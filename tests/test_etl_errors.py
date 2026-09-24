@@ -349,7 +349,13 @@ class TestPersistedCategoryParity:
     @pytest.mark.parametrize("member", list(RunErrorCategory))
     def test_store_column_equals_record_json_for_every_member(self, member):
         record = build_run_record(
-            status="failed", elapsed=0.0, entity_counts={}, source="cli", sis_type="myedbc", error_category=member
+            status="failed",
+            elapsed=0.0,
+            entity_counts={},
+            source="cli",
+            sis_type="myedbc",
+            error_category=member,
+            entity_outcomes=None,
         )
         assert type(record["error_category"]) is str, "normalised to a plain str, not the enum"
         assert write_run_record(record, source="cli") is True
@@ -359,14 +365,26 @@ class TestPersistedCategoryParity:
 
     def test_a_legacy_value_string_normalises_identically(self):
         record = build_run_record(
-            status="failed", elapsed=0.0, entity_counts={}, source="cli", sis_type="", error_category="output"
+            status="failed",
+            elapsed=0.0,
+            entity_counts={},
+            source="cli",
+            sis_type="",
+            error_category="output",
+            entity_outcomes=None,
         )
         assert record["error_category"] == "output" and type(record["error_category"]) is str
 
     def test_an_unknown_category_string_is_refused_at_the_one_normalisation_point(self):
         with pytest.raises(ValueError):
             build_run_record(
-                status="failed", elapsed=0.0, entity_counts={}, source="cli", sis_type="", error_category="bogus"
+                status="failed",
+                elapsed=0.0,
+                entity_counts={},
+                source="cli",
+                sis_type="",
+                error_category="bogus",
+                entity_outcomes=None,
             )
 
 

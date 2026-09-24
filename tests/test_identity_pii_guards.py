@@ -166,6 +166,9 @@ FROZEN_RUN_RECORD_KEYS = frozenset(
         "CourseInfo",
         "StudentCourses",
         "StudentAttendance",
+        # plan 0053 S2 — the per-entity outcomes: entity NAMES + closed-set codes + row
+        # COUNTS only (never a column, a header, a path or an address).
+        "entity_outcomes",
     }
 )
 
@@ -185,6 +188,7 @@ def test_run_record_key_set_is_frozen() -> None:
         source="cli",
         sis_type="myedbc",
         error_category="none",
+        entity_outcomes=None,
     )
     assert set(record) == FROZEN_RUN_RECORD_KEYS
 
@@ -208,6 +212,7 @@ def test_store_column_set_is_frozen(isolated_user_profile: Path) -> None:
         source="cli",
         sis_type="myedbc",
         error_category="none",
+        entity_outcomes=None,
     )
     assert write_run_record(record, source="cli") is True  # positive twin: the DB exists
 

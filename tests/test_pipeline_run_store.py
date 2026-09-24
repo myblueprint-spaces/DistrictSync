@@ -1062,7 +1062,11 @@ class TestRunAsRidesTheRecord:
         assert records is not None and records[0]["run_as"]
 
     def test_an_older_record_without_the_key_still_reads(self) -> None:
-        """A DB written by <= v3.21.0 has no ``run_as`` — the reader must not care."""
+        """A DB written by <= v3.21.0 has no ``run_as`` — the reader must not care.
+
+        Such a record also predates ``entity_outcomes`` (plan 0053 S2), so both are removed
+        to reproduce the real older shape.
+        """
         from src.history.store import write_run_record
 
         legacy = pipeline.build_run_record(
@@ -1072,8 +1076,10 @@ class TestRunAsRidesTheRecord:
             source="cli",
             sis_type="myedbc",
             error_category="none",
+            entity_outcomes=None,
         )
         legacy.pop("run_as")
+        legacy.pop("entity_outcomes")
         assert write_run_record(legacy, source="cli") is True
 
         records = read_run_records()
@@ -1188,3 +1194,245 @@ class TestTypedCategoriesReachTheRecord:
         )
         records = read_run_records()
         assert records is not None and records[0]["error_category"] == "no_input"
+
+
+# --------------------------------------------------------------------------- #
+# per-entity outcomes reach the record (plan 0053 S2)                          #
+# --------------------------------------------------------------------------- #
+_MYEDBC_ORDER = ["Students", "Staff", "Family", "Classes", "Enrollments"]
+
+
+def _log_payload(caplog: pytest.LogCaptureFixture) -> dict:
+    lines = [r.message for r in caplog.records if "__DISTRICTSYNC_RUN__" in r.message]
+    assert lines, "expected a structured run-log line"
+    return json.loads(lines[-1].split("__DISTRICTSYNC_RUN__ ")[1])
+
+
+def _kinds(stored: dict) -> dict[str, tuple[str, str]]:
+    return {entity: (entry["kind"], entry["reason"]) for entity, entry in stored["entity_outcomes"].items()}
+
+
+class TestEntityOutcomesReachTheRecord:
+    """``entity_outcomes`` rides EVERY record both entry points write: one outcome per
+    configured entity, in configured order, the log line and the store sharing one dict —
+    and ``None`` exactly where no ledger existed. Recording only: every failure below still
+    fails the run exactly as before S2."""
+
+    _UNITY = TestTypedCategoriesReachTheRecord._UNITY
+
+    def test_a_success_record_carries_one_built_outcome_per_configured_entity(
+        self, gde_input: Path, gde_output: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.INFO, logger="src.etl.pipeline"):
+            result = run_pipeline("myedbc", str(gde_input), str(gde_output))
+        records = read_run_records()
+        assert records is not None and len(records) == 1
+        stored = records[0]
+        assert list(stored["entity_outcomes"]) == _MYEDBC_ORDER, "keys == configured_entity_order, in order"
+        assert _log_payload(caplog)["entity_outcomes"] == stored["entity_outcomes"], "one dict, two sinks"
+        for entity, entry in stored["entity_outcomes"].items():
+            assert entry["kind"] == "built" and entry["reason"] == "none"
+            # For a BUILT entity on a successful run the two row numbers agree.
+            assert entry["rows"] == stored[entity] > 0
+        # The run's own return value carries the same outcomes.
+        assert [o.entity for o in result.entity_outcomes] == _MYEDBC_ORDER
+        assert {o.entity: o.rows for o in result.entity_outcomes} == result.entity_counts
+
+    def test_the_unity_plain_report_records_family_failed_and_the_rest_not_run(
+        self, gde_input: Path, gde_output: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from src.etl.errors import SourceSchemaError
+
+        TestTypedCategoriesReachTheRecord._plain_emergency_report(gde_input)
+        with caplog.at_level(logging.INFO, logger="src.etl.pipeline"), pytest.raises(SourceSchemaError):
+            run_pipeline(self._UNITY, str(gde_input), str(gde_output))
+        records = read_run_records()
+        assert records is not None and len(records) == 1
+        stored = records[0]
+        assert stored["status"] == "failed" and stored["error_category"] == "source_schema"
+        assert _kinds(stored) == {
+            "Students": ("built", "none"),
+            "Staff": ("built", "none"),
+            "Family": ("failed", "missing_source_column"),
+            "Classes": ("not_run", "run_aborted"),
+            "Enrollments": ("not_run", "run_aborted"),
+        }
+        assert _log_payload(caplog)["entity_outcomes"] == stored["entity_outcomes"]
+        # The flat count keys keep their meaning: nothing reached `outputs` on this run.
+        assert stored["Students"] == 0 and stored["entity_outcomes"]["Students"]["rows"] == 2
+        # Nothing was written — S2 changes no behaviour.
+        assert not list(gde_output.glob("*.csv"))
+
+    def test_a_family_with_no_usable_contact_is_empty_no_rows_after_transform(
+        self, gde_input: Path, gde_output: Path
+    ) -> None:
+        """The SD51 shape: contacts arrive, none carries an email, Family builds nothing."""
+        pd.DataFrame(
+            {"Student Number": ["S001"], "First Name": ["John"], "Last Name": ["Smith"], "Email Address": [""]}
+        ).to_csv(gde_input / "EmergencyContactInformation.txt", index=False)
+        run_pipeline("myedbc", str(gde_input), str(gde_output))
+        records = read_run_records()
+        assert records is not None and records[0]["status"] == "success"
+        assert _kinds(records[0])["Family"] == ("empty", "no_rows_after_transform")
+        assert records[0]["Family"] == 0
+
+    def test_the_twin_a_family_with_no_file_is_empty_source_files_empty(
+        self, gde_input: Path, gde_output: Path
+    ) -> None:
+        (gde_input / "EmergencyContactInformation.txt").unlink()
+        run_pipeline("myedbc", str(gde_input), str(gde_output))
+        records = read_run_records()
+        assert records is not None
+        assert _kinds(records[0])["Family"] == ("empty", "source_files_empty")
+        assert _kinds(records[0])["Students"] == ("built", "none")
+
+    def test_a_raise_before_the_entity_loop_records_every_entity_not_run(
+        self, gde_input: Path, gde_output: Path, monkeypatch
+    ) -> None:
+        from src.etl.extractor import DataExtractor, ExtractionError
+
+        monkeypatch.setattr(DataExtractor, "_read_with_fallback", staticmethod(lambda *a, **k: None))
+        with pytest.raises(ExtractionError):
+            run_pipeline("myedbc", str(gde_input), str(gde_output))
+        records = read_run_records()
+        assert records is not None and len(records) == 1
+        assert _kinds(records[0]) == dict.fromkeys(_MYEDBC_ORDER, ("not_run", "run_aborted"))
+
+    def test_no_usable_input_records_every_entity_not_run(self, tmp_path: Path, gde_output: Path) -> None:
+        empty_input = tmp_path / "empty"
+        empty_input.mkdir()
+        with pytest.raises(RuntimeError, match="No usable required input"):
+            run_pipeline("myedbc", str(empty_input), str(gde_output))
+        records = read_run_records()
+        assert records is not None
+        assert _kinds(records[0]) == dict.fromkeys(_MYEDBC_ORDER, ("not_run", "run_aborted"))
+
+    def test_a_raise_after_the_transform_keeps_the_complete_ledger(
+        self, gde_input: Path, gde_output: Path, monkeypatch
+    ) -> None:
+        from src.etl.loader import DataLoader
+
+        def _locked(*_a: object, **_kw: object) -> None:
+            raise PermissionError(13, "Permission denied")
+
+        monkeypatch.setattr(DataLoader, "save_all", _locked)
+        with pytest.raises(pipeline.OutputWriteError):
+            run_pipeline("myedbc", str(gde_input), str(gde_output))
+        records = read_run_records()
+        assert records is not None
+        assert records[0]["error_category"] == "output"
+        assert _kinds(records[0]) == dict.fromkeys(_MYEDBC_ORDER, ("built", "none"))
+
+    @pytest.mark.parametrize("fault", ["missing_input_dir", "unknown_config", "unusable_output"])
+    def test_an_attempt_that_ended_before_the_ledger_records_none(
+        self, fault: str, gde_input: Path, gde_output: Path, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        sis, input_dir, output_dir = "myedbc", str(gde_input), str(gde_output)
+        if fault == "missing_input_dir":
+            input_dir = str(tmp_path / "nope")
+        elif fault == "unknown_config":
+            sis = "not-a-district"
+        else:
+            output_dir = TestOutputFolderPreflight._unusable(tmp_path)
+        with caplog.at_level(logging.INFO, logger="src.etl.pipeline"), pytest.raises(SystemExit):
+            run_pipeline(sis, input_dir, output_dir)
+        records = read_run_records()
+        assert records is not None and len(records) == 1
+        assert "entity_outcomes" in records[0] and records[0]["entity_outcomes"] is None
+        assert _log_payload(caplog)["entity_outcomes"] is None
+
+    def test_a_generic_raise_before_the_ledger_still_records_none(
+        self, gde_input: Path, gde_output: Path, monkeypatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The generic failure sink's ``None`` arm: a non-``SystemExit`` raise before the ledger
+        exists must still write exactly one record (a dropped guard would swallow it silently)."""
+
+        def _probe(*_a: object, **_kw: object) -> None:
+            raise RuntimeError("probe")
+
+        monkeypatch.setattr(pipeline, "output_target_problem", _probe)
+        with caplog.at_level(logging.INFO, logger="src.etl.pipeline"), pytest.raises(RuntimeError, match="probe"):
+            run_pipeline("myedbc", str(gde_input), str(gde_output))
+        records = read_run_records()
+        assert records is not None and len(records) == 1
+        assert records[0]["status"] == "failed"
+        assert records[0]["error_category"] == "unknown"
+        assert "entity_outcomes" in records[0] and records[0]["entity_outcomes"] is None
+        assert _log_payload(caplog)["entity_outcomes"] is None
+
+    def test_a_dry_run_log_line_carries_the_outcomes_but_nothing_is_stored(
+        self, gde_input: Path, gde_output: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.INFO, logger="src.etl.pipeline"):
+            run_pipeline("myedbc", str(gde_input), str(gde_output), dry_run=True)
+        assert list(_log_payload(caplog)["entity_outcomes"]) == _MYEDBC_ORDER
+        assert read_run_records() == []
+
+
+class TestConvertRecordsTheSameOutcomes:
+    """Convert builds its ledger at the CLI's point, so a Convert result and record say per
+    entity exactly what the CLI would; a delivery-only record and the pre-flight refusal say
+    ``None`` (no ledger existed)."""
+
+    def test_a_manual_record_carries_the_outcomes_the_cli_records(
+        self, gde_input: Path, gde_output: Path, tmp_path: Path
+    ) -> None:
+        from src.ui_flet.screens.convert import convert_job
+
+        cli_output = tmp_path / "cli_output"
+        cli_output.mkdir()
+        run_pipeline("myedbc", str(gde_input), str(cli_output))
+        AppConfig(input_dir=str(gde_input), output_dir=str(gde_output), sis_type="myedbc").save()
+        result = convert_job("myedbc", str(gde_input))
+
+        records = read_run_records()
+        assert records is not None and len(records) == 2
+        manual, cli = records[0], records[1]
+        assert manual["source"] == "manual" and cli["source"] == "cli"
+        assert manual["entity_outcomes"] == cli["entity_outcomes"]
+        assert list(manual["entity_outcomes"]) == _MYEDBC_ORDER
+        assert result.entity_outcomes is not None
+        assert [o.entity for o in result.entity_outcomes] == _MYEDBC_ORDER
+
+    def test_convert_no_input_carries_every_entity_not_run(self, gde_output: Path, tmp_path: Path) -> None:
+        from src.etl.outcomes import OutcomeKind
+        from src.ui_flet.convert_result import ConvertStatus
+        from src.ui_flet.screens.convert import convert_job
+
+        empty_input = tmp_path / "empty"
+        empty_input.mkdir()
+        AppConfig(input_dir=str(empty_input), output_dir=str(gde_output), sis_type="myedbc").save()
+        result = convert_job("myedbc", str(empty_input))
+        assert result.status is ConvertStatus.NO_INPUT
+        assert result.entity_outcomes is not None
+        assert [o.entity for o in result.entity_outcomes] == _MYEDBC_ORDER
+        assert {o.kind for o in result.entity_outcomes} == {OutcomeKind.NOT_RUN}
+        assert read_run_records() == [], "NO_INPUT still writes no record (unchanged)"
+
+    def test_the_convert_preflight_refusal_carries_none(self, gde_input: Path, tmp_path: Path) -> None:
+        from src.ui_flet.convert_result import ConvertStatus
+        from src.ui_flet.screens.convert import convert_job
+
+        unusable = TestOutputFolderPreflight._unusable(tmp_path)
+        AppConfig(input_dir=str(gde_input), output_dir=unusable, sis_type="myedbc").save()
+        result = convert_job("myedbc", str(gde_input))
+        assert result.status is ConvertStatus.OUTPUT_FOLDER_UNUSABLE
+        assert result.entity_outcomes is None
+
+    def test_a_delivery_only_record_carries_none_beside_a_build_record_that_carries_them(
+        self, gde_input: Path, gde_output: Path, monkeypatch
+    ) -> None:
+        from src.ui_flet.screens import convert as convert_screen
+
+        AppConfig(input_dir=str(gde_input), output_dir=str(gde_output), sis_type="myedbc").save()
+        convert_screen.convert_job("myedbc", str(gde_input))
+        calls: list[tuple[Path, str | None, set[str]]] = []
+        monkeypatch.setattr(convert_screen, "SFTPUploader", _fake_uploader(calls))
+        result = convert_screen.deliver_job("myedbc")
+
+        assert result.entity_outcomes is None
+        records = read_run_records()
+        assert records is not None and len(records) == 2
+        delivery, build = records[0], records[1]
+        assert delivery["delivery_only"] is True and delivery["entity_outcomes"] is None
+        assert list(build["entity_outcomes"]) == _MYEDBC_ORDER

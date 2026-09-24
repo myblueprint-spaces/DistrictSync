@@ -736,7 +736,8 @@ def sd74_frozen_corpus(tmp_path_factory):
 
     from src.config.loader import load_config
     from src.etl.extractor import DataExtractor
-    from src.etl.pipeline import extract_required_files, run_transform
+    from src.etl.outcomes import OutcomeLedger
+    from src.etl.pipeline import configured_entity_order, extract_required_files, run_transform
 
     empty_user_dir = tmp_path_factory.mktemp("sd74_frozen_empty_user_mappings")
     with (
@@ -757,6 +758,11 @@ def sd74_frozen_corpus(tmp_path_factory):
 
     def run(**overrides):
         global_config = {**raw["global_config"], **overrides}
-        return run_transform({name: frame.copy() for name, frame in extracted.items()}, mappings, global_config)
+        return run_transform(
+            {name: frame.copy() for name, frame in extracted.items()},
+            mappings,
+            global_config,
+            ledger=OutcomeLedger(configured_entity_order(mappings, global_config)),
+        )
 
     return raw["global_config"], run

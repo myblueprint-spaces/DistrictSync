@@ -2853,7 +2853,7 @@ def _deliver_ready_cfg(tmp_path, monkeypatch, *, sis_type, csv_names):
 def _built_result():
     from src.ui_flet.convert_result import ConvertResult, ConvertStatus
 
-    return ConvertResult(status=ConvertStatus.DELIVERED, entity_counts={"Students": 12})
+    return ConvertResult(entity_outcomes=None, status=ConvertStatus.DELIVERED, entity_counts={"Students": 12})
 
 
 def _convert_with_result(tmp_path, monkeypatch, *, sis_type, csv_names, result, on_navigate=None):
@@ -3037,7 +3037,9 @@ def test_a_switched_district_can_never_ship_another_districts_roster(tmp_path, m
 
     def _spy_deliver(sis: str) -> ConvertResult:
         shipped.append(sis)
-        return ConvertResult(status=ConvertStatus.DELIVERED_FROM_DISK, sftp_attempted=True, sftp_ok=True)
+        return ConvertResult(
+            entity_outcomes=None, status=ConvertStatus.DELIVERED_FROM_DISK, sftp_attempted=True, sftp_ok=True
+        )
 
     monkeypatch.setattr(convert_mod, "deliver_job", _spy_deliver)
 
@@ -3099,7 +3101,7 @@ class TestCheckRowFactory:
 def _unusable_output_result():
     from src.ui_flet.convert_result import ConvertResult, ConvertStatus
 
-    return ConvertResult(status=ConvertStatus.OUTPUT_FOLDER_UNUSABLE)
+    return ConvertResult(entity_outcomes=None, status=ConvertStatus.OUTPUT_FOLDER_UNUSABLE)
 
 
 def test_output_folder_refusal_renders_the_band_and_a_routed_open_setup(tmp_path, monkeypatch):
@@ -3125,7 +3127,7 @@ def test_output_folder_refusal_renders_the_band_and_a_routed_open_setup(tmp_path
         on_navigate=routed.append,
     )
 
-    _verdict, headline, detail = summarize(_CR(status=ConvertStatus.OUTPUT_FOLDER_UNUSABLE))
+    _verdict, headline, detail = summarize(_CR(status=ConvertStatus.OUTPUT_FOLDER_UNUSABLE, entity_outcomes=None))
     assert _has_text_containing(result_slot, headline)
     assert _has_text_containing(result_slot, detail)
     # NOT the never-crash floor (whose copy is the input-folder misattribution itself).
@@ -3153,7 +3155,7 @@ def test_output_folder_refusal_without_on_navigate_renders_no_button(tmp_path, m
         result=_unusable_output_result(),
     )
 
-    _verdict, headline, _detail = summarize(_CR(status=ConvertStatus.OUTPUT_FOLDER_UNUSABLE))
+    _verdict, headline, _detail = summarize(_CR(status=ConvertStatus.OUTPUT_FOLDER_UNUSABLE, entity_outcomes=None))
     assert _has_text_containing(result_slot, headline), "the verdict band stands without the button"
     assert not [c for c in _iter_controls(result_slot) if getattr(c, "content", None) == "Open Setup"]
 

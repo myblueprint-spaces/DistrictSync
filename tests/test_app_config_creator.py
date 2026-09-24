@@ -528,7 +528,7 @@ class TestActivateCreatorConfig:
         monkeypatch.setattr(
             creator_screen,
             "creator_gate_job",
-            lambda *_a, **_kw: PipelineResult(entity_counts={"Students": 5}),
+            lambda *_a, **_kw: PipelineResult(entity_outcomes=(), entity_counts={"Students": 5}),
         )
         page = MagicMock()
         page.run_thread = lambda fn: fn()
@@ -579,7 +579,7 @@ class TestActivateCreatorConfig:
         monkeypatch.setattr(
             creator_screen,
             "creator_gate_job",
-            lambda *_a, **_kw: PipelineResult(entity_counts={"Students": 5}),
+            lambda *_a, **_kw: PipelineResult(entity_outcomes=(), entity_counts={"Students": 5}),
         )
         page = MagicMock()
         page.run_thread = lambda fn: fn()

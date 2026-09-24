@@ -29,6 +29,18 @@ Per-release download links and auto-generated commit notes live on the
   pupil's data. They now name only the column the mapping expected and say how many
   columns the file had.
 
+### Added
+
+- **Each run now records what happened to every file it was set up to build.** The
+  run record (in `history.db` and the `__DISTRICTSYNC_RUN__` log line) gains an
+  `entity_outcomes` entry that says, for each of the district's files — Students,
+  Staff, Family contacts and so on — whether it was built (and how many rows), left
+  empty (and why: no source file, an empty export, or no usable rows), failed (a
+  missing column, or another error), or was not reached because the run stopped
+  first. Nothing on screen reads it yet, and nothing about what is built or delivered
+  changes: a run that failed before still fails the same way. An older DistrictSync
+  sharing the same history simply ignores the new entry.
+
 ## [3.25.0] - 2026-09-23
 
 Staff who do not teach are no longer delivered to SpacesEDU as administrators.

@@ -14,7 +14,7 @@ import logging
 import os
 import sys
 import time
-from collections.abc import Collection, Iterable, Mapping
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -34,6 +34,15 @@ from src.etl.errors import (
 )
 from src.etl.extractor import DataExtractor
 from src.etl.loader import DataLoader, output_target_problem
+from src.etl.outcomes import (
+    OUTCOMES_RECORD_KEY,
+    ROSTER_ANCHOR_ENTITY,
+    EntityOutcome,
+    OutcomeLedger,
+    OutcomeReason,
+    outcomes_to_record,
+    reason_for,
+)
 from src.etl.transformer import DataTransformer
 from src.etl.transformers.dates import SchoolYearDetermination
 from src.etl.transformers.grades import resolve_timetable_scope
@@ -63,18 +72,8 @@ _RECORD_ENTITY_KEYS: tuple[str, ...] = (
 
 _SOURCE_ENV_VAR = "DSYNC_SOURCE"  # scheduled/cron/Docker set this; the registered task passes --source
 
-ROSTER_ANCHOR_ENTITY = "Students"
-"""The entity every other delivered file's student references resolve against.
-
-``Students.csv`` is the referential ROOT of a SpacesEDU delivery: the zero-orphan
-invariant (CLAUDE.md → Key Data Flow → Enrollments) is defined as "no emitted row
-references a ``User ID`` absent from ``Students.csv``", and ``Family`` /
-``StudentCourses`` carry the same dependency (see ``quality/report.py``'s orphan
-checks). That makes it the ONE entity whose absence invalidates the whole payload —
-every other entity may legitimately be empty on a given night (per-entity
-skip-on-empty). Named here rather than inlined so the special case is explicit and
-single-sourced.
-"""
+# `ROSTER_ANCHOR_ENTITY` (the referential root of a delivery) moved to `src.etl.outcomes`
+# with plan 0053 S2, beside the criticality table it forces; imported above.
 
 
 @dataclass
@@ -102,6 +101,11 @@ class PipelineResult:
     raise) return no result at all and carry no observation — by design: those
     failures name the offending column themselves and fail loudly, while an
     absent mapped column is an *intended blank* that nothing else reports.
+
+    ``entity_outcomes`` (plan 0053 S2) is one :class:`~src.etl.outcomes.EntityOutcome`
+    per configured entity, in configured order — the same outcomes the run record
+    carries. REQUIRED keyword-only with NO default: a consumer that gates on it (the
+    creator's activation gate, S4) must never read a defaulted "nothing failed".
     """
 
     entity_counts: dict[str, int] = field(default_factory=dict)
@@ -111,6 +115,9 @@ class PipelineResult:
     # `field(default_factory=dict)` per the `entity_counts` precedent above — a bare
     # `{}` default raises `ValueError: mutable default` at class definition.
     input_columns: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    # `kw_only`: every field above has a default, and a required positional field after
+    # defaulted ones is a `TypeError` at class definition.
+    entity_outcomes: tuple[EntityOutcome, ...] = field(kw_only=True)
 
 
 def extract_required_files(config) -> list[str]:
@@ -213,6 +220,13 @@ def configured_entity_order(mappings: dict, global_config: dict) -> list[str]:
     entities in the mapping (see CLAUDE.md "Output Targeting"), and treating
     those as expected would fire false anomalies against a DIFFERENT config's
     legitimate CSV sharing the output dir.
+
+    Each entity appears ONCE (its first position wins). An ``entity_order`` that listed
+    an entity twice used to transform it twice — the second pass overwriting the first
+    with the same frame and double-counting its data errors; since plan 0053 S2 the
+    per-run :class:`~src.etl.outcomes.OutcomeLedger` holds exactly one outcome per
+    entity, so the list it is built from names each entity once. (No bundled config
+    lists an entity twice; this guards a hand-written overlay.)
     """
     entity_order = global_config.get("entity_order") or list(mappings.keys())
     # `enabled_entities` (when non-empty) filters which mappings actually run.
@@ -220,7 +234,8 @@ def configured_entity_order(mappings: dict, global_config: dict) -> list[str]:
     # activates by default — districts opt in by listing them. The selection
     # rule itself is single-sourced in `filter_enabled_entities` (the same
     # kernel behind `MappingConfig.active_entities`).
-    return filter_enabled_entities(entity_order, global_config.get("enabled_entities"))
+    selected = filter_enabled_entities(entity_order, global_config.get("enabled_entities"))
+    return list(dict.fromkeys(selected))
 
 
 class TransformOutputs(NamedTuple):
@@ -235,18 +250,25 @@ class TransformOutputs(NamedTuple):
     determination (diagnostics only — carries no in-code default, since every
     run genuinely has one) — threaded out so ``--quality`` can report WHY a
     year was chosen, not just what it was (see ``DataQualityReport.school_year``).
+
+    ``outcomes`` (plan 0053 S2) is the COMPLETE per-entity ledger — one
+    :class:`~src.etl.outcomes.EntityOutcome` per configured entity, in configured
+    order. Read fields by attribute; the production callers never unpack this tuple.
     """
 
     outputs: dict[str, pd.DataFrame]
     field_orders: dict[str, list[str]]
     data_errors: list[dict]
     school_year: SchoolYearDetermination
+    outcomes: tuple[EntityOutcome, ...]
 
 
 def run_transform(
     raw_data: dict[str, pd.DataFrame],
     mappings: dict,
     global_config: dict,
+    *,
+    ledger: OutcomeLedger,
 ) -> TransformOutputs:
     """Shared transform-orchestration: school-year determination + the per-entity loop.
 
@@ -261,7 +283,24 @@ def run_transform(
     The returned :class:`TransformOutputs` also carries ``data_errors`` — the
     shared context's fail-loud field-transform ledger accumulated across every
     entity (empty on a clean run).
+
+    ``ledger`` (plan 0053 S2) is REQUIRED keyword-only: the caller builds it (from
+    :func:`configured_entity_order`, before the input is read) so a failure BEFORE
+    this function still yields a complete ledger through its failure sink. Every
+    skip branch below records EMPTY with its reason and every emitted entity BUILT
+    with its row count. A raise from an entity's transform is recorded FAILED
+    (:func:`~src.etl.outcomes.reason_for`) with every later entity NOT_RUN, and then
+    re-raised BARE — the same object, so the category and exit code are exactly what
+    they were. There is no isolation here yet: every entity's raise still fails the
+    run (the ISOLATABLE bulkhead is plan 0053 S4).
     """
+    configured = configured_entity_order(mappings, global_config)
+    if ledger.configured != tuple(configured):
+        raise ValueError(
+            f"The outcome ledger was built for {list(ledger.configured)}, but this run is "
+            f"configured to produce {configured}; build it from configured_entity_order()."
+        )
+
     transformer = DataTransformer()
     # Before the entity loop: an entity may need a source file that ANOTHER
     # entity declares (Staff resolves the Classes timetable roles).
@@ -305,17 +344,19 @@ def run_transform(
             f"resolved={sy}. academic start={transformer.academic_start}, end={transformer.academic_end}"
         )
 
-    for entity_name in configured_entity_order(mappings, global_config):
+    for position, entity_name in enumerate(configured):
         entity_cfg = mappings.get(entity_name, {})
         source_config = entity_cfg.get("source_files", {})
 
         if not source_config:
             logger.warning(f"No source_files for entity '{entity_name}' in the mapping; skipping.")
+            ledger.record(EntityOutcome.empty(entity_name, OutcomeReason.NO_SOURCE_FILES_DECLARED))
             continue
 
         source_files = list(source_config.values()) if isinstance(source_config, dict) else source_config
         if not source_files:
             logger.warning(f"No valid source files for entity '{entity_name}'; skipping.")
+            ledger.record(EntityOutcome.empty(entity_name, OutcomeReason.NO_SOURCE_FILES_DECLARED))
             continue
 
         # Skip only when EVERY source frame is empty. The positional-first frame
@@ -327,21 +368,34 @@ def run_transform(
         source_frames = [raw_data.get(sf, pd.DataFrame()) for sf in source_files]
         if all(df.empty for df in source_frames):
             logger.warning(f"All source files {source_files} are empty for '{entity_name}'; skipping.")
+            ledger.record(EntityOutcome.empty(entity_name, OutcomeReason.SOURCE_FILES_EMPTY))
             continue
         primary_df = source_frames[0]  # may be empty for a role-resolved entity (period-only attendance)
 
-        transformed = transformer.transform(primary_df, entity_cfg, entity_name, raw_data, global_config)
+        try:
+            transformed = transformer.transform(primary_df, entity_cfg, entity_name, raw_data, global_config)
+        except Exception as exc:
+            # RECORD, then re-raise the ORIGINAL object — no containment in plan 0053 S2 (the
+            # entity bulkhead is S4). `Exception`, never `BaseException`: a Ctrl+C or a
+            # SystemExit is not an entity outcome; the caller's failure sink marks what is left.
+            ledger.record(EntityOutcome.failed(entity_name, reason_for(exc)))
+            ledger.mark_not_run(configured[position + 1 :])
+            raise
 
         if transformed.empty:
             logger.warning(f"No data transformed for entity '{entity_name}'; skipping.")
+            ledger.record(EntityOutcome.empty(entity_name, OutcomeReason.NO_ROWS_AFTER_TRANSFORM))
             continue
 
         outputs[entity_name] = transformed
         field_orders[entity_name] = list(entity_cfg.get("field_map", {}).keys())
+        ledger.record(EntityOutcome.built(entity_name, len(transformed)))
 
     # The shared per-run TransformContext accumulates fail-loud field-transform
     # errors across every entity; surface them on the same axis as the outputs.
-    return TransformOutputs(outputs, field_orders, transformer.data_errors, sy_determination)
+    # `complete()` refuses a ledger missing any configured entity: every branch above
+    # records exactly one outcome, and this is where that claim is checked.
+    return TransformOutputs(outputs, field_orders, transformer.data_errors, sy_determination, ledger.complete())
 
 
 class DeliveryIntegrityError(EtlError, RuntimeError):
@@ -564,6 +618,7 @@ def build_run_record(
     source: str,
     sis_type: str,
     error_category: RunErrorCategory | str,
+    entity_outcomes: Sequence[EntityOutcome] | None,
     timestamp: str | None = None,
 ) -> dict[str, Any]:
     """Build the ONE flat run-record dict written to BOTH sinks (D2a — one dict, two sinks).
@@ -591,6 +646,24 @@ def build_run_record(
     through :class:`~src.etl.errors.RunErrorCategory` (an unknown string raises rather than
     persisting a value no reader knows) and stored as its plain ``.value`` string, so the
     ``runs.error_category`` column and the JSON record can never disagree.
+
+    ``entity_outcomes`` (plan 0053 S2) is REQUIRED keyword-only with no default (P8): the
+    per-entity outcomes, stored under :data:`~src.etl.outcomes.OUTCOMES_RECORD_KEY` as
+    ``{entity: {"kind", "reason", "rows"}}`` in configured order — or ``None`` ONLY when no
+    ledger existed: the attempt ended at the input-folder check, the config load, the
+    output-folder pre-flight or any other raise before the ledger was built, or the record
+    is a delivery-only one (a delivery is not a build). Like ``run_as`` it is an additive JSON key, never a ``runs`` column: no DDL, no
+    ``user_version`` bump (the additive-migration ladder has a measured brick state — the
+    ROADMAP "migration ladder" item), and an older exe sharing the ``history.db`` ignores the
+    key and renders the record exactly as it did before.
+
+    **Two row numbers, two meanings.** The FLAT per-entity count keys (``record["Students"]``
+    …) keep exactly their existing meaning: the rows in ``outputs`` when the record was built
+    (``_counts_from_outputs``) — which on a run that failed AFTER the transform is NOT
+    necessarily 0. ``entity_outcomes[e]["rows"]`` is the rows the entity's TRANSFORM
+    produced. The two agree for every BUILT entity on a successful run. Read the flat keys for
+    "how big was what this run wrote" (Home's size clause and Run History's columns do, and
+    are unchanged); read the outcomes for "did each entity build, and if not, why".
     """
     record: dict[str, Any] = {
         "timestamp": timestamp or datetime.now().isoformat(timespec="seconds"),
@@ -607,6 +680,7 @@ def build_run_record(
     }
     for key in _RECORD_ENTITY_KEYS:
         record[key] = int(entity_counts.get(key, 0))
+    record[OUTCOMES_RECORD_KEY] = None if entity_outcomes is None else outcomes_to_record(entity_outcomes)
     return record
 
 
@@ -643,6 +717,7 @@ def _emit_run_log(
     Retained as the small "count the outputs and log it" convenience the unit tests pin;
     ``run_pipeline`` uses the finer-grained :func:`build_run_record` + :func:`_log_run_record`
     + :func:`_store_run_record` split so the SAME dict reaches both sinks (build once).
+    It holds no outcome ledger, and its record says so: ``entity_outcomes`` is ``None``.
     """
     record = build_run_record(
         status=status,
@@ -655,6 +730,7 @@ def _emit_run_log(
         source=source,
         sis_type=sis_type,
         error_category=error_category,
+        entity_outcomes=None,
     )
     _log_run_record(record, error=error)
 
@@ -708,6 +784,11 @@ def _record_early_failure(
     ``dry_run`` is REQUIRED and keyword-only for the same reason it is on
     :func:`_store_run_record`: every early-exit sink must forward the caller's preview flag,
     and a default would let a new ``sys.exit`` path silently record a preview as a run.
+
+    Every caller exits BEFORE the run's :class:`~src.etl.outcomes.OutcomeLedger` exists (the
+    input-folder check, the config load, the output-folder pre-flight), so the record's
+    ``entity_outcomes`` is ``None`` — "no ledger existed", never an empty success. A failure
+    after the ledger exists reaches ``run_pipeline``'s generic sink instead, which completes it.
     """
     try:
         record = build_run_record(
@@ -717,6 +798,7 @@ def _record_early_failure(
             source=source,
             sis_type=sis_type,
             error_category=category,
+            entity_outcomes=None,
         )
         _log_run_record(record, error=error)  # rich free-text error → LOG only
         # store carries error_category only — and nothing at all for a dry run
@@ -801,6 +883,9 @@ def run_pipeline(
     t0 = time.monotonic()
     resolved_source = _resolve_source(source)
     outputs: dict[str, pd.DataFrame] = {}
+    # The per-entity outcome ledger (plan 0053 S2). `None` until it is built below — which is
+    # what lets the failure sink tell "no ledger existed" from "this run's outcomes".
+    ledger: OutcomeLedger | None = None
     sftp_attempted = False
     sftp_ok = False
     anomalies: list[str] = []
@@ -878,6 +963,12 @@ def run_pipeline(
                 )
                 sys.exit(1)
 
+        # The outcome ledger, built at the SAME point as `convert_job`'s: the raw dicts exist,
+        # the output folder has passed its pre-flight, and nothing has been read. From here on
+        # every exit completes it (`finalize_aborted` in the failure sink), so an
+        # `ExtractionError` or a `NoUsableInputError` records every entity NOT_RUN.
+        ledger = OutcomeLedger(configured_entity_order(mappings, global_config))
+
         extractor = DataExtractor(input_path)
         try:
             loader = DataLoader(output_path)
@@ -920,7 +1011,11 @@ def run_pipeline(
 
         # Shared transform-orchestration (school-year + per-entity loop +
         # enabled_entities filter + field-order collection).
-        outputs, field_orders, data_errors, sy_determination = run_transform(raw_data, mappings, global_config)
+        transform_outputs = run_transform(raw_data, mappings, global_config, ledger=ledger)
+        outputs = transform_outputs.outputs
+        field_orders = transform_outputs.field_orders
+        data_errors = transform_outputs.data_errors
+        sy_determination = transform_outputs.school_year
 
         # Surface fail-loud field-transform errors (a separate axis from ETL
         # status): consolidated ERROR + a compact run-log summary. The run still
@@ -1040,6 +1135,7 @@ def run_pipeline(
             source=resolved_source,
             sis_type=sis_type,
             error_category=RunErrorCategory.NONE,
+            entity_outcomes=transform_outputs.outcomes,
         )
         _log_run_record(record)
         _store_run_record(record, source=resolved_source, dry_run=dry_run)
@@ -1054,6 +1150,7 @@ def run_pipeline(
             # re-read, a second normalisation or a new extractor seam. `str()` so
             # nothing but `str` leaves the pipeline.
             input_columns={filename: tuple(str(column) for column in df.columns) for filename, df in raw_data.items()},
+            entity_outcomes=transform_outputs.outcomes,
         )
 
     except SystemExit:
@@ -1075,6 +1172,10 @@ def run_pipeline(
                 source=resolved_source,
                 sis_type=sis_type,
                 error_category=classify_error_category(e),
+                # Complete the ledger: an entity the run never reached is NOT_RUN/RUN_ABORTED
+                # (idempotent after a transform raise, which already recorded FAILED + the rest).
+                # `None` only when the raise came before the ledger was built.
+                entity_outcomes=None if ledger is None else ledger.finalize_aborted(),
             )
             _log_run_record(record, error=str(e))  # rich free-text error → LOG only
             # store carries error_category only — and nothing at all for a dry run

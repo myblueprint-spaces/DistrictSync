@@ -927,7 +927,7 @@ class TestTheGateRefusesWithoutAUsableOutputFolder:
 
         def _fake(sis_type, input_path, output_path, **kwargs):  # noqa: ANN001, ANN202
             calls.append({"sis": sis_type, "input": input_path, "output": output_path, **kwargs})
-            return pipeline_mod.PipelineResult(entity_counts={"Students": 3})
+            return pipeline_mod.PipelineResult(entity_outcomes=(), entity_counts={"Students": 3})
 
         monkeypatch.setattr(pipeline_mod, "run_pipeline", _fake)
         return calls
@@ -1026,7 +1026,7 @@ class _PassingGate:
         from src.etl.pipeline import PipelineResult
 
         self.calls.append((sis_id, input_dir, output_dir))
-        return PipelineResult(entity_counts={"Students": 12, "Classes": 4})
+        return PipelineResult(entity_outcomes=(), entity_counts={"Students": 12, "Classes": 4})
 
 
 def _wizard_at_the_gate(monkeypatch: pytest.MonkeyPatch, cfg: AppConfig) -> tuple[ft.Control, _PassingGate]:
@@ -2495,7 +2495,7 @@ class TestTheOutputFolderPreconditionOnMapping:
         monkeypatch.setattr(
             pipeline_mod,
             "run_pipeline",
-            lambda *a, **kw: calls.append(kw) or pipeline_mod.PipelineResult(entity_counts={}),  # noqa: ARG005
+            lambda *a, **kw: calls.append(kw) or pipeline_mod.PipelineResult(entity_outcomes=(), entity_counts={}),  # noqa: ARG005
         )
         root = _mapping(monkeypatch, cfg)
 
@@ -2521,7 +2521,7 @@ class TestTheOutputFolderPreconditionOnMapping:
 
         def _fake(sis_type, input_path, output_path, **kwargs):  # noqa: ANN001, ANN202
             calls.append({"sis": sis_type, **kwargs})
-            return pipeline_mod.PipelineResult(entity_counts={"Students": 3})
+            return pipeline_mod.PipelineResult(entity_outcomes=(), entity_counts={"Students": 3})
 
         monkeypatch.setattr(pipeline_mod, "run_pipeline", _fake)
         root = _mapping(monkeypatch, cfg)

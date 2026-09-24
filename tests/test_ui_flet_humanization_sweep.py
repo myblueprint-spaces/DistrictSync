@@ -286,6 +286,7 @@ class TestConvertSummarizeSweep:
         # The anomalies tuple carries the sentinel-bearing raw strings + the quality_text
         # carries a path — summarize must surface NEITHER.
         result = ConvertResult(
+            entity_outcomes=None,
             status=status,
             data_errors_total=3,
             anomalies=(_RAW_ANOMALY, f"Staff in {_SECRET_PATH} dropped"),

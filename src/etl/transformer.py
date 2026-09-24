@@ -80,6 +80,27 @@ class DataTransformer:
         """Per-run fail-loud field-transform error ledger (see TransformContext)."""
         return self._context.data_errors
 
+    def data_errors_mark(self) -> int:
+        """A position in the data-error ledger, to roll back to with :meth:`rollback_data_errors`.
+
+        Plan 0053: the entity bulkhead (S4) takes a mark before an ISOLATABLE entity's
+        transform, so an entity that is then left out of the run does not leave its per-row
+        entries behind to inflate the run's "N data warnings".
+        """
+        return len(self._context.data_errors)
+
+    def rollback_data_errors(self, mark: int) -> None:
+        """Drop every data-error entry recorded since ``mark`` (earlier entries are untouched).
+
+        Refuses a mark that is not a position in the ledger — a negative one, or one past its
+        end (the ledger only ever grows during a run, so a larger mark is a stale or foreign
+        value, and truncating to it would silently do nothing).
+        """
+        ledger = self._context.data_errors
+        if isinstance(mark, bool) or not isinstance(mark, int) or not 0 <= mark <= len(ledger):
+            raise ValueError(f"not a data-error mark for this run: {mark!r} (ledger holds {len(ledger)})")
+        del ledger[mark:]
+
     # --- Core methods ---
 
     def set_school_year(self, year: int, start_month_day: str, end_month_day: str) -> None:

@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from src.etl.errors import RunErrorCategory
+from src.etl.outcomes import EntityOutcome
 from src.ui_flet.humanize import AnomalyVariant, friendly_anomaly_detail, pluralize
 from src.ui_flet.verdict import Verdict
 
@@ -67,6 +68,13 @@ class ConvertResult:
         sftp_attempted: whether an SFTP delivery was attempted this run.
         sftp_ok: whether that delivery succeeded (only meaningful if attempted).
         quality_text: the ``DataQualityReport`` text for a collapsible (may be "").
+        entity_outcomes: the run's per-entity outcomes (plan 0053 S2) — one
+            ``EntityOutcome`` per configured entity, in configured order — or ``None``,
+            which says explicitly that NO outcome ledger existed for this result: the
+            output-folder pre-flight refused before one was built, or the result is a
+            delivery from disk (a delivery is not a build). REQUIRED keyword-only with
+            no default, so no construction site can omit it by accident. Carried, not
+            yet read: ``summarize`` renders nothing from it until plan 0053 S3.
     """
 
     status: ConvertStatus
@@ -76,6 +84,9 @@ class ConvertResult:
     sftp_attempted: bool = False
     sftp_ok: bool = False
     quality_text: str = ""
+    # `kw_only`: every field above has a default, and a required positional field after
+    # defaulted ones is a `TypeError` at class definition.
+    entity_outcomes: tuple[EntityOutcome, ...] | None = field(kw_only=True)
 
 
 def summarize(result: ConvertResult) -> tuple[Verdict, str, str]:

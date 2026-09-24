@@ -4,8 +4,8 @@
 |---|---|
 | **What this is** | The ONE written rule set for how the ETL fails: at what scope, for which entity, in which direction, with which bounded reason, and what the admin sees. Read it before adding a check, an entity or a config knob. |
 | **Plan** | `.claude/plans/0053-etl-failure-policy.md` (slices S0–S15). Decisions: `docs/claugentic-DECISIONS.md` 2026-09-23. Register: one `docs/claugentic-INVARIANTS.md` row per rule P1–P16. |
-| **Verified against** | commit `8d33664` (v3.25.0). Every code `file:line` below was read at that commit, except the rows plan 0053 S1 flipped (2026-09-24), which cite symbols instead of lines so they do not drift. Citations into docs this change also edits (`faq.md`, the ROADMAP) are by question heading or item title, never by line, so they do not drift. |
-| **Pinned by** | `tests/test_failure_policy_parity.py` — **arrives in S2**; until then this document is held true by review only. |
+| **Verified against** | commit `8d33664` (v3.25.0). Every code `file:line` below was read at that commit, except the rows plan 0053 S1 and S2 flipped (2026-09-24), which cite symbols instead of lines so they do not drift. Citations into docs this change also edits (`faq.md`, the ROADMAP) are by question heading or item title, never by line, so they do not drift. |
+| **Pinned by** | `tests/test_failure_policy_parity.py` (since S2): the §3 criticality table == `outcomes.ENTITY_CRITICALITY` + `DEPENDS_ON`, and the §6 vocabulary table == every member of the enums it lists, each with a non-vacuity check and a doctored-doc twin. Later slices extend it (S4: the FAQ ↔ `Q5-status`; S11: the §5 site tags). Every other row is held true by review. |
 | **Style** | Tables first, graded like `docs/developer/output-contract.md`. Every rule row says what the code does TODAY and carries a Status. |
 
 ---
@@ -38,11 +38,11 @@ Every posture below derives from this rule. It is the tie-breaker when two rules
 | 1 | Config parse — is the mapping well-formed? | Pydantic at load; the pipeline records `config` and exits 1 (`pipeline.py:869-881`). A typo'd `GlobalConfig`/`EntityConfig`/`Field*` key is silently dropped. | `PLANNED (0053 S12)` |
 | 2 | Extract — could each file be read? | Missing file → empty frame + ERROR log (`extractor.py:131-135`); unparseable (or a case-insensitive name collision) → `ExtractionError`, an `EtlError` whose class category is `input_unreadable` (`extractor.ExtractionError`), which fails the run with that category. | `ENFORCED` |
 | 3 | Source observation — does each entity's OWN file carry its mapped columns? | Not in the run path; `preflight_report` runs only from the creator (`screens/creator.py:491`). | `PLANNED (0053 S6)` |
-| 4 | Per-entity transform — did this entity build? | No per-entity outcome; any raise at `pipeline.py:345` fails the run. | `PLANNED (0053 S2/S4)` |
+| 4 | Per-entity transform — did this entity build? | Every configured entity gets exactly one outcome per run in an `outcomes.OutcomeLedger` (`pipeline.run_transform`): EMPTY with its reason or BUILT with its row count at the existing branches; on a raise, that entity FAILED and every later one NOT_RUN — then the SAME exception is re-raised, so any entity's raise still fails the run. | `ENFORCED` (recording, S2) · entity-scope isolation `PLANNED (0053 S4)` |
 | 5 | Delivery-integrity gate — can this output set be vouched for? | `check_delivery_integrity` (`pipeline.py:404-470`): `no_output`, `incomplete_roster`. Unchanged by this plan. | `ENFORCED` |
 | 6 | Atomic write | `save_all` backup-and-restore commit; a write `OSError` → `OutputWriteError` (`pipeline.py:1002`). | `ENFORCED` |
 | 7 | Deliver | Manifest = files this run wrote (`pipeline.py:1026`, `uploader.py:512-521`). | `ENFORCED` |
-| 8 | Run record | Flat per-entity counts + `status` + `error_category` (`build_run_record`, `pipeline.py:566`). No per-entity outcome. | `PLANNED (0053 S2)` for `entity_outcomes` |
+| 8 | Run record | Flat per-entity counts + `status` + `error_category` + `entity_outcomes` (`pipeline.build_run_record`; the outcomes key since S2, `None` only when no ledger existed). | `ENFORCED` |
 | 9 | Copy mappers | Home and Run History key a failure on `status`, never on its category (ROADMAP item "Surface the new `output` error category on Home / Run History"); Convert's `on_error` card is one zero-argument message that always points at the input folder (`convert_result.py:230-245`). | `PLANNED (0053 S3)` |
 
 | Scope (narrow → wide) | Who may choose it | Today | Status |
@@ -56,12 +56,12 @@ Transformers RAISE and never catch-to-continue at entity scope; only the orchest
 
 ## §3 Entity criticality (P3)
 
-**Status of this table: `PLANNED (0053 S2 records it, S4 enforces it)`.** Today EVERY entity's raise fails the whole run, whatever this table says. Decided by the owner 2026-09-23 (D1). `depends_on` lists CODE dependencies on another entity's published context state only.
+**Status of this table: `ENFORCED` as a declaration (S2) · `PLANNED (0053 S4)` as behaviour.** It is the code's `outcomes.ENTITY_CRITICALITY` + `outcomes.DEPENDS_ON`, row for row (`tests/test_failure_policy_parity.py`), and every run records each entity's outcome — but nothing branches on criticality yet: today EVERY entity's raise fails the whole run, whatever this table says. Decided by the owner 2026-09-23 (D1). `depends_on` lists CODE dependencies on another entity's published context state only.
 
 <!-- failure-policy-table: criticality -->
 | entity | criticality | rationale | promotion evidence | depends_on |
 |---|---|---|---|---|
-| Students | CRITICAL | The roster anchor (`pipeline.py:61`); publishes `context.active_student_ids` (`students.py:47`); a user missing from a delivered `Students.csv` is marked Inactive (`faq.md`, "What happens to students or staff no longer in the file?"). | none — the anchor is never promoted | — |
+| Students | CRITICAL | The roster anchor (`outcomes.ROSTER_ANCHOR_ENTITY`); publishes `context.active_student_ids` (`students.py:47`); a user missing from a delivered `Students.csv` is marked Inactive (`faq.md`, "What happens to students or staff no longer in the file?"). | none — the anchor is never promoted | — |
 | Staff | CRITICAL | What happens to a user missing from a delivered `Staff.csv` depends on the district's import settings (`faq.md`, "What happens to students or staff no longer in the file?"); what an ABSENT file does is unknown (Q5a). | would need the Q5a answer + a DECISIONS entry | — |
 | Family | ISOLATABLE | Unity 2026-09-22: a report flip under the same filename failed the whole roster. Absence already ships (`tests/test_pipeline_delivery_integrity.py:581-590`; SD51 builds no `Family.csv`); publishes no context state; no entity reads it. Whether a guardian missing from a delivery is unlinked is open (Q5e). | absence-already-ships evidence + owner decision D1 (2026-09-23) | Students |
 | Classes | CRITICAL | Publishes `context.class_artifacts` (`classes.py:49`), which Enrollments requires (`enrollments.py:37-45`). | none while Enrollments is CRITICAL | Students |
@@ -90,7 +90,7 @@ Transformers RAISE and never catch-to-continue at entity scope; only the orchest
 |---|---|---|---|---|
 | (a) `pii_scope` | WHO may be delivered (row_filters, grade scope) | Fail CLOSED; typed `SourceSchemaError(guard=PII_SCOPE)`; entity scope if ISOLATABLE, run if CRITICAL | Fails closed at run scope. Sites #1 and #4 raise the typed `SourceSchemaError(guard=PII_SCOPE)` naming the config's columns and a column COUNT only (S1); #5 and #6 are still untyped / unguarded | `PLANNED (0053 S4)` (entity scope) · #5/#6 `PLANNED (0053 S9/S10)` |
 | (b) `join_key` | An identity or join (merge keys, class artifacts, home school) | Fail CLOSED, typed; never a raw `KeyError`, never a partial result | Mixed: sites #2/#3 raise the typed `SourceSchemaError(guard=JOIN_KEY)` naming the config's columns and a column COUNT only (S1); elsewhere untyped `ValueError`s with an actionable message, raw pandas `KeyError`s, one partial ship | `PLANNED (0053 S10)` |
-| (c) `contract_field` | An output field the importer requires | Rows lacking it are excluded and COUNTED; all excluded ⇒ EMPTY with a recorded reason | Family's email exclusion conforms (log count); EMPTY carries no reason | `PLANNED (0053 S2/S11)` |
+| (c) `contract_field` | An output field the importer requires | Rows lacking it are excluded and COUNTED; all excluded ⇒ EMPTY with a recorded reason | Family's email exclusion conforms (log count); an all-excluded entity is recorded EMPTY/`no_rows_after_transform` (S2); the exclusion COUNT reaches no record | `ENFORCED` (EMPTY + reason, S2) · recorded count `PLANNED (0053 S11)` |
 | (d) `optional_field` | A value that may be blank | Blank + one aggregated WARNING + an outcome note | Silent blank (`base.py:753`) | `PLANNED (0053 S6/S11)` |
 | (e) `safety_heuristic` | A fail-open safety filter | Fail OPEN only in the surplus direction; always recorded | Direction mostly right; several sites silent | `PLANNED (0053 S11)` |
 
@@ -167,30 +167,30 @@ Classification is by TYPE only (`isinstance`), never by message text. Exemplar: 
 | RunErrorCategory | UNKNOWN | `unknown` | everything else — incl. a raw pandas `KeyError` | `ENFORCED` |
 | RunErrorCategory | SOURCE_SCHEMA | `source_schema` | `SourceSchemaError` — §5 sites #1–#4 | `ENFORCED` |
 | RunErrorCategory | INPUT_UNREADABLE | `input_unreadable` | `ExtractionError` — an unparseable file, or a case-insensitive filename collision | `ENFORCED` |
-| OutcomeKind | BUILT | `built` | no per-entity outcome exists | `PLANNED (0053 S2)` |
-| OutcomeKind | EMPTY | `empty` | — | `PLANNED (0053 S2)` |
-| OutcomeKind | FAILED | `failed` | — | `PLANNED (0053 S2)` |
-| OutcomeKind | NOT_RUN | `not_run` | — | `PLANNED (0053 S2)` |
-| OutcomeReason | NONE | `none` | — | `PLANNED (0053 S2)` |
-| OutcomeReason | NO_SOURCE_FILES_DECLARED | `no_source_files_declared` | — (`pipeline.py:324-331` logs and skips) | `PLANNED (0053 S2)` |
-| OutcomeReason | SOURCE_FILES_EMPTY | `source_files_empty` | — (`pipeline.py:340-342`) | `PLANNED (0053 S2)` |
-| OutcomeReason | NO_ROWS_AFTER_TRANSFORM | `no_rows_after_transform` | — (`pipeline.py:347-349`) | `PLANNED (0053 S2)` |
-| OutcomeReason | MISSING_SOURCE_COLUMN | `missing_source_column` | — | `PLANNED (0053 S2)` |
-| OutcomeReason | TRANSFORM_ERROR | `transform_error` | — | `PLANNED (0053 S2)` |
-| OutcomeReason | RUN_ABORTED | `run_aborted` | — | `PLANNED (0053 S2)` |
+| OutcomeKind | BUILT | `built` | `run_transform`: the entity's transform produced rows (they are in `outputs`) | `ENFORCED` |
+| OutcomeKind | EMPTY | `empty` | `run_transform`: the entity was skipped with nothing to build (always with one of the three EMPTY reasons) | `ENFORCED` |
+| OutcomeKind | FAILED | `failed` | `run_transform`: the entity's own transform raised (recorded, then re-raised — no isolation until S4) | `ENFORCED` |
+| OutcomeKind | NOT_RUN | `not_run` | every entity after a raising one, and every entity when the run fails before the loop (`OutcomeLedger.finalize_aborted`) | `ENFORCED` |
+| OutcomeReason | NONE | `none` | every BUILT outcome | `ENFORCED` |
+| OutcomeReason | NO_SOURCE_FILES_DECLARED | `no_source_files_declared` | `run_transform`: the mapping declares no source file for the entity (incl. an `entity_order` name with no mapping) | `ENFORCED` |
+| OutcomeReason | SOURCE_FILES_EMPTY | `source_files_empty` | `run_transform`: every source file of the entity was missing or empty | `ENFORCED` |
+| OutcomeReason | NO_ROWS_AFTER_TRANSFORM | `no_rows_after_transform` | `run_transform`: the entity had input and its transform kept no row (e.g. every contact excluded for a blank email) | `ENFORCED` |
+| OutcomeReason | MISSING_SOURCE_COLUMN | `missing_source_column` | `outcomes.reason_for`: the transform raised a `SourceSchemaError` (§5 sites #1–#4) — by type | `ENFORCED` |
+| OutcomeReason | TRANSFORM_ERROR | `transform_error` | `outcomes.reason_for`: any other raise from the transform; also what `outcomes_from_record` reads an unknown kind/reason as | `ENFORCED` |
+| OutcomeReason | RUN_ABORTED | `run_aborted` | every NOT_RUN outcome | `ENFORCED` |
 
-Guard kinds (`GuardKind`: `PII_SCOPE`, `JOIN_KEY`) and the leaf errors (`SourceSchemaError`, `NoUsableInputError`, `ConfigLoadError`) are named in the plan's *Naming table* and live in `src/etl/errors.py` (S1). `SourceSchemaError`'s `entity`, `columns` (config spelling, never empty) and `guard` are required keyword-only. One exception: site #4 (`grades.filter_to_grade_scope`) carries the RESOLVED, lower-cased grade column (or the default `grade`), not the config's spelling, until S9's resolver lands. The persisted `error_category` is normalised to the enum's plain `.value` in ONE place, `pipeline.build_run_record`, so the store column and the record JSON cannot disagree.
+Guard kinds (`GuardKind`: `PII_SCOPE`, `JOIN_KEY`) and the leaf errors (`SourceSchemaError`, `NoUsableInputError`, `ConfigLoadError`) are named in the plan's *Naming table* and live in `src/etl/errors.py` (S1). `SourceSchemaError`'s `entity`, `columns` (config spelling, never empty) and `guard` are required keyword-only. One exception: site #4 (`grades.filter_to_grade_scope`) carries the RESOLVED, lower-cased grade column (or the default `grade`), not the config's spelling, until S9's resolver lands. The persisted `error_category` is normalised to the enum's plain `.value` in ONE place, `pipeline.build_run_record`, so the store column and the record JSON cannot disagree. `OutcomeKind`, `OutcomeReason`, the legal kind→reason table `VALID_REASONS` and `EntityOutcome` (frozen; an illegal state — BUILT with no rows, a reason invalid for its kind, rows on a non-BUILT outcome — is REFUSED at construction) live in `src/etl/outcomes.py` (S2).
 
 ## §7 Surfacing, record keys, symmetric sinks (P7, P8, P12)
 
 | Rule | Today | Status |
 |---|---|---|
-| Every configured entity has exactly one outcome per run, in the record as `entity_outcomes` | No such key | `PLANNED (0053 S2)` |
+| Every configured entity has exactly one outcome per run, in the record as `entity_outcomes` | `build_run_record` writes `entity_outcomes` (`{entity: {kind, reason, rows}}`, configured order) on every record the CLI and Convert write, the log line and the store sharing one dict; `None` only where no ledger existed (input-folder check, config load, output pre-flight, a delivery-only record). The ledger is built at the same point on both entry points, and `OutcomeLedger.complete()` refuses a missing outcome. Its `rows` is the rows the TRANSFORM produced — the flat count keys keep their own meaning (`build_run_record`'s docstring). Nothing READS it yet (S3) | `ENFORCED` (recording) · reader `PLANNED (0053 S3)` |
 | A FAILED outcome in a successful run is PARTIAL / WARNING on Home, Run History and Convert every run it persists, derived from that run's own record | No PARTIAL rung; the only signal is the one-run vanished-entity anomaly | `PLANNED (0053 S3/S4)` |
-| Every build attempt on every entry point writes exactly one record through `build_run_record` | The CLI records every failure (`pipeline.py:1089-1112`; a dry run stores nothing by design); a Convert whose transform raises writes NONE (`screens/convert.py:315` is uncaught) | `PLANNED (0053 S5)` |
+| Every build attempt on every entry point writes exactly one record through `build_run_record` | The CLI records every failure (`run_pipeline`'s failure sink; a dry run stores nothing by design); a Convert whose transform raises writes NONE (`convert_job`'s `run_transform` call is uncaught). `entity_outcomes` is already a REQUIRED keyword-only parameter with no default on `build_run_record`, `run_transform` (`ledger`), `convert._record_manual_run` and both `PipelineResult` / `ConvertResult` (S2) | `ENFORCED` (required outcome parameter) · every attempt recorded `PLANNED (0053 S5)` |
 | Partner assumption (P13): a rule that depends on SpacesEDU import behaviour cites a dated confirmation row in `output-contract.md` or the open question; until confirmed the conservative branch applies, and partner docs never claim an omitted file has no side effects | Q5 is open (`Q5-status: open`); `docs/partner/faq.md` states today's branches and makes no such claim | `ENFORCED` (review) · parity test `PLANNED (0053 S4)` |
 | Record evolution is additive JSON only — no `runs` DDL, CHECK or `user_version` change until ROADMAP:50 is fixed; readers are TOTAL | No DDL since v1; `store.py` readers are total | `ENFORCED` |
-| An unknown kind/reason from a newer build reads as FAILED/TRANSFORM_ERROR (errs toward a warning) | No outcome reader | `PLANNED (0053 S2)` |
+| An unknown kind/reason from a newer build reads as FAILED/TRANSFORM_ERROR (errs toward a warning) | `outcomes.outcomes_from_record` is TOTAL (never raises): a non-mapping → `()`, a blank key dropped, an unknown kind or reason → FAILED/`transform_error`, a known-but-impossible entry dropped (`tests/test_etl_outcomes.py`) | `ENFORCED` |
 | Exit codes: `0` success (incl. a partial run, D3) · `1` ETL failure · `2` empty stdin / conflicting flags · `3` delivery failed | As stated; a partial run cannot exist yet | `ENFORCED` (codes) · `PLANNED (0053 S4)` (partial) |
 
 ## §8 Privacy and labels (P9)
@@ -221,7 +221,7 @@ Guard kinds (`GuardKind`: `PII_SCOPE`, `JOIN_KEY`) and the leaf errors (`SourceS
 |---|---|---|
 | `src/etl`, `src/config`, `src/history`, `src/quality` never import flet or `src.ui_flet`; an explicit `FLET_FREE_MODULES` list never imports flet | True by inspection; no test pins it | `PLANNED (0053 S13a)` |
 | Transformers never import `src.etl.pipeline` | True by inspection; unpinned | `PLANNED (0053 S13a)` |
-| Exactly one entity-scope broad handler, in `run_transform` | None exists | `PLANNED (0053 S4)` |
+| Exactly one entity-scope broad handler, in `run_transform` | `run_transform` has ONE `except Exception` around the entity transform (S2), which only RECORDS the outcome and re-raises the same object — it contains nothing yet | `PLANNED (0053 S4)` |
 | Every in-scope `except Exception` carries a reasoned `# noqa: BLE001 — <reason>` | Some do (`base.py:786`, `pipeline.py` failure sink); ruff `BLE` is not selected | `PLANNED (0053 S13a)` |
 
 ## §12 Checklists and DoD delta

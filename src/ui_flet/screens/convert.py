@@ -117,6 +117,7 @@ from src.config.loader import load_config
 from src.etl.errors import RunErrorCategory
 from src.etl.extractor import DataExtractor
 from src.etl.loader import DataLoader, output_target_problem
+from src.etl.outcomes import EntityOutcome, OutcomeLedger
 from src.etl.pipeline import (
     advisory_expected_files,
     build_run_record,
@@ -234,6 +235,13 @@ def convert_job(
     pre-check cannot see. Neither writes a run record (see :func:`_record_manual_run`):
     nothing was produced, and the admin is watching the surface that already shows it.
 
+    **The outcome ledger (plan 0053 S2)** is built right after ``to_raw_dict`` — the SAME
+    point as ``run_pipeline``'s: the output folder has passed its pre-flight and nothing has
+    been read yet — and every result from there on carries its outcomes, so a Convert
+    result (and its record) says per entity exactly what the CLI would. ``NO_INPUT`` carries
+    every entity NOT_RUN (``finalize_aborted``), as the CLI's failure sink records for the
+    same folder. The pre-flight refusal carries ``None``: no ledger existed.
+
     **Two pre-write gates, in the CLI's order.**
 
     1. :func:`~src.etl.pipeline.check_delivery_integrity` — the SAME way-OUT gate
@@ -285,11 +293,15 @@ def convert_job(
     output_problem = output_target_problem(output_dir_value)
     if output_problem is not None:
         logger.error("Output folder is not usable for district %r: %s", config_name, output_problem)
-        return ConvertResult(status=ConvertStatus.OUTPUT_FOLDER_UNUSABLE)
+        return ConvertResult(status=ConvertStatus.OUTPUT_FOLDER_UNUSABLE, entity_outcomes=None)
 
     raw = config.to_raw_dict()
     mappings = raw.get("mappings", {})
     global_config = raw.get("global_config", {})
+
+    # The outcome ledger (plan 0053 S2) — the same point as `run_pipeline`'s, before the input
+    # is read, so the two entry points report the same outcomes for the same fault.
+    ledger = OutcomeLedger(configured_entity_order(mappings, global_config))
 
     # Collect explicit headers for headerless files (exactly as run_conversion does).
     file_headers: dict[str, list[str]] = {}
@@ -310,9 +322,15 @@ def convert_job(
     # folder with nothing in it yields a FULL dict and the bare truthiness test would never
     # fire again. Shared with `run_pipeline` so both paths answer this the same way.
     if has_no_usable_input(raw_data):
-        return ConvertResult(status=ConvertStatus.NO_INPUT)
+        # Every entity NOT_RUN — what the CLI records when it raises `NoUsableInputError` here.
+        return ConvertResult(status=ConvertStatus.NO_INPUT, entity_outcomes=ledger.finalize_aborted())
 
-    outputs, field_orders, data_errors, sy_determination = run_transform(raw_data, mappings, global_config)
+    transform_outputs = run_transform(raw_data, mappings, global_config, ledger=ledger)
+    outputs = transform_outputs.outputs
+    field_orders = transform_outputs.field_orders
+    data_errors = transform_outputs.data_errors
+    sy_determination = transform_outputs.school_year
+    entity_outcomes = transform_outputs.outcomes
 
     # What this run was CONFIGURED to produce (enabled-entities-derived, NEVER raw
     # `mappings.keys()`). Computed once and shared by both pre-write gates, exactly as
@@ -328,6 +346,7 @@ def convert_job(
             status=status_for_integrity_fault(integrity_fault.category),
             entity_counts={name: len(df) for name, df in outputs.items()},
             data_errors_total=_data_errors_total(data_errors),
+            entity_outcomes=entity_outcomes,
         )
         _record_manual_run(
             refused,
@@ -335,6 +354,7 @@ def convert_job(
             elapsed=time.monotonic() - t0,
             status="failed",
             error_category=integrity_fault.category,
+            entity_outcomes=entity_outcomes,
         )
         return refused
 
@@ -348,6 +368,7 @@ def convert_job(
             entity_counts={name: len(df) for name, df in outputs.items()},
             data_errors_total=_data_errors_total(data_errors),
             anomalies=tuple(anomalies),
+            entity_outcomes=entity_outcomes,
         )
 
     # Atomic write. Plan 0050 REVERSES the old "a `save_all` failure PROPAGATES" rule,
@@ -369,7 +390,7 @@ def convert_job(
         # A RESULT on screen, but still a failure worth a trace — the card is bounded and
         # category-only, so the raw path lives here or nowhere.
         logger.error("Could not write to the output folder (district %r).", config_name, exc_info=True)
-        return ConvertResult(status=ConvertStatus.OUTPUT_FOLDER_UNUSABLE)
+        return ConvertResult(status=ConvertStatus.OUTPUT_FOLDER_UNUSABLE, entity_outcomes=entity_outcomes)
 
     # Archive (non-destructive) entity CSVs left in the output dir that this run
     # did NOT produce — mirrors run_pipeline: a stale CSV must never ship in an
@@ -420,8 +441,14 @@ def convert_job(
                 sftp_attempted=True,
                 sftp_ok=False,
                 quality_text=quality_text,
+                entity_outcomes=entity_outcomes,
             )
-            _record_manual_run(built_not_delivered, sis_type=config_name, elapsed=time.monotonic() - t0)
+            _record_manual_run(
+                built_not_delivered,
+                sis_type=config_name,
+                elapsed=time.monotonic() - t0,
+                entity_outcomes=entity_outcomes,
+            )
             return built_not_delivered
         # Data errors are a SEPARATE axis — a successful delivery must NOT erase the
         # "N records had field problems" warning (fail-loud; mirrors home_status).
@@ -433,8 +460,11 @@ def convert_job(
             sftp_attempted=True,
             sftp_ok=True,
             quality_text=quality_text,
+            entity_outcomes=entity_outcomes,
         )
-        _record_manual_run(delivered, sis_type=config_name, elapsed=time.monotonic() - t0)
+        _record_manual_run(
+            delivered, sis_type=config_name, elapsed=time.monotonic() - t0, entity_outcomes=entity_outcomes
+        )
         return delivered
 
     status = ConvertStatus.BUILT_WITH_DATA_ERRORS if errors_total > 0 else ConvertStatus.DELIVERED
@@ -443,8 +473,9 @@ def convert_job(
         entity_counts=entity_counts,
         data_errors_total=errors_total,
         quality_text=quality_text,
+        entity_outcomes=entity_outcomes,
     )
-    _record_manual_run(built, sis_type=config_name, elapsed=time.monotonic() - t0)
+    _record_manual_run(built, sis_type=config_name, elapsed=time.monotonic() - t0, entity_outcomes=entity_outcomes)
     return built
 
 
@@ -501,11 +532,19 @@ def deliver_job(sis_type: str) -> ConvertResult:
         ).upload_csvs(Path(output_dir_value), sis_type=district, manifest=manifest)
     except Exception:  # noqa: BLE001 - exit-3 shape: a failed delivery is a RESULT, not on_error
         logger.error("Delivery-only run failed (district %r).", district, exc_info=True)
-        failed = ConvertResult(status=ConvertStatus.BUILT_NOT_DELIVERED, sftp_attempted=True, sftp_ok=False)
-        _record_manual_run(failed, sis_type=sis_type, elapsed=time.monotonic() - t0, delivery_only=True)
+        failed = ConvertResult(
+            status=ConvertStatus.BUILT_NOT_DELIVERED, sftp_attempted=True, sftp_ok=False, entity_outcomes=None
+        )
+        _record_manual_run(
+            failed, sis_type=sis_type, elapsed=time.monotonic() - t0, delivery_only=True, entity_outcomes=None
+        )
         return failed
-    delivered = ConvertResult(status=ConvertStatus.DELIVERED_FROM_DISK, sftp_attempted=True, sftp_ok=True)
-    _record_manual_run(delivered, sis_type=sis_type, elapsed=time.monotonic() - t0, delivery_only=True)
+    delivered = ConvertResult(
+        status=ConvertStatus.DELIVERED_FROM_DISK, sftp_attempted=True, sftp_ok=True, entity_outcomes=None
+    )
+    _record_manual_run(
+        delivered, sis_type=sis_type, elapsed=time.monotonic() - t0, delivery_only=True, entity_outcomes=None
+    )
     return delivered
 
 
@@ -522,6 +561,7 @@ def _record_manual_run(
     delivery_only: bool = False,
     status: str = "success",
     error_category: str = RunErrorCategory.NONE.value,
+    entity_outcomes: tuple[EntityOutcome, ...] | None,
 ) -> None:
     """Write a manual Convert run to the run-history store (source="manual"), best-effort.
 
@@ -544,6 +584,11 @@ def _record_manual_run(
     record, never repeated here) and the rider lets ``home_status``/``run_history`` render it
     as a delivery, not a 0-row build.
 
+    ``entity_outcomes`` (plan 0053 S2) is REQUIRED keyword-only with no default: the build's
+    per-entity outcomes (the same the CLI records for the same fault), or ``None`` for a
+    delivery-only record — a delivery ships an earlier build's files and has no ledger of its
+    own. It rides the record as ``entity_outcomes`` through the shared ``build_run_record``.
+
     Deliberate asymmetry with ``run_pipeline``: ``NO_INPUT`` and ``NEEDS_ANOMALY_ACK`` write
     nothing — the first is "you picked the wrong folder" and the second is a question, not an
     outcome, and the admin is watching the surface where both are already shown. What IS
@@ -561,6 +606,7 @@ def _record_manual_run(
         source="manual",
         sis_type=sis_type,
         error_category=error_category,
+        entity_outcomes=entity_outcomes,
     )
     if delivery_only:
         record["delivery_only"] = True  # rides free in the store's JSON blob (additive, no schema change)

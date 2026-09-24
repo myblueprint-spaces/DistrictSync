@@ -22,7 +22,8 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from src.etl.pipeline import run_pipeline, run_transform
+from src.etl.outcomes import OutcomeLedger
+from src.etl.pipeline import configured_entity_order, run_pipeline, run_transform
 
 # ---------------------------------------------------------------------------
 # Required-input GDE columns (minimal, mirrors test_sftp_exit.py)
@@ -321,7 +322,9 @@ class TestRunTransformAllSourcesEmptySkip:
             "StudentPeriodAbsencesEnhanced.txt": _period_frame(),  # populated period band
         }
 
-        result = run_transform(raw_data, mappings, global_config)
+        result = run_transform(
+            raw_data, mappings, global_config, ledger=OutcomeLedger(configured_entity_order(mappings, global_config))
+        )
 
         assert "StudentAttendance" in result.outputs, (
             "period-only attendance must still produce StudentAttendance "
@@ -338,7 +341,9 @@ class TestRunTransformAllSourcesEmptySkip:
             "StudentPeriodAbsencesEnhanced.txt": pd.DataFrame(),
         }
 
-        result = run_transform(raw_data, mappings, global_config)
+        result = run_transform(
+            raw_data, mappings, global_config, ledger=OutcomeLedger(configured_entity_order(mappings, global_config))
+        )
 
         assert "StudentAttendance" not in result.outputs
 
@@ -379,7 +384,9 @@ class TestRunTransformAllSourcesEmptySkip:
             ),
         }
 
-        result = run_transform(raw_data, mappings, global_config)
+        result = run_transform(
+            raw_data, mappings, global_config, ledger=OutcomeLedger(configured_entity_order(mappings, global_config))
+        )
 
         assert "Enrollments" not in result.outputs
 
@@ -445,15 +452,15 @@ class TestPipelineResultInputColumns:
         assert result.input_columns["StudentSchedule.txt"] == ()  # absent from disk
         assert result.input_columns["StudentDemographicInformation.txt"]
 
-    def test_it_defaults_to_empty_so_no_construction_site_had_to_change(self) -> None:
-        """The field is appended + defaulted, so the stub constructions elsewhere
-        (``tests/test_ui_flet_routing.py``, ``tests/test_ui_flet_config_editor.py``) and
-        the ``hasattr`` shape test in ``tests/test_sftp_exit.py`` stay untouched. An
-        empty observation is exactly what makes ``preflight`` claim nothing."""
+    def test_it_defaults_to_empty(self) -> None:
+        """``input_columns`` is appended + defaulted: a construction that does not observe
+        the input (the test stubs) carries an empty observation, which is exactly what
+        makes ``preflight`` claim nothing. (Since plan 0053 S2 every construction must
+        name ``entity_outcomes`` — pinned in ``tests/test_etl_outcomes.py``.)"""
         from src.etl.pipeline import PipelineResult
 
-        assert PipelineResult().input_columns == {}
-        assert PipelineResult(entity_counts={"Students": 3}).input_columns == {}
+        assert PipelineResult(entity_outcomes=()).input_columns == {}
+        assert PipelineResult(entity_outcomes=(), entity_counts={"Students": 3}).input_columns == {}
 
     def test_a_run_that_never_completes_carries_no_observation_at_all(self, tmp_path: Path, gde_output: Path) -> None:
         """The early-exit division of labour: only the success path builds a

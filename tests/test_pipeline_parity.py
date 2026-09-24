@@ -362,6 +362,35 @@ class TestCLIvsUIParity:
             assert not data.startswith(b"\xef\xbb\xbf"), f"{out_dir.name}/StudentAttendance.csv must have no BOM"
             assert data.startswith(b"School Number"), "first header must be clean (no BOM glued on)"
 
+    def test_both_paths_report_the_same_entity_outcomes(self, gde_sources, tmp_path):
+        """Plan 0053 S2: the two entry points build their outcome ledger at the same point,
+        so the per-entity outcomes — in the returned result AND in the stored record — are
+        identical, one per configured entity (six here, attendance included)."""
+        from src.history.store import read_run_records
+
+        cli_input, cli_output = tmp_path / "cli_in", tmp_path / "cli_out"
+        cli_input.mkdir()
+        cli_output.mkdir()
+        for name, data in gde_sources.items():
+            (cli_input / name).write_bytes(data)
+        cli_result = run_pipeline(CONFIG, str(cli_input), str(cli_output))
+        _run_ui_path(gde_sources, tmp_path)
+        ui_result = convert_job(CONFIG, str(tmp_path / "ui_input"))
+
+        assert ui_result.entity_outcomes == cli_result.entity_outcomes
+        assert [o.entity for o in cli_result.entity_outcomes] == [
+            "Students",
+            "Staff",
+            "Family",
+            "Classes",
+            "Enrollments",
+            "StudentAttendance",
+        ]
+        records = read_run_records()
+        assert records is not None and len(records) >= 2
+        by_source = {r["source"]: r["entity_outcomes"] for r in reversed(records)}
+        assert by_source["manual"] == by_source["cli"]
+
     def test_rostering_keeps_bom_on_both_paths(self, gde_sources, tmp_path):
         """The with-BOM entity: Students.csv keeps the utf-8-sig BOM for Excel on
         BOTH paths."""

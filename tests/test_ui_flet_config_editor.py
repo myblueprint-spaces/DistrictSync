@@ -588,7 +588,7 @@ class TestMissingFiles:
 class TestGateOutcomeFor:
     def test_no_output_folder_REFUSES_whatever_else_is_true(self):
         outcome = gate_outcome_for(
-            result=PipelineResult(entity_counts={"Students": 5}),
+            result=PipelineResult(entity_outcomes=(), entity_counts={"Students": 5}),
             error=None,
             output_dir_valid=False,
             expected_files=["Students.txt"],
@@ -604,7 +604,7 @@ class TestGateOutcomeFor:
 
     def test_a_completed_run_PASSES_with_its_counts(self):
         outcome = gate_outcome_for(
-            result=PipelineResult(entity_counts={"Students": 12, "Classes": 3}),
+            result=PipelineResult(entity_outcomes=(), entity_counts={"Students": 12, "Classes": 3}),
             error=None,
             output_dir_valid=True,
             expected_files=["Students.txt"],
@@ -616,7 +616,7 @@ class TestGateOutcomeFor:
 
     def test_a_pass_still_reports_missing_files_without_downgrading_the_verdict(self):
         outcome = gate_outcome_for(
-            result=PipelineResult(entity_counts={"Students": 12}),
+            result=PipelineResult(entity_outcomes=(), entity_counts={"Students": 12}),
             error=None,
             output_dir_valid=True,
             expected_files=["Students.txt", "StaffInformation.txt"],
@@ -641,7 +641,7 @@ class TestGateOutcomeFor:
     def test_both_a_result_and_an_error_fails_loud(self):
         with pytest.raises(ValueError, match="exactly one outcome"):
             gate_outcome_for(
-                result=PipelineResult(),
+                result=PipelineResult(entity_outcomes=()),
                 error=RuntimeError("boom"),
                 output_dir_valid=True,
                 expected_files=[],
@@ -659,7 +659,7 @@ class TestGateOutcomeFor:
             ).state
             for result, error, valid in [
                 (None, None, True),
-                (PipelineResult(), None, True),
+                (PipelineResult(entity_outcomes=()), None, True),
                 (None, RuntimeError("x"), True),
                 (None, None, False),
             ]
@@ -718,20 +718,22 @@ class TestTheGateCarriesThePreflightReport:
     def test_a_call_that_passes_no_report_carries_no_columns(self):
         """Every S3/S4/S6 call site is unchanged: the parameter is additive and defaulted,
         and ``None`` means "no report" rather than "nothing missing"."""
-        outcome = self._outcome(result=PipelineResult(entity_counts={"Students": 5}))
+        outcome = self._outcome(result=PipelineResult(entity_outcomes=(), entity_counts={"Students": 5}))
 
         assert outcome.state is GateState.PASSED
         assert outcome.missing_columns == ()
 
     def test_a_passed_run_with_every_file_present_CARRIES_the_columns(self):
-        outcome = self._outcome(result=PipelineResult(entity_counts={"Students": 5}), preflight=self.REPORT)
+        outcome = self._outcome(
+            result=PipelineResult(entity_outcomes=(), entity_counts={"Students": 5}), preflight=self.REPORT
+        )
 
         assert outcome.missing_columns == (_missing("Legal Surname", "Students"),)
 
     def test_the_same_report_beside_a_MISSING_FILE_is_not_carried(self):
         """The twin of the row above, one input apart: the file report owns that fact."""
         outcome = self._outcome(
-            result=PipelineResult(entity_counts={"Students": 5}),
+            result=PipelineResult(entity_outcomes=(), entity_counts={"Students": 5}),
             expected=["Students.txt", "StaffInformation.txt"],
             present=["Students.txt"],
             preflight=self.REPORT,
@@ -746,11 +748,11 @@ class TestTheGateCarriesThePreflightReport:
         run that did not complete observed nothing worth a claim, and a refused one never
         started."""
         rows = {
-            GateState.PASSED: self._outcome(result=PipelineResult(), preflight=self.REPORT),
+            GateState.PASSED: self._outcome(result=PipelineResult(entity_outcomes=()), preflight=self.REPORT),
             GateState.FAILED: self._outcome(error=RuntimeError("boom"), preflight=self.REPORT),
             GateState.NOT_RUN: self._outcome(preflight=self.REPORT),
             GateState.REFUSED_NO_OUTPUT_DIR: self._outcome(
-                result=PipelineResult(), output_dir_valid=False, preflight=self.REPORT
+                result=PipelineResult(entity_outcomes=()), output_dir_valid=False, preflight=self.REPORT
             ),
         }
 
@@ -760,7 +762,7 @@ class TestTheGateCarriesThePreflightReport:
         assert [state for state, outcome in rows.items() if outcome.missing_columns] == [GateState.PASSED]
 
     def test_an_empty_report_on_a_passed_run_carries_nothing_to_say(self):
-        outcome = self._outcome(result=PipelineResult(), preflight=_report())
+        outcome = self._outcome(result=PipelineResult(entity_outcomes=()), preflight=_report())
 
         assert outcome.missing_columns == ()
 

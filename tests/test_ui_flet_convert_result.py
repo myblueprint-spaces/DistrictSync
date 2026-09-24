@@ -26,6 +26,7 @@ from src.ui_flet.verdict import Verdict
 class TestSummarizeDelivered:
     def test_delivered_with_sftp_is_healthy_and_mentions_spacesedu(self) -> None:
         result = ConvertResult(
+            entity_outcomes=None,
             status=ConvertStatus.DELIVERED,
             entity_counts={"Students": 100},
             sftp_attempted=True,
@@ -38,7 +39,7 @@ class TestSummarizeDelivered:
         assert detail
 
     def test_delivered_without_sftp_is_healthy_converted(self) -> None:
-        result = ConvertResult(status=ConvertStatus.DELIVERED, sftp_attempted=False)
+        result = ConvertResult(entity_outcomes=None, status=ConvertStatus.DELIVERED, sftp_attempted=False)
         verdict, headline, detail = summarize(result)
         assert verdict is Verdict.HEALTHY
         assert "converted" in headline.lower()
@@ -50,6 +51,7 @@ class TestSummarizeDeliveredFromDisk:
     def test_delivered_from_disk_is_healthy_and_never_claims_a_build(self) -> None:
         """Deliver-from-disk (0034 Slice 2): the files shipped, but NOTHING was converted."""
         result = ConvertResult(
+            entity_outcomes=None,
             status=ConvertStatus.DELIVERED_FROM_DISK,
             sftp_attempted=True,
             sftp_ok=True,
@@ -68,6 +70,7 @@ class TestSummarizeBuiltNotDelivered:
     def test_exit3_booleans_map_to_failed_built_but_not_delivered(self) -> None:
         """sftp_attempted=True + sftp_ok=False → FAILED 'built but didn't reach SpacesEDU'."""
         result = ConvertResult(
+            entity_outcomes=None,
             status=ConvertStatus.BUILT_NOT_DELIVERED,
             entity_counts={"Students": 100},
             sftp_attempted=True,
@@ -82,6 +85,7 @@ class TestSummarizeBuiltNotDelivered:
 class TestSummarizeDataErrors:
     def test_data_errors_are_a_warning_with_the_count(self) -> None:
         result = ConvertResult(
+            entity_outcomes=None,
             status=ConvertStatus.BUILT_WITH_DATA_ERRORS,
             data_errors_total=3,
         )
@@ -91,7 +95,7 @@ class TestSummarizeDataErrors:
         assert detail
 
     def test_single_data_error_uses_singular(self) -> None:
-        result = ConvertResult(status=ConvertStatus.BUILT_WITH_DATA_ERRORS, data_errors_total=1)
+        result = ConvertResult(entity_outcomes=None, status=ConvertStatus.BUILT_WITH_DATA_ERRORS, data_errors_total=1)
         _verdict, headline, _detail = summarize(result)
         assert "1 data warning" in headline
         assert "warnings" not in headline
@@ -100,6 +104,7 @@ class TestSummarizeDataErrors:
         # Fail-loud: a successful delivery must NOT silently erase the data-error warning
         # (mirrors home_status's delivered-with-warnings verdict); it stays a WARNING.
         result = ConvertResult(
+            entity_outcomes=None,
             status=ConvertStatus.DELIVERED_WITH_DATA_ERRORS,
             data_errors_total=2,
             sftp_attempted=True,
@@ -115,6 +120,7 @@ class TestSummarizeDataErrors:
 class TestSummarizeAnomalyAck:
     def test_anomaly_ack_is_a_warning_naming_smaller_files(self) -> None:
         result = ConvertResult(
+            entity_outcomes=None,
             status=ConvertStatus.NEEDS_ANOMALY_ACK,
             anomalies=("Students dropped from 100 to 40 rows (60% decrease)",),
         )
@@ -125,6 +131,7 @@ class TestSummarizeAnomalyAck:
 
     def test_multiple_anomalies_pluralize(self) -> None:
         result = ConvertResult(
+            entity_outcomes=None,
             status=ConvertStatus.NEEDS_ANOMALY_ACK,
             anomalies=(
                 "Students dropped from 100 to 40 rows (60% decrease)",
@@ -137,19 +144,19 @@ class TestSummarizeAnomalyAck:
 
 class TestSummarizeNoInputNoOutput:
     def test_no_input_is_failed_plain(self) -> None:
-        verdict, headline, detail = summarize(ConvertResult(status=ConvertStatus.NO_INPUT))
+        verdict, headline, detail = summarize(ConvertResult(entity_outcomes=None, status=ConvertStatus.NO_INPUT))
         assert verdict is Verdict.FAILED
         assert "No files could be read" in headline
         assert detail
 
     def test_no_input_uses_plain_language_not_gde(self) -> None:
         # Vocabulary map (0035 W3b): GDE → "MyEd BC extract files" — no jargon in copy.
-        _verdict, headline, detail = summarize(ConvertResult(status=ConvertStatus.NO_INPUT))
+        _verdict, headline, detail = summarize(ConvertResult(entity_outcomes=None, status=ConvertStatus.NO_INPUT))
         assert "GDE" not in headline and "GDE" not in detail
         assert "MyEd BC extract files" in detail
 
     def test_no_output_is_failed_plain(self) -> None:
-        verdict, headline, detail = summarize(ConvertResult(status=ConvertStatus.NO_OUTPUT))
+        verdict, headline, detail = summarize(ConvertResult(entity_outcomes=None, status=ConvertStatus.NO_OUTPUT))
         assert verdict is Verdict.FAILED
         assert "No output" in headline
         assert detail
@@ -160,6 +167,7 @@ class TestSummarizeIncompleteRoster:
 
     def test_incomplete_roster_is_failed_and_names_the_missing_students(self) -> None:
         result = ConvertResult(
+            entity_outcomes=None,
             status=ConvertStatus.INCOMPLETE_ROSTER,
             entity_counts={"Classes": 40, "Enrollments": 300, "Family": 80},
         )
@@ -173,12 +181,14 @@ class TestSummarizeIncompleteRoster:
     def test_it_is_distinct_from_no_output(self) -> None:
         # Files WERE built here — telling the admin "no output was produced" would send
         # them looking for the wrong fault.
-        _v, incomplete, _d = summarize(ConvertResult(status=ConvertStatus.INCOMPLETE_ROSTER))
-        _v2, no_output, _d2 = summarize(ConvertResult(status=ConvertStatus.NO_OUTPUT))
+        _v, incomplete, _d = summarize(ConvertResult(entity_outcomes=None, status=ConvertStatus.INCOMPLETE_ROSTER))
+        _v2, no_output, _d2 = summarize(ConvertResult(entity_outcomes=None, status=ConvertStatus.NO_OUTPUT))
         assert incomplete != no_output
 
     def test_the_copy_is_plain_language_and_carries_no_identifiers(self) -> None:
-        _verdict, headline, detail = summarize(ConvertResult(status=ConvertStatus.INCOMPLETE_ROSTER))
+        _verdict, headline, detail = summarize(
+            ConvertResult(entity_outcomes=None, status=ConvertStatus.INCOMPLETE_ROSTER)
+        )
         for jargon in ("Students.csv", "roster anchor", "entity", "SFTP", "GDE", "exception", "archive_"):
             assert jargon not in headline and jargon not in detail
         assert "{" not in headline + detail  # fixed copy — no interpolation slot at all
@@ -225,11 +235,13 @@ class TestOutputFolderUnusableCopy:
     """
 
     def _copy(self) -> tuple[str, str]:
-        _verdict, headline, detail = summarize(ConvertResult(status=ConvertStatus.OUTPUT_FOLDER_UNUSABLE))
+        _verdict, headline, detail = summarize(
+            ConvertResult(entity_outcomes=None, status=ConvertStatus.OUTPUT_FOLDER_UNUSABLE)
+        )
         return headline, detail
 
     def test_it_is_a_failed_verdict(self) -> None:
-        verdict, _h, _d = summarize(ConvertResult(status=ConvertStatus.OUTPUT_FOLDER_UNUSABLE))
+        verdict, _h, _d = summarize(ConvertResult(entity_outcomes=None, status=ConvertStatus.OUTPUT_FOLDER_UNUSABLE))
         assert verdict is Verdict.FAILED
 
     def test_it_names_the_output_folder_and_never_the_input_one(self) -> None:
@@ -274,6 +286,7 @@ class TestOutputFolderUnusableCopy:
         # A result carrying a path/district/column in every field must produce the SAME
         # two strings as an empty one - the structural reason nothing can leak.
         loaded = ConvertResult(
+            entity_outcomes=None,
             status=ConvertStatus.OUTPUT_FOLDER_UNUSABLE,
             entity_counts={"Students": 4},
             data_errors_total=7,
@@ -287,7 +300,7 @@ class TestSummarizeTotality:
     def test_every_status_has_a_mapping(self) -> None:
         """summarize is TOTAL over ConvertStatus — every member returns a valid triple."""
         for status in ConvertStatus:
-            result = ConvertResult(status=status, data_errors_total=1, anomalies=("x",))
+            result = ConvertResult(entity_outcomes=None, status=status, data_errors_total=1, anomalies=("x",))
             verdict, headline, detail = summarize(result)
             assert isinstance(verdict, Verdict)
             assert isinstance(headline, str) and headline
@@ -308,6 +321,7 @@ class TestSummarizePrivacy:
 
     def test_anomaly_strings_carrying_identifiers_never_leak(self) -> None:
         result = ConvertResult(
+            entity_outcomes=None,
             status=ConvertStatus.NEEDS_ANOMALY_ACK,
             anomalies=(f"{self._FAKE_COLUMN} in {self._FAKE_PATH} for {self._FAKE_SIS} dropped from 100 to 1 rows",),
         )
@@ -317,6 +331,7 @@ class TestSummarizePrivacy:
     def test_no_status_interpolates_the_raw_fields(self) -> None:
         for status in ConvertStatus:
             result = ConvertResult(
+                entity_outcomes=None,
                 status=status,
                 entity_counts={self._FAKE_COLUMN: 5},
                 data_errors_total=2,
