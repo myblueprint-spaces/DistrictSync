@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.etl.pipeline import RunErrorCategory
+from src.etl.errors import RunErrorCategory
 from src.ui_flet.convert_result import (
     ConvertResult,
     ConvertStatus,

@@ -60,6 +60,7 @@ import pandas as pd
 # `models` is still initialising). If a later slice wants layering purity, the
 # clean move is a neutral grade-vocabulary module both layers import.
 from src.config.models import CLASS_ROSTERING_HOMEROOM_SENTINEL
+from src.etl.errors import GuardKind, SourceSchemaError, available_columns_note
 
 # CEDS grade-level code table (single source of truth; keys are the upper-cased,
 # trimmed source values). Unknown values map to "UG" (ungraded).
@@ -384,16 +385,23 @@ def filter_to_grade_scope(
     because a column moved would deliver students the district is not licensed
     to send):
 
-    - ``grade_col`` absent ⇒ ``KeyError`` naming the column and the available
-      ones (the ``apply_row_filters`` message shape), matching
-      :func:`split_by_homeroom_grades`'s documented ``KeyError`` contract;
+    - ``grade_col`` absent ⇒ :class:`~src.etl.errors.SourceSchemaError` (guard
+      ``PII_SCOPE``, entity = ``caller``) naming the column and the COUNT of
+      source columns — never their names (plan 0053 S1; an observed header can
+      be a pupil). Before S1 this was a ``KeyError`` listing every header;
+      :func:`split_by_homeroom_grades` still raises pandas' own ``KeyError``
+      (§5 site #5, plan 0053 S10);
     - the temporary column name already present ⇒ ``ValueError`` rather than a
       silent overwrite-and-drop of a real source column.
     """
     if grade_col not in df.columns:
-        raise KeyError(
-            f"[{caller}] grade column '{grade_col}' not found in source columns, so the "
-            f"student_rostering_grades scope cannot be applied. Available: {sorted(df.columns)}"
+        raise SourceSchemaError(
+            f"[{caller}] grade column '{grade_col}' not found in the source "
+            f"({available_columns_note(len(df.columns))}), so the student_rostering_grades scope "
+            f"cannot be applied.",
+            entity=caller,
+            columns=(grade_col,),
+            guard=GuardKind.PII_SCOPE,
         )
     if _SCOPE_CEDS_COLUMN in df.columns:
         raise ValueError(

@@ -34,6 +34,7 @@ import pandas as pd
 from src.config.models import ALLOWED_TRANSFORMS as _ALLOWED_TRANSFORMS
 from src.config.models import ConfiguredField, ensure_field_mapping
 from src.etl.column_names import MASTER_TIMETABLE_ID
+from src.etl.errors import EtlError, GuardKind, SourceSchemaError, available_columns_note
 from src.etl.transformers import course_codes as _course_codes
 from src.etl.transformers import dates as _dates
 from src.etl.transformers import emails as _emails
@@ -470,22 +471,36 @@ class BaseTransformer(ABC):
         (lowercase) frame, so the filter column is resolved with the same
         strip+lower treatment.
 
-        Fail-loud (validate at boundary): a filter naming a column absent from
-        the frame raises ``ValueError`` — a renamed source column must never
-        silently keep everyone or no one. Empty/absent ``filters`` return ``df``
+        Fail-loud (validate at boundary): EVERY filter column is checked before
+        any filtering, and one or more absent columns raise ONE
+        :class:`~src.etl.errors.SourceSchemaError` (guard ``PII_SCOPE``) naming
+        them all in the CONFIG's spelling — a renamed source column must never
+        silently keep everyone or no one, and an admin fixing the export should
+        learn every missing column from one run, not one per night. The message
+        carries the COUNT of source columns, never their names (§8: an observed
+        header can be a pupil). Empty/absent ``filters`` return ``df``
         unchanged. Only the kept/total COUNT is logged (never row values / PII).
         """
         if not filters:
             return df
+        missing = tuple(
+            str(row_filter["column"])
+            for row_filter in filters
+            if str(row_filter["column"]).strip().lower() not in df.columns
+        )
+        if missing:
+            raise SourceSchemaError(
+                f"[{entity_name}] row_filter column(s) {list(missing)} not found in the source "
+                f"({available_columns_note(len(df.columns))}). The filter decides which rows may be "
+                f"delivered, so it cannot be skipped.",
+                entity=entity_name,
+                columns=missing,
+                guard=GuardKind.PII_SCOPE,
+            )
         total = len(df)
         mask = pd.Series(True, index=df.index)
         for row_filter in filters:
             col = str(row_filter["column"]).strip().lower()
-            if col not in df.columns:
-                raise ValueError(
-                    f"[{entity_name}] row_filter column '{col}' not found in source columns. "
-                    f"Available: {sorted(df.columns)}"
-                )
             include = {str(v).strip().lower() for v in row_filter.get("include", [])}
             values = _ids.normalize_id_series(df[col]).str.lower()
             mask &= values.isin(include)
@@ -731,6 +746,11 @@ class BaseTransformer(ABC):
           (``data_errors``) and Run History — never swallowed.
         - **Intended blank** (the config column is simply absent from the frame)
           is NOT an error: it stays ``pd.NA`` and is NOT recorded.
+        - **Typed failures propagate.** An :class:`~src.etl.errors.EtlError`
+          raised inside a strategy or a per-row transform (e.g. a
+          ``SourceSchemaError`` from a guard) is re-raised at BOTH levels, never
+          demoted to a blank cell or column — its scope is the orchestrator's
+          decision (plan 0053 S1, ``failure-policy.md`` §6).
         """
         for tgt_field, raw_spec in field_map.items():
             try:
@@ -752,6 +772,11 @@ class BaseTransformer(ABC):
                     col = str(spec).lower()
                     result[tgt_field] = working[col] if col in working.columns else pd.NA
 
+            except EtlError:
+                # A TYPED failure (e.g. a SourceSchemaError from a guard inside a
+                # transform) is a decision already made about scope — it must
+                # reach the orchestrator, never be demoted to a blank column.
+                raise
             except Exception as ex:
                 # Column-level error (unknown transform or any structural
                 # failure). Blank the column, record loudly, continue — never
@@ -783,6 +808,8 @@ class BaseTransformer(ABC):
         for value in series:
             try:
                 out.append(func(value))
+            except EtlError:
+                raise  # typed: never demoted to a blank cell (see ``apply_field_map``)
             except Exception as ex:  # noqa: BLE001 — per-row isolation; recorded below
                 out.append(pd.NA)
                 failures += 1

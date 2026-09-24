@@ -48,7 +48,8 @@ import pytest
 
 from src.config.app_config import AppConfig
 from src.etl import pipeline
-from src.etl.pipeline import RunErrorCategory, run_pipeline
+from src.etl.errors import RunErrorCategory
+from src.etl.pipeline import run_pipeline
 from src.history.store import read_run_records
 from src.ui_flet.convert_output import run_identity
 from src.ui_flet.convert_result import ConvertStatus

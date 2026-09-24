@@ -4,6 +4,14 @@
 
 
 
+## 2026-09-24 — ETL failures are classified by TYPE only; the taxonomy lives in `src/etl/errors.py`; observed headers never reach exception or log text (plan 0053 S1)
+
+Supersedes: the message-substring branch of `pipeline._classify_error_category` (`"No usable required input" in str(exc)` → `no_input`), which had no DECISIONS entry of its own; the function is deleted.
+
+**Decided.** `RunErrorCategory` moved out of `pipeline.py` into the stdlib-only `src/etl/errors.py` as a `StrEnum` (the eight persisted values unchanged; `source_schema` and `input_unreadable` added) beside `EtlError`, `GuardKind`, `SourceSchemaError`, `NoUsableInputError`, `ConfigLoadError` and the public `classify_error_category`. **No re-export shim** — every importer was moved (an AST sweep, not a grep, pins it: `convert.py` imported the enum inside a parenthesised block). Classification is `isinstance` only (AST-pinned: no `str(` call, no string-`in` test). `DeliveryIntegrityError`/`OutputWriteError`/`ExtractionError` were re-parented onto `EtlError` IN PLACE and pass enum members; a legacy string category is coerced through the enum so an unknown one fails at construction. `build_run_record` is the ONE normalisation point for the persisted `error_category` (`.value`), so the `runs` column and the record JSON cannot disagree — `StrEnum` rather than `(str, Enum)` because on 3.13 the latter stringifies to `RunErrorCategory.NONE`. The field-map engine re-raises an `EtlError` ahead of its two broad excepts: a typed guard failure is a scope decision for the orchestrator, never a blank cell. **Privacy:** the four `Available: {sorted(df.columns)}` dumps are gone; a missing-column message names the CONFIG's columns and a COUNT (`errors.available_columns_note`) — a headerless file read without its header makes row 1 a pupil. `apply_row_filters` now checks every filter column and names all missing ones in one error.
+
+**Deliberately NOT changed:** the pipeline's config-load block still records `config` via `_record_early_failure` and exits 1 (converting it would double-record and defeat `humanize_config_error`'s type-based branches); `ConfigLoadError` is defined but first raised by Convert in S5. Scope is unchanged — every typed error still fails the RUN until S4's entity boundary. `config_editor.humanize_config_error` still reads message text to pick its bounded sentence; it is a creator-screen copy mapper, not the run-record classifier, and is out of S1's scope.
+
 ## 2026-09-24 — Gate A (plan 0053): §3 and §5 of the failure policy approved as written
 
 Supersedes: nothing — completes Gate A of the 2026-09-23 failure-policy entry below.

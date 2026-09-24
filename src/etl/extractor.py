@@ -9,6 +9,7 @@ from typing import Optional
 import pandas as pd
 
 from src.etl.column_names import normalize_column_name
+from src.etl.errors import EtlError, RunErrorCategory
 from src.utils.helpers import normalize_columns
 
 logger = logging.getLogger(__name__)
@@ -38,8 +39,15 @@ def _compare_token(value: object) -> str:
     return " ".join(normalize_column_name(str(value)).split())
 
 
-class ExtractionError(Exception):
-    """Raised when a file exists on disk but cannot be parsed by any encoding/delimiter."""
+class ExtractionError(EtlError):
+    """A source file exists but cannot be read: no encoding/delimiter parses it, or more
+    than one file on disk matches its configured name when case is ignored.
+
+    An :class:`~src.etl.errors.EtlError` whose class category is ``input_unreadable``
+    (plan 0053 S1) — before the taxonomy it fell through to ``unknown``.
+    """
+
+    default_category = RunErrorCategory.INPUT_UNREADABLE
 
 
 class DataExtractor:

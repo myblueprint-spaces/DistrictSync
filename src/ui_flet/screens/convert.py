@@ -114,10 +114,10 @@ import flet as ft
 
 from src.config.app_config import AppConfig
 from src.config.loader import load_config
+from src.etl.errors import RunErrorCategory
 from src.etl.extractor import DataExtractor
 from src.etl.loader import DataLoader, output_target_problem
 from src.etl.pipeline import (
-    RunErrorCategory,
     advisory_expected_files,
     build_run_record,
     check_delivery_integrity,

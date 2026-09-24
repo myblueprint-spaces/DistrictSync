@@ -4,7 +4,7 @@
 |---|---|
 | **What this is** | The ONE written rule set for how the ETL fails: at what scope, for which entity, in which direction, with which bounded reason, and what the admin sees. Read it before adding a check, an entity or a config knob. |
 | **Plan** | `.claude/plans/0053-etl-failure-policy.md` (slices S0–S15). Decisions: `docs/claugentic-DECISIONS.md` 2026-09-23. Register: one `docs/claugentic-INVARIANTS.md` row per rule P1–P16. |
-| **Verified against** | commit `8d33664` (v3.25.0). Every code `file:line` below was read at that commit. Citations into docs this change also edits (`faq.md`, the ROADMAP) are by question heading or item title, never by line, so they do not drift. |
+| **Verified against** | commit `8d33664` (v3.25.0). Every code `file:line` below was read at that commit, except the rows plan 0053 S1 flipped (2026-09-24), which cite symbols instead of lines so they do not drift. Citations into docs this change also edits (`faq.md`, the ROADMAP) are by question heading or item title, never by line, so they do not drift. |
 | **Pinned by** | `tests/test_failure_policy_parity.py` — **arrives in S2**; until then this document is held true by review only. |
 | **Style** | Tables first, graded like `docs/developer/output-contract.md`. Every rule row says what the code does TODAY and carries a Status. |
 
@@ -36,7 +36,7 @@ Every posture below derives from this rule. It is the tie-breaker when two rules
 | # | Layer (each owns one question) | Today | Status |
 |---|---|---|---|
 | 1 | Config parse — is the mapping well-formed? | Pydantic at load; the pipeline records `config` and exits 1 (`pipeline.py:869-881`). A typo'd `GlobalConfig`/`EntityConfig`/`Field*` key is silently dropped. | `PLANNED (0053 S12)` |
-| 2 | Extract — could each file be read? | Missing file → empty frame + ERROR log (`extractor.py:131-135`); unparseable → `ExtractionError` (`:195`), which fails the run as category `unknown`. | `PLANNED (0053 S1)` (`input_unreadable`) |
+| 2 | Extract — could each file be read? | Missing file → empty frame + ERROR log (`extractor.py:131-135`); unparseable (or a case-insensitive name collision) → `ExtractionError`, an `EtlError` whose class category is `input_unreadable` (`extractor.ExtractionError`), which fails the run with that category. | `ENFORCED` |
 | 3 | Source observation — does each entity's OWN file carry its mapped columns? | Not in the run path; `preflight_report` runs only from the creator (`screens/creator.py:491`). | `PLANNED (0053 S6)` |
 | 4 | Per-entity transform — did this entity build? | No per-entity outcome; any raise at `pipeline.py:345` fails the run. | `PLANNED (0053 S2/S4)` |
 | 5 | Delivery-integrity gate — can this output set be vouched for? | `check_delivery_integrity` (`pipeline.py:404-470`): `no_output`, `incomplete_roster`. Unchanged by this plan. | `ENFORCED` |
@@ -88,8 +88,8 @@ Transformers RAISE and never catch-to-continue at entity scope; only the orchest
 
 | Class | The column guards | Required posture | Today | Status |
 |---|---|---|---|---|
-| (a) `pii_scope` | WHO may be delivered (row_filters, grade scope) | Fail CLOSED; typed `SourceSchemaError(guard=PII_SCOPE)`; entity scope if ISOLATABLE, run if CRITICAL | Fails closed, untyped (`ValueError`/`KeyError`), run scope, message lists observed headers | `PLANNED (0053 S1/S4)` |
-| (b) `join_key` | An identity or join (merge keys, class artifacts, home school) | Fail CLOSED, typed; never a raw `KeyError`, never a partial result | Mixed: untyped `ValueError`s with an actionable message, raw pandas `KeyError`s, one partial ship | `PLANNED (0053 S10)` |
+| (a) `pii_scope` | WHO may be delivered (row_filters, grade scope) | Fail CLOSED; typed `SourceSchemaError(guard=PII_SCOPE)`; entity scope if ISOLATABLE, run if CRITICAL | Fails closed at run scope. Sites #1 and #4 raise the typed `SourceSchemaError(guard=PII_SCOPE)` naming the config's columns and a column COUNT only (S1); #5 and #6 are still untyped / unguarded | `PLANNED (0053 S4)` (entity scope) · #5/#6 `PLANNED (0053 S9/S10)` |
+| (b) `join_key` | An identity or join (merge keys, class artifacts, home school) | Fail CLOSED, typed; never a raw `KeyError`, never a partial result | Mixed: sites #2/#3 raise the typed `SourceSchemaError(guard=JOIN_KEY)` naming the config's columns and a column COUNT only (S1); elsewhere untyped `ValueError`s with an actionable message, raw pandas `KeyError`s, one partial ship | `PLANNED (0053 S10)` |
 | (c) `contract_field` | An output field the importer requires | Rows lacking it are excluded and COUNTED; all excluded ⇒ EMPTY with a recorded reason | Family's email exclusion conforms (log count); EMPTY carries no reason | `PLANNED (0053 S2/S11)` |
 | (d) `optional_field` | A value that may be blank | Blank + one aggregated WARNING + an outcome note | Silent blank (`base.py:753`) | `PLANNED (0053 S6/S11)` |
 | (e) `safety_heuristic` | A fail-open safety filter | Fail OPEN only in the surplus direction; always recorded | Direction mostly right; several sites silent | `PLANNED (0053 S11)` |
@@ -99,11 +99,11 @@ Transformers RAISE and never catch-to-continue at entity scope; only the orchest
 <!-- failure-policy-table: sites -->
 | # | Site | Class | Today | Status |
 |---|---|---|---|---|
-| 1 | `base.apply_row_filters` `base.py:458-494` (raise `:483-488`) | (a) | Untyped `ValueError`; lists observed headers (`:487`) | `PLANNED (0053 S1)` |
-| 2 | `students.py:136-140` cross-enrollment home-school column | (b) | `ValueError` + observed headers | `PLANNED (0053 S1)` |
+| 1 | `base.apply_row_filters` | (a) | Checks EVERY filter column first; one `SourceSchemaError(guard=PII_SCOPE)` names all missing ones in config spelling + the source's column count, never its headers. Run scope | `ENFORCED` (typed) · entity scope `PLANNED (0053 S4)` |
+| 2 | `StudentTransformer._collapse_cross_enrollment` — the `home_school_column` check | (b) | `SourceSchemaError(guard=JOIN_KEY)`, config spelling + column count | `ENFORCED` |
 | 2a | `students.py:132-150` cross-enrollment SchoolCode / User ID source columns (`working[school_col]` `:143`, `sort_values`/`drop_duplicates` on `user_id_col` `:149-150`) | (b) | Raw pandas `KeyError`, no presence check; both resolved by bare `str(field_map.get(...))` (`:132-133`), so a `{column: …}`-shaped entry becomes the text of a dict | `PLANNED (0053 S9/S10)` |
-| 3 | `students.py:282-286` email `derived_dates` column | (b) | `ValueError` + observed headers | `PLANNED (0053 S1)` |
-| 4 | `grades.filter_to_grade_scope` `grades.py:393-397` | (a) | Raw `KeyError` + observed headers | `PLANNED (0053 S1)` |
+| 3 | `StudentTransformer` email `derived_dates` column check | (b) | `SourceSchemaError(guard=JOIN_KEY)`, config spelling + column count | `ENFORCED` |
+| 4 | `grades.filter_to_grade_scope` | (a) | `SourceSchemaError(guard=PII_SCOPE)`, the resolved grade column + column count (was a raw `KeyError` listing every header). Run scope | `ENFORCED` (typed) · entity scope `PLANNED (0053 S4)` |
 | 5 | `grades.split_by_homeroom_grades` `grades.py:340/:342` (`df[grade_col]`) | (a) | Implicit pandas `KeyError` | `PLANNED (0053 S10)` |
 | 6 | `students.py:193` grade column for the student scope (`resolve_column` ignores a bare string) | (a) | A bare-string rename is ignored | `PLANNED (0053 S9)` |
 | 7 | `enrollments.py:37-45` class artifacts absent | (b) | Raises with an actionable message | `ENFORCED` |
@@ -149,8 +149,8 @@ Classification is by TYPE only (`isinstance`), never by message text. Exemplar: 
 
 | Rule | Today | Status |
 |---|---|---|
-| Every boundary-crossing ETL failure is an `EtlError` with a bounded `category` | No common base class; two carriers (`DeliveryIntegrityError`, `OutputWriteError`) pass `.value` strings | `PLANNED (0053 S1)` |
-| The classifier reads no exception text | `_classify_error_category` tests `"No usable required input" in str(exc)` (`pipeline.py:759`) | `PLANNED (0053 S1)` |
+| Every boundary-crossing ETL failure is an `EtlError` with a bounded `category` | `src/etl/errors.py` holds the taxonomy (`RunErrorCategory`, `EtlError`, `SourceSchemaError`, `NoUsableInputError`, `ConfigLoadError`); `DeliveryIntegrityError`, `OutputWriteError` and `ExtractionError` are `EtlError`s carrying enum members; the four §8 sites raise `SourceSchemaError`. Still untyped: the raw pandas `KeyError` and untyped `ValueError` sites catalogued in §5 | `ENFORCED` (taxonomy + every carrier) · remaining sites `PLANNED (0053 S10)` |
+| The classifier reads no exception text | `errors.classify_error_category` branches on `isinstance` only; no usable input is the TYPE `NoUsableInputError`. AST-pinned (`tests/test_etl_errors.py`: no `str(` call, no string-`in` test) | `ENFORCED` |
 | Every closed-enum member maps to copy, a verdict and a row here | No copy table exists | `PLANNED (0053 S3)` |
 | Config typos are loud, origin-keyed (P15): a bundled config RAISES at load; a user-dir overlay WARNS at run and is REFUSED at authoring; `Field*` leaf models forbid extras everywhere; the root stays `extra="ignore"` | `GlobalConfig`/`EntityConfig`/`FieldTransform`/`FieldNameConfig` accept and drop an unknown key (`enabled_entites`, `transfrom:`) | `PLANNED (0053 S12)` |
 
@@ -158,15 +158,15 @@ Classification is by TYPE only (`isinstance`), never by message text. Exemplar: 
 | enum | member | value | produced today by | Status |
 |---|---|---|---|---|
 | RunErrorCategory | NONE | `none` | every completed run (`pipeline.py:1072`) | `ENFORCED` |
-| RunErrorCategory | NO_INPUT | `no_input` | input folder missing (`pipeline.py:843-849`); every required file missing/empty — by MESSAGE substring (`:759`) | `ENFORCED` |
+| RunErrorCategory | NO_INPUT | `no_input` | input folder missing (`run_pipeline`'s early exit); every required file missing/empty — `NoUsableInputError`, by type | `ENFORCED` |
 | RunErrorCategory | NO_OUTPUT | `no_output` | `check_delivery_integrity` (`pipeline.py:452-457`) | `ENFORCED` |
 | RunErrorCategory | INCOMPLETE_ROSTER | `incomplete_roster` | `check_delivery_integrity` (`pipeline.py:459-468`) | `ENFORCED` |
-| RunErrorCategory | CONFIG | `config` | config load (`pipeline.py:869-881`); any `FileNotFoundError` (`:761`) | `ENFORCED` |
-| RunErrorCategory | DATA | `data` | any `ValueError` (`:763-765`) — includes today's row_filters missing column | `ENFORCED` |
+| RunErrorCategory | CONFIG | `config` | config load (`run_pipeline`'s early exit); any `FileNotFoundError`; `ConfigLoadError` (defined in S1, first raised by Convert in S5) | `ENFORCED` |
+| RunErrorCategory | DATA | `data` | any UNTYPED `ValueError` (e.g. `DataLoader.select_ordered`'s missing output column) — no longer the row_filters missing column, which is `source_schema` | `ENFORCED` |
 | RunErrorCategory | OUTPUT | `output` | output pre-flight (`pipeline.py:896-909`); `OutputWriteError` (`:378-401`) | `ENFORCED` |
-| RunErrorCategory | UNKNOWN | `unknown` | everything else — incl. `ExtractionError` and raw `KeyError` | `ENFORCED` |
-| RunErrorCategory | SOURCE_SCHEMA | `source_schema` | not produced (a missing guarded column records `data` or `unknown`) | `PLANNED (0053 S1)` |
-| RunErrorCategory | INPUT_UNREADABLE | `input_unreadable` | not produced (an unparseable file records `unknown`) | `PLANNED (0053 S1)` |
+| RunErrorCategory | UNKNOWN | `unknown` | everything else — incl. a raw pandas `KeyError` | `ENFORCED` |
+| RunErrorCategory | SOURCE_SCHEMA | `source_schema` | `SourceSchemaError` — §5 sites #1–#4 | `ENFORCED` |
+| RunErrorCategory | INPUT_UNREADABLE | `input_unreadable` | `ExtractionError` — an unparseable file, or a case-insensitive filename collision | `ENFORCED` |
 | OutcomeKind | BUILT | `built` | no per-entity outcome exists | `PLANNED (0053 S2)` |
 | OutcomeKind | EMPTY | `empty` | — | `PLANNED (0053 S2)` |
 | OutcomeKind | FAILED | `failed` | — | `PLANNED (0053 S2)` |
@@ -179,7 +179,7 @@ Classification is by TYPE only (`isinstance`), never by message text. Exemplar: 
 | OutcomeReason | TRANSFORM_ERROR | `transform_error` | — | `PLANNED (0053 S2)` |
 | OutcomeReason | RUN_ABORTED | `run_aborted` | — | `PLANNED (0053 S2)` |
 
-Guard kinds (`GuardKind`: `PII_SCOPE`, `JOIN_KEY`) and the leaf errors (`SourceSchemaError`, `NoUsableInputError`, `ConfigLoadError`) are named in the plan's *Naming table* and arrive in S1.
+Guard kinds (`GuardKind`: `PII_SCOPE`, `JOIN_KEY`) and the leaf errors (`SourceSchemaError`, `NoUsableInputError`, `ConfigLoadError`) are named in the plan's *Naming table* and live in `src/etl/errors.py` (S1). `SourceSchemaError`'s `entity`, `columns` (config spelling, never empty) and `guard` are required keyword-only. One exception: site #4 (`grades.filter_to_grade_scope`) carries the RESOLVED, lower-cased grade column (or the default `grade`), not the config's spelling, until S9's resolver lands. The persisted `error_category` is normalised to the enum's plain `.value` in ONE place, `pipeline.build_run_record`, so the store column and the record JSON cannot disagree.
 
 ## §7 Surfacing, record keys, symmetric sinks (P7, P8, P12)
 
@@ -198,7 +198,7 @@ Guard kinds (`GuardKind`: `PII_SCOPE`, `JOIN_KEY`) and the leaf errors (`SourceS
 | Rule | Today | Status |
 |---|---|---|
 | Records, banners and cards carry closed-set codes humanised through total copy tables — never `str(e)`, cell values or paths | The store carries `error_category` only; `home_status` never interpolates the free-text error (`home_status.py:22-26`); Convert's card is fixed copy | `ENFORCED` |
-| No OBSERVED header text in any exception message or log line (a headerless file read without its header makes row 1 a pupil) | Four sites dump `sorted(df.columns)`: `base.py:487`, `grades.py:396`, `students.py:139`, `:285` | `PLANNED (0053 S1)` |
+| No OBSERVED header text in any exception message or log line (a headerless file read without its header makes row 1 a pupil) | The four sites that dumped `sorted(df.columns)` (§5 #1–#4) now carry the COUNT only (`errors.available_columns_note`); pinned by the sentinel sweep in `tests/test_etl_errors.py` and end to end in `tests/test_pipeline_run_store.py` | `ENFORCED` |
 | Config-DECLARED file and column labels may appear in copy and record, membership-validated against the resolved config and sanitised (D4, decided 2026-09-23) | Not implemented | `PLANNED (0053 S7)` |
 
 ## §9 Column resolution (P10)

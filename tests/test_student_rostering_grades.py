@@ -31,6 +31,7 @@ import pandas as pd
 import pytest
 from pandas.testing import assert_frame_equal
 
+from src.etl.errors import GuardKind, SourceSchemaError
 from src.etl.transformer import DataTransformer
 from src.etl.transformers.grades import (
     filter_to_grade_scope,
@@ -156,16 +157,26 @@ class TestFilterToGradeScope:
         filter_to_grade_scope(source, "grade", {"KG"}, caller="Students")
         assert_frame_equal(source, before)
 
-    def test_an_unresolvable_grade_column_RAISES_naming_the_available_columns(self):
+    def test_an_unresolvable_grade_column_RAISES_a_typed_error_that_counts_but_never_names_the_headers(self):
         """Fail-open is the dangerous direction: this is an EXCLUSION key, so a
-        renamed/absent column must never mean "keep everyone"."""
+        renamed/absent column must never mean "keep everyone".
+
+        Plan 0053 S1 changed this pin deliberately: it used to assert the message
+        LISTED the available columns, which is exactly the observed-header dump §8
+        bans (a headerless file read without its header makes row 1 a pupil). The
+        error is now TYPED (``PII_SCOPE``), names the missing CONFIG column, and
+        carries only the COUNT of the source's columns."""
         frame = _student_frame().drop(columns="grade")
-        with pytest.raises(KeyError) as exc:
+        with pytest.raises(SourceSchemaError) as exc:
             filter_to_grade_scope(frame, "grade", {"KG"}, caller="Students")
-        message = str(exc.value)
-        assert "grade" in message
-        assert "student number" in message, "the message must name the available columns"
-        assert "Students" in message, "the message must name the consumer"
+        err = exc.value
+        message = str(err)
+        assert err.guard is GuardKind.PII_SCOPE
+        assert err.entity == "Students", "the error must name the consumer"
+        assert err.columns == ("grade",)
+        assert "'grade'" in message and "Students" in message
+        assert "has 2 columns" in message, "the message carries the COUNT of source columns"
+        assert "student number" not in message, "an observed header must never reach the message"
 
     def test_a_frame_already_carrying_the_temp_column_RAISES(self):
         """Collision-proofing, pinned: the drop would otherwise delete a real
@@ -284,7 +295,8 @@ class TestStudentsUnderAScope:
         students the district is not licensed to send."""
         mapping = {**students_mapping, "field_map": {**students_mapping["field_map"], "Grade": {"value": ""}}}
         demographic = _demographic(["K", "12"]).drop(columns="grade")
-        with pytest.raises(KeyError, match="grade"):
+        # Plan 0053 S1: a typed SourceSchemaError (PII_SCOPE), was a bare KeyError.
+        with pytest.raises(SourceSchemaError, match="grade") as exc:
             _run_students(
                 students_transformer,
                 mapping,
@@ -292,6 +304,8 @@ class TestStudentsUnderAScope:
                 demographic,
                 student_rostering_grades=["KG"],
             )
+        assert exc.value.guard is GuardKind.PII_SCOPE
+        assert exc.value.entity == "Students"
 
     def test_the_grade_column_is_resolved_from_the_field_map_not_hardcoded(
         self, students_transformer, students_mapping, global_config

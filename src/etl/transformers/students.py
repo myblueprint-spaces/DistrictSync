@@ -5,6 +5,7 @@ from typing import Any
 
 import pandas as pd
 
+from src.etl.errors import GuardKind, SourceSchemaError, available_columns_note
 from src.etl.transformers.base import BaseTransformer
 from src.etl.transformers.context import TransformContext
 from src.etl.transformers.grades import filter_to_grade_scope, resolve_student_scope
@@ -122,7 +123,9 @@ class StudentTransformer(BaseTransformer):
         Source column names resolve from the Students ``field_map`` (Configurable
         Columns): ``User ID`` and ``SchoolCode``. Fail-loud (validate at
         boundary): a configured ``home_school_column`` absent from the frame
-        raises ``ValueError``. Never drops a student entirely (always ≥ 1 row per
+        raises :class:`~src.etl.errors.SourceSchemaError` (guard ``JOIN_KEY``,
+        the column named in the config's spelling, the source's column COUNT
+        only — never its header names). Never drops a student entirely (always ≥ 1 row per
         User ID). Logs only the collapsed COUNT (no PII).
         """
         cc = (context.global_config or {}).get("cross_enrollment") or {}
@@ -134,9 +137,13 @@ class StudentTransformer(BaseTransformer):
         home_col = str(cc.get("home_school_column", "")).strip().lower()
 
         if home_col not in working.columns:
-            raise ValueError(
-                f"[Students] cross_enrollment home_school_column '{home_col}' not found in "
-                f"source columns. Available: {sorted(working.columns)}"
+            configured = str(cc.get("home_school_column", ""))
+            raise SourceSchemaError(
+                f"[Students] cross_enrollment home_school_column {configured!r} not found in the "
+                f"source ({available_columns_note(len(working.columns))}).",
+                entity="Students",
+                columns=(configured,),
+                guard=GuardKind.JOIN_KEY,
             )
 
         before = len(working)
@@ -280,9 +287,12 @@ class StudentTransformer(BaseTransformer):
             for pseudo, spec in derived.items():
                 col = str(spec["column"]).strip().lower()
                 if col not in src.columns:
-                    raise ValueError(
-                        f"[Students] Email 'derived_dates' column {spec['column']!r} not found in "
-                        f"source columns. Available: {sorted(src.columns)}"
+                    raise SourceSchemaError(
+                        f"[Students] Email 'derived_dates' column {spec['column']!r} not found in the "
+                        f"source ({available_columns_note(len(src.columns))}).",
+                        entity="Students",
+                        columns=(str(spec["column"]),),
+                        guard=GuardKind.JOIN_KEY,
                     )
                 strf = self.friendly_date_format_to_strftime(str(spec["date_format"]))
                 src[str(pseudo).strip().lower()] = src[col].apply(lambda v, f=strf: self.derive_date_part(v, f))

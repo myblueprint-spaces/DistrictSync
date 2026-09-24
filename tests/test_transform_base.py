@@ -16,8 +16,10 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from src.etl.errors import GuardKind, RunErrorCategory, SourceSchemaError
 from src.etl.transformers.base import BaseTransformer
 from src.etl.transformers.context import TransformContext
+from tests.test_etl_errors import SENTINEL_PII
 
 SD62_PATTERNS = [r"^.{5}-K", r"^.{5}0\d", r"^X", r"^ATT"]
 # Function-level fixture: arbitrary flavor substrings (incl. "---") to pin the
@@ -170,6 +172,50 @@ class TestApplyRowFilters:
         df = self._df()
         with pytest.raises(ValueError, match="not found"):
             BaseTransformer.apply_row_filters(df, [{"column": "Nonexistent", "include": ["Y"]}], "Family")
+
+    def test_every_missing_filter_column_is_named_in_ONE_typed_error(self):
+        """Plan 0053 S1: ALL filter columns are checked before any filtering, and the
+        ONE error names every missing column in the CONFIG's spelling (not the
+        normalised one) — an admin fixing the export learns everything from one run."""
+        df = self._df()
+        filters = [
+            {"column": "Parent Auth / Guardian", "include": ["Y"]},  # present
+            {"column": "Custody Flag", "include": ["Y"]},  # absent
+            {"column": "Lives With", "include": ["Y"]},  # absent
+        ]
+        with pytest.raises(SourceSchemaError) as exc:
+            BaseTransformer.apply_row_filters(df, filters, "Family")
+        err = exc.value
+        assert err.columns == ("Custody Flag", "Lives With"), "config spelling, in config order, every one"
+        assert err.guard is GuardKind.PII_SCOPE
+        assert err.entity == "Family"
+        assert err.category is RunErrorCategory.SOURCE_SCHEMA
+        assert isinstance(err, ValueError), "every existing `except ValueError` keeps working"
+        assert "Custody Flag" in str(err) and "Lives With" in str(err)
+        assert "has 3 columns" in str(err)
+
+    def test_the_twin_all_filter_columns_present_filters_exactly_as_before(self):
+        """The positive twin: with every column present the typed check is silent and
+        the AND-combined filter still applies (the check must not have changed WHAT
+        is kept)."""
+        df = self._df()
+        filters = [
+            {"column": "Parent Auth / Guardian", "include": ["Y"]},
+            {"column": "Relationship", "include": ["Parent", "Guardian"]},
+        ]
+        out = BaseTransformer.apply_row_filters(df, filters, "Family")
+        assert list(out["first name"]) == ["A", "C"]
+
+    def test_an_observed_header_never_reaches_the_message_or_the_log(self, caplog):
+        """§8 sentinel: a headerless file read without its header makes row 1 a
+        pupil, so the first "header" here stands in for a pupil's name."""
+        df = pd.DataFrame({SENTINEL_PII.lower(): ["x"], "relationship": ["Parent"]})
+        with caplog.at_level(logging.DEBUG), pytest.raises(SourceSchemaError) as exc:
+            BaseTransformer.apply_row_filters(df, [{"column": "Parent Auth / Guardian", "include": ["Y"]}], "Family")
+        assert SENTINEL_PII.lower() not in str(exc.value).lower()
+        assert SENTINEL_PII.lower() not in caplog.text.lower()
+        # Non-vacuity: the sentinel IS in the frame the function was handed.
+        assert SENTINEL_PII.lower() in df.columns
 
     def test_returns_copy_not_view(self):
         df = self._df()
@@ -768,6 +814,69 @@ class TestApplyFieldMapFailLoud:
 
         assert list(out["Out"]) == ["ok:A", "ok:B", "ok:C"]
         assert ctx.data_errors == []
+
+
+class TestTypedErrorsAreNeverDemotedToBlanks:
+    """Plan 0053 S1: an ``EtlError`` raised inside the field-map engine propagates.
+
+    The engine's broad excepts exist to turn an UNTYPED fault into a recorded blank
+    (cell or column). A typed error is a decision already made about scope — a
+    ``SourceSchemaError`` swallowed into a blank cell would ship the very rows its
+    guard exists to stop. Each propagation test has a twin proving the same path
+    still blanks an untyped fault, so the ``except EtlError: raise`` cannot pass
+    vacuously.
+    """
+
+    class _Host(BaseTransformer):
+        ALLOWED_TRANSFORMS = frozenset(BaseTransformer.ALLOWED_TRANSFORMS | {"guarded"})
+        raise_typed = True
+
+        def transform(self, df, mapping, context):  # pragma: no cover — unused
+            return df
+
+        def guarded(self, value):
+            if str(value) == "BAD":
+                if self.raise_typed:
+                    raise SourceSchemaError(
+                        "guard tripped", entity="Students", columns=("Some Column",), guard=GuardKind.PII_SCOPE
+                    )
+                raise ValueError("untyped")
+            return value
+
+        def generate_class_id(self, row, mt_id_col, append_year, context):
+            if self.raise_typed:
+                raise SourceSchemaError(
+                    "join key missing", entity="Classes", columns=("Master Timetable ID",), guard=GuardKind.JOIN_KEY
+                )
+            raise ValueError("untyped")
+
+    def _map(self, host, field_map):
+        working = pd.DataFrame({"src": ["A", "BAD"], "mtid": ["M1", "M2"]})
+        ctx = TransformContext()
+        out = host.apply_field_map(working, pd.DataFrame(index=working.index), field_map, "Students", ctx)
+        return out, ctx
+
+    def test_a_typed_error_in_a_per_row_transform_propagates(self):
+        with pytest.raises(SourceSchemaError, match="guard tripped"):
+            self._map(self._Host(), {"Out": {"column": "src", "transform": "guarded"}})
+
+    def test_the_twin_an_untyped_per_row_error_still_blanks_that_cell(self):
+        host = self._Host()
+        host.raise_typed = False
+        out, ctx = self._map(host, {"Out": {"column": "src", "transform": "guarded"}})
+        assert out["Out"].iloc[0] == "A" and pd.isna(out["Out"].iloc[1])
+        assert ctx.data_errors and ctx.data_errors[0]["failed_rows"] == 1
+
+    def test_a_typed_error_at_column_level_propagates(self):
+        with pytest.raises(SourceSchemaError, match="join key missing"):
+            self._map(self._Host(), {"Class ID": {"column": "mtid", "append_year_to_id": True}})
+
+    def test_the_twin_an_untyped_column_level_error_still_blanks_the_column(self):
+        host = self._Host()
+        host.raise_typed = False
+        out, ctx = self._map(host, {"Class ID": {"column": "mtid", "append_year_to_id": True}})
+        assert out["Class ID"].isna().all()
+        assert ctx.data_errors and ctx.data_errors[0]["field"] == "Class ID"
 
 
 class TestPerRowSampleNeverLeaksTheCell:

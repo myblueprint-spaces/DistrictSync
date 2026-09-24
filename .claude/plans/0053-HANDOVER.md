@@ -18,7 +18,7 @@ Last updated: 2026-09-24 (Gate A approved; S0 awaiting the owner's merge; S1 nex
 |---|---|---|---|
 | Plan | Stage 3 complete; **Gate A COMPLETE 2026-09-24** (owner approved §3/§5 as written — DECISIONS 2026-09-24) | committed with S0 | D1 = all four optional feeds ISOLATABLE (owner overrode the (b) recommendation); D3 = exit 0 + PARTIAL; D4 = validated config-declared labels |
 | **S0** | **MERGED 2026-09-24** (`f0e3d46`; docs only). The Gate A record commit landed after the merge, so it rides S1's branch | `claude/0053-s0-failure-policy` (off `8d33664`) → **PR #144** (https://github.com/myblueprint-spaces/DistrictSync/pull/144), commits `d88aa5f`, `6542ff0` (Q5 evidence; CI run 36016686379 green), + the Gate A record | Local gates green 2026-09-23: 7,627 passed / 98 skipped, coverage 96.5%, ruff clean, email scan OK. Written by an Opus writer + 3 rounds of adversarial verification (truth-vs-code, catalogue, harness) |
-| S1 | **in progress** | `claude/0053-s1-typed-errors` (off `f0e3d46`) | Gate A cleared; implementer → review → verify → fix workflow running |
+| S1 | **PR open — awaiting CI + owner merge** | `claude/0053-s1-typed-errors` (off `f0e3d46`) | Implemented + 3-lens review (architect APPROVE; 5 findings confirmed and fixed, 4 refuted). Local: 7,707 passed / 98 skipped, coverage 96.53%, ruff/mypy(+linux)/bandit/emails/tree/20 configs green. Real drops: Unity 20260922 `data`→`source_schema`; Unity 20260914 + SD51 20260918 outputs byte-identical to base |
 | S2–S15 | not started | — | — |
 
 ### Q5 evidence gathered 2026-09-24 (now recorded in `output-contract.md` "Evidence so far" as E1–E6, on #144; `Q5-status` stays `open`)
@@ -31,7 +31,9 @@ Last updated: 2026-09-24 (Gate A approved; S0 awaiting the owner's merge; S1 nex
 
 **Gate A answers (owner, 2026-09-24 — all three confirm §3/§5 as written):** (1) an unlisted entity is CRITICAL until promoted; (2) a missing LINKING column (class (b), co-teacher columns included) fails the night, behind S10's measurement gate; (3) a missing NICE-TO-HAVE column (class (d), e.g. homeroom teacher name — site #35) is blank + warn, never a run failure.
 
-**Next action:** finish S1 (spec: plan § "S1 — Typed ETL error taxonomy") on `claude/0053-s1-typed-errors`.
+**Next action:** read S1's PR CI and quote it; once the owner merges, start S2 (spec: plan § "S2 — Per-entity outcome ledger").
+
+**S1 findings the next slices need:** `errors.available_columns_note(count)` is the one "count, never headers" phrasing; site #4 (`grades.filter_to_grade_scope`) carries the RESOLVED lower-cased grade column until S9; `ExtractionError` also covers the case-insensitive filename collision (records `input_unreadable`); `config_editor.humanize_config_error` still routes by message text (S3/S5 concern); SD51 20260918 builds Family = 0 rows (feeds the plan's SD51-Family verify item, S6); no site tags added (S11 owns them).
 
 ### S0 checklist (from the plan's S0 Spec — tick as done)
 - [x] `docs/developer/failure-policy.md` §0–§14, ≤300 lines, every row's Status truthful about TODAY

@@ -1080,3 +1080,111 @@ class TestRunAsRidesTheRecord:
         assert records is not None and len(records) == 1
         assert "run_as" not in records[0]
         assert to_run_rows(records)  # the Run History reader still renders it
+
+
+# --------------------------------------------------------------------------- #
+# typed categories reach the record (plan 0053 S1)                             #
+# --------------------------------------------------------------------------- #
+class TestTypedCategoriesReachTheRecord:
+    """Each typed fault records its OWN category, by type — and each has the twin that
+    proves the path is not answering the same thing for everything."""
+
+    #: Unity's own config: Family on, filtered to guardians (``row_filters``).
+    _UNITY = "unitychristianmyedbc"
+
+    @staticmethod
+    def _plain_emergency_report(d: Path, *, first_header: str = "Student Number", guardian: bool = False) -> None:
+        """The 2026-09-22 shape: the PLAIN report under the Enhanced report's filename."""
+        columns: dict[str, list[str]] = {
+            first_header: ["S001"],
+            "First Name": ["John"],
+            "Last Name": ["Smith"],
+            "Email Address": ["john@mail.com"],
+        }
+        if first_header != "Student Number":
+            columns["Student Number"] = ["S001"]
+        if guardian:
+            columns["Parent Auth / Guardian"] = ["Y"]
+        pd.DataFrame(columns).to_csv(d / "EmergencyContactInformation.txt", index=False)
+
+    def test_a_missing_row_filter_column_records_source_schema(self, gde_input: Path, gde_output: Path) -> None:
+        """Was ``data`` (an untyped ``ValueError``) before S1."""
+        from src.etl.errors import GuardKind, SourceSchemaError
+
+        self._plain_emergency_report(gde_input)
+        with pytest.raises(SourceSchemaError) as exc_info:
+            run_pipeline(self._UNITY, str(gde_input), str(gde_output))
+        assert exc_info.value.guard is GuardKind.PII_SCOPE
+        records = read_run_records()
+        assert records is not None and len(records) == 1
+        assert records[0]["status"] == "failed"
+        assert records[0]["error_category"] == "source_schema"
+
+    def test_the_twin_the_enhanced_report_succeeds_with_the_same_config(
+        self, gde_input: Path, gde_output: Path
+    ) -> None:
+        self._plain_emergency_report(gde_input, guardian=True)
+        run_pipeline(self._UNITY, str(gde_input), str(gde_output))
+        records = read_run_records()
+        assert records is not None and records[0]["status"] == "success"
+        assert records[0]["error_category"] == "none"
+        assert records[0]["Family"] == 1
+
+    def test_no_observed_header_reaches_the_exception_or_the_log(
+        self, gde_input: Path, gde_output: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """§8 end to end: a first header standing in for a pupil (row 1 of a headerless
+        file) never reaches the raised message, the ``Pipeline failed`` line or the
+        ``__DISTRICTSYNC_RUN__`` line."""
+        from src.etl.errors import SourceSchemaError
+        from tests.test_etl_errors import SENTINEL_PII
+
+        self._plain_emergency_report(gde_input, first_header=SENTINEL_PII)
+        with caplog.at_level(logging.DEBUG), pytest.raises(SourceSchemaError) as exc_info:
+            run_pipeline(self._UNITY, str(gde_input), str(gde_output))
+        assert SENTINEL_PII.lower() not in str(exc_info.value).lower()
+        assert SENTINEL_PII.lower() not in caplog.text.lower()
+        # Non-vacuity: the failure line WAS logged, carrying the typed message.
+        assert "Pipeline failed" in caplog.text and "Parent Auth / Guardian" in caplog.text
+
+    def test_an_unparseable_required_file_records_input_unreadable(
+        self, gde_input: Path, gde_output: Path, monkeypatch
+    ) -> None:
+        """Was ``unknown`` before S1 (``ExtractionError`` had no category)."""
+        from src.etl.extractor import DataExtractor, ExtractionError
+
+        monkeypatch.setattr(DataExtractor, "_read_with_fallback", staticmethod(lambda *a, **k: None))
+        with pytest.raises(ExtractionError):
+            run_pipeline("myedbc", str(gde_input), str(gde_output))
+        records = read_run_records()
+        assert records is not None and len(records) == 1
+        assert records[0]["error_category"] == "input_unreadable"
+
+    def test_the_twin_an_untyped_transform_raise_still_records_unknown(
+        self, gde_input: Path, gde_output: Path, monkeypatch
+    ) -> None:
+        def _boom(*_a: object, **_k: object) -> None:
+            raise RuntimeError("an untyped transformer fault")
+
+        monkeypatch.setattr(pipeline, "run_transform", _boom)
+        with pytest.raises(RuntimeError, match="untyped transformer fault"):
+            run_pipeline("myedbc", str(gde_input), str(gde_output))
+        records = read_run_records()
+        assert records is not None and records[0]["error_category"] == "unknown"
+
+    def test_no_usable_input_is_typed_and_its_message_is_unchanged(self, tmp_path: Path, gde_output: Path) -> None:
+        from src.etl.errors import NoUsableInputError
+
+        empty_input = tmp_path / "empty"
+        empty_input.mkdir()
+        with pytest.raises(NoUsableInputError) as exc_info:
+            run_pipeline("myedbc", str(empty_input), str(gde_output))
+        assert isinstance(exc_info.value, RuntimeError)
+        assert str(exc_info.value).startswith(
+            "No usable required input was loaded — every required file is missing or empty: "
+        )
+        assert str(exc_info.value).endswith(
+            ". Check the input folder, the export job, and that the files are not locked."
+        )
+        records = read_run_records()
+        assert records is not None and records[0]["error_category"] == "no_input"

@@ -9,6 +9,26 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+### Changed
+
+- **A failed run now records its cause more precisely.** When an export
+  file is missing a column the mapping needs to decide who may be delivered or to
+  link records (for example the guardian column a family filter reads), the run
+  record now says `source_schema` instead of the generic `data`; when an export
+  file exists but cannot be read, it says `input_unreadable` instead of `unknown`.
+  You see this in the `--diagnose` support report's "problem" line. The Home and
+  Run History screens still show such a run simply as failed — they do not show the
+  category yet. Nothing about what is delivered changes: these runs fail exactly as
+  before.
+
+### Privacy
+
+- **Column names read from an export file no longer appear in error messages or
+  the log.** Four "column not found" messages used to list every column the file
+  contained. For a file without a header row, that "column list" is the first
+  pupil's data. They now name only the column the mapping expected and say how many
+  columns the file had.
+
 ## [3.25.0] - 2026-09-23
 
 Staff who do not teach are no longer delivered to SpacesEDU as administrators.

@@ -17,7 +17,6 @@ import time
 from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import Enum
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -27,6 +26,12 @@ import yaml
 from src.config.app_config import AppConfig
 from src.config.loader import load_config
 from src.config.models import filter_enabled_entities
+from src.etl.errors import (
+    EtlError,
+    NoUsableInputError,
+    RunErrorCategory,
+    classify_error_category,
+)
 from src.etl.extractor import DataExtractor
 from src.etl.loader import DataLoader, output_target_problem
 from src.etl.transformer import DataTransformer
@@ -70,23 +75,6 @@ every other entity may legitimately be empty on a given night (per-entity
 skip-on-empty). Named here rather than inlined so the special case is explicit and
 single-sourced.
 """
-
-
-class RunErrorCategory(str, Enum):
-    """The bounded, PII-free failure taxonomy stamped on every run record (mirrors the
-    ``LatestReason`` closed-set style). The store carries ONLY this category — never the
-    free-text ``str(e)`` (which can leak a path / column / sis_type); the diagnostic log
-    keeps the rich message for ops. A closed set so a future filter UI can rely on it.
-    """
-
-    NONE = "none"  # a completed run (delivery/anomaly/data-warning axes live in their own fields)
-    NO_INPUT = "no_input"  # no usable input (input folder missing, or every required file missing/empty)
-    NO_OUTPUT = "no_output"  # input loaded, but every entity was empty/skipped — nothing to write or deliver
-    INCOMPLETE_ROSTER = "incomplete_roster"  # the roster anchor produced nothing while dependent entities did
-    CONFIG = "config"  # a config/validation problem surfaced as the failure
-    DATA = "data"  # a build/write problem (missing field-map column, transform, loader)
-    OUTPUT = "output"  # the OUTPUT FOLDER is unreachable / unwritable (before or during the write)
-    UNKNOWN = "unknown"  # an unclassified failure
 
 
 @dataclass
@@ -356,7 +344,7 @@ def run_transform(
     return TransformOutputs(outputs, field_orders, transformer.data_errors, sy_determination)
 
 
-class DeliveryIntegrityError(RuntimeError):
+class DeliveryIntegrityError(EtlError, RuntimeError):
     """The produced output set cannot be vouched for — refuse to write or deliver it.
 
     Subclasses ``RuntimeError`` so it rides the EXISTING "``run_pipeline`` raises →
@@ -365,17 +353,18 @@ class DeliveryIntegrityError(RuntimeError):
     would be wrong — it promises "output is present on disk, only delivery failed",
     and here nothing is written at all.
 
-    Carries a BOUNDED :class:`RunErrorCategory` value so the run store records the
-    real fault without the free-text message (the privacy split — see
-    :func:`build_run_record`). Classified by TYPE, never by interpolating text.
+    Carries a BOUNDED :class:`~src.etl.errors.RunErrorCategory` member so the run store
+    records the real fault without the free-text message (the privacy split — see
+    :func:`build_run_record`). Classified by TYPE, never by interpolating text: it is an
+    :class:`~src.etl.errors.EtlError` (plan 0053 S1), and ``category`` is REQUIRED — the
+    gate is the only site that knows which of its two faults fired.
     """
 
-    def __init__(self, message: str, category: str) -> None:
-        super().__init__(message)
-        self.category = category
+    def __init__(self, message: str, category: RunErrorCategory) -> None:
+        super().__init__(message, category=category)
 
 
-class OutputWriteError(RuntimeError):
+class OutputWriteError(EtlError, RuntimeError):
     """The output folder failed AFTER a clean pre-flight — the window a pre-check cannot see.
 
     :func:`~src.etl.loader.output_target_problem` closes the "unusable at t=0" window;
@@ -394,11 +383,11 @@ class OutputWriteError(RuntimeError):
     rolls back per file inside ``try/except OSError`` and a restore that itself fails is
     logged at ERROR, not raised (on a drive that drops mid-commit it fails on the same
     dead path), after which ``save_all``'s ``finally`` discards the backup dir.
+
+    An :class:`~src.etl.errors.EtlError` whose class category is ``output`` (plan 0053 S1).
     """
 
-    def __init__(self, message: str) -> None:
-        super().__init__(message)
-        self.category = RunErrorCategory.OUTPUT.value
+    default_category = RunErrorCategory.OUTPUT
 
 
 def check_delivery_integrity(
@@ -453,7 +442,7 @@ def check_delivery_integrity(
             "The run produced no output files at all — every entity was empty or skipped. "
             "Nothing was written and nothing was delivered. Check that the input folder "
             "holds this district's extract files and that the correct district is selected.",
-            RunErrorCategory.NO_OUTPUT.value,
+            RunErrorCategory.NO_OUTPUT,
         )
 
     anchor = ROSTER_ANCHOR_ENTITY
@@ -464,7 +453,7 @@ def check_delivery_integrity(
             f"Delivering them would reference students absent from {anchor}.csv, so nothing "
             f"was written and nothing was delivered — the previous output is untouched. "
             f"Check this district's student export for this run.",
-            RunErrorCategory.INCOMPLETE_ROSTER.value,
+            RunErrorCategory.INCOMPLETE_ROSTER,
         )
 
     return None
@@ -574,7 +563,7 @@ def build_run_record(
     data_errors: dict[str, Any] | None = None,
     source: str,
     sis_type: str,
-    error_category: str,
+    error_category: RunErrorCategory | str,
     timestamp: str | None = None,
 ) -> dict[str, Any]:
     """Build the ONE flat run-record dict written to BOTH sinks (D2a — one dict, two sinks).
@@ -597,6 +586,11 @@ def build_run_record(
     autocommit commits; a crash between them re-ALTERs every night thereafter). It is an
     OS account name, never a student identifier — the same class of value the log already
     carries, and it stays local.
+
+    ``error_category`` is normalised HERE, once, for every sink (plan 0053 S1): coerced
+    through :class:`~src.etl.errors.RunErrorCategory` (an unknown string raises rather than
+    persisting a value no reader knows) and stored as its plain ``.value`` string, so the
+    ``runs.error_category`` column and the JSON record can never disagree.
     """
     record: dict[str, Any] = {
         "timestamp": timestamp or datetime.now().isoformat(timespec="seconds"),
@@ -604,7 +598,7 @@ def build_run_record(
         "source": source,
         "sis_type": sis_type,
         "run_as": process_account(),
-        "error_category": error_category,
+        "error_category": RunErrorCategory(error_category).value,
         "duration_s": round(elapsed, 1),
         "sftp_attempted": sftp_attempted,
         "sftp_ok": sftp_ok,
@@ -642,7 +636,7 @@ def _emit_run_log(
     *,
     source: str = "cli",
     sis_type: str = "",
-    error_category: str = RunErrorCategory.NONE.value,
+    error_category: RunErrorCategory = RunErrorCategory.NONE,
 ) -> None:
     """Build a run record from ``outputs`` and write the diagnostic-log line (log sink only).
 
@@ -699,7 +693,9 @@ def _store_run_record(record: dict[str, Any], *, source: str, dry_run: bool) -> 
         return False
 
 
-def _record_early_failure(t0: float, *, source: str, sis_type: str, error: str, category: str, dry_run: bool) -> None:
+def _record_early_failure(
+    t0: float, *, source: str, sis_type: str, error: str, category: RunErrorCategory, dry_run: bool
+) -> None:
     """Record a pre-ETL failure (bad input dir / config) to BOTH sinks before an early ``sys.exit``.
 
     The ``sys.exit(1)`` paths inside ``run_pipeline`` re-raise through the ``except SystemExit``
@@ -738,32 +734,6 @@ def _resolve_source(source: str | None) -> str:
     """
     resolved = source or os.environ.get(_SOURCE_ENV_VAR) or "cli"
     return resolved if resolved in VALID_SOURCES else "unknown"
-
-
-def _classify_error_category(exc: BaseException) -> str:
-    """Map a failure to the bounded, PII-free :class:`RunErrorCategory` (never the message).
-
-    Classified by exception type/marker, not text interpolation — the store never sees the
-    free-text error. ``SystemExit`` never reaches here (it is re-raised before the failure sink).
-    """
-    if isinstance(exc, DeliveryIntegrityError):
-        # Must precede the RuntimeError branch below — DeliveryIntegrityError IS a
-        # RuntimeError, and it already carries its own bounded category.
-        return exc.category
-    if isinstance(exc, OutputWriteError):
-        # Same shape, same reason (also a RuntimeError, also a carrier): the site that
-        # raised it is the only one that KNOWS the fault came from the write, so it
-        # stamps the category there rather than having this function guess from a type
-        # (`OSError` alone cannot tell an output-folder failure from any other).
-        return exc.category
-    if isinstance(exc, RuntimeError) and "No usable required input" in str(exc):
-        return RunErrorCategory.NO_INPUT.value
-    if isinstance(exc, FileNotFoundError):
-        return RunErrorCategory.CONFIG.value
-    if isinstance(exc, ValueError):
-        # A missing field-map column (loader) / validation surfaces as ValueError.
-        return RunErrorCategory.DATA.value
-    return RunErrorCategory.UNKNOWN.value
 
 
 def _summarize_data_errors(data_errors: list[dict]) -> dict[str, Any]:
@@ -845,7 +815,7 @@ def run_pipeline(
                 source=resolved_source,
                 sis_type=sis_type,
                 error=error,
-                category=RunErrorCategory.NO_INPUT.value,
+                category=RunErrorCategory.NO_INPUT,
                 dry_run=dry_run,
             )
             sys.exit(1)
@@ -875,7 +845,7 @@ def run_pipeline(
                 source=resolved_source,
                 sis_type=sis_type,
                 error=str(e),
-                category=RunErrorCategory.CONFIG.value,
+                category=RunErrorCategory.CONFIG,
                 dry_run=dry_run,
             )
             sys.exit(1)
@@ -903,7 +873,7 @@ def run_pipeline(
                     source=resolved_source,
                     sis_type=sis_type,
                     error=error,
-                    category=RunErrorCategory.OUTPUT.value,
+                    category=RunErrorCategory.OUTPUT,
                     dry_run=dry_run,
                 )
                 sys.exit(1)
@@ -942,7 +912,7 @@ def run_pipeline(
         # bare truthiness test is a trap once a caller reads the CONFIG's file set.
         if has_no_usable_input(raw_data):
             empty_or_missing = [name for name, df in raw_data.items() if df.empty] or list(required_files)
-            raise RuntimeError(
+            raise NoUsableInputError(
                 "No usable required input was loaded — every required file is "
                 f"missing or empty: {empty_or_missing}. Check the input folder, "
                 "the export job, and that the files are not locked."
@@ -1069,7 +1039,7 @@ def run_pipeline(
             data_errors=data_errors_summary,
             source=resolved_source,
             sis_type=sis_type,
-            error_category=RunErrorCategory.NONE.value,
+            error_category=RunErrorCategory.NONE,
         )
         _log_run_record(record)
         _store_run_record(record, source=resolved_source, dry_run=dry_run)
@@ -1104,7 +1074,7 @@ def run_pipeline(
                 sftp_ok=sftp_ok,
                 source=resolved_source,
                 sis_type=sis_type,
-                error_category=_classify_error_category(e),
+                error_category=classify_error_category(e),
             )
             _log_run_record(record, error=str(e))  # rich free-text error → LOG only
             # store carries error_category only — and nothing at all for a dry run
