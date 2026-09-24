@@ -593,10 +593,10 @@ Where this contract differs from a published reference, and what we intend to do
 
 ## Open owner questions
 
-**Q1a is SETTLED (owner, 2026-07-30).** Three remain `pending owner confirmation` — an accepted landing
-state, a **status field, not debt**. Each is stated verbatim beside the rows it governs; collected here
+**Q1a is SETTLED (owner, 2026-07-30).** Q1b–Q4 remain `pending owner confirmation` — an accepted landing
+state, a **status field, not debt** — and Q5 (plan 0053) is open with SpacesEDU. Each is stated verbatim beside the rows it governs; collected here
 with the exact check that would settle it, so the certification pass is a short bench test rather than a
-research task. **Ordered by blast radius, not by number.**
+research task. **Q1a–Q4 are ordered by blast radius, not by number; Q5 is appended after Q4 and carries its own priority note.**
 
 > **✅ Q1a — attendance date format. SETTLED: ISO `yyyy-MM-dd` is REQUIRED.**
 > `dd-MMM-yyyy` — the shape the published BC/Aspen Doc documents — is **not accepted** by the live
@@ -608,7 +608,7 @@ research task. **Ordered by blast radius, not by number.**
 > **Q1b — attendance category vocabulary: does the live importer IGNORE an unaccepted code, or REJECT the file?**
 > The published Docs list the categories `A`, `AD`, `A-E`, `A-E OffSite`, `AL`, `AL-E`, `L`, `L AUTH`, `L-E`. DistrictSync DERIVES only `A`, `A-E`, `L`, `L-E` for the K-7 daily band — that vocabulary is ours to promise — and PASSES THROUGH the district's own codes unfiltered for the 8-12 period band, including values the Docs never list (`OffSite`, `ISS`, …). That pass-through rests on an understanding recorded 2026-06-19 and never confirmed: that SpacesEDU ignores non-accepted codes rather than rejecting the file. Which of the Docs' values does the live importer actually accept today, and what does it do with one it does not — skip the row, or refuse the whole feed?
 
-**🔴 Settle Q1b FIRST.** Everything else here is a documentation question; this one is a live correctness
+**🔴 Settle Q1b FIRST.** Everything else in Q1b–Q4 is a documentation question (Q5, below, is the other live correctness question); this one is a live correctness
 question with district-wide blast radius. *The check:* import a `StudentAttendance.csv` carrying one row
 with a category outside the Docs' nine (e.g. `ISS`) alongside several valid rows. Does the importer
 (a) accept the file and skip that row, (b) accept the file and import the row, or (c) reject the whole
@@ -639,6 +639,89 @@ second class appearing. **Worth settling before the next name change, not urgent
 releases have already relied on it without incident, which is evidence but not confirmation. The 2.0.0
 row is the standing reminder that an unconfirmed importer assumption held here for months while the old
 shape was silently broken.
+
+> **Q5 — an ABSENT or header-only CSV: what does the live importer do with records an earlier delivery created?**
+> DistrictSync sometimes delivers without one of its files — today when an entity builds no rows, and from plan 0053 S4 also when an optional entity's export fails. Nothing in this repo records what SpacesEDU does in that case, for any of the eight files. Five sub-questions follow, each with its own check.
+
+Q5-status: open
+
+**🔴 Highest blast radius — answer before any demotion/promotion (S14).** Plan 0053's criticality table
+(`docs/developer/failure-policy.md` §3) lets Family, StudentAttendance, CourseInfo and StudentCourses be
+left out of a night's delivery when their own export fails — an owner decision (2026-09-23) taken ahead of
+this answer; every later change to that table waits on it. Q1b stays the first attendance-correctness check; Q5 governs every
+file. **What we have is evidence, not an answer:** `docs/partner/faq.md` states that a student missing from a
+DELIVERED `Students.csv` is marked Inactive and that what happens to staff and to class enrollments missing
+from a DELIVERED file depends on the district's import settings — all of it describes a row absent from a file that arrived, not a file that did not;
+the same FAQ's import-validation table says a file with an invalid format is skipped as a whole, which
+suggests but does not establish how an absent file is treated; and rostering zips without `Family.csv`
+already ship whenever Family builds no rows (SD51 since its contacts export carries no email column —
+DECISIONS 2026-09-12) — whether anything was unlinked on those nights has not been checked. DistrictSync
+does not emit a header-only CSV today (an entity with no rows is skipped, never written), so Q5b matters
+only if that ever changes. The owner sends Q5 (plan 0053 D2); S14 records the answer.
+
+**Evidence so far (2026-09-24).** Six sources, none of them a Q5 answer; `Q5-status` stays `open`.
+
+- **E1 — owner, 2026-09-24:** the SpacesEDU import works in a hierarchy — it can import users
+  (Students/Staff) on their own, but not Enrollments without Classes, and not Family without users.
+- **E2 — owner, 2026-09-24:** Unity Christian has the family-association removal setting OFF.
+- **E3 — Confluence "SpacesEDU - Advanced CSV Requirements" (2025-03-17):** "The system should import the
+  files that are on the SFTP, even if not all file types are there."
+- **E4 — Confluence "[SpacesEDU] School-Family-Student Associations M2 & Other Family Updates" (2026-07-15):**
+  a district setting to remove imported school-family-student associations no longer in the data; "The
+  family data set must be a complete file set if this toggle is enabled."
+- **E5 — Confluence "Imports" KB (2025-10-06):** staff setting "Unenroll teachers absent or unenrolled in the
+  imports" — when OFF, teachers are left active even if no longer in the rostering data; student setting
+  "Remove from classes students unenrolled in the imports" — when OFF, students remain in their classes.
+  Removing a student from a class is a SOFT remove (shown "(Removed)", data kept) per "REQs Met - Updated
+  Behaviour for Removing Students from Class" (2025-04-24).
+- **E6 — Confluence "GDE 2 AdvancedCSV ETL Tool" (2025-08-06):** user records are marked Inactive when they
+  no longer have a matching record in `Students.csv` or `Staff.csv`, matched on User ID, Role and School ID.
+
+What it narrows, sub-question by sub-question:
+
+- **Q5a — narrowed (E1 + E3), not answered.** Per the requirement in E3 and the owner in E1, the import
+  proceeds with the files present, within the hierarchy (users alone; Enrollments need Classes; Family
+  needs users). NOT confirmed: that records an earlier
+  delivery of the absent file created stay unchanged.
+- **Q5b — still open.** No source says what a header-only file does.
+- **Q5c — still open.** No source says whether a missing `CourseInfo.csv`, `StudentCourses.csv` or
+  `StudentAttendance.csv` raises an alert, or what it changes.
+- **Q5d — not narrowed.** E1's hierarchy covers the rostering files only; it says nothing about the two
+  course feeds.
+- **Q5e — narrowed (E4 + E2), not answered.** E4 describes an opt-in district setting that removes
+  associations no longer in the data and needs a complete family file when ON; no source says what
+  happens when it is OFF. Unity has it OFF (E2).
+
+> **Q5a — rostering files: when `Students.csv`, `Staff.csv`, `Family.csv`, `Classes.csv` or `Enrollments.csv` is ABSENT from the rostering zip, what happens to records an earlier delivery of that file created?**
+> For each of the five files separately: are previously imported records left unchanged, deactivated / unlinked / unenrolled, or is the whole zip rejected?
+
+*The check:* for each file in turn, import a full zip, then a zip identical except that the one file is
+omitted. Record, per file, whether the records it created are unchanged, deactivated/unlinked/unenrolled,
+or whether the import refused the zip.
+
+> **Q5b — rostering files: does a header-only file (the header row and no records) behave like an absent file, or like a file that lists nobody?**
+> Same five files, same three possible outcomes: records unchanged, deactivated/unlinked/unenrolled, or the zip rejected.
+
+*The check:* repeat Q5a's check with each file present but header-only, and compare the outcome to Q5a's
+for the same file.
+
+> **Q5c — standalone feeds: when `CourseInfo.csv`, `StudentCourses.csv` or `StudentAttendance.csv` is absent on a night, does anything change in SpacesEDU, and does the nightly check alert anyone?**
+> For each feed separately: are previously imported course, transcript or attendance records unchanged or removed, and does SpacesEDU's nightly check for the file raise an alert, and to whom?
+
+*The check:* for one night deliver each feed's usual file set minus that one feed; note whether the
+previously imported data changes and whether any alert is raised.
+
+> **Q5d — must `StudentCourses.csv` and `CourseInfo.csv` arrive together?**
+> If one arrives without the other on a night, is the one that arrived imported normally, imported against the previously imported copy of the other, or refused?
+
+*The check:* deliver `StudentCourses.csv` alone (no `CourseInfo.csv`) after a normal night, then the
+reverse; note what is imported in each case.
+
+> **Q5e — family links: when a guardian who was in the previous `Family.csv` is missing from a DELIVERED `Family.csv`, is that guardian unlinked from the student?**
+> The FAQ now says staff and enrollment removal depend on district import settings and describes the family-association setting; it does not say what happens to a guardian missing from a delivered `Family.csv` when that setting is OFF.
+
+*The check:* import a `Family.csv`, then one identical except that one guardian row is removed; note
+whether that guardian's link to the student survives.
 
 ---
 

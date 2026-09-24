@@ -129,7 +129,67 @@ Q4_TEXT = (
     "against the live importer. If it is wrong, a rename orphans the original class and its student work."
 )
 
-_EXPECTED_QUESTION_COUNTS = {"Q1b": (Q1B_TEXT, 2), "Q2": (Q2_TEXT, 2), "Q3": (Q3_TEXT, 1), "Q4": (Q4_TEXT, 1)}
+#: Q5 (plan 0053, 2026-09-23) is a SpacesEDU question the owner sends (D2): what the importer
+#: does with an ABSENT or header-only file. It is asked once, in the collected section, as a
+#: parent plus five sub-questions — each pinned verbatim so none can be softened or dropped
+#: while plan 0053's criticality table still rests on it being unanswered.
+Q5_TEXT = (
+    "**Q5 — an ABSENT or header-only CSV: what does the live importer do with records an earlier "
+    "delivery created?**\n"
+    "> DistrictSync sometimes delivers without one of its files — today when an entity builds no rows, "
+    "and from plan 0053 S4 also when an optional entity's export fails. Nothing in this repo records what "
+    "SpacesEDU does in that case, for any of the eight files. Five sub-questions follow, each with its own "
+    "check."
+)
+Q5A_TEXT = (
+    "**Q5a — rostering files: when `Students.csv`, `Staff.csv`, `Family.csv`, `Classes.csv` or "
+    "`Enrollments.csv` is ABSENT from the rostering zip, what happens to records an earlier delivery of that "
+    "file created?**\n"
+    "> For each of the five files separately: are previously imported records left unchanged, deactivated / "
+    "unlinked / unenrolled, or is the whole zip rejected?"
+)
+Q5B_TEXT = (
+    "**Q5b — rostering files: does a header-only file (the header row and no records) behave like an absent "
+    "file, or like a file that lists nobody?**\n"
+    "> Same five files, same three possible outcomes: records unchanged, deactivated/unlinked/unenrolled, or "
+    "the zip rejected."
+)
+Q5C_TEXT = (
+    "**Q5c — standalone feeds: when `CourseInfo.csv`, `StudentCourses.csv` or `StudentAttendance.csv` is "
+    "absent on a night, does anything change in SpacesEDU, and does the nightly check alert anyone?**\n"
+    "> For each feed separately: are previously imported course, transcript or attendance records unchanged "
+    "or removed, and does SpacesEDU's nightly check for the file raise an alert, and to whom?"
+)
+Q5D_TEXT = (
+    "**Q5d — must `StudentCourses.csv` and `CourseInfo.csv` arrive together?**\n"
+    "> If one arrives without the other on a night, is the one that arrived imported normally, imported "
+    "against the previously imported copy of the other, or refused?"
+)
+Q5E_TEXT = (
+    "**Q5e — family links: when a guardian who was in the previous `Family.csv` is missing from a DELIVERED "
+    "`Family.csv`, is that guardian unlinked from the student?**\n"
+    "> The FAQ now says staff and enrollment removal depend on district import settings and describes the "
+    "family-association setting; it does not say what happens to a guardian missing from a delivered "
+    "`Family.csv` when that setting is OFF."
+)
+
+_EXPECTED_QUESTION_COUNTS = {
+    "Q1b": (Q1B_TEXT, 2),
+    "Q2": (Q2_TEXT, 2),
+    "Q3": (Q3_TEXT, 1),
+    "Q4": (Q4_TEXT, 1),
+    "Q5": (Q5_TEXT, 1),
+    "Q5a": (Q5A_TEXT, 1),
+    "Q5b": (Q5B_TEXT, 1),
+    "Q5c": (Q5C_TEXT, 1),
+    "Q5d": (Q5D_TEXT, 1),
+    "Q5e": (Q5E_TEXT, 1),
+}
+
+#: The machine-readable Q5 status line plan 0053 S4's FAQ parity test reads (and S14 flips to
+#: ``answered``). Exactly one, on a line of its own, with a closed value set.
+_Q5_STATUS_RE = re.compile(r"^Q5-status: (?P<status>\S+)$", re.MULTILINE)
+_Q5_STATUSES = frozenset({"open", "answered"})
 
 #: The RETIRED question text. Q1a was answered, so the two-part Q1 must not still
 #: be posed anywhere — a doc that keeps asking a question the owner has settled
@@ -383,6 +443,25 @@ def test_the_open_owner_questions_are_stated_verbatim(label):
         f"{expected_count}. The question text is pinned in this module — if {label} was ANSWERED, "
         f"retire it deliberately (update the rows it governs, then this constant); if it was "
         f"reworded, the doc and this pin have diverged."
+    )
+
+
+def test_q5_carries_exactly_one_machine_readable_status_line():
+    """``Q5-status: <open|answered>`` is a CONTRACT for plan 0053's FAQ parity test (S4).
+
+    A second line would let the two disagree; a missing one would make that test read
+    nothing and pass vacuously; a free-text value would make "answered" unrepresentable
+    by the closed set S4 switches on. The Q5 verbatim pin above is the positive twin
+    (deleting the whole section turns that one red too).
+    """
+    statuses = [m.group("status") for m in _Q5_STATUS_RE.finditer(_doc_text())]
+    assert len(statuses) == 1, (
+        f"{ORDER_AUTHORITY} must carry exactly one `Q5-status:` line (found {len(statuses)}). "
+        f"Plan 0053 S4's partner-FAQ parity test reads it to decide whether the FAQ's pending clause is due."
+    )
+    assert statuses[0] in _Q5_STATUSES, (
+        f"`Q5-status: {statuses[0]}` is not one of {sorted(_Q5_STATUSES)} — S14 flips it to `answered` "
+        f"only when SpacesEDU's answer is recorded as dated confirmation rows."
     )
 
 

@@ -152,6 +152,19 @@ _**2026-08-17 refresh** (D-0037-6, run as a documented substitute for the missin
 
 ## Remaining backlog
 
+### Plan 0053 — ETL failure policy (cross-reference; opened 2026-09-23)
+
+`.claude/plans/0053-etl-failure-policy.md` takes over these existing items; each stays where it is and closes when its slice lands. Rules: `docs/developer/failure-policy.md`.
+- Tier 1 — a renamed Grade / Homeroom / teacher-id / student-number column silently ignored on the homeroom path (dead `context.py` `mappings` path + the conftest mask) → **S9**.
+- Tier 2 — a field-map typo (`transfrom:`) ships the column blank with no error → **S12**.
+- Tier 2 — the run-history store will stop recording on the next schema change → **NOT fixed by 0053**; it is why 0053 adds no DDL (P12). Must be fixed before any future `runs` DDL.
+- Tier 2 — no status AND no withdraw-date column defaults every student to Active → **S11** surfaces it; failing it is owner decision **D10**.
+- Tier 2 — a caught `KeyError`/`MergeError` in the homeroom merge ships a partial result (`enrollments.py:159-161`) → **S10**.
+- Tier 2 — a crashed MANUAL Convert writes no run record → **S5**.
+- Tier 3 — ~10 divergent inline "resolve a source column from field_map" spellings → **S9**.
+- Tier 3 — `ALL_BUNDLED_CONFIGS` is a hand-list missing `unitychristianmyedbc` → **S13a**.
+- Below — a DIRECT field mapping whose source column is absent blanks silently (SD67, 2026-09-22) → diagnostic half **S6**; standing warning **S8** (owner decision D5).
+
 **[ETL / OBSERVABILITY, surfaced 2026-09-22 while troubleshooting an SD67 run that shipped no `Family.csv`] A DIRECT field mapping whose source column is absent blanks the output column silently — no data error, no warning, nothing naming the column.** `apply_field_map` records to `context.data_errors` for a transform that raises and for a column-level error, but a plain `"Email": "Email Address"` mapping over a frame that has no `email address` column produces a blank output column and records NOTHING (verified: `data_errors` is empty for that run). The cost is diagnostic, and it is concrete: Family drops every row with a blank email (`_exclude_rows_without_email`, correctly — SpacesEDU rejects them), so a RENAMED contact-email column and a genuinely EMPTY one produce the **identical** log — `[Family] Excluded N of N contact row(s) with no email address` — and then `No data transformed for entity 'Family'; skipping`. Support cannot tell "your export renamed a column" from "your contacts have no emails" without asking the district for the file's header row, which is exactly what the 2026-09-22 SD67 case required. It generalises past Family: any entity whose district renamed a directly-mapped column gets a silently blank output field. **Not simply "make it raise":** a district legitimately omits optional columns (the base maps several a given export may not carry), so the fix is a WARNING naming the entity + the missing source column — plus a decision on whether a missing column backing a CONTRACT-REQUIRED output (`Family.Email`) deserves more than a warning. Tag `observability`, `needs-owner-decision`.
 
 

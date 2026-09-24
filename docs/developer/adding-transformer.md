@@ -251,3 +251,4 @@ Adding an entity touches more than the transformer. Don't miss:
 - [ ] `make validate-config` list (Makefile) — include any new config.
 - [ ] `tests/test_transform_<entity>.py` — unit tests (and snapshot coverage if relevant).
 - [ ] `docs/claugentic-ARCHITECTURE_TREE.md` — add the new file(s) with a one-line description (enforced by the tree-check hook).
+- [ ] Failure policy (`docs/developer/failure-policy.md`) — declare criticality in `outcomes.ENTITY_CRITICALITY` (from S2); classify every column your code reads into failure-policy §5 (a)–(e) and state what happens if it vanishes.

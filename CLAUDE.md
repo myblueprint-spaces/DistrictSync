@@ -227,6 +227,7 @@ Priority order: **SOLID > DRY > KISS > YAGNI**. Keep layers isolated (UI / ETL-b
 - **Validate at boundaries.** Pydantic validates configs at load; GDE inputs are untrusted — check for required columns rather than `KeyError`-ing mid-transform.
 - **Single source of truth.** Never duplicate config, types, or constants across files.
 - **No permissive default on a safety-relevant parameter.** Make the unsafe call unrepresentable rather than defaulted — `upload_csvs(..., *, manifest)`, `ack_authorizes` refusing a bare bool, `_store_run_record(..., *, dry_run)` required at BOTH pipeline sinks, `--cli-smoke` refusing without `DISTRICTSYNC_DATA_DIR` instead of warning.
+- ETL failure policy (scope, criticality, missing-column matrix, typed errors, labels): `docs/developer/failure-policy.md` — read before adding a check, entity or config knob; pinned by `tests/test_failure_policy_parity.py` (from S2).
 
 The **full, reusable quality bar** — every dimension an implementation is held to (performance/caching, security/secrets, privacy/PII, resilience, concurrency, data integrity, observability, extensibility, i18n, …) — lives in **`docs/claugentic-ENGINEERING_STANDARDS.md`**, a *growing catch-all*. Per change, apply the **relevant** dimensions *fully* (never skip a relevant one; don't gold-plate irrelevant ones); you may **add** dimensions and may **justify a novel pattern** rather than be confined to known ones. Its **Current scope** section tracks which dimensions are live in DistrictSync *today* (a non-capping snapshot that grows with the stack).
 
