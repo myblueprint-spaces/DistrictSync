@@ -1,6 +1,6 @@
 # 0053 — Handover (paste the prompt below into a fresh session)
 
-Last updated: 2026-09-23, end of the planning session (Fable 5.1 orchestrated the plan; Opus 5.5 started execution).
+Last updated: 2026-09-24 (Gate A approved; S0 awaiting the owner's merge; S1 next).
 
 ---
 
@@ -16,9 +16,10 @@ Last updated: 2026-09-23, end of the planning session (Fable 5.1 orchestrated th
 
 | Slice | Status | Branch / PR | Notes |
 |---|---|---|---|
-| Plan | Stage 3 complete; Gate A decided except §3/§5 approval | untracked → committed with S0 | D1 = all four optional feeds ISOLATABLE (owner overrode the (b) recommendation); D3 = exit 0 + PARTIAL; D4 = validated config-declared labels |
-| **S0** | **PR #144 OPEN, CI GREEN — awaiting owner §3/§5 approval + merge** (docs only) | `claude/0053-s0-failure-policy` (off `8d33664`) → **PR #144** (https://github.com/myblueprint-spaces/DistrictSync/pull/144), commit `d88aa5f` | Local gates green 2026-09-23: 7,627 passed / 98 skipped, coverage 96.5%, ruff clean, email scan OK. Written by an Opus writer + 3 rounds of adversarial verification (truth-vs-code, catalogue, harness) |
-| S1–S15 | not started | — | S1 waits for the owner to approve §3 + §5 of `docs/developer/failure-policy.md` after S0's PR |
+| Plan | Stage 3 complete; **Gate A COMPLETE 2026-09-24** (owner approved §3/§5 as written — DECISIONS 2026-09-24) | committed with S0 | D1 = all four optional feeds ISOLATABLE (owner overrode the (b) recommendation); D3 = exit 0 + PARTIAL; D4 = validated config-declared labels |
+| **S0** | **PR #144 OPEN — Gate A approved; awaiting the owner's MERGE** (docs only) | `claude/0053-s0-failure-policy` (off `8d33664`) → **PR #144** (https://github.com/myblueprint-spaces/DistrictSync/pull/144), commits `d88aa5f`, `6542ff0` (Q5 evidence; CI run 36016686379 green), + the Gate A record | Local gates green 2026-09-23: 7,627 passed / 98 skipped, coverage 96.5%, ruff clean, email scan OK. Written by an Opus writer + 3 rounds of adversarial verification (truth-vs-code, catalogue, harness) |
+| S1 | next | `claude/0053-s1-typed-errors` | Gate A cleared. Branch off `origin/main` once #144 is merged (or stack on S0's head and merge `origin/main` before opening the PR) |
+| S2–S15 | not started | — | — |
 
 ### Q5 evidence gathered 2026-09-24 (now recorded in `output-contract.md` "Evidence so far" as E1–E6, on #144; `Q5-status` stays `open`)
 - **Owner (2026-09-24):** the import runs in a HIERARCHY — it can import users (Students/Staff) alone, but not Enrollments without Classes, and not Family without users. This matches the plan's CRITICAL set and `DEPENDS_ON`.
@@ -28,7 +29,9 @@ Last updated: 2026-09-23, end of the planning session (Fable 5.1 orchestrated th
 
 **S0 findings the next slices need:** `failure-policy.md` §5 is the verified site catalogue (39 rows incl. new defects: blended `_add_session_key` silently merges classes when time/school columns are absent — #39; a missing `User ID` SOURCE column makes the roster `{"<NA>"}` and drops every downstream student row — #27(ii); `staff._merge_roster` raw KeyError — #13a). Prefer its line numbers over the plan's. S2's `DEPENDS_ON` gains `Classes→{Students}` (already in the plan).
 
-**Next action:** if S0's PR is open, read its CI (`gh pr checks <N> --watch` in the background; check `PIPESTATUS`, never `--fail-level`), quote the result to the owner, and ask for §3/§5 approval + merge. Once merged, start S1 on a new branch.
+**Gate A answers (owner, 2026-09-24 — all three confirm §3/§5 as written):** (1) an unlisted entity is CRITICAL until promoted; (2) a missing LINKING column (class (b), co-teacher columns included) fails the night, behind S10's measurement gate; (3) a missing NICE-TO-HAVE column (class (d), e.g. homeroom teacher name — site #35) is blank + warn, never a run failure.
+
+**Next action:** if #144 is still open, ask the owner to merge it (read CI first). Then run S1 (spec: plan § "S1 — Typed ETL error taxonomy").
 
 ### S0 checklist (from the plan's S0 Spec — tick as done)
 - [x] `docs/developer/failure-policy.md` §0–§14, ≤300 lines, every row's Status truthful about TODAY
