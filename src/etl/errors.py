@@ -131,8 +131,8 @@ class NoUsableInputError(EtlError, RuntimeError):
 class ConfigLoadError(EtlError, ValueError):
     """A district mapping could not be loaded or validated.
 
-    Defined here for the Convert path (plan 0053 S5 wraps its config load so the screen
-    copy and the record both say ``config`` by type). The pipeline's own config block
+    Raised by the Convert path (plan 0053 S5: ``convert_job`` wraps its config load in it, so
+    the screen copy and the record both say ``config`` by type). The pipeline's own config block
     deliberately keeps recording ``config`` through ``_record_early_failure`` and exiting
     1, and the self-service creator keeps receiving the loader's ORIGINAL exception types
     (``humanize_config_error`` reads them).
@@ -148,7 +148,7 @@ class OutputFolderUnsetError(EtlError, ValueError):
     and fails loud (D10). Typed (plan 0053 S3) so Convert's ``on_error`` card words it as the
     ``output`` category — "check the output folder in Settings" — rather than the ``data``
     copy an untyped ``ValueError`` classifies to. A ``ValueError`` for every existing caller,
-    and still never recorded (plan 0053 S5 lists it among the deliberate non-records).
+    and never recorded (plan 0053 S5 lists it among the deliberate non-records).
     """
 
     default_category = RunErrorCategory.OUTPUT

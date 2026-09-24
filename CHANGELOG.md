@@ -11,6 +11,20 @@ Per-release download links and auto-generated commit notes live on the
 
 ### Changed
 
+- **A failed Convert now appears in Run History.** When a conversion started from
+  the Convert screen fails — for example because an export file is missing a column
+  the district's mapping needs, or the district's mapping cannot be read — Run History
+  now lists it as a "Manual" run reading "Failed"; it used to leave no trace there. The
+  cause is named on the Convert screen's error card as the conversion fails. **A failed
+  Convert does not change Home's verdict:** Home keeps answering from the most recent run that did
+  not fail on the Convert screen — the last nightly sync, command-line run or
+  successful Convert — because one failed hand-run attempt does not make the nightly
+  sync unhealthy, and the Convert screen already showed the failure as it happened. A
+  successful Convert still counts on Home, as before, and a failed nightly sync still
+  turns Home red. A conversion the Convert screen refuses because the student export
+  is missing is treated the same way: it is listed in Run History and no longer turns
+  Home red. If every run recorded so far is a failed Convert, Home and Run History say
+  "No completed sync recorded yet".
 - **A problem with the family-contacts export no longer stops the whole roster
   sync.** When the emergency-contact export arrives in a shape DistrictSync cannot
   use — for example the basic *Emergency Contact Information* report saved under the
@@ -35,9 +49,10 @@ Per-release download links and auto-generated commit notes live on the
 - **`--dry-run` now names a file it could not build** on a line of its own, after
   the files it would write.
 - **Failure messages now say what kind of problem it was instead of always pointing
-  at the input folder.** When a sync or a conversion fails, Home, Run History and the
-  Convert screen's error card now name the cause — an export file missing a column
-  the district's mapping needs, an export file that could not be read, the output
+  at the input folder.** When a nightly sync or a command-line run fails, Home and Run
+  History now name the cause, and when a conversion fails the Convert screen's error card
+  does — an export file missing a column the district's mapping needs, an export file
+  that could not be read, the output
   folder, the district mapping, or no usable input at all — with a next step to
   match, in the same words on all three. Only a missing or unreadable input tells you
   to check the input folder. On the Convert screen the message ends by saying nothing

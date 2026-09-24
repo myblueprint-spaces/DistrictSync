@@ -35,6 +35,7 @@ from src.config.app_config import AppConfig
 from src.history.store import read_run_records, store_meta
 from src.scheduler import get_scheduler
 from src.ui_flet import components, tokens
+from src.ui_flet.home_status import verdict_latest_timestamp
 from src.ui_flet.humanize import friendly_district_name
 from src.ui_flet.run_history import derive_history_banner, run_as_summary_line, to_run_rows
 from src.ui_flet.schedule_status import ScheduleStatus
@@ -105,13 +106,20 @@ def _surface(page: ft.Page, app_config: AppConfig, on_refresh: Callable[[], None
     table + banner paint immediately from the store; the banner re-renders in place once the
     read-back returns.
     """
-    records = read_run_records(limit=LIMIT)
+    # The WHOLE ledger, as Home and the Setup badge read it (plan 0053 S5): the banner's verdict
+    # and the probe's timestamp skip failed manual attempts (D14), so a 50-row window could hold
+    # nothing but those and answer "No completed sync recorded yet" while Home is green. Only the
+    # TABLE is capped at LIMIT rows (`to_run_rows(..., limit=LIMIT)` below).
+    records = read_run_records()
     # Only the empty branch needs the store's birth stamp (fresh-start vs first-run copy).
     store_created_at = None
     if records == []:
         meta = store_meta()
         store_created_at = meta.get("created_at") if meta else None
-    latest_ts = records[0].get("timestamp") if records else None
+    # D14 (plan 0053 S5): the newest record the VERDICT reads — the table below still lists
+    # every record, but the banner and the schedule probe skip a failed manual attempt, as
+    # Home and the Setup badge do.
+    latest_ts = verdict_latest_timestamp(records)
 
     container = ft.Column(spacing=22)
 
@@ -128,7 +136,7 @@ def _surface(page: ft.Page, app_config: AppConfig, on_refresh: Callable[[], None
             # 0049 S-2a.5: the account now running is injected (the derivation is pure and never
             # reads the environment); the bounded per-row display and the table-wide "would this
             # column say anything?" rule live in run_history/components, not here.
-            rows = to_run_rows(records, active_sis=app_config.sis_type, current_account=process_account())[:LIMIT]
+            rows = to_run_rows(records, active_sis=app_config.sis_type, current_account=process_account(), limit=LIMIT)
             summary = run_as_summary_line(rows, machine_scope=paths.is_machine_scope())
             if summary:
                 controls.append(ft.Text(summary, size=tokens.type_caption, color=tokens.color_muted))

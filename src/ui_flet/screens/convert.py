@@ -49,10 +49,11 @@ successful build, an explicit pre-flight-confirmed delivery. The ``upload_csvs``
 is wrapped TIGHTLY (only around the upload): a failure folds into a
 ``BUILT_NOT_DELIVERED`` result (the exit-3 shape — read from booleans by
 ``summarize``, NEVER routed through ``on_error``), carrying a fault CATEGORY only —
-never the raw exception / host / path (privacy). A ``load_config`` failure, or a
-``save_all`` ``ValueError`` (a missing field-map column), still PROPAGATES to
-``on_error`` (fail-loud); the upload catch never widens over the build. A failed
-delivery never rolls back the build — the files stay written and the admin can retry.
+never the raw exception / host / path (privacy). A ``load_config`` failure (as the
+typed ``ConfigLoadError``), or a ``save_all`` ``ValueError`` (a missing field-map column),
+still PROPAGATES to ``on_error`` (fail-loud) — recorded first, as one ``failed`` run
+(plan 0053 S5); the upload catch never widens over the build. A failed delivery never
+rolls back the build — the files stay written and the admin can retry.
 
 **The output-folder pre-flight (plan 0050):** ``convert_job`` calls
 ``etl.loader.output_target_problem`` FIRST — before ``to_raw_dict`` and before a single
@@ -113,10 +114,11 @@ from collections.abc import Callable
 from pathlib import Path
 
 import flet as ft
+import yaml
 
 from src.config.app_config import AppConfig
 from src.config.loader import load_config
-from src.etl.errors import OutputFolderUnsetError, RunErrorCategory
+from src.etl.errors import ConfigLoadError, OutputFolderUnsetError, RunErrorCategory, classify_error_category
 from src.etl.extractor import DataExtractor
 from src.etl.loader import DataLoader, output_target_problem
 from src.etl.outcomes import EntityOutcome, OutcomeLedger
@@ -269,23 +271,52 @@ def convert_job(
        spent on another. A pending anomaly without a matching token returns
        ``NEEDS_ANOMALY_ACK`` **without writing**.
 
-    ETL-level failures (a missing field-map column → ``save_all``'s ``ValueError``,
-    ``load_config``'s errors) propagate as exceptions → the runner's ``on_error``
-    (fail-loud). Exactly TWO steps catch in-job, each scoped tightly: the write's
-    ``OSError`` (→ ``OUTPUT_FOLDER_UNUSABLE``, above) and the SFTP leg — the
-    ``upload_csvs`` call is wrapped TIGHTLY and folded into a ``BUILT_NOT_DELIVERED``
-    result (the exit-3 shape — a CATEGORY only, never the raw exception/host/path),
-    so a build failure is never mis-labelled "SFTP failed" and a failed delivery
-    never discards the written files. NO DataFrame is returned (privacy).
+    ETL-level failures (a missing field-map column → ``save_all``'s ``ValueError``, a
+    CRITICAL entity's raise, ``load_config``'s errors as ``ConfigLoadError``) propagate as
+    exceptions → the runner's ``on_error`` (fail-loud). Exactly TWO steps catch-and-RESULT
+    in-job, each scoped tightly: the write's ``OSError`` (→ ``OUTPUT_FOLDER_UNUSABLE``,
+    above) and the SFTP leg — the ``upload_csvs`` call is wrapped TIGHTLY and folded into a
+    ``BUILT_NOT_DELIVERED`` result (the exit-3 shape — a CATEGORY only, never the raw
+    exception/host/path), so a build failure is never mis-labelled "SFTP failed" and a
+    failed delivery never discards the written files. NO DataFrame is returned (privacy).
 
-    A committed run (built + optionally delivered) is recorded to the run-history store
-    tagged ``source="manual"`` via :func:`_record_manual_run` — best-effort, never fatal;
-    so is a delivery-integrity REFUSAL, as ``status="failed"`` carrying the gate's bounded
-    ``error_category`` (never ``success`` — Home and Run History must not paint a night
-    green that delivered nothing, and this is the CLI's behaviour on the same fault).
+    **Every attempt leaves exactly one run record** (plan 0053 S5, failure-policy §7),
+    tagged ``source="manual"`` and best-effort (recording never changes the outcome): a
+    committed run (built + optionally delivered) and a delivery-integrity REFUSAL go through
+    :func:`_record_manual_run` — the refusal as ``status="failed"`` with the gate's bounded
+    ``error_category``, never ``success``; an attempt that RAISES — the config load, or
+    anything from ``to_raw_dict`` through the quality report — goes through
+    :func:`_record_failed_attempt`, ``status="failed"`` with the category of the exception's
+    TYPE and the completed ledger, and is then re-raised as the SAME object. Four outcomes
+    are deliberately NOT recorded (listed on :func:`_record_manual_run`). One honest edge: a
+    raise AFTER ``save_all`` committed (the archive or the quality report) records
+    ``failed`` although the files were written — the attempt did not complete.
     """
+    global _WRITE_IN_FLIGHT
     t0 = time.monotonic()
-    config = load_config(config_name)
+
+    # The config load (plan 0053 S5). The loader's own exception types become the typed
+    # `ConfigLoadError`, so the on_error card AND the record both say `config` BY TYPE — the
+    # same three types, and the same category, as `run_pipeline`'s config block records; the
+    # loader's original rides along as `__cause__` for the log. ANY raise from the load — those
+    # three typed, or anything else (a `PermissionError` opening a user-dir overlay, say, which
+    # `run_pipeline`'s outer sink records as `unknown`) — is recorded ONCE (no ledger existed
+    # yet → `entity_outcomes=None`), its category read off its TYPE, and re-raised to `on_error`.
+    try:
+        try:
+            config = load_config(config_name)
+        except (FileNotFoundError, ValueError, yaml.YAMLError) as exc:
+            raise ConfigLoadError(str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 — every config-load raise is recorded, then always re-raised
+        with contextlib.suppress(Exception):  # recording is best-effort; it must never mask the fault
+            _record_failed_attempt(
+                exc,
+                sis_type=config_name,
+                elapsed=time.monotonic() - t0,
+                entity_counts={},
+                entity_outcomes=None,
+            )
+        raise
 
     # Resolve the output folder up front and FAIL LOUD if it's unset (D10): the view gate
     # (`can_run_convert`) blocks a run with no output folder, so reaching here empty is a
@@ -306,131 +337,157 @@ def convert_job(
             status=ConvertStatus.OUTPUT_FOLDER_UNUSABLE, entity_outcomes=None, delivery_requested=sftp_requested
         )
 
-    raw = config.to_raw_dict()
-    mappings = raw.get("mappings", {})
-    global_config = raw.get("global_config", {})
-
-    # The outcome ledger (plan 0053 S2) — the same point as `run_pipeline`'s, before the input
-    # is read, so the two entry points report the same outcomes for the same fault.
-    ledger = OutcomeLedger(configured_entity_order(mappings, global_config))
-
-    # Collect explicit headers for headerless files (exactly as run_conversion does).
-    file_headers: dict[str, list[str]] = {}
-    for entity_cfg in mappings.values():
-        for filename, header_list in entity_cfg.get("headers", {}).items():
-            file_headers[filename] = header_list
-
-    # Read EXACTLY the files this config names, through the SAME disk path the CLI uses
-    # (plan 0051). Convert used to read every `.csv`/`.txt` in the picked folder and parse
-    # the lot, so an extract DistrictSync never reads could decide the run: SD67's died on
-    # an empty `AccidentInformation.txt` while their nightly over the same folder
-    # succeeded. Going through `load_data` also inherits the disk path's case-insensitive
-    # resolution and its case-COLLISION raise, which the bytes path never had.
-    required_files = extract_required_files(config)
-    raw_data = DataExtractor(str(input_dir)).load_data(required_files, file_headers=file_headers)
-
-    # NOT `not raw_data`: `load_data` inserts an EMPTY frame per file it cannot find, so a
-    # folder with nothing in it yields a FULL dict and the bare truthiness test would never
-    # fire again. Shared with `run_pipeline` so both paths answer this the same way.
-    if has_no_usable_input(raw_data):
-        # Every entity NOT_RUN — what the CLI records when it raises `NoUsableInputError` here.
-        return ConvertResult(
-            status=ConvertStatus.NO_INPUT, entity_outcomes=ledger.finalize_aborted(), delivery_requested=sftp_requested
-        )
-
-    transform_outputs = run_transform(raw_data, mappings, global_config, ledger=ledger)
-    outputs = transform_outputs.outputs
-    field_orders = transform_outputs.field_orders
-    data_errors = transform_outputs.data_errors
-    sy_determination = transform_outputs.school_year
-    entity_outcomes = transform_outputs.outcomes
-
-    # What this run was CONFIGURED to produce (enabled-entities-derived, NEVER raw
-    # `mappings.keys()`). Computed once and shared by both pre-write gates, exactly as
-    # `run_pipeline` does — so a tier config with no roster anchor (mbponly, mbp_core,
-    # sd51attendance) is judged by ITS configured set and never false-positives.
-    expected_entities = configured_entity_order(mappings, global_config)
-
-    # Gate 1 — delivery integrity, BEFORE the write and before the anomaly gate. The same
-    # pure check the CLI raises on; here its bounded category becomes a terminal status.
-    integrity_fault = check_delivery_integrity(outputs, expected_entities)
-    if integrity_fault is not None:
-        refused = ConvertResult(
-            status=status_for_integrity_fault(integrity_fault.category),
-            entity_counts={name: len(df) for name, df in outputs.items()},
-            data_errors_total=_data_errors_total(data_errors),
-            entity_outcomes=entity_outcomes,
-            delivery_requested=sftp_requested,
-        )
-        _record_manual_run(
-            refused,
-            sis_type=config_name,
-            elapsed=time.monotonic() - t0,
-            status="failed",
-            error_category=integrity_fault.category,
-            entity_outcomes=entity_outcomes,
-        )
-        return refused
-
-    # Gate 2 — anomalies: a >20% drop, or an entity this run was configured to produce
-    # that vanished (present→absent / N→0). Withholds the write unless the pending
-    # acknowledgement was given for THIS run (district + input folder).
-    anomalies = compute_anomalies(outputs, output_dir, expected_entities)
-    if anomalies and not ack_authorizes(anomaly_ack, run_identity(config_name, input_dir)):
-        return ConvertResult(
-            status=ConvertStatus.NEEDS_ANOMALY_ACK,
-            entity_counts={name: len(df) for name, df in outputs.items()},
-            data_errors_total=_data_errors_total(data_errors),
-            anomalies=tuple(anomalies),
-            entity_outcomes=entity_outcomes,
-            delivery_requested=sftp_requested,
-        )
-
-    # Atomic write. Plan 0050 REVERSES the old "a `save_all` failure PROPAGATES" rule,
-    # deliberately and for `OSError` ONLY: that is the same output-folder fault the
-    # pre-flight refuses, so it gets the same honest result instead of the input-folder
-    # `on_error` card. A `ValueError` (a missing field-map column) is a DATA fault and
-    # still propagates. No NEW output is written, so no run record either; what survives
-    # of the previous set is the loader's BEST-EFFORT rollback. `_WRITE_IN_FLIGHT` (C6)
-    # is still cleared in the `finally` on both paths.
-    global _WRITE_IN_FLIGHT
+    # The symmetric failure sink (plan 0053 S5, failure-policy §7). From here to the end of the
+    # build — the read, the transform, both gates, the write, the archive and the quality report
+    # — a raise records ONE `failed` run with its category BY TYPE and the ledger's outcomes,
+    # exactly what `run_pipeline`'s failure sink records for the same fault, and is then
+    # re-raised UNCHANGED (the same object reaches `JobRunner.on_error`). Every path in here that
+    # already records-and-returns (the integrity refusal) or deliberately returns WITHOUT a
+    # record (NO_INPUT, NEEDS_ANOMALY_ACK, the write's OSError) is untouched, so an attempt
+    # leaves exactly one record or — for those three — none. The try ENDS before the SFTP leg:
+    # a failed delivery is already its own recorded result (BUILT_NOT_DELIVERED).
+    ledger: OutcomeLedger | None = None
+    outputs: dict = {}
     try:
-        loader = DataLoader(str(output_dir))
-        _WRITE_IN_FLIGHT = True
+        raw = config.to_raw_dict()
+        mappings = raw.get("mappings", {})
+        global_config = raw.get("global_config", {})
+
+        # The outcome ledger (plan 0053 S2) — the same point as `run_pipeline`'s, before the input
+        # is read, so the two entry points report the same outcomes for the same fault.
+        ledger = OutcomeLedger(configured_entity_order(mappings, global_config))
+
+        # Collect explicit headers for headerless files (exactly as run_conversion does).
+        file_headers: dict[str, list[str]] = {}
+        for entity_cfg in mappings.values():
+            for filename, header_list in entity_cfg.get("headers", {}).items():
+                file_headers[filename] = header_list
+
+        # Read EXACTLY the files this config names, through the SAME disk path the CLI uses
+        # (plan 0051). Convert used to read every `.csv`/`.txt` in the picked folder and parse
+        # the lot, so an extract DistrictSync never reads could decide the run: SD67's died on
+        # an empty `AccidentInformation.txt` while their nightly over the same folder
+        # succeeded. Going through `load_data` also inherits the disk path's case-insensitive
+        # resolution and its case-COLLISION raise, which the bytes path never had.
+        required_files = extract_required_files(config)
+        raw_data = DataExtractor(str(input_dir)).load_data(required_files, file_headers=file_headers)
+
+        # NOT `not raw_data`: `load_data` inserts an EMPTY frame per file it cannot find, so a
+        # folder with nothing in it yields a FULL dict and the bare truthiness test would never
+        # fire again. Shared with `run_pipeline` so both paths answer this the same way.
+        if has_no_usable_input(raw_data):
+            # Every entity NOT_RUN — what the CLI records when it raises `NoUsableInputError` here.
+            return ConvertResult(
+                status=ConvertStatus.NO_INPUT,
+                entity_outcomes=ledger.finalize_aborted(),
+                delivery_requested=sftp_requested,
+            )
+
+        transform_outputs = run_transform(raw_data, mappings, global_config, ledger=ledger)
+        outputs = transform_outputs.outputs
+        field_orders = transform_outputs.field_orders
+        data_errors = transform_outputs.data_errors
+        sy_determination = transform_outputs.school_year
+        entity_outcomes = transform_outputs.outcomes
+
+        # What this run was CONFIGURED to produce (enabled-entities-derived, NEVER raw
+        # `mappings.keys()`). Computed once and shared by both pre-write gates, exactly as
+        # `run_pipeline` does — so a tier config with no roster anchor (mbponly, mbp_core,
+        # sd51attendance) is judged by ITS configured set and never false-positives.
+        expected_entities = configured_entity_order(mappings, global_config)
+
+        # Gate 1 — delivery integrity, BEFORE the write and before the anomaly gate. The same
+        # pure check the CLI raises on; here its bounded category becomes a terminal status.
+        integrity_fault = check_delivery_integrity(outputs, expected_entities)
+        if integrity_fault is not None:
+            refused = ConvertResult(
+                status=status_for_integrity_fault(integrity_fault.category),
+                entity_counts={name: len(df) for name, df in outputs.items()},
+                data_errors_total=_data_errors_total(data_errors),
+                entity_outcomes=entity_outcomes,
+                delivery_requested=sftp_requested,
+            )
+            _record_manual_run(
+                refused,
+                sis_type=config_name,
+                elapsed=time.monotonic() - t0,
+                status="failed",
+                error_category=integrity_fault.category,
+                entity_outcomes=entity_outcomes,
+            )
+            return refused
+
+        # Gate 2 — anomalies: a >20% drop, or an entity this run was configured to produce
+        # that vanished (present→absent / N→0). Withholds the write unless the pending
+        # acknowledgement was given for THIS run (district + input folder).
+        anomalies = compute_anomalies(outputs, output_dir, expected_entities)
+        if anomalies and not ack_authorizes(anomaly_ack, run_identity(config_name, input_dir)):
+            return ConvertResult(
+                status=ConvertStatus.NEEDS_ANOMALY_ACK,
+                entity_counts={name: len(df) for name, df in outputs.items()},
+                data_errors_total=_data_errors_total(data_errors),
+                anomalies=tuple(anomalies),
+                entity_outcomes=entity_outcomes,
+                delivery_requested=sftp_requested,
+            )
+
+        # Atomic write. Plan 0050 REVERSES the old "a `save_all` failure PROPAGATES" rule,
+        # deliberately and for `OSError` ONLY: that is the same output-folder fault the
+        # pre-flight refuses, so it gets the same honest result instead of the input-folder
+        # `on_error` card. A `ValueError` (a missing field-map column) is a DATA fault and
+        # still propagates. No NEW output is written, so no run record either; what survives
+        # of the previous set is the loader's BEST-EFFORT rollback. `_WRITE_IN_FLIGHT` (C6)
+        # is still cleared in the `finally` on both paths.
         try:
-            loader.save_all(outputs, field_orders)
-        finally:
-            _WRITE_IN_FLIGHT = False
-    except OSError:
-        # A RESULT on screen, but still a failure worth a trace — the card is bounded and
-        # category-only, so the raw path lives here or nowhere.
-        logger.error("Could not write to the output folder (district %r).", config_name, exc_info=True)
-        return ConvertResult(
-            status=ConvertStatus.OUTPUT_FOLDER_UNUSABLE,
-            entity_outcomes=entity_outcomes,
-            delivery_requested=sftp_requested,
+            loader = DataLoader(str(output_dir))
+            _WRITE_IN_FLIGHT = True
+            try:
+                loader.save_all(outputs, field_orders)
+            finally:
+                _WRITE_IN_FLIGHT = False
+        except OSError:
+            # A RESULT on screen, but still a failure worth a trace — the card is bounded and
+            # category-only, so the raw path lives here or nowhere.
+            logger.error("Could not write to the output folder (district %r).", config_name, exc_info=True)
+            return ConvertResult(
+                status=ConvertStatus.OUTPUT_FOLDER_UNUSABLE,
+                entity_outcomes=entity_outcomes,
+                delivery_requested=sftp_requested,
+            )
+
+        # Archive (non-destructive) entity CSVs left in the output dir that this run
+        # did NOT produce — mirrors run_pipeline: a stale CSV must never ship in an
+        # SFTP zip (the delivery leg below, or a later deliver-from-disk, globs the
+        # top-level *.csv set). Moving them into archive_<ts>/ (a SUBfolder) excludes
+        # them without deleting anything; best-effort — never fails a committed build.
+        loader.archive_stale_outputs(set(outputs))
+
+        # Columns the config declares fixed-blank ({value: ""}) skip the missing-field check —
+        # blank by design is not a finding (see quality/report.py; same rule as run_pipeline).
+        quality_text = (
+            DataQualityReport()
+            .analyze(outputs, declared_blank=declared_blank_fields(raw), school_year=sy_determination)
+            .to_text()
         )
-
-    # Archive (non-destructive) entity CSVs left in the output dir that this run
-    # did NOT produce — mirrors run_pipeline: a stale CSV must never ship in an
-    # SFTP zip (the delivery leg below, or a later deliver-from-disk, globs the
-    # top-level *.csv set). Moving them into archive_<ts>/ (a SUBfolder) excludes
-    # them without deleting anything; best-effort — never fails a committed build.
-    loader.archive_stale_outputs(set(outputs))
-
-    # Columns the config declares fixed-blank ({value: ""}) skip the missing-field check —
-    # blank by design is not a finding (see quality/report.py; same rule as run_pipeline).
-    quality_text = (
-        DataQualityReport()
-        .analyze(outputs, declared_blank=declared_blank_fields(raw), school_year=sy_determination)
-        .to_text()
-    )
-    entity_counts = {name: len(df) for name, df in outputs.items()}
-    errors_total = _data_errors_total(data_errors)
+        entity_counts = {name: len(df) for name, df in outputs.items()}
+        errors_total = _data_errors_total(data_errors)
+    except Exception as exc:  # noqa: BLE001 — symmetric failure sink (failure-policy §7); always re-raised
+        with contextlib.suppress(Exception):  # recording is best-effort; it must never mask the fault
+            _record_failed_attempt(
+                exc,
+                sis_type=config_name,
+                elapsed=time.monotonic() - t0,
+                entity_counts={name: len(df) for name, df in outputs.items()},
+                # Complete the ledger as the pipeline's sink does: an entity the attempt never
+                # reached is NOT_RUN/RUN_ABORTED (idempotent after a transform raise, which already
+                # recorded FAILED + the rest); `None` only when the raise came before it existed.
+                entity_outcomes=None if ledger is None else ledger.finalize_aborted(),
+            )
+        raise
 
     # SFTP delivery leg (IA-5b): only after a successful build, only when requested.
-    # The `upload_csvs` catch is scoped TIGHTLY around the upload — a build failure
-    # (steps 1–5) already propagated to `on_error` above; this catch never widens.
+    # The `upload_csvs` catch is scoped TIGHTLY around the upload — a build failure was
+    # already recorded and re-raised to `on_error` above; this catch never widens.
     # A failure folds into the exit-3 BUILT_NOT_DELIVERED result (a CATEGORY via the
     # booleans — `summarize` maps it to fixed copy; the raw error is NEVER carried).
     # The build stays written; the admin can retry delivery.
@@ -467,6 +524,9 @@ def convert_job(
                 built_not_delivered,
                 sis_type=config_name,
                 elapsed=time.monotonic() - t0,
+                # The BUILD succeeded; the failed delivery is the separate `sftp_*` axis (exit 3).
+                status="success",
+                error_category=RunErrorCategory.NONE.value,
                 entity_outcomes=entity_outcomes,
             )
             return built_not_delivered
@@ -484,7 +544,12 @@ def convert_job(
             delivery_requested=sftp_requested,
         )
         _record_manual_run(
-            delivered, sis_type=config_name, elapsed=time.monotonic() - t0, entity_outcomes=entity_outcomes
+            delivered,
+            sis_type=config_name,
+            elapsed=time.monotonic() - t0,
+            status="success",
+            error_category=RunErrorCategory.NONE.value,
+            entity_outcomes=entity_outcomes,
         )
         return delivered
 
@@ -497,7 +562,14 @@ def convert_job(
         entity_outcomes=entity_outcomes,
         delivery_requested=sftp_requested,
     )
-    _record_manual_run(built, sis_type=config_name, elapsed=time.monotonic() - t0, entity_outcomes=entity_outcomes)
+    _record_manual_run(
+        built,
+        sis_type=config_name,
+        elapsed=time.monotonic() - t0,
+        status="success",
+        error_category=RunErrorCategory.NONE.value,
+        entity_outcomes=entity_outcomes,
+    )
     return built
 
 
@@ -562,7 +634,15 @@ def deliver_job(sis_type: str) -> ConvertResult:
             delivery_requested=True,
         )
         _record_manual_run(
-            failed, sis_type=sis_type, elapsed=time.monotonic() - t0, delivery_only=True, entity_outcomes=None
+            failed,
+            sis_type=sis_type,
+            elapsed=time.monotonic() - t0,
+            delivery_only=True,
+            # A delivery builds nothing, so its ETL axis is `success`; the failed upload is the
+            # `sftp_*` axis (the exit-3 shape), exactly as for a build whose upload failed.
+            status="success",
+            error_category=RunErrorCategory.NONE.value,
+            entity_outcomes=None,
         )
         return failed
     delivered = ConvertResult(
@@ -573,7 +653,13 @@ def deliver_job(sis_type: str) -> ConvertResult:
         delivery_requested=True,
     )
     _record_manual_run(
-        delivered, sis_type=sis_type, elapsed=time.monotonic() - t0, delivery_only=True, entity_outcomes=None
+        delivered,
+        sis_type=sis_type,
+        elapsed=time.monotonic() - t0,
+        delivery_only=True,
+        status="success",
+        error_category=RunErrorCategory.NONE.value,
+        entity_outcomes=None,
     )
     return delivered
 
@@ -589,25 +675,27 @@ def _record_manual_run(
     sis_type: str,
     elapsed: float,
     delivery_only: bool = False,
-    status: str = "success",
-    error_category: str = RunErrorCategory.NONE.value,
+    status: str,
+    error_category: str,
     entity_outcomes: tuple[EntityOutcome, ...] | None,
 ) -> None:
-    """Write a manual Convert run to the run-history store (source="manual"), best-effort.
+    """Write a manual Convert run that RETURNED a result to the run-history store (source="manual").
 
     Manual runs used to never appear in Run History (``convert_job`` bypasses
     ``run_pipeline``/``_emit_run_log`` by design). This writes the SAME flat record shape
     through the SAME ``build_run_record`` + ``write_run_record`` seam the pipeline uses, so a
-    manual run finally shows up tagged ``manual``. A committed Convert always BUILT
-    successfully → the default ``status="success"``; a failed SFTP delivery is the separate
-    ``sftp_*`` axis (the exit-3 shape). Strictly non-fatal — never changes the returned
-    ``ConvertResult``.
+    manual run shows up tagged ``manual``. Strictly non-fatal — never changes the returned
+    ``ConvertResult``. An attempt that RAISED has no result and is recorded by
+    :func:`_record_failed_attempt` instead, through the same builder and the same writer.
 
-    ``status`` / ``error_category`` (FIX-2) are the truthful-refusal axis: a delivery-integrity
-    refusal passes ``"failed"`` plus the gate's BOUNDED :class:`RunErrorCategory` value, so
-    Home's "did the roster sync?" verdict and the Run History row read the refusal as the
-    failure it is instead of a green night. The privacy split is unchanged — the category is
-    a closed-set enum value; the free-text detail never reaches the store.
+    ``status`` / ``error_category`` are REQUIRED keyword-only with no default (plan 0053 S5,
+    P8): every call site states the run's outcome. They used to default to ``"success"`` /
+    ``none`` — the permissive direction, where a new call site that forgot them would paint a
+    failure green. A committed build passes ``"success"`` (a failed SFTP delivery is the
+    separate ``sftp_*`` axis, the exit-3 shape); a delivery-integrity refusal passes
+    ``"failed"`` plus the gate's BOUNDED :class:`RunErrorCategory` value, so the record reads
+    the refusal as the failure it is. The privacy split is unchanged — the category is a
+    closed-set enum value; the free-text detail never reaches the store.
 
     ``delivery_only`` (0034 Slice 2) marks a ``deliver_job`` attempt: the record's flat count
     keys stay zeros (a delivery ships an earlier build — its counts belong to that build's
@@ -619,11 +707,15 @@ def _record_manual_run(
     delivery-only record — a delivery ships an earlier build's files and has no ledger of its
     own. It rides the record as ``entity_outcomes`` through the shared ``build_run_record``.
 
-    Deliberate asymmetry with ``run_pipeline``: ``NO_INPUT`` and ``NEEDS_ANOMALY_ACK`` write
-    nothing — the first is "you picked the wrong folder" and the second is a question, not an
-    outcome, and the admin is watching the surface where both are already shown. What IS
-    recorded is every run that either produced output or was REFUSED by the delivery gate:
-    those look like a normal night from the outside, so the ledger has to carry them.
+    **Exactly one record per attempt (plan 0053 S5), with four deliberate non-records** (the
+    list lives in ``docs/claugentic-DECISIONS.md`` 2026-09-24): an unset output folder
+    (``OutputFolderUnsetError`` — a gate/programming error the view cannot reach), the
+    output-folder refusal (``OUTPUT_FOLDER_UNUSABLE``, from the pre-flight before any ETL work
+    or from the write's ``OSError``), ``NO_INPUT`` ("you picked the wrong folder") and
+    ``NEEDS_ANOMALY_ACK`` (a question, not an outcome). The admin is watching the surface that
+    shows each of them, and none of them produced or refused a roster. Everything else — a
+    committed build, a delivery-integrity refusal, a failed delivery, a config that would not
+    load, a build that raised — is recorded.
     """
     record = build_run_record(
         status=status,
@@ -640,8 +732,53 @@ def _record_manual_run(
     )
     if delivery_only:
         record["delivery_only"] = True  # rides free in the store's JSON blob (additive, no schema change)
-    # Recording a manual run is best-effort — never fail the conversion. ``write_run_record``
-    # already swallows sqlite/OS errors; suppress anything else too (belt-and-suspenders).
+    _write_manual_record(record)
+
+
+def _record_failed_attempt(
+    exc: BaseException,
+    *,
+    sis_type: str,
+    elapsed: float,
+    entity_counts: dict[str, int],
+    entity_outcomes: tuple[EntityOutcome, ...] | None,
+) -> None:
+    """Record a Convert attempt that RAISED — ``status="failed"``, its category BY TYPE (plan 0053 S5).
+
+    The manual twin of ``run_pipeline``'s failure sink: the same ``build_run_record``, the same
+    ``classify_error_category`` (so one fault records the SAME ``error_category`` on both entry
+    points) and the same completed ledger. There is no ``status`` parameter because there is no
+    other answer, and no ``error_category`` parameter because the exception's TYPE is its only
+    source — neither can be forgotten or contradicted at a call site. ``entity_counts`` are what
+    the attempt built before it raised (the pipeline's ``_counts_from_outputs`` rule); nothing
+    was delivered, because the sink closes before the SFTP leg. Like the pipeline's sink it
+    records no ``anomalies`` and no ``data_errors`` summary — a failed attempt's record carries
+    the same keys, with the same values, whichever entry point wrote it.
+
+    Best-effort like every sink; the CALLER also wraps it in ``contextlib.suppress`` and then
+    re-raises, so recording can never replace the fault the admin is about to be shown.
+    """
+    record = build_run_record(
+        status="failed",
+        elapsed=elapsed,
+        entity_counts=entity_counts,
+        sftp_attempted=False,
+        sftp_ok=False,
+        source="manual",
+        sis_type=sis_type,
+        error_category=classify_error_category(exc),
+        entity_outcomes=entity_outcomes,
+    )
+    _write_manual_record(record)
+
+
+def _write_manual_record(record: dict) -> None:
+    """The ONE manual-run store write — best-effort, never fails the conversion.
+
+    ``write_run_record`` already swallows sqlite/OS errors; anything else is suppressed too
+    (belt-and-suspenders), so a broken store can never turn a result into an ``on_error`` card
+    or mask the exception a failed attempt is re-raising.
+    """
     with contextlib.suppress(Exception):
         write_run_record(record, source="manual")
 

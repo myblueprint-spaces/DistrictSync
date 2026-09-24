@@ -36,13 +36,18 @@ surfaces deliberately word the same classification differently ("Last sync faile
 last sync failed"), so headline equality is not merely unasserted — it is false by design, and
 the strict sweep asserts the strongest property that is actually true there. Only the EMPTY
 state single-sources its headlines, which is why ``TestTheEmptyStoreAgreement`` *can* and does
-assert copy equality. An earlier version of this docstring claimed the strict sweep caught
+assert copy equality (three headlines since plan 0053 S5:
+``TestD14BothSurfacesSkipTheSameRecord`` sweeps the failed-attempts-only one, and pins that
+BOTH surfaces skip a failed MANUAL attempt through the one ``verdict_records`` filter — owner
+decision D14). An earlier version of this docstring claimed the strict sweep caught
 "copy-level divergence"; it never reached copy level on the record axis, and a detail-level
 falsehood shipped past it green. The honest split is recorded here rather than papered over.
 """
 
 from __future__ import annotations
 
+import ast
+import pathlib
 from datetime import datetime, timedelta
 
 import pytest
@@ -56,9 +61,11 @@ from src.ui_flet.home_status import (
     classify_latest_reason,
     derive_home_status,
     verdict_for_reason,
+    verdict_latest_timestamp,
 )
-from src.ui_flet.run_history import derive_history_banner, to_run_row
+from src.ui_flet.run_history import derive_history_banner, to_run_row, to_run_rows
 from src.ui_flet.schedule_status import ScheduleState, ScheduleStatus, derive_schedule_status
+from src.ui_flet.screens.run_history import LIMIT
 from src.ui_flet.verdict import Verdict
 
 _NOW = datetime(2026, 7, 4, 8, 0, 0)
@@ -394,3 +401,236 @@ class TestTheEmptyStoreAgreement:
         banner = derive_history_banner([], cfg, now=_NOW, schedule_status=_UNEXPECTED_MISSING)
         assert home.detail == home_status_mod.EMPTY_NO_AUTO_SYNC_DETAIL
         assert banner.detail == home_status_mod.EMPTY_NO_AUTO_SYNC_DETAIL
+
+
+# --------------------------------------------------------------------------- #
+# Owner decision D14 (plan 0053 S5): one source filter, both surfaces          #
+# --------------------------------------------------------------------------- #
+_NEWEST = (_NOW - timedelta(hours=1)).isoformat(timespec="seconds")
+_FAILED_MANUAL = _base_record(timestamp=_NEWEST, status="failed", source="manual", error_category="source_schema")
+
+
+class TestD14BothSurfacesSkipTheSameRecord:
+    """A failed MANUAL attempt on top of any record: Home and the banner both key on the record
+    BENEATH it (``home_status.verdict_records`` — the one filter), and the row still shows it."""
+
+    def test_the_failed_attempt_would_be_red_on_its_own(self) -> None:
+        """Non-vacuity: without the filter this record IS the red one both surfaces would show."""
+        assert classify_latest_reason(_FAILED_MANUAL, prior_build=None) is LatestReason.FAILED_ETL
+        assert to_run_row(_FAILED_MANUAL, prior_build=None, now=_NOW).status_verdict is Verdict.FAILED
+
+    @pytest.mark.parametrize("reason", _REASONS, ids=lambda r: r.value)
+    @pytest.mark.parametrize("schedule_id", sorted(_QUIET_SCHEDULES), ids=sorted(_QUIET_SCHEDULES))
+    def test_both_surfaces_read_the_record_beneath(self, reason: LatestReason, schedule_id: str) -> None:
+        ledger = [_FAILED_MANUAL, _RECORD_FOR_REASON[reason]]
+        schedule = _QUIET_SCHEDULES[schedule_id]
+        home = derive_home_status(ledger, _CONFIGURED, now=_NOW, schedule_status=schedule)
+        banner = derive_history_banner(ledger, _CONFIGURED, now=_NOW, schedule_status=schedule)
+        expected = verdict_for_reason(reason)
+        assert home.verdict is expected, f"Home under {reason}/{schedule_id}"
+        assert banner.verdict is expected, f"banner under {reason}/{schedule_id}"
+
+    @pytest.mark.parametrize("source", ["scheduled", "cli", None], ids=["scheduled", "cli", "pre-source"])
+    def test_twin_a_failed_non_manual_record_is_never_skipped(self, source: str | None) -> None:
+        failed = dict(_FAILED_MANUAL)
+        if source is None:
+            failed.pop("source")
+        else:
+            failed["source"] = source
+        ledger = [failed, _RECORD_FOR_REASON[LatestReason.CLEAN]]
+        assert derive_home_status(ledger, _CONFIGURED, now=_NOW).verdict is Verdict.FAILED
+        assert derive_history_banner(ledger, _CONFIGURED, now=_NOW).verdict is Verdict.FAILED
+
+    @pytest.mark.parametrize("store_created_at", [None, _RECENT], ids=["no-stamp", "stamp"])
+    @pytest.mark.parametrize("setup_completed", [False, True], ids=["setup-unfinished", "setup-finished"])
+    @pytest.mark.parametrize("schedule_id", sorted(_QUIET_SCHEDULES), ids=sorted(_QUIET_SCHEDULES))
+    def test_only_failed_attempts_reads_the_same_empty_state(
+        self, store_created_at: str | None, setup_completed: bool, schedule_id: str
+    ) -> None:
+        cfg = AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc", setup_completed=setup_completed)
+        schedule = _QUIET_SCHEDULES[schedule_id]
+        ledger = [_FAILED_MANUAL]
+        home = derive_home_status(ledger, cfg, now=_NOW, store_created_at=store_created_at, schedule_status=schedule)
+        banner = derive_history_banner(
+            ledger, cfg, now=_NOW, store_created_at=store_created_at, schedule_status=schedule
+        )
+        assert home.verdict is banner.verdict is Verdict.WARNING
+        assert home.headline == banner.headline == home_status_mod.EMPTY_NO_COMPLETED_RUNS_HEADLINE
+
+
+# --------------------------------------------------------------------------- #
+# D14 over the WHOLE ledger: a 50-row window must not decide the verdict       #
+# --------------------------------------------------------------------------- #
+def _hours_ago(hours: int) -> str:
+    return (_NOW - timedelta(hours=hours)).isoformat(timespec="seconds")
+
+
+def _failed_attempts_over(beneath: dict, *, count: int) -> list[dict]:
+    """``count`` failed manual attempts, newest-first, on top of ``beneath``."""
+    attempts = [
+        _base_record(timestamp=_hours_ago(hours), status="failed", source="manual", error_category="source_schema")
+        for hours in range(1, count + 1)
+    ]
+    return [*attempts, beneath]
+
+
+class TestMoreFailedAttemptsThanTheTableShows:
+    """Run History used to read only the ``LIMIT`` rows it displays. Once D14 lets the verdict skip
+    records, a window holding nothing but failed attempts answered "No completed sync recorded
+    yet" (and handed the probe ``None``) while Home, reading everything, was green."""
+
+    _SUCCESS = _base_record(timestamp=_hours_ago(2), source="scheduled")
+
+    def _ledger(self) -> list[dict]:
+        # The success is OLDER than every attempt, but recent enough to be HEALTHY on its own.
+        attempts = [
+            _base_record(timestamp=_hours_ago(1), status="failed", source="manual", error_category="source_schema")
+            for _ in range(LIMIT + 1)
+        ]
+        return [*attempts, self._SUCCESS]
+
+    def test_the_whole_ledger_gives_both_surfaces_the_same_verdict(self) -> None:
+        ledger = self._ledger()
+        home = derive_home_status(ledger, _CONFIGURED, now=_NOW)
+        banner = derive_history_banner(ledger, _CONFIGURED, now=_NOW)
+        assert home.verdict is banner.verdict is Verdict.HEALTHY
+        assert banner.headline != home_status_mod.EMPTY_NO_COMPLETED_RUNS_HEADLINE
+        assert verdict_latest_timestamp(ledger) == self._SUCCESS["timestamp"]
+
+    def test_twin_the_display_window_alone_would_disagree(self) -> None:
+        """Non-vacuity: the SAME ledger cut to the table's window is the failed-attempts-only
+        state — exactly what the screen read before it read the whole ledger."""
+        window = self._ledger()[:LIMIT]
+        banner = derive_history_banner(window, _CONFIGURED, now=_NOW, store_created_at=_RECENT)
+        assert banner.verdict is Verdict.WARNING
+        assert banner.headline == home_status_mod.EMPTY_NO_COMPLETED_RUNS_HEADLINE
+        assert verdict_latest_timestamp(window) is None
+
+    def test_only_failed_attempts_beyond_the_window_is_the_same_empty_state_on_both(self) -> None:
+        ledger = _failed_attempts_over(
+            _base_record(timestamp=_hours_ago(LIMIT + 5), status="failed", source="manual"), count=LIMIT + 1
+        )
+        home = derive_home_status(ledger, _CONFIGURED, now=_NOW, store_created_at=_RECENT)
+        banner = derive_history_banner(ledger, _CONFIGURED, now=_NOW, store_created_at=_RECENT)
+        assert home.verdict is banner.verdict is Verdict.WARNING
+        assert home.headline == banner.headline == home_status_mod.EMPTY_NO_COMPLETED_RUNS_HEADLINE
+
+
+class TestTheTableIsCappedButItsWalkBackIsNot:
+    """``to_run_rows(..., limit=)`` caps the ROWS while a delivery-only row still finds its build
+    OUTSIDE the window — the screen reads the whole ledger, so the table's walk-back uses it."""
+
+    def _ledger(self) -> list[dict]:
+        partial_build = _base_record(
+            timestamp=_hours_ago(LIMIT + 10),
+            source="scheduled",
+            entity_outcomes={"Family": {"kind": "failed", "reason": "missing_source_column", "rows": 0}},
+        )
+        delivery = _base_record(timestamp=_hours_ago(LIMIT), source="manual", delivery_only=True)
+        return [*_failed_attempts_over(delivery, count=LIMIT - 1), partial_build]
+
+    def test_limit_equals_slicing_the_uncapped_rows(self) -> None:
+        ledger = self._ledger()
+        capped = to_run_rows(ledger, now=_NOW, limit=LIMIT)
+        assert len(capped) == LIMIT
+        assert capped == to_run_rows(ledger, now=_NOW)[:LIMIT]
+
+    def test_twin_cutting_the_ledger_first_loses_the_walk_back(self) -> None:
+        ledger = self._ledger()
+        with_context = to_run_rows(ledger, now=_NOW, limit=LIMIT)[-1]
+        cut_first = to_run_rows(ledger[:LIMIT], now=_NOW)[-1]
+        assert with_context.status_verdict is Verdict.WARNING  # it shipped a PARTIAL build's files
+        assert cut_first.status_verdict is Verdict.HEALTHY  # no build in reach to say otherwise
+
+
+# --------------------------------------------------------------------------- #
+# Supply: the three views hand the probe the D14 timestamp, over the WHOLE store #
+# --------------------------------------------------------------------------- #
+_UI = pathlib.Path(__file__).resolve().parents[1] / "src" / "ui_flet"
+
+#: Every view that hands ``probe_schedule`` a ``latest_record_ts`` read from the store. Named
+#: explicitly, so dropping one is a visible test edit rather than a silently-shrinking sweep.
+_VERDICT_TIMESTAMP_SITES: tuple[str, ...] = ("screens/home.py", "screens/run_history.py", "shell.py")
+
+
+def _named(call: ast.Call, name: str) -> bool:
+    return isinstance(call.func, ast.Name) and call.func.id == name
+
+
+def _is_newest_timestamp_read(call: ast.Call) -> bool:
+    """``<anything>[0].get("timestamp")`` — the pre-D14 supply."""
+    func = call.func
+    return (
+        isinstance(func, ast.Attribute)
+        and func.attr == "get"
+        and bool(call.args)
+        and isinstance(call.args[0], ast.Constant)
+        and call.args[0].value == "timestamp"
+        and isinstance(func.value, ast.Subscript)
+        and isinstance(func.value.slice, ast.Constant)
+        and func.value.slice.value == 0
+    )
+
+
+def _timestamp_supply_problems(source: str) -> list[str]:
+    """Why a view's ``latest_record_ts`` supply is wrong — ``[]`` when it is right.
+
+    The glue is coverage-omitted and every probe runs under ``contextlib.suppress``, so reverting
+    one view to ``records[0].get("timestamp")`` (or to a capped read) would stay green everywhere
+    else and silently let a failed manual attempt mask, on that one surface, a nightly that fired
+    and recorded nothing.
+    """
+    tree = ast.parse(source)
+    problems: list[str] = []
+    calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)]
+    if not any(_named(c, "verdict_latest_timestamp") for c in calls):
+        problems.append("never calls verdict_latest_timestamp")
+    for call in calls:
+        if _is_newest_timestamp_read(call):
+            problems.append(f"line {call.lineno}: reads the NEWEST record's timestamp, not the verdict's")
+        if _named(call, "read_run_records") and (call.args or call.keywords):
+            problems.append(f"line {call.lineno}: reads a capped store, not the whole ledger")
+        if _named(call, "probe_schedule"):
+            value = {kw.arg: kw.value for kw in call.keywords}.get("latest_record_ts")
+            if not (
+                (isinstance(value, ast.Name) and value.id == "latest_ts")
+                or (isinstance(value, ast.Call) and _named(value, "verdict_latest_timestamp"))
+            ):
+                problems.append(f"line {call.lineno}: probe_schedule is not handed the verdict timestamp")
+    assigns = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "latest_ts" for t in node.targets)
+    ]
+    for node in assigns:
+        if not (isinstance(node.value, ast.Call) and _named(node.value, "verdict_latest_timestamp")):
+            problems.append(f"line {node.lineno}: latest_ts is not verdict_latest_timestamp(...)")
+    return problems
+
+
+_CORRECT_VIEW = (
+    "records = read_run_records()\n"
+    "latest_ts = verdict_latest_timestamp(records)\n"
+    "probe_schedule(latest_record_ts=latest_ts)\n"
+)
+
+
+class TestEveryViewHandsTheProbeTheVerdictTimestamp:
+    @pytest.mark.parametrize("relative", _VERDICT_TIMESTAMP_SITES, ids=_VERDICT_TIMESTAMP_SITES)
+    def test_the_view_supplies_the_d14_timestamp(self, relative: str) -> None:
+        source = (_UI / relative).read_text(encoding="utf-8")
+        assert "probe_schedule(" in source, f"{relative} no longer probes — update _VERDICT_TIMESTAMP_SITES"
+        assert _timestamp_supply_problems(source) == []
+
+    @pytest.mark.parametrize(
+        ("old", "new"),
+        [
+            ("latest_ts = verdict_latest_timestamp(records)", "latest_ts = records[0].get('timestamp')"),
+            ("read_run_records()", "read_run_records(limit=50)"),
+            ("latest_record_ts=latest_ts", "latest_record_ts=records[0].get('timestamp')"),
+        ],
+        ids=["newest-record", "capped-read", "bypassed-at-the-call"],
+    )
+    def test_twin_a_reverted_view_is_caught(self, old: str, new: str) -> None:
+        assert _timestamp_supply_problems(_CORRECT_VIEW) == []
+        assert _timestamp_supply_problems(_CORRECT_VIEW.replace(old, new)) != []

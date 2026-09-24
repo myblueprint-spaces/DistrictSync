@@ -45,9 +45,7 @@ from src.ui_flet.failure_copy import data_warnings_clause, partial_copy
 from src.ui_flet.home_status import (
     _MYBLUEPRINT_ENTITIES,
     _ROSTERING_ENTITIES,
-    EMPTY_FRESH_START_HEADLINE,
     EMPTY_NO_AUTO_SYNC_DETAIL,
-    EMPTY_NO_RUNS_HEADLINE,
     LatestReason,
     _as_int,
     _data_errors_total,
@@ -59,6 +57,7 @@ from src.ui_flet.home_status import (
     _schedule_is_live,
     build_record_for,
     classify_latest_reason,
+    empty_state_headline,
     failed_detail,
     has_earlier_run_history,
     is_delivery_only,
@@ -67,6 +66,7 @@ from src.ui_flet.home_status import (
     sftp_delivered,
     sync_window_paused,
     verdict_for_reason,
+    verdict_records,
 )
 from src.ui_flet.humanize import (
     AnomalyVariant,
@@ -230,6 +230,13 @@ _FRESH_START_LEAD = (
     "New runs will appear here from now on. If you used an earlier version, its run history isn't carried over."
 )
 
+# Run History's OWN lead for the D14 failed-attempts-only state (plan 0053 S5): the banner sits
+# directly above the rows it describes, so it points at them rather than at this screen. The
+# headline is Home's (``home_status.empty_state_headline``), single-sourced.
+_FAILED_ATTEMPTS_ONLY_LEAD = (
+    "The conversions run from the Convert tab so far didn't finish — each attempt is listed below."
+)
+
 
 def derive_history_banner(
     records: list[dict] | None,
@@ -247,6 +254,10 @@ def derive_history_banner(
     the per-run rows. Graceful degradation (``None``/``[]``) is a first-class calm WARNING output,
     never a raise. NEVER interpolates the raw ``error`` / ``ANOMALY:`` string.
 
+    The banner reads the records the VERDICT reads (``home_status.verdict_records``, owner
+    decision D14): a failed MANUAL attempt never sets it, exactly as on Home — while the rows
+    beneath it (``to_run_rows``) still list every record, that attempt included.
+
     ``store_created_at`` (the run store's ``meta.created_at``) is the established-install signal
     for the fresh-start empty state; ``schedule_status`` (D4, injected off-thread) supplies the
     honest LIVE next-run reassurance — Run History is read-only (no fix CTA), so it does not
@@ -259,6 +270,10 @@ def derive_history_banner(
             headline="Run history unavailable",
             detail="We couldn't read the run history right now — your nightly sync may still be running normally.",
         )
+
+    # D14 (plan 0053 S5): the SAME filter, at the same point, as ``derive_home_status``.
+    failed_attempts_only = bool(records) and not verdict_records(records)
+    records = verdict_records(records)
 
     # FIX 1: the seasonal-pause fact, gated to Home's EXACT precedence so the two surfaces can never
     # disagree about one state — an ENABLED window outside its season, UNLESS a confirmed-MISSING
@@ -317,6 +332,10 @@ def derive_history_banner(
             # own — the SAME sentence Home shows, from the same constant, rather than implying
             # automation. Only on a CONFIRMED MISSING read-back (never an unconfirmed None/UNKNOWN).
             detail = EMPTY_NO_AUTO_SYNC_DETAIL
+        elif failed_attempts_only:
+            detail = _FAILED_ATTEMPTS_ONLY_LEAD
+            if _schedule_is_live(schedule_status):
+                detail += f" Scheduled for {schedule_status.next_run_display} each night."  # type: ignore[union-attr]
         elif upgrade:
             detail = _FRESH_START_LEAD
             if _schedule_is_live(schedule_status):
@@ -330,7 +349,7 @@ def derive_history_banner(
             detail = "Runs will appear here once the first one completes."
         return HistoryBanner(
             verdict=Verdict.WARNING,
-            headline=EMPTY_FRESH_START_HEADLINE if upgrade else EMPTY_NO_RUNS_HEADLINE,
+            headline=empty_state_headline(upgrade=upgrade, failed_attempts_only=failed_attempts_only),
             detail=detail,
         )
 
@@ -617,6 +636,7 @@ def to_run_rows(
     now: datetime | None = None,
     active_sis: str | None = None,
     current_account: str = "",
+    limit: int | None = None,
 ) -> list[RunRow]:
     """Map a newest-first list of run records → ``RunRow``s (one per record, never raises).
 
@@ -624,11 +644,17 @@ def to_run_rows(
     an actual list (``[]`` → ``[]``; a mixed valid/partial list → one safe ``RunRow`` per record).
     Each distinct differing district's display name is resolved ONCE per call (the resolution is
     a config read — never repeated per row for the same district).
+
+    ``limit`` caps the rows to the newest ``limit`` records (``None`` = every record) WITHOUT
+    narrowing what a row can see: a delivery-only row's ``prior_build`` walk-back still searches
+    the WHOLE list. The screen hands this the full ledger — the one Home reads — so the banner's
+    verdict (plan 0053 S5, D14) and the table's walk-backs are never decided by a 50-row window.
     """
+    shown = records if limit is None else records[: max(limit, 0)]
     active = (active_sis or "").strip()
     displays: dict[str, str] = {}
     if active:
-        for record in records:
+        for record in shown:
             sis = str(record.get("sis_type", "") or "").strip()
             if sis and sis != active and sis not in displays:
                 displays[sis] = friendly_district_name(sis)
@@ -641,5 +667,5 @@ def to_run_rows(
             district_displays=displays,
             current_account=current_account,
         )
-        for index, record in enumerate(records)
+        for index, record in enumerate(shown)
     ]

@@ -204,6 +204,22 @@ _FIRST_SYNC_LEAD = "Your nightly sync will appear here."
 # missing form — this one covers "we cannot see one", which is not the same claim.)
 _NO_RUNS_YET_LEAD = "Whenever a sync runs — nightly, or from the Convert tab — its result appears here."
 
+# The third empty-state headline (plan 0053 S5, owner decision D14). The verdict skips a FAILED
+# MANUAL attempt (see ``verdict_records``), so an install whose ledger holds ONLY such attempts
+# reaches the empty branch with rows in its run history. Neither older headline is true there:
+# "No runs recorded yet" denies the rows Run History lists one click away, and "starts fresh
+# here" — which the store stamp every such attempt creates would otherwise select — tells a
+# brand-new install about "an earlier version" it never had (the falsehood 0038 S7 (i) removed).
+# This one claims only what the LEDGER shows, like its two siblings: nothing COMPLETED is
+# recorded. It is true for the newcomer and for the <= v3.4.0 upgrader alike, and it never
+# claims a sync happened. Single-sourced: Run History's banner imports it.
+EMPTY_NO_COMPLETED_RUNS_HEADLINE = "No completed sync recorded yet"
+# HOME's lead for that state (Run History writes its own, pointing at the rows beneath it).
+# Names only the Convert tab — every record the verdict skips is, by definition, a manual one.
+_FAILED_ATTEMPTS_ONLY_LEAD = (
+    "The conversions run from the Convert tab so far didn't finish — Run History lists each attempt."
+)
+
 # --------------------------------------------------------------------------- #
 # The first-run welcome band (0038 S6) — the one line above the hosted wizard. #
 #                                                                             #
@@ -347,6 +363,18 @@ def has_earlier_run_history(*, store_created_at: str | None) -> bool:
     until this slice).
     """
     return bool((store_created_at or "").strip())
+
+
+def empty_state_headline(*, upgrade: bool, failed_attempts_only: bool) -> str:
+    """The empty-state headline — ONE rule for Home and the Run History banner (pure).
+
+    ``failed_attempts_only`` (plan 0053 S5, D14) outranks ``upgrade``: the store stamp that makes
+    an install an "upgrader" is exactly what its first failed manual attempt created, so without
+    this order a brand-new install would be told about an earlier version it never had.
+    """
+    if failed_attempts_only:
+        return EMPTY_NO_COMPLETED_RUNS_HEADLINE
+    return EMPTY_FRESH_START_HEADLINE if upgrade else EMPTY_NO_RUNS_HEADLINE
 
 
 def _expects_a_nightly(app_config: AppConfig, schedule_status: ScheduleStatus | None) -> bool:
@@ -647,6 +675,50 @@ def build_record_for(records: Sequence[dict], index: int) -> dict | None:
     return _newest_successful_build(records[index + 1 :])
 
 
+def is_failed_manual_attempt(record: dict) -> bool:
+    """Whether ``record`` is a FAILED MANUAL Convert attempt — the one kind the verdict skips (D14).
+
+    Owner decision D14 (plan 0053, 2026-09-24): ``source == "manual"`` AND ``status == "failed"``,
+    both EXACT. A manual SUCCESS still counts (a hand-run fix of a failed nightly genuinely
+    repairs it), a failed nightly or command-line run still counts, and a manual record whose
+    status is anything other than the literal ``"failed"`` — absent, garbage — is NOT skipped: the
+    classifier reads it as FAILED_ETL, and erring toward the warning is the safe direction.
+    Pure + TOTAL (``.get`` only).
+    """
+    return record.get("source") == "manual" and record.get("status") == "failed"
+
+
+def verdict_records(records: Sequence[dict]) -> list[dict]:
+    """The records the VERDICT reads — every record except a failed manual attempt (D14), newest-first.
+
+    THE one place the D14 source filter is applied. ``derive_home_status`` (Home and, through
+    ``_latest_is_failure``, its schedule-attention guard), ``run_history.derive_history_banner``
+    and :func:`verdict_latest_timestamp` (the ``latest_record_ts`` Home, Run History and the Setup
+    nav badge hand the schedule probe) all read through it, so the three surfaces key on the SAME
+    newest record and cannot disagree. Run History's ROWS deliberately do NOT: they list every
+    record, the failed manual attempt included (``run_history.to_run_rows``).
+
+    **Why:** Home answers "is the sync healthy?". One failed hand-run attempt after a good nightly
+    does not make the nightly unhealthy, and the admin saw that attempt fail on the Convert screen
+    as it happened; the row in Run History keeps the record of it.
+    """
+    return [record for record in records if not is_failed_manual_attempt(record)]
+
+
+def verdict_latest_timestamp(records: Sequence[dict] | None) -> str | None:
+    """The timestamp of the newest record the verdict reads (D14), or ``None`` — pure + TOTAL.
+
+    What every view passes the schedule probe as ``latest_record_ts`` (the fired-but-no-record
+    contradiction). Keyed on :func:`verdict_records` so a failed manual attempt can no more mask
+    a nightly that fired and recorded nothing than it can set Home's verdict.
+    """
+    verdict = verdict_records(records or [])
+    if not verdict:
+        return None
+    value = verdict[0].get("timestamp")
+    return value if isinstance(value, str) else None
+
+
 def derive_home_status(
     records: list[dict] | None,
     app_config: AppConfig,
@@ -696,6 +768,14 @@ def derive_home_status(
             metrics=None,
         )
 
+    # D14 (plan 0053 S5): from here on the derivation reads only the records the VERDICT reads — a
+    # failed manual attempt never sets it (``verdict_records``). Every rule below, the empty state,
+    # the missed-run and foreign-principal facts and the schedule-attention guard included, sees the
+    # filtered list. ``failed_attempts_only`` remembers that the ledger itself was NOT empty, so the
+    # empty branch never denies the rows Run History lists.
+    failed_attempts_only = bool(records) and not verdict_records(records)
+    records = verdict_records(records)
+
     # Rule: schedule needs attention (D4) — the read-back contradicts the config (task gone
     # while expected, or fired-but-no-record). The dominant WARNING-tier trust fault: even a clean
     # last run can't reassure if the nightly won't run again. Routed to Setup, NEVER to onboarding.
@@ -739,8 +819,9 @@ def derive_home_status(
     # for the missed-run, stale and empty-state arms that would otherwise each assert a fault that
     # did not happen — every night, forever — for a sync that is working perfectly. It is computed
     # here and consulted at TWO slots below (the empty-store block and the main sequence), exactly
-    # like ``missed_run``, and it NEVER outranks a FAILED latest record: a manual Convert that
-    # genuinely failed still owns the band.
+    # like ``missed_run``, and it NEVER outranks a FAILED latest record: a nightly or command-line
+    # run that genuinely failed still owns the band (a failed MANUAL attempt never sets the verdict
+    # at all — D14, ``verdict_records``).
     foreign_records = _foreign_records_elsewhere(records, now=now, schedule_status=schedule_status)
 
     schedule_attention = _schedule_attention(schedule_status)
@@ -802,6 +883,12 @@ def derive_home_status(
             # read-back (MISSING), never on an unconfirmed None/UNKNOWN (which would falsely deny a
             # schedule we simply can't see).
             detail = EMPTY_NO_AUTO_SYNC_DETAIL
+        elif failed_attempts_only:
+            # D14: only failed manual attempts are recorded. Name them (they are in Run History)
+            # without letting them set the verdict, and claim no sync ever completed HERE.
+            detail = _FAILED_ATTEMPTS_ONLY_LEAD
+            if _schedule_is_live(schedule_status):
+                detail += f" Your nightly sync is scheduled for {schedule_status.next_run_display}."  # type: ignore[union-attr]
         elif upgrade:
             detail = _FRESH_START_LEAD
             if _schedule_is_live(schedule_status):
@@ -822,7 +909,7 @@ def derive_home_status(
             detail = _NO_RUNS_YET_LEAD
         return HomeStatus(
             verdict=Verdict.WARNING,
-            headline=EMPTY_FRESH_START_HEADLINE if upgrade else EMPTY_NO_RUNS_HEADLINE,
+            headline=empty_state_headline(upgrade=upgrade, failed_attempts_only=failed_attempts_only),
             detail=detail,
             fix=None,  # nothing to fix — just wait for the first run
             metrics=None,
@@ -887,7 +974,8 @@ def derive_home_status(
     # (a real local failure is not explained away by where the NIGHTLY's records go) and the pause,
     # and ABOVE missed-run / stale / anomaly / data-warnings — whose copy would each describe a
     # nightly cadence this ledger cannot see. It only fires when that ledger has nothing current to
-    # say (see ``_foreign_records_elsewhere``), so a fresh manual Convert still speaks for itself.
+    # say (see ``_foreign_records_elsewhere``), so a fresh successful manual Convert still speaks
+    # for itself.
     if foreign_records:
         return _foreign_records_status(schedule_status)  # type: ignore[arg-type]
 
@@ -1091,7 +1179,8 @@ def _foreign_records_elsewhere(
       have claims made about it. A confirmed-MISSING foreign task keeps today's honest
       "won't sync automatically" copy;
     * the local ledger CANNOT SPEAK — no records at all, or the newest is stale. With a fresh
-      local record (a manual Convert) this surface has something true and current to say, and
+      local record (a successful manual Convert — the caller passes the D14-filtered list, so a
+      failed attempt is never one) this surface has something true and current to say, and
       saying it is better than explaining an absence that isn't there.
 
     Plan 0049 S-2a.1 adds the third: the records must actually BE elsewhere. On a machine-scoped

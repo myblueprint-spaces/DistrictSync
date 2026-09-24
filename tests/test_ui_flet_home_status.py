@@ -2035,7 +2035,10 @@ class TestTheForeignPrincipalBranch:
         assert status.verdict is Verdict.HEALTHY
 
     def test_it_never_outranks_a_failed_latest_record(self) -> None:
-        """Failures above warnings — a manual Convert that genuinely failed still owns the band."""
+        """Failures above warnings — a run that genuinely failed still owns the band.
+
+        (Not a failed MANUAL attempt since plan 0053 S5: D14 skips those before any rule runs.
+        This record carries no ``source``, so it is exactly the pre-D14 shape.)"""
         status = derive_home_status(
             [_record(timestamp=_ANCIENT, status="failed", error="boom")],
             _CONFIGURED,
@@ -2567,3 +2570,230 @@ class TestLegacyRecordSnapshot:
             ledger = self._ledgers()["clean_delivered"]
             ledger[0]["entity_outcomes"] = value
             assert self._render(ledger) == snapshot["clean_delivered"]
+
+
+# --------------------------------------------------------------------------- #
+# Owner decision D14 (plan 0053 S5): a FAILED MANUAL attempt never sets Home  #
+# --------------------------------------------------------------------------- #
+_EARLIER = (_NOW - timedelta(hours=9)).isoformat(timespec="seconds")  # older, still inside the stale window
+
+
+def _failed_manual(**overrides: object) -> dict:
+    """What S5's Convert failure sink records: manual, failed, a bounded category."""
+    base = {"source": "manual", "status": "failed", "error_category": "source_schema"}
+    base.update(overrides)
+    return _record(**base)
+
+
+class TestD14FailedManualAttemptsNeverSetTheVerdict:
+    """The source filter ``home_status.verdict_records`` — and its three ordering twins."""
+
+    def test_an_older_success_under_a_newer_failed_manual_attempt_stays_healthy(self) -> None:
+        ledger = [_failed_manual(timestamp=_RECENT), _record(timestamp=_EARLIER, source="scheduled")]
+        status = derive_home_status(ledger, _CONFIGURED, now=_NOW)
+        assert status.verdict is Verdict.HEALTHY
+        assert status.headline == "Your roster is up to date"
+
+    def test_twin_a_newer_manual_SUCCESS_after_a_failed_nightly_is_still_healthy(self) -> None:
+        """Unchanged by D14: a hand-run fix of a failed nightly genuinely repairs it."""
+        ledger = [
+            _record(timestamp=_RECENT, source="manual"),
+            _record(timestamp=_EARLIER, status="failed", source="scheduled"),
+        ]
+        assert derive_home_status(ledger, _CONFIGURED, now=_NOW).verdict is Verdict.HEALTHY
+
+    @pytest.mark.parametrize("source", ["scheduled", "cli"])
+    def test_twin_a_newer_failed_NIGHTLY_or_cli_run_still_fails(self, source: str) -> None:
+        ledger = [
+            _record(timestamp=_RECENT, status="failed", source=source),
+            _record(timestamp=_EARLIER, source="scheduled"),
+        ]
+        status = derive_home_status(ledger, _CONFIGURED, now=_NOW)
+        assert classify_latest_reason(ledger[0], prior_build=build_record_for(ledger, 0)) is LatestReason.FAILED_ETL
+        assert status.verdict is Verdict.FAILED
+        assert status.headline == "Last sync failed"
+
+    @pytest.mark.parametrize("status_value", [None, "", "crashed"], ids=["absent", "blank", "garbage"])
+    def test_only_the_literal_failed_status_is_skipped(self, status_value: object) -> None:
+        """A manual record whose status is not the literal ``failed`` is NOT skipped — the
+        classifier reads it as FAILED_ETL, and erring toward the warning is the safe side."""
+        record = _record(timestamp=_RECENT, source="manual")
+        if status_value is None:
+            record.pop("status")
+        else:
+            record["status"] = status_value
+        assert home_status_mod.is_failed_manual_attempt(record) is False
+        ledger = [record, _record(timestamp=_EARLIER)]
+        assert derive_home_status(ledger, _CONFIGURED, now=_NOW).verdict is Verdict.FAILED
+
+    def test_the_predicate_needs_BOTH_facts(self) -> None:
+        assert home_status_mod.is_failed_manual_attempt(_failed_manual()) is True
+        assert home_status_mod.is_failed_manual_attempt(_record(source="manual")) is False
+        assert home_status_mod.is_failed_manual_attempt(_record(status="failed", source="scheduled")) is False
+        assert home_status_mod.is_failed_manual_attempt(_record(status="failed")) is False  # a pre-source record
+
+    def test_a_delivery_after_a_partial_build_stays_partial_across_a_failed_attempt(self) -> None:
+        """The walk-back (S3) still finds the partial BUILD behind a resend, whatever failed in between."""
+        delivery = _record(
+            timestamp=_RECENT,
+            delivery_only=True,
+            source="manual",
+            Students=0,
+            Staff=0,
+            Family=0,
+            Classes=0,
+            Enrollments=0,
+        )
+        ledger = [delivery, _failed_manual(timestamp=_RECENT), _partial(timestamp=_EARLIER, source="scheduled")]
+        status = derive_home_status(ledger, _CONFIGURED, now=_NOW)
+        assert status.verdict is Verdict.WARNING
+        filtered = home_status_mod.verdict_records(ledger)
+        assert classify_latest_reason(filtered[0], prior_build=build_record_for(filtered, 0)) is LatestReason.PARTIAL
+        # Twin: the same ledger WITHOUT the partial build behind it is a clean delivery.
+        clean = [delivery, _failed_manual(timestamp=_RECENT), _record(timestamp=_EARLIER, source="scheduled")]
+        assert derive_home_status(clean, _CONFIGURED, now=_NOW).verdict is Verdict.HEALTHY
+
+    def test_a_failed_attempt_does_not_hide_schedule_attention(self) -> None:
+        """The W3-B guard reads the filtered list too: a failed manual attempt is not a
+        "failed latest" that may own the band over a schedule fault."""
+        attention = derive_schedule_status(
+            ScheduleReadback(found=False),
+            hint_registered=True,
+            latest_record_ts=None,
+            foreign_account="",
+            shared_records=False,
+        )
+        assert attention.attention is True
+        ledger = [_failed_manual(timestamp=_RECENT), _record(timestamp=_EARLIER)]
+        status = derive_home_status(ledger, _CONFIGURED, now=_NOW, schedule_status=attention)
+        assert status.verdict is Verdict.WARNING
+        assert status.headline == attention.headline
+        # Twin: a failed NIGHTLY does own the band over the same schedule fault.
+        failed_nightly = [_record(timestamp=_RECENT, status="failed", source="scheduled")]
+        assert (
+            derive_home_status(failed_nightly, _CONFIGURED, now=_NOW, schedule_status=attention).verdict
+            is Verdict.FAILED
+        )
+
+    def test_a_failed_attempt_is_not_the_nightly_arriving(self) -> None:
+        """Missed-run reads the filtered list: a LIVE schedule with only an old nightly and a
+        fresh FAILED manual attempt still reports the missed nightly."""
+        established = (_NOW - timedelta(hours=MISSED_RUN_AFTER_HOURS + 48)).isoformat(timespec="seconds")
+        old_nightly = (_NOW - timedelta(hours=MISSED_RUN_AFTER_HOURS + 5)).isoformat(timespec="seconds")
+        ledger = [_failed_manual(timestamp=_RECENT), _record(timestamp=old_nightly, source="scheduled")]
+        status = derive_home_status(
+            ledger, _CONFIGURED, now=_NOW, store_created_at=established, schedule_status=_live_schedule()
+        )
+        assert status.headline == "We expected a nightly sync that didn't arrive"
+        # Twin: a fresh manual SUCCESS is a recorded sync, so nothing was missed.
+        ledger[0] = _record(timestamp=_RECENT, source="manual")
+        status = derive_home_status(
+            ledger, _CONFIGURED, now=_NOW, store_created_at=established, schedule_status=_live_schedule()
+        )
+        assert status.verdict is Verdict.HEALTHY
+
+
+class TestD14OnlyFailedAttemptsRecorded:
+    """A ledger holding ONLY failed manual attempts: the empty branch, with its own honest headline."""
+
+    _STAMP = _RECENT  # every such attempt created the store, so the stamp is always there
+
+    def test_it_is_a_calm_warning_that_claims_no_completed_sync(self) -> None:
+        status = derive_home_status([_failed_manual()], _CONFIGURED, now=_NOW, store_created_at=self._STAMP)
+        assert status.verdict is Verdict.WARNING
+        assert status.headline == home_status_mod.EMPTY_NO_COMPLETED_RUNS_HEADLINE
+        assert status.detail == home_status_mod._FAILED_ATTEMPTS_ONLY_LEAD
+        # Exact-string pin: a row only reads "Failed", so the lead promises a LIST, not an
+        # account of what happened (the Convert card named the cause at the time).
+        assert (
+            status.detail
+            == "The conversions run from the Convert tab so far didn't finish — Run History lists each attempt."
+        )
+        assert status.fix is None
+        # Never the upgrader's line — the stamp is this install's own failed attempt.
+        assert "earlier version" not in status.detail
+        assert status.headline != home_status_mod.EMPTY_FRESH_START_HEADLINE
+
+    def test_twin_the_same_stamp_over_an_EMPTY_ledger_is_the_fresh_start_state(self) -> None:
+        """Proves the rule, not the stamp, selected the headline above."""
+        status = derive_home_status([], _CONFIGURED, now=_NOW, store_created_at=self._STAMP)
+        assert status.headline == home_status_mod.EMPTY_FRESH_START_HEADLINE
+
+    def test_a_live_schedule_is_named(self) -> None:
+        status = derive_home_status(
+            [_failed_manual()],
+            _CONFIGURED,
+            now=_NOW,
+            store_created_at=self._STAMP,
+            schedule_status=_live_schedule("2:00 AM"),
+        )
+        assert (
+            status.detail == home_status_mod._FAILED_ATTEMPTS_ONLY_LEAD + " Your nightly sync is scheduled for 2:00 AM."
+        )
+
+    def test_a_confirmed_absent_schedule_keeps_the_no_automation_sentence(self) -> None:
+        done = AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc", setup_completed=True)
+        missing = derive_schedule_status(
+            ScheduleReadback(found=False),
+            hint_registered=False,
+            latest_record_ts=None,
+            foreign_account="",
+            shared_records=False,
+        )
+        status = derive_home_status(
+            [_failed_manual()], done, now=_NOW, store_created_at=self._STAMP, schedule_status=missing
+        )
+        assert status.headline == home_status_mod.EMPTY_NO_COMPLETED_RUNS_HEADLINE
+        assert status.detail == home_status_mod.EMPTY_NO_AUTO_SYNC_DETAIL
+
+    def test_the_headline_rule_orders_failed_attempts_above_the_stamp(self) -> None:
+        rule = home_status_mod.empty_state_headline
+        assert rule(upgrade=True, failed_attempts_only=True) == home_status_mod.EMPTY_NO_COMPLETED_RUNS_HEADLINE
+        assert rule(upgrade=False, failed_attempts_only=True) == home_status_mod.EMPTY_NO_COMPLETED_RUNS_HEADLINE
+        assert rule(upgrade=True, failed_attempts_only=False) == home_status_mod.EMPTY_FRESH_START_HEADLINE
+        assert rule(upgrade=False, failed_attempts_only=False) == home_status_mod.EMPTY_NO_RUNS_HEADLINE
+
+
+class TestVerdictLatestTimestamp:
+    """What Home, Run History and the Setup badge hand the schedule probe as ``latest_record_ts``."""
+
+    def test_it_skips_a_failed_manual_attempt(self) -> None:
+        ledger = [_failed_manual(timestamp=_RECENT), _record(timestamp=_EARLIER)]
+        assert home_status_mod.verdict_latest_timestamp(ledger) == _EARLIER
+
+    def test_twin_a_manual_success_is_the_newest(self) -> None:
+        ledger = [_record(timestamp=_RECENT, source="manual"), _record(timestamp=_EARLIER)]
+        assert home_status_mod.verdict_latest_timestamp(ledger) == _RECENT
+
+    @pytest.mark.parametrize(
+        "ledger",
+        [None, [], [_failed_manual()], [_record(timestamp=None)]],
+        ids=["none", "empty", "only-failed-manual", "no-ts"],
+    )
+    def test_it_is_total(self, ledger: list[dict] | None) -> None:
+        assert home_status_mod.verdict_latest_timestamp(ledger) is None
+
+    def test_the_contradiction_is_no_longer_masked_by_a_failed_attempt(self) -> None:
+        """End to end over the real derivation: the task fired 4 h ago, the only newer record
+        is a failed manual attempt → the fired-but-no-record contradiction still stands."""
+        ledger = [
+            _failed_manual(timestamp=_RECENT),
+            _record(timestamp=(_NOW - timedelta(hours=30)).isoformat(timespec="seconds")),
+        ]
+        readback = ScheduleReadback(found=True, last_run=(_NOW - timedelta(hours=10)).isoformat(timespec="seconds"))
+        filtered = derive_schedule_status(
+            readback,
+            hint_registered=True,
+            latest_record_ts=home_status_mod.verdict_latest_timestamp(ledger),
+            foreign_account="",
+            shared_records=False,
+        )
+        unfiltered = derive_schedule_status(
+            readback,
+            hint_registered=True,
+            latest_record_ts=ledger[0]["timestamp"],
+            foreign_account="",
+            shared_records=False,
+        )
+        assert filtered.attention is True
+        assert unfiltered.attention is False  # the mask this closes

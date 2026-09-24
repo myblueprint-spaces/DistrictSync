@@ -1360,3 +1360,54 @@ class TestFailedBannerCategory:
         rec.pop("error_category", None)
         banner = derive_history_banner([rec], _CONFIGURED, now=_NOW)
         assert banner.detail.endswith(failed_copy(FALLBACK_CATEGORY, delivery_requested=False)[1])
+
+
+# --------------------------------------------------------------------------- #
+# Owner decision D14 (plan 0053 S5): the BANNER skips a failed manual attempt;  #
+# the ROWS list every record                                                     #
+# --------------------------------------------------------------------------- #
+_D14_EARLIER = (_NOW - timedelta(hours=9)).isoformat(timespec="seconds")
+
+
+def _d14_failed_manual(**overrides: object) -> dict:
+    base = {"source": "manual", "status": "failed", "error_category": "source_schema", "timestamp": _RECENT}
+    base.update(overrides)
+    return _record(**base)
+
+
+class TestD14TheBannerAndTheRows:
+    def test_the_banner_follows_the_older_success(self) -> None:
+        ledger = [_d14_failed_manual(), _record(timestamp=_D14_EARLIER, source="scheduled")]
+        banner = derive_history_banner(ledger, _CONFIGURED, now=_NOW)
+        assert banner.verdict is Verdict.HEALTHY
+        assert banner.headline == "Your last sync worked"
+
+    def test_the_rows_still_list_the_failed_attempt(self) -> None:
+        ledger = [_d14_failed_manual(), _record(timestamp=_D14_EARLIER, source="scheduled")]
+        rows = to_run_rows(ledger, now=_NOW)
+        assert len(rows) == 2
+        assert (rows[0].source, rows[0].status_label, rows[0].status_verdict) == ("Manual", "Failed", Verdict.FAILED)
+        assert rows[1].status_verdict is Verdict.HEALTHY
+
+    def test_twin_a_failed_NIGHTLY_still_sets_the_banner(self) -> None:
+        ledger = [_d14_failed_manual(source="scheduled"), _record(timestamp=_D14_EARLIER)]
+        banner = derive_history_banner(ledger, _CONFIGURED, now=_NOW)
+        assert banner.verdict is Verdict.FAILED
+        assert banner.headline == "Your last sync failed"
+
+    def test_only_failed_attempts_reads_the_shared_headline_and_points_at_the_rows(self) -> None:
+        banner = derive_history_banner([_d14_failed_manual()], _CONFIGURED, now=_NOW, store_created_at=_RECENT)
+        assert banner.verdict is Verdict.WARNING
+        assert banner.headline == home_status_mod.EMPTY_NO_COMPLETED_RUNS_HEADLINE
+        assert (
+            banner.detail
+            == "The conversions run from the Convert tab so far didn't finish — each attempt is listed below."
+        )
+        assert "earlier version" not in banner.detail
+
+    def test_only_failed_attempts_under_a_live_schedule_names_it(self) -> None:
+        live = ScheduleStatus(state=ScheduleState.LIVE, headline="h", detail="d", next_run_display="3:00 AM")
+        banner = derive_history_banner(
+            [_d14_failed_manual()], _CONFIGURED, now=_NOW, store_created_at=_RECENT, schedule_status=live
+        )
+        assert banner.detail.endswith(" Scheduled for 3:00 AM each night.")

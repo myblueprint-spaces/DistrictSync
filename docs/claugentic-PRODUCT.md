@@ -166,6 +166,11 @@ States:
   nightly time only when the read-back CONFIRMS a live task (a merely-registered one names no
   time), and naming no nightly at all when nothing confirms or records one.
 - **Empty (store predates this update)** — "Run history starts fresh here" (see Journey 2).
+- **Empty (only failed Convert attempts)** — "No completed sync recorded yet" (plan 0053 S5). A
+  failed manual Convert never sets the verdict (owner decision D14 — see Journey 2), so an install
+  whose run history holds nothing else lands in the empty state — but not on either headline
+  above: Run History lists those attempts, and the store stamp the upgrader's line keys on is the
+  attempt's own. A calm WARNING, never red.
 - **Degraded** — the store couldn't be read: "Sync status unavailable" WARNING, reassuring the nightly
   sync may still be running.
 - **Stale** — a clean success that's simply too old (>~1.5 nightly cycles): "No recent sync" WARNING.
@@ -340,7 +345,12 @@ registration time.)
 ### Journey 2 — Daily trust check (the Watcher)
 
 Open → read one verdict → done. Home derives a single HEALTHY / WARNING / FAILED verdict over the
-newest run record.
+newest run record — skipping a FAILED MANUAL Convert attempt (owner decision D14, plan 0053 S5).
+Home answers "is the sync healthy?", and one failed hand-run attempt after a good nightly does not
+make the nightly unhealthy; the admin saw it fail on the Convert screen, and Run History lists it.
+A manual SUCCESS still counts (a hand-run fix of a failed nightly genuinely repairs it), and so
+does a failed nightly or command-line run. The Run History banner and the Setup badge read the
+same filtered record, so the three cannot disagree.
 
 - **Loading** — a synchronous local read; fast, no spinner needed.
 - **Empty (nothing recorded)** — a calm *"No runs recorded yet"*, naming the nightly time only when
