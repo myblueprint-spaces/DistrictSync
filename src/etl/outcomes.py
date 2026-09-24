@@ -8,9 +8,10 @@ by the entry point's failure sink (:meth:`OutcomeLedger.finalize_aborted`). The 
 reach the run record as ONE additive JSON key, :data:`OUTCOMES_RECORD_KEY`, written by
 ``pipeline.build_run_record`` and read back by the TOTAL :func:`outcomes_from_record`.
 
-**Recording only, in S2.** :data:`ENTITY_CRITICALITY` is DECLARED here and pinned to the
-§3 table, but nothing branches on it yet: every entity's raise still fails the whole run.
-The entity bulkhead that makes an ISOLATABLE failure stay an entity-scope failure is S4.
+**Declared here, enforced in ONE place.** :data:`ENTITY_CRITICALITY` is pinned to the §3
+table, and since plan 0053 S4 the entity bulkhead in ``pipeline.run_transform`` — the only
+code that branches on it — keeps an ISOLATABLE entity's failure at entity scope (recorded
+FAILED, the rest of the run continues) while a CRITICAL one still fails the whole run.
 
 **Stdlib only, deliberately** — like :mod:`src.etl.errors`, which it imports and which
 never imports it (``errors ← outcomes ← {transformers, pipeline} ← ui``). That direction
@@ -34,8 +35,8 @@ from src.etl.errors import SourceSchemaError
 class EntityCriticality(StrEnum):
     """Whether one entity's failure may be contained to that entity (§3, P3)."""
 
-    CRITICAL = "critical"  # its failure fails the whole run (today's behaviour for EVERY entity)
-    ISOLATABLE = "isolatable"  # its failure may be left out of the run (enforced from plan 0053 S4)
+    CRITICAL = "critical"  # its failure fails the whole run
+    ISOLATABLE = "isolatable"  # its failure leaves it out of the run; the rest continues (plan 0053 S4)
 
 
 ROSTER_ANCHOR_ENTITY: Final = "Students"

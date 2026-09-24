@@ -10,7 +10,11 @@ drift from the code (or the code from the doc) without a red test that names the
 * §6's rule "every closed-enum member maps to copy, a verdict and a row here" (plan 0053
   S3): every documented ``RunErrorCategory`` except ``NONE`` has a
   ``failure_copy.FAILED_CATEGORY_COPY`` entry, every documented ``OutcomeKind`` an
-  ``OUTCOME_TIER`` verdict, and every documented ``OutcomeReason`` an ``outcome_sentence``.
+  ``OUTCOME_TIER`` verdict, and every documented ``OutcomeReason`` an ``outcome_sentence``;
+* §3 / P13 ↔ ``docs/partner/faq.md`` (plan 0053 S4): the FAQ's two criticality bullets name
+  exactly the CRITICAL and ISOLATABLE sets (by ``failure_copy.entity_phrase``), and the
+  ISOLATABLE bullet carries the "pending confirmation" clause exactly while
+  ``output-contract.md`` says ``Q5-status: open``.
 
 Each pin has a non-vacuity assertion (the parser really found the rows) and a
 doctored-doc negative twin (an edited copy of the real doc turns it red). Tables are found
@@ -19,14 +23,23 @@ by their ``<!-- failure-policy-table: <name> -->`` markers, never by line number
 
 from __future__ import annotations
 
+import re
 from enum import StrEnum
 from pathlib import Path
 
 import pytest
 
 from src.etl.errors import RunErrorCategory
-from src.etl.outcomes import DEPENDS_ON, ENTITY_CRITICALITY, VALID_REASONS, OutcomeKind, OutcomeReason
-from src.ui_flet.failure_copy import FAILED_CATEGORY_COPY, OUTCOME_TIER
+from src.etl.outcomes import (
+    DEPENDS_ON,
+    ENTITY_CRITICALITY,
+    VALID_REASONS,
+    EntityCriticality,
+    OutcomeKind,
+    OutcomeReason,
+)
+from src.ui_flet.failure_copy import FAILED_CATEGORY_COPY, OUTCOME_TIER, entity_phrase
+from tests.test_output_contract_doc import _Q5_STATUS_RE  # the ONE spelling of the status line
 
 _DOC = Path(__file__).resolve().parents[1] / "docs" / "developer" / "failure-policy.md"
 
@@ -271,4 +284,119 @@ class TestSection6CopyParity:
         assert _copy_gaps(_doc_text(), category_copy=FAILED_CATEGORY_COPY, tier=tier, reasons_with_copy=reasons) == [
             "failure-policy.md §6: OutcomeKind.NOT_RUN has no OUTCOME_TIER verdict",
             "failure-policy.md §6: OutcomeReason.RUN_ABORTED has no outcome_sentence",
+        ]
+
+
+# --------------------------------------------------------------------------- #
+# §3 / §7 P13 ↔ the partner FAQ (plan 0053 S4)                                 #
+# --------------------------------------------------------------------------- #
+_FAQ = Path(__file__).resolve().parents[1] / "docs" / "partner" / "faq.md"
+_CONTRACT = Path(__file__).resolve().parents[1] / "docs" / "developer" / "output-contract.md"
+
+#: The two bullets of the FAQ's "What happens if the GDE files are not present…" answer that
+#: state the criticality rule to a district, found by their LEADS (never by line number).
+_FAQ_LEADS: dict[EntityCriticality, tuple[str, str]] = {
+    EntityCriticality.CRITICAL: ("**If the output that can't be built is ", ", the whole run stops.**"),
+    EntityCriticality.ISOLATABLE: ("**If the output that can't be built is ", ", only that output is left out.**"),
+}
+
+#: P13: while SpacesEDU has not answered Q5, the isolatable bullet must SAY the consequence
+#: for earlier-linked records is unconfirmed — and must stop saying so once it is answered.
+FAQ_PENDING_CLAUSE = (
+    "What SpacesEDU does with records linked by an earlier delivery of that file is pending confirmation."
+)
+
+
+def _q5_status(contract_text: str) -> str:
+    statuses = _Q5_STATUS_RE.findall(contract_text)
+    return statuses[0] if len(statuses) == 1 else ""
+
+
+def _faq_bullet(faq_text: str, criticality: EntityCriticality) -> str:
+    """The one FAQ line carrying ``criticality``'s lead, or ``""``."""
+    lead, tail = _FAQ_LEADS[criticality]
+    lines = [line for line in faq_text.splitlines() if lead in line and tail in line]
+    return lines[0] if len(lines) == 1 else ""
+
+
+def _named_phrases(bullet: str, criticality: EntityCriticality) -> set[str]:
+    lead, tail = _FAQ_LEADS[criticality]
+    listed = bullet.split(lead, 1)[1].split(tail, 1)[0]
+    return {part.strip() for part in re.split(r",\s*|\s+or\s+", listed) if part.strip()}
+
+
+def _faq_mismatches(faq_text: str, contract_text: str) -> list[str]:
+    problems: list[str] = []
+    for criticality in EntityCriticality:
+        bullet = _faq_bullet(faq_text, criticality)
+        if not bullet:
+            problems.append(f"faq.md: no single {criticality.name} bullet (lead {_FAQ_LEADS[criticality][0]!r})")
+            continue
+        expected = {entity_phrase(e) for e, c in ENTITY_CRITICALITY.items() if c is criticality}
+        named = _named_phrases(bullet, criticality)
+        if named != expected:
+            problems.append(
+                f"faq.md: the {criticality.name} bullet names {sorted(named)}, "
+                f"but outcomes.ENTITY_CRITICALITY's {criticality.name} set reads {sorted(expected)}"
+            )
+    status = _q5_status(contract_text)
+    isolatable = _faq_bullet(faq_text, EntityCriticality.ISOLATABLE)
+    if status not in {"open", "answered"}:
+        problems.append(f"output-contract.md: Q5-status is {status!r}, not open/answered")
+    elif isolatable and (FAQ_PENDING_CLAUSE in isolatable) != (status == "open"):
+        problems.append(
+            f"faq.md: the ISOLATABLE bullet {'lacks' if status == 'open' else 'still carries'} the pending "
+            f"clause while Q5-status is {status!r} (P13)"
+        )
+    return problems
+
+
+class TestTheFaqStatesTheCriticalityRule:
+    def test_the_faq_names_exactly_the_declared_sets_and_the_pending_clause(self):
+        assert _faq_mismatches(_FAQ.read_text(encoding="utf-8"), _CONTRACT.read_text(encoding="utf-8")) == []
+
+    def test_non_vacuity_both_bullets_parse_and_q5_is_open_today(self):
+        faq = _FAQ.read_text(encoding="utf-8")
+        assert _named_phrases(_faq_bullet(faq, EntityCriticality.ISOLATABLE), EntityCriticality.ISOLATABLE) == {
+            "family contacts",
+            "courses",
+            "student courses",
+            "attendance rows",
+        }
+        assert len(_named_phrases(_faq_bullet(faq, EntityCriticality.CRITICAL), EntityCriticality.CRITICAL)) == 4
+        assert _q5_status(_CONTRACT.read_text(encoding="utf-8")) == "open"
+        assert FAQ_PENDING_CLAUSE in _faq_bullet(faq, EntityCriticality.ISOLATABLE)
+
+    def test_doctored_a_dropped_isolatable_entity_is_red(self):
+        faq = _FAQ.read_text(encoding="utf-8")
+        doctored = faq.replace(
+            "family contacts, courses, student courses or attendance rows", "family contacts or courses", 1
+        )
+        assert doctored != faq
+        assert _faq_mismatches(doctored, _CONTRACT.read_text(encoding="utf-8")) == [
+            "faq.md: the ISOLATABLE bullet names ['courses', 'family contacts'], but outcomes.ENTITY_CRITICALITY's "
+            "ISOLATABLE set reads ['attendance rows', 'courses', 'family contacts', 'student courses']"
+        ]
+
+    def test_doctored_a_missing_pending_clause_is_red_while_q5_is_open(self):
+        faq = _FAQ.read_text(encoding="utf-8")
+        doctored = faq.replace(" " + FAQ_PENDING_CLAUSE, "", 1)
+        assert doctored != faq
+        assert _faq_mismatches(doctored, _CONTRACT.read_text(encoding="utf-8")) == [
+            "faq.md: the ISOLATABLE bullet lacks the pending clause while Q5-status is 'open' (P13)"
+        ]
+
+    def test_doctored_an_answered_q5_makes_the_pending_clause_red(self):
+        contract = _CONTRACT.read_text(encoding="utf-8")
+        answered = contract.replace("Q5-status: open", "Q5-status: answered", 1)
+        assert answered != contract
+        assert _faq_mismatches(_FAQ.read_text(encoding="utf-8"), answered) == [
+            "faq.md: the ISOLATABLE bullet still carries the pending clause while Q5-status is 'answered' (P13)"
+        ]
+
+    def test_doctored_a_missing_bullet_is_red(self):
+        faq = _FAQ.read_text(encoding="utf-8")
+        doctored = faq.replace(", the whole run stops.**", ", everything stops.**", 1)
+        assert _faq_mismatches(doctored, _CONTRACT.read_text(encoding="utf-8")) == [
+            'faq.md: no single CRITICAL bullet (lead "**If the output that can\'t be built is ")'
         ]

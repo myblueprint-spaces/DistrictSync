@@ -660,6 +660,47 @@ def test_run_record_marker_is_emitted_by_log_run_record(caplog: pytest.LogCaptur
     assert any(smoke._RUN_RECORD_MARKER in r.message for r in caplog.records)
 
 
+def _dry_run_stdout(*, left_out: tuple[str, ...]) -> str:
+    """What ``run_pipeline --dry-run`` prints for the five rostering entities, via the REAL
+    line builder (``pipeline.dry_run_entity_lines``), with ``left_out`` entities FAILED."""
+    import pandas as pd
+
+    from src.etl import pipeline
+    from src.etl.outcomes import EntityOutcome, OutcomeReason
+
+    frame = pd.DataFrame({"User ID": ["S1", "S2"]})
+    built = [name for name in smoke._ROSTERING_ENTITIES if name not in left_out]
+    outcomes = [
+        EntityOutcome.failed(name, OutcomeReason.MISSING_SOURCE_COLUMN)
+        if name in left_out
+        else EntityOutcome.built(name, len(frame))
+        for name in smoke._ROSTERING_ENTITIES
+    ]
+    lines = pipeline.dry_run_entity_lines(dict.fromkeys(built, frame), outcomes)
+    return "\n".join(["", "=== DRY RUN (no files written) ===", *lines, ""])
+
+
+def test_the_built_line_pattern_matches_what_the_pipeline_prints() -> None:
+    """Plan 0053 S4: the smoke's per-entity check reads the BUILT line's SHAPE, pinned to the
+    pipeline's own line builder (the script never imports src)."""
+    assert smoke.unbuilt_entities(_dry_run_stdout(left_out=()), smoke._ROSTERING_ENTITIES) == []
+
+
+def test_negative_twin_a_not_built_entity_fails_the_per_entity_check() -> None:
+    """The line saying Family was NOT built names Family — the old name-only check passed on
+    it. The shape check does not."""
+    stdout = _dry_run_stdout(left_out=("Family",))
+    assert "  ! not built: Family (missing_source_column)" in stdout.splitlines()
+    assert "Family" in stdout, "the retired name-only check would have passed here"
+    assert smoke.unbuilt_entities(stdout, smoke._ROSTERING_ENTITIES) == ["Family"]
+
+
+def test_negative_twin_any_other_family_line_is_not_a_built_line() -> None:
+    for impostor in ("  Family: NOT BUILT", "Family: 3 rows", "  ! not built: Family (transform_error)"):
+        assert smoke.unbuilt_entities(impostor, ("Family",)) == ["Family"], impostor
+    assert smoke.unbuilt_entities("  Family: 3 rows, columns: ['Email']", ("Family",)) == []
+
+
 def test_paused_marker_is_emitted_by_the_sync_window_gate(caplog: pytest.LogCaptureFixture) -> None:
     from datetime import date
 

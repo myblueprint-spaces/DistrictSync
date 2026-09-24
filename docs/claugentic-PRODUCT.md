@@ -201,7 +201,7 @@ States:
   Settings first" (D9/D10 — no silent fallback into the input folder).
 - **Running** — a spinner while the worker builds the roster.
 - **Needs-ack** — a WARNING that some files look much smaller than usual; the admin reviews before
-  delivering.
+  delivering. When the smaller file is one the run left out (plan 0053 S4), the prompt also says why.
 - **Output findable (post-run)** — a committed run shows the output folder + an "Open folder" button.
   The path is app-owned config (never student PII), so it lives at the view layer and never enters the
   PII-free result model.

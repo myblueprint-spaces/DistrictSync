@@ -260,8 +260,66 @@ class TestFailLoud:
                 "portion absent": [0.5],
             }
         )
-        with pytest.raises(ValueError, match="no category mapping"):
+        with pytest.raises(ValueError, match="no category mapping") as raised:
             _run(df, student_attendance_mapping, attendance_global_config)
+        # A code-shaped value IS echoed, with the key to add — that is what makes it actionable.
+        assert "Absent Code='Z'" in str(raised.value) and "Add 'Z|N'" in str(raised.value)
+
+    def test_a_value_that_is_not_code_shaped_is_never_echoed(
+        self, student_attendance_mapping, attendance_global_config
+    ):
+        """Plan 0053 S4 (§8): a daily file whose columns do not line up puts ANY cell where the
+        code belongs — a pupil's name included — and this message reaches the log (the
+        ``ENTITY NOT BUILT`` traceback). A non-code value is described by its length only."""
+        df = pd.DataFrame(
+            {
+                "school number": ["100"],
+                "student number": ["S1"],
+                "absence date": ["18-Sep-2024"],
+                "absent code am": ["Pupilsurname"],  # a shifted column: a NAME where the code belongs
+                "authorized am": ["Firstname"],
+                "portion absent": [0.5],
+            }
+        )
+        with pytest.raises(ValueError, match="no category mapping") as raised:
+            _run(df, student_attendance_mapping, attendance_global_config)
+        message = str(raised.value)
+        assert "Pupilsurname" not in message and "Firstname" not in message
+        assert "PUPILSURNAME" not in message, "nor its upper-cased category-map key"
+        assert "<a 12-character value that is not a code — not shown>" in message
+        assert "columns are not in the order" in message
+
+    @pytest.mark.parametrize(
+        ("code", "flag", "hidden"),
+        [
+            ("Li", "Kai", ("Li", "Kai", "LI", "KAI")),
+            ("Wong", "Y", ("Wong", "WONG")),
+            ("Z", "Ava", ("Ava", "AVA")),
+        ],
+        ids=["two-short-names", "short-surname-with-a-real-flag", "real-code-with-a-short-name"],
+    )
+    def test_a_SHORT_name_is_never_echoed_either(
+        self, student_attendance_mapping, attendance_global_config, code, flag, hidden
+    ):
+        """A 1-4 letter mixed-case name is as short as a code — the vocabulary is closed
+        (upper-case codes, Y/N/blank flags), so a name cannot pass as one (PRIV-1)."""
+        df = pd.DataFrame(
+            {
+                "school number": ["100"],
+                "student number": ["S1"],
+                "absence date": ["18-Sep-2024"],
+                "absent code am": [code],
+                "authorized am": [flag],
+                "portion absent": [0.5],
+            }
+        )
+        with pytest.raises(ValueError, match="no category mapping") as raised:
+            _run(df, student_attendance_mapping, attendance_global_config)
+        message = str(raised.value)
+        for value in hidden:
+            assert f"'{value}'" not in message and f"{value}|" not in message and f"|{value}" not in message
+        assert "not a code — not shown" in message
+        assert "Add '" not in message, "a pair holding a non-code must not be offered as a key to add"
 
     def test_missing_attendance_config_raises(self, student_attendance_mapping):
         df = pd.DataFrame(

@@ -126,7 +126,9 @@ def summarize(result: ConvertResult) -> tuple[Verdict, str, str]:
     show a FAILED entity is a WARNING worded by ``failure_copy.partial_copy`` — the same
     headline and detail Home shows for that run — with the data-warning count as a second
     sentence. Every FAILED status, ``BUILT_NOT_DELIVERED`` and the anomaly gate keep their
-    precedence: a partial build that also failed to upload is still a delivery failure.
+    precedence: a partial build that also failed to upload is still a delivery failure. The
+    anomaly gate's prompt carries the same not-built sentence after its own detail (plan
+    0053 S4), because a left-out file is usually the file that vanished.
     """
     status = result.status
 
@@ -187,10 +189,17 @@ def summarize(result: ConvertResult) -> tuple[Verdict, str, str]:
 
     if status is ConvertStatus.NEEDS_ANOMALY_ACK:
         count = len(result.anomalies)
+        detail = friendly_anomaly_detail(count, variant=AnomalyVariant.CONVERT)
+        if left_out:
+            # Plan 0053 S4: a file the bulkhead left out VANISHES from the output, so it is often
+            # the very anomaly this prompt asks about. Name WHY it is missing — the same
+            # sentence the PARTIAL verdict gives (nothing is written or sent yet, hence
+            # ``delivered=False``) — so "convert anyway" is consent to a known cause.
+            detail = f"{detail} {partial_copy(left_out, delivered=False)[1]}"
         return (
             Verdict.WARNING,
             "Some files look much smaller than usual",
-            friendly_anomaly_detail(count, variant=AnomalyVariant.CONVERT),
+            detail,
         )
 
     if status in _FAILED_STATUS_CATEGORIES:

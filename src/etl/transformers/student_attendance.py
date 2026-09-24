@@ -59,6 +59,7 @@ never code.
 """
 
 import logging
+import re
 from typing import Any
 
 import pandas as pd
@@ -67,6 +68,42 @@ from src.etl.transformers.base import BaseTransformer
 from src.etl.transformers.context import TransformContext
 
 logger = logging.getLogger(__name__)
+
+#: What an absence CODE looks like: empty, or 1-4 UPPER-CASE letters/digits/hyphens (``A``,
+#: ``T``, ``L-E``). Upper-case only, deliberately: MyEd BC codes arrive upper-case, while a
+#: pupil's name arrives mixed-case — a mixed-case pattern echoed ``Li``/``Kai``/``Wong``.
+_CODE_SHAPE = re.compile(r"(?:[A-Z0-9][A-Z0-9-]{0,3})?")
+
+#: The CLOSED vocabulary of the authorized flag (compared upper-cased): yes, no, or blank.
+#: Anything else is not a flag, so it is never echoed.
+_FLAG_VOCABULARY: frozenset[str] = frozenset({"Y", "N", ""})
+
+
+def _is_code(value: str) -> bool:
+    """Whether ``value`` may be echoed as an absence code (see :data:`_CODE_SHAPE`)."""
+    return _CODE_SHAPE.fullmatch(value) is not None
+
+
+def _is_flag(value: str) -> bool:
+    """Whether ``value`` may be echoed as an authorized flag (see :data:`_FLAG_VOCABULARY`)."""
+    return value.upper() in _FLAG_VOCABULARY
+
+
+def _for_message(value: str, *, echoable: bool) -> str:
+    """``value`` as the unmapped-code message may show it — never a value outside its vocabulary.
+
+    The two cells the message echoes are CODES by contract, and a code is what the admin
+    needs to add to ``category_map``. But a daily-absences file whose columns do not line up
+    with the declared ``headers:`` (the SD51 2026-09-17 shape) puts ANY cell in the code's
+    position — a pupil's name included, and a short name (``Li``, ``Wong``) is as short as a
+    code — and this message reaches the log, since plan 0053 S4 on the ``ENTITY NOT BUILT``
+    line's traceback (before it, on ``Pipeline failed:``). So only a value inside the closed
+    vocabulary (:func:`_is_code` / :func:`_is_flag`) is echoed; any other is described by its
+    length only (§8: no observed value in a log line).
+    """
+    if echoable:
+        return repr(value)
+    return f"<a {len(value)}-character value that is not a code — not shown>"
 
 
 class StudentAttendanceTransformer(BaseTransformer):
@@ -346,10 +383,17 @@ class StudentAttendanceTransformer(BaseTransformer):
         key = f"{absent_code.upper()}|{authorized.upper()}"
         category = category_map.get(key)
         if category is None:
+            code_ok, flag_ok = _is_code(absent_code), _is_flag(authorized)
+            both_codes = code_ok and flag_ok
+            advice = (
+                f"Add '{key}' to global_config.attendance.daily.category_map."
+                if both_codes
+                else "A value that is not a code usually means the daily absences file's columns are "
+                "not in the order this district's mapping declares."
+            )
             raise ValueError(
-                f"StudentAttendance: no category mapping for (Absent Code={absent_code!r}, "
-                f"Authorized={authorized!r}). Add '{key}' to "
-                "global_config.attendance.daily.category_map."
+                f"StudentAttendance: no category mapping for (Absent Code={_for_message(absent_code, echoable=code_ok)}, "
+                f"Authorized={_for_message(authorized, echoable=flag_ok)}). {advice}"
             )
         return category
 

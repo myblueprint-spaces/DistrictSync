@@ -26,6 +26,12 @@ app even though it is spelled in this file. Two rows are genuinely derived inste
 HRESULT (``format_hresult(HR_NO_SUCH_LOGON_SESSION)``) and the log-line anchor (the ``[HRESULT
 `` prefix of ``windows._FAIL_LOG_FORMAT``), which is the one thing the doc tells an admin to
 grep ``etl_tool.log`` for.
+
+**Plan 0053 S4 added a second family** — the words an admin sees when a run LEFT A FILE OUT
+(the PARTIAL headlines and Run History labels, proved against ``failure_copy.partial_copy`` and
+``run_history.to_run_row``) plus the ``ENTITY NOT BUILT`` log anchor, derived from
+``pipeline._ENTITY_NOT_BUILT_LOG_FORMAT`` — all quoted by the troubleshooting page's "Family
+contacts weren't included" section.
 """
 
 from __future__ import annotations
@@ -34,6 +40,8 @@ from pathlib import Path
 
 import pytest
 
+from src.etl import pipeline
+from src.etl.outcomes import EntityOutcome, OutcomeReason, outcomes_to_record
 from src.scheduler import windows
 from src.scheduler.task_com import (
     HR_NO_SUCH_LOGON_SESSION,
@@ -45,7 +53,9 @@ from src.scheduler.task_com import (
     PrincipalKind,
     format_hresult,
 )
+from src.ui_flet.failure_copy import partial_copy
 from src.ui_flet.home_status import MACHINE_SCOPE_LINE_LEAD, machine_scope_line
+from src.ui_flet.run_history import to_run_row
 from src.ui_flet.setup_errors import classify_schedule_error
 from src.ui_flet.setup_flow import GMSA_IT_DOC_TITLE, GMSA_PREREQUISITES
 from src.utils.diagnostics import SCOPE_PER_USER, SCOPE_SHARED
@@ -65,6 +75,29 @@ _LOG_ANCHOR = "[" + windows._FAIL_LOG_FORMAT.split("[", 1)[1].split("%", 1)[0]
 
 #: The policy code, DERIVED through the same formatter the classifier and the log line use.
 _POLICY_CODE = format_hresult(HR_NO_SUCH_LOGON_SESSION)
+
+#: Plan 0053 S4. The ``ENTITY NOT BUILT`` grep anchor, DERIVED from the one log format the
+#: entity bulkhead writes — the troubleshooting page tells an admin to search the log for it.
+_NOT_BUILT_ANCHOR = pipeline._ENTITY_NOT_BUILT_LOG_FORMAT.split(" [", 1)[0]
+
+#: The PARTIAL run the "Family contacts weren't included" section describes: Family left out
+#: for a missing column, everything else built.
+_FAMILY_LEFT_OUT = (EntityOutcome.failed("Family", OutcomeReason.MISSING_SOURCE_COLUMN),)
+
+
+def _partial_row_label(*, delivered: bool) -> str:
+    """The Run History row label for that run — through the real row mapper."""
+    record = {
+        "status": "success",
+        "error_category": "none",
+        "sftp_attempted": delivered,
+        "sftp_ok": delivered,
+        "entity_outcomes": outcomes_to_record(
+            (EntityOutcome.built("Students", 5), *_FAMILY_LEFT_OUT, EntityOutcome.built("Classes", 2))
+        ),
+    }
+    return to_run_row(record, prior_build=None).status_label
+
 
 #: name -> (the quoted string, the classifier output it must also appear in). ``None`` as the
 #: producer means the string is its own producer (a module constant, or a derived value).
@@ -141,6 +174,19 @@ _PINNED: dict[str, tuple[str, str | None]] = {
     ),
     "diagnose_scope_shared": (SCOPE_SHARED, None),
     "diagnose_scope_per_user": (SCOPE_PER_USER, None),
+    # Plan 0053 S4 — "Family contacts weren't included": the page tells an admin which on-screen
+    # words mean a run left a file out, so each is proved against the renderer that paints it.
+    "partial_headline_delivered": (
+        "Your roster synced without family contacts",
+        partial_copy(_FAMILY_LEFT_OUT, delivered=True)[0],
+    ),
+    "partial_headline_completed": (
+        "Your sync completed without family contacts",
+        partial_copy(_FAMILY_LEFT_OUT, delivered=False)[0],
+    ),
+    "partial_row_delivered": ("Delivered · 1 file skipped", _partial_row_label(delivered=True)),
+    "partial_row_completed": ("Completed · 1 file skipped", _partial_row_label(delivered=False)),
+    "entity_not_built_anchor": (_NOT_BUILT_ANCHOR, None),
 }
 
 #: doc -> the strings that doc is DECLARED to quote. Anything not listed must be ABSENT.
@@ -209,10 +255,37 @@ def test_the_pinned_set_is_the_one_this_test_was_written_for() -> None:
 
 
 def test_the_derived_rows_are_really_derived() -> None:
-    """The two rows nothing hand-types: the log anchor and the policy code."""
+    """The rows nothing hand-types: the two log anchors and the policy code."""
     assert _LOG_ANCHOR == "[HRESULT ", f"the failure-log format moved — the anchor now reads {_LOG_ANCHOR!r}"
     assert _LOG_ANCHOR in windows._FAIL_LOG_FORMAT
     assert _POLICY_CODE == "0x80070520", f"HR_NO_SUCH_LOGON_SESSION now formats as {_POLICY_CODE}"
+    assert _NOT_BUILT_ANCHOR == "ENTITY NOT BUILT", f"the bulkhead's log line now opens {_NOT_BUILT_ANCHOR!r}"
+
+
+def test_the_not_built_anchor_is_what_the_bulkhead_really_logs(caplog, monkeypatch) -> None:
+    """The anchor is derived from a constant — this is the twin that proves the bulkhead logs
+    THROUGH it, so the troubleshooting page's search term finds a real line (plan 0053 S4)."""
+    import logging
+
+    import pandas as pd
+
+    from src.etl.outcomes import OutcomeLedger
+    from src.etl.transformer import DataTransformer
+
+    def _family_raises(self, df, mapping, entity, raw_data, global_config):  # noqa: ANN001, ANN202
+        if entity == "Family":
+            raise RuntimeError("planted")
+        return pd.DataFrame({"Out": [entity]})
+
+    monkeypatch.setattr(DataTransformer, "transform", _family_raises)
+    mappings = {
+        name: {"source_files": {"p": f"{name}.txt"}, "field_map": {"Out": "c"}} for name in ("Students", "Family")
+    }
+    raw = {f"{name}.txt": pd.DataFrame({"c": ["x"]}) for name in mappings}
+    gc = {"academic_start_month_day": "09-01", "academic_end_month_day": "06-30"}
+    with caplog.at_level(logging.ERROR, logger="src.etl.pipeline"):
+        pipeline.run_transform(raw, mappings, gc, ledger=OutcomeLedger(["Students", "Family"]))
+    assert any(r.getMessage().startswith(f"{_NOT_BUILT_ANCHOR} [Family]") for r in caplog.records)
 
 
 def test_the_scope_words_are_read_from_the_constant_not_retyped() -> None:

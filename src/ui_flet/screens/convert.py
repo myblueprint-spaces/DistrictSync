@@ -243,6 +243,14 @@ def convert_job(
     every entity NOT_RUN (``finalize_aborted``), as the CLI's failure sink records for the
     same folder. The pre-flight refusal carries ``None``: no ledger existed.
 
+    **The entity bulkhead (plan 0053 S4)** lives inside the shared ``run_transform``, so a
+    Convert whose ISOLATABLE entity fails (Family on a plain contacts report) COMPLETES
+    exactly as the CLI does: that entity is recorded FAILED and absent from the outputs, and
+    the steps below run in the CLI's order — the integrity gate, the anomaly gate (whose
+    prompt names why the file is missing), the write, the archive of the entity's previous
+    CSV, the delivery — with the outcomes on every result, which ``summarize`` shows as the
+    PARTIAL warning. A CRITICAL entity's raise still propagates to ``on_error`` unchanged.
+
     **Two pre-write gates, in the CLI's order.**
 
     1. :func:`~src.etl.pipeline.check_delivery_integrity` — the SAME way-OUT gate

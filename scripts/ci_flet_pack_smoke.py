@@ -744,6 +744,23 @@ _BANNER_MARKER = "data dir:"  # utils/version.startup_banner
 _UNREADABLE_MARKER = "could not be read as settings"  # AppConfig.load, UNREADABLE provenance
 _PAUSED_MARKER = "Sync paused"  # main._paused_by_sync_window
 
+# The dry run's BUILT line per entity — ``pipeline.dry_run_entity_lines``: "  <Entity>: <n> rows,
+# columns: [...]". Asserting only that an entity's NAME appears on stdout would pass on a line
+# saying it was NOT built (plan 0053 S4 prints "  ! not built: <Entity> (<reason>)"), so the
+# phases assert this SHAPE instead. The script never imports src; tests/test_ci_flet_pack_smoke.py
+# ties the pattern to what the pipeline really prints, with a not-built negative twin.
+_BUILT_LINE_RE = re.compile(r"^  (?P<entity>[A-Za-z]+): \d+ rows\b", re.MULTILINE)
+
+
+def unbuilt_entities(stdout: str, expected: Iterable[str]) -> list[str]:
+    """The ``expected`` entities a dry run's stdout carries NO built line for, in order. PURE.
+
+    An entity counts as previewed only through its ``<Entity>: <n> rows`` line — never
+    because its name appears somewhere else on stdout (a not-built line names it too).
+    """
+    built = {match.group("entity") for match in _BUILT_LINE_RE.finditer(stdout)}
+    return [name for name in expected if name not in built]
+
 
 @dataclass(frozen=True)
 class CliSmokeContext:
@@ -894,13 +911,13 @@ def _smoke_dry_run(art: Path, ctx: CliSmokeContext) -> bool:
     proc = _run_cli(art, _convert_args(ctx, out, "--dry-run"))
     tail = ctx.log_text()[before_log:]
     record, why = _last_run_record(tail)
-    missing = [name for name in _ROSTERING_ENTITIES if name not in proc.stdout]
+    missing = unbuilt_entities(proc.stdout, _ROSTERING_ENTITIES)
     store_after = _file_signature(store)
 
     checks = [
         _expect(proc.returncode == 0, "exit 0", f"got {proc.returncode}"),
         _expect("=== DRY RUN" in proc.stdout, "'=== DRY RUN' banner on stdout"),
-        _expect(not missing, "all 5 rostering entities previewed", f"missing {missing}" if missing else ""),
+        _expect(not missing, "all 5 rostering entities previewed as BUILT", f"not built {missing}" if missing else ""),
         _expect(not list(out.glob("*.csv")), "no CSV written by the preview"),
         _expect(record is not None, f"{_RUN_RECORD_MARKER} line in the log", why),
         _expect(
@@ -1044,7 +1061,7 @@ def _smoke_user_overlay(art: Path, ctx: CliSmokeContext) -> bool:
         before_log = len(ctx.log_text())
         proc = _run_cli(art, [*args, "--output", str(out), "--dry-run"])
         tail = ctx.log_text()[before_log:]
-        missing = [name for name in _ROSTERING_ENTITIES if name not in proc.stdout]
+        missing = unbuilt_entities(proc.stdout, _ROSTERING_ENTITIES)
 
         checks = [
             _expect(
@@ -1056,8 +1073,8 @@ def _smoke_user_overlay(art: Path, ctx: CliSmokeContext) -> bool:
             _expect("=== DRY RUN" in proc.stdout, "'=== DRY RUN' banner on stdout"),
             _expect(
                 not missing,
-                "all 5 rostering entities previewed through the overlay",
-                f"missing {missing}" if missing else "",
+                "all 5 rostering entities previewed as BUILT through the overlay",
+                f"not built {missing}" if missing else "",
             ),
             _expect(
                 _SD93_OVERLAY_SIS in tail,

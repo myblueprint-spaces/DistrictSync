@@ -500,15 +500,43 @@ class TestSummarizePartial:
             ConvertStatus.NO_OUTPUT,
             ConvertStatus.INCOMPLETE_ROSTER,
             ConvertStatus.OUTPUT_FOLDER_UNUSABLE,
-            ConvertStatus.NEEDS_ANOMALY_ACK,
         ],
     )
-    def test_failed_statuses_and_the_anomaly_gate_keep_their_precedence(self, status: ConvertStatus) -> None:
+    def test_failed_statuses_keep_their_precedence(self, status: ConvertStatus) -> None:
         with_failure = ConvertResult(
             delivery_requested=False, status=status, anomalies=("x",), entity_outcomes=_outcomes("Family")
         )
         without = ConvertResult(delivery_requested=False, status=status, anomalies=("x",), entity_outcomes=None)
         assert summarize(with_failure) == summarize(without)
+
+    def test_the_anomaly_gate_keeps_its_precedence_and_names_why_the_file_is_missing(self) -> None:
+        """Plan 0053 S4 (was: identical with and without the outcomes). The gate still WINS —
+        same verdict, same headline, its own detail first — and its prompt now carries the
+        not-built sentence, so "convert anyway" is consent to a KNOWN cause."""
+        with_failure = ConvertResult(
+            delivery_requested=False,
+            status=ConvertStatus.NEEDS_ANOMALY_ACK,
+            anomalies=("x",),
+            entity_outcomes=_outcomes("Family"),
+        )
+        without = ConvertResult(
+            delivery_requested=False, status=ConvertStatus.NEEDS_ANOMALY_ACK, anomalies=("x",), entity_outcomes=None
+        )
+        gated_verdict, gated_headline, gated_detail = summarize(with_failure)
+        plain_verdict, plain_headline, plain_detail = summarize(without)
+        assert (gated_verdict, gated_headline) == (plain_verdict, plain_headline)
+        assert gated_headline == "Some files look much smaller than usual"
+        not_built = partial_copy(_outcomes("Family")[2:3], delivered=False)[1]
+        assert gated_detail == f"{plain_detail} {not_built}"
+        assert "missing a column this district's mapping needs" in gated_detail
+        # The twin: with every entity built the prompt is exactly today's.
+        built = ConvertResult(
+            delivery_requested=False,
+            status=ConvertStatus.NEEDS_ANOMALY_ACK,
+            anomalies=("x",),
+            entity_outcomes=_outcomes(),
+        )
+        assert summarize(built) == summarize(without)
 
 
 class TestFailedStatusesReadTheSharedTable:

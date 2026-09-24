@@ -11,6 +11,29 @@ Per-release download links and auto-generated commit notes live on the
 
 ### Changed
 
+- **A problem with the family-contacts export no longer stops the whole roster
+  sync.** When the emergency-contact export arrives in a shape DistrictSync cannot
+  use — for example the basic *Emergency Contact Information* report saved under the
+  Enhanced report's filename, which lacks the guardian column a district's family
+  filter reads — family contacts are now left out of that night's sync and
+  everything else (students, staff, classes and enrollments) is built and delivered
+  as normal. The whole run used to fail and deliver nothing. Contacts are never sent
+  unfiltered: the family file is left out whole, and the previous one is moved into
+  an `archive_<date>` subfolder of the output folder so it cannot be sent by
+  mistake. Home, Run History and the Convert screen show a warning every night until
+  a correct export arrives, and the next good export is picked up automatically,
+  with nothing to change. The course list, student courses and attendance exports
+  behave the same way. A problem with the student, staff, class or enrollment
+  exports still stops the whole run, as before. Such a run ends with exit code 0.
+  What SpacesEDU does with family links from an earlier delivery while the family
+  file is missing is not yet confirmed. The nightly sync runs the `.exe` saved when
+  the schedule was set up, so it behaves this way once that file is replaced with
+  this version (or the schedule is saved again in Settings).
+- **A self-service mapping can no longer be switched on while it leaves a file
+  out.** The test conversion on the *Your files* step now fails when any file the
+  mapping produces could not be built, naming which ones, instead of passing.
+- **`--dry-run` now names a file it could not build** on a line of its own, after
+  the files it would write.
 - **Failure messages now say what kind of problem it was instead of always pointing
   at the input folder.** When a sync or a conversion fails, Home, Run History and the
   Convert screen's error card now name the cause — an export file missing a column
@@ -24,12 +47,13 @@ Per-release download links and auto-generated commit notes live on the
   saved to your output folder. Run History's row for a failed run still reads "Failed".
 - **A failed run now records its cause more precisely.** When an export
   file is missing a column the mapping needs to decide who may be delivered or to
-  link records (for example the guardian column a family filter reads), the run
+  link records (for example the role column a staff filter reads), the run
   record now says `source_schema` instead of the generic `data`; when an export
   file exists but cannot be read, it says `input_unreadable` instead of `unknown`.
   You see this in the `--diagnose` support report's "problem" line, and it is the
-  category the new failure messages above are worded from. Nothing about what is
-  delivered changes: these runs fail exactly as before.
+  category the new failure messages above are worded from. These runs still fail;
+  the family-contact, course and attendance exports are the exception described at
+  the top of this list.
 
 ### Privacy
 
@@ -38,6 +62,11 @@ Per-release download links and auto-generated commit notes live on the
   contained. For a file without a header row, that "column list" is the first
   pupil's data. They now name only the column the mapping expected and say how many
   columns the file had.
+- **An attendance code the district's mapping does not list is shown in the log only
+  when it looks like a code.** When the daily absences file's columns do not line up
+  with the mapping, the value in the code's place can be anything — a pupil's name
+  included — so only an upper-case code or a Y/N flag is shown; any other value — even a short
+  name — is now described by its length only.
 
 ### Added
 
@@ -47,11 +76,9 @@ Per-release download links and auto-generated commit notes live on the
   Staff, Family contacts and so on — whether it was built (and how many rows), left
   empty (and why: no source file, an empty export, or no usable rows), failed (a
   missing column, or another error), or was not reached because the run stopped
-  first. Home, Run History and Convert are ready to read it, but no run can finish
-  with a file left out yet, so nothing you see changes because of it, and nothing
-  about what is built or delivered changes: a run that failed before still fails the
-  same way. An older DistrictSync sharing the same history simply ignores the new
-  entry.
+  first. Home, Run History and Convert read it: a run that finished with a file left
+  out shows the warning described under *Changed*. An older DistrictSync sharing the
+  same history simply ignores the new entry, and shows such a run as a plain success.
 
 ## [3.25.0] - 2026-09-23
 

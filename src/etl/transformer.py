@@ -83,9 +83,10 @@ class DataTransformer:
     def data_errors_mark(self) -> int:
         """A position in the data-error ledger, to roll back to with :meth:`rollback_data_errors`.
 
-        Plan 0053: the entity bulkhead (S4) takes a mark before an ISOLATABLE entity's
-        transform, so an entity that is then left out of the run does not leave its per-row
-        entries behind to inflate the run's "N data warnings".
+        Plan 0053 S4: the entity bulkhead (``pipeline.run_transform``) takes a mark before
+        each entity's transform and rolls back to it when an ISOLATABLE entity is left out of
+        the run, so that entity does not leave its per-row entries behind to inflate the
+        run's "N data warnings".
         """
         return len(self._context.data_errors)
 

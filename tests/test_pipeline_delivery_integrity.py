@@ -424,6 +424,32 @@ class TestRosterAnchorVanishedFailsLoud:
         assert records[0]["status"] == "failed"
         assert records[0]["error_category"] == RunErrorCategory.INCOMPLETE_ROSTER.value
 
+    def test_an_isolated_entity_failure_never_masks_the_missing_anchor(
+        self, gde_input: Path, gde_output: Path, monkeypatch
+    ) -> None:
+        """Plan 0053 S4: the floor is UNCHANGED by the bulkhead. With the student export gone
+        AND Family's transform raising, Family is contained (ISOLATABLE) — and the missing
+        anchor still refuses the run as INCOMPLETE_ROSTER, the previous output untouched.
+        The record carries both facts: the category, and Family FAILED in its outcomes."""
+        from src.etl.transformer import DataTransformer
+
+        good = self._baseline_then_drop_students(gde_input, gde_output)
+        original = DataTransformer.transform
+
+        def _family_raises(self, df, mapping, entity, raw_data, global_config):  # noqa: ANN001, ANN202
+            if entity == "Family":
+                raise RuntimeError("planted Family fault")
+            return original(self, df, mapping, entity, raw_data, global_config)
+
+        monkeypatch.setattr(DataTransformer, "transform", _family_raises)
+        with pytest.raises(RuntimeError, match=_ANCHOR):
+            run_pipeline("myedbc", str(gde_input), str(gde_output))
+        assert _snapshot(gde_output) == good
+        records = read_run_records()
+        assert records is not None
+        assert records[0]["error_category"] == RunErrorCategory.INCOMPLETE_ROSTER.value
+        assert records[0]["entity_outcomes"]["Family"]["kind"] == "failed"
+
     def test_first_ever_run_without_a_student_export_also_fails(self, tmp_path: Path, gde_output: Path) -> None:
         """No baseline on disk at all — still a refusal (the fault is the payload,
         not the comparison against a previous run)."""
@@ -589,6 +615,28 @@ class TestLegitimatePartialRunsStayGreen:
 
         assert any("Family produced no output this run" in a for a in result.anomalies)
         assert result.entity_counts.get(_ANCHOR, 0) > 0
+
+    def test_an_isolated_entity_failure_passes_the_gate_when_the_anchor_built(
+        self, gde_input: Path, gde_output: Path, monkeypatch
+    ) -> None:
+        """Plan 0053 S4: a Family whose transform RAISES is left out, not fatal — the anchor
+        built, so the delivery-integrity gate is clean and the run completes (exit 0)."""
+        from src.etl.transformer import DataTransformer
+
+        original = DataTransformer.transform
+
+        def _family_raises(self, df, mapping, entity, raw_data, global_config):  # noqa: ANN001, ANN202
+            if entity == "Family":
+                raise RuntimeError("planted Family fault")
+            return original(self, df, mapping, entity, raw_data, global_config)
+
+        monkeypatch.setattr(DataTransformer, "transform", _family_raises)
+        result = run_pipeline("myedbc", str(gde_input), str(gde_output))  # must not raise
+
+        assert result.entity_counts.get(_ANCHOR, 0) > 0
+        assert "Family" not in result.entity_counts
+        assert not (gde_output / "Family.csv").exists()
+        assert _exit_code_via_main_wiring("myedbc", str(gde_input), str(gde_output)) == 0
 
     def test_anchor_only_run_stays_green(self, tmp_path: Path, gde_output: Path) -> None:
         """Only the demographic export arrived — Students ships, the rest skip. Exit 0."""

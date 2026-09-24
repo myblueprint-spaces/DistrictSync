@@ -23,6 +23,16 @@
 
 ---
 
+## Family contacts weren't included
+
+**What you see.** Home reads **"Your roster synced without family contacts"** — or **"Your sync completed without family contacts"** when the run was not set to deliver — and the run's row in Run History reads **"Delivered · 1 file skipped"** (or **"Completed · 1 file skipped"**). `Family.csv` is not in your output folder, and any previous one has been moved into an `archive_<date>` subfolder there, so it cannot be sent by mistake.
+
+**What it means.** Your emergency-contact export arrived, but DistrictSync could not build family contacts from it. The usual cause is a different MyEd BC report saved under the usual filename — for example the basic *Emergency Contact Information* report instead of the **Enhanced** one, which carries the email and parent/guardian columns your mapping reads. DistrictSync never sends contacts it cannot filter, so it leaves the whole file out rather than send them. Everything else — students, staff, classes and enrollments — was built and delivered as normal, and the run still ends with exit code **0**. What SpacesEDU does with family links from an earlier delivery while `Family.csv` is missing is pending confirmation.
+
+**What to do.** Re-export the Enhanced emergency-contact report under the same filename. The next sync picks it up automatically — there is nothing to change in DistrictSync — and the warning clears once family contacts are built again; until then it shows every night. For the detailed cause, open `etl_tool.log` and search for `ENTITY NOT BUILT`: that line names the file that was left out and the kind of problem. The course and attendance exports behave the same way — a problem with one of them leaves only that file out.
+
+---
+
 ## SFTP upload fails
 
 **Error: "No password found"**
@@ -122,8 +132,8 @@ Result**; in Command Prompt read it with `echo %ERRORLEVEL%`, in PowerShell with
 
 | Code | Meaning | What to do |
 |------|---------|-----------|
-| **0** | Success — the conversion completed (and any requested SFTP delivery succeeded). | Nothing. |
-| **1** | The run did **not** complete: bad input folder, unreadable district config, no usable input files, or a run that produced no output / lost its student roster. **Nothing was written** — your previous output folder is untouched. | Check `etl_tool.log` for the `Pipeline failed:` line, and confirm the GDE export actually landed in the input folder. |
+| **0** | Success — the conversion completed (and any requested SFTP delivery succeeded). This includes a run that left out a file whose export had a problem — family contacts, courses, student courses or attendance; Home and Run History show that as a warning. | Nothing — or, if Home shows a warning, see [*Family contacts weren't included*](#family-contacts-werent-included). |
+| **1** | The run did **not** complete: bad input folder, unreadable district config, no usable input files, a student, staff, class or enrollment export with a problem (for example a missing column the mapping needs), or a run that produced no output / lost its student roster. **Nothing was written** — your previous output folder is untouched. | Check `etl_tool.log` for the `Pipeline failed:` line, and confirm the GDE export actually landed in the input folder. |
 | **2** | The command line itself was wrong — a missing/unknown flag, more than one `--sftp-…` subcommand, or `--sftp-password-stdin` with nothing piped in. | Fix the command; nothing was run. |
 | **3** | The conversion **succeeded and the CSVs were written**, but the SFTP delivery to SpacesEDU failed. | See the *Last Run Result* notes above — the files are intact in your output folder. |
 

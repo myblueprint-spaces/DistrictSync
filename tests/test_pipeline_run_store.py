@@ -1116,18 +1116,42 @@ class TestTypedCategoriesReachTheRecord:
             columns["Parent Auth / Guardian"] = ["Y"]
         pd.DataFrame(columns).to_csv(d / "EmergencyContactInformation.txt", index=False)
 
-    def test_a_missing_row_filter_column_records_source_schema(self, gde_input: Path, gde_output: Path) -> None:
-        """Was ``data`` (an untyped ``ValueError``) before S1."""
+    #: SD83's config: Staff filtered on the ``Prefix`` column that STATES the role. Staff is
+    #: CRITICAL, so a missing ``Prefix`` still fails the whole run (plan 0053 S4) — the shape
+    #: that keeps ``source_schema`` a RUN category after Family's failure became entity-scoped.
+    _SD83 = "sd83myedbc"
+
+    def test_a_missing_row_filter_column_on_a_critical_entity_records_source_schema(
+        self, gde_input: Path, gde_output: Path
+    ) -> None:
+        """Was ``data`` (an untyped ``ValueError``) before S1. Since S4 the CRITICAL shape
+        (``gde_input``'s staff file has no ``Prefix``) is what fails the run: Family's
+        missing guardian column is entity-scoped (the next test)."""
         from src.etl.errors import GuardKind, SourceSchemaError
 
-        self._plain_emergency_report(gde_input)
         with pytest.raises(SourceSchemaError) as exc_info:
-            run_pipeline(self._UNITY, str(gde_input), str(gde_output))
+            run_pipeline(self._SD83, str(gde_input), str(gde_output))
         assert exc_info.value.guard is GuardKind.PII_SCOPE
+        assert exc_info.value.entity == "Staff"
         records = read_run_records()
         assert records is not None and len(records) == 1
         assert records[0]["status"] == "failed"
         assert records[0]["error_category"] == "source_schema"
+
+    def test_the_same_fault_on_family_is_left_out_not_fatal(self, gde_input: Path, gde_output: Path) -> None:
+        """Plan 0053 S4: Family is ISOLATABLE — the run completes without it (was exit 1)."""
+        self._plain_emergency_report(gde_input)
+        result = run_pipeline(self._UNITY, str(gde_input), str(gde_output))
+        records = read_run_records()
+        assert records is not None and len(records) == 1
+        assert records[0]["status"] == "success"
+        assert records[0]["error_category"] == "none"
+        assert records[0]["entity_outcomes"]["Family"] == {
+            "kind": "failed",
+            "reason": "missing_source_column",
+            "rows": 0,
+        }
+        assert "Family" not in result.entity_counts
 
     def test_the_twin_the_enhanced_report_succeeds_with_the_same_config(
         self, gde_input: Path, gde_output: Path
@@ -1139,22 +1163,41 @@ class TestTypedCategoriesReachTheRecord:
         assert records[0]["error_category"] == "none"
         assert records[0]["Family"] == 1
 
-    def test_no_observed_header_reaches_the_exception_or_the_log(
+    def test_no_observed_header_reaches_the_entity_not_built_traceback(
         self, gde_input: Path, gde_output: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """§8 end to end: a first header standing in for a pupil (row 1 of a headerless
-        file) never reaches the raised message, the ``Pipeline failed`` line or the
-        ``__DISTRICTSYNC_RUN__`` line."""
-        from src.etl.errors import SourceSchemaError
+        """§8 end to end, ISOLATABLE path (plan 0053 S4): a first header standing in for a
+        pupil (row 1 of a headerless file) never reaches the ``ENTITY NOT BUILT`` line — which
+        carries the whole traceback (``exc_info=True``) — nor the ``__DISTRICTSYNC_RUN__`` line."""
         from tests.test_etl_errors import SENTINEL_PII
 
         self._plain_emergency_report(gde_input, first_header=SENTINEL_PII)
-        with caplog.at_level(logging.DEBUG), pytest.raises(SourceSchemaError) as exc_info:
+        with caplog.at_level(logging.DEBUG):
             run_pipeline(self._UNITY, str(gde_input), str(gde_output))
+        assert SENTINEL_PII.lower() not in caplog.text.lower()
+        # Non-vacuity: the line WAS logged, with its traceback and the typed message.
+        not_built = [r for r in caplog.records if r.getMessage().startswith("ENTITY NOT BUILT [Family]")]
+        assert len(not_built) == 1 and not_built[0].exc_info is not None
+        assert "Traceback" in caplog.text and "Parent Auth / Guardian" in caplog.text
+
+    def test_no_observed_header_reaches_the_exception_or_the_log_on_a_critical_failure(
+        self, gde_input: Path, gde_output: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """§8 end to end, CRITICAL path: the raised message, the ``Pipeline failed`` line and
+        the ``__DISTRICTSYNC_RUN__`` line (SD83's staff file, its first header a sentinel)."""
+        from src.etl.errors import SourceSchemaError
+        from tests.test_etl_errors import SENTINEL_PII
+
+        staff = pd.read_csv(gde_input / "StaffInformationEnhanced.txt", dtype=str)
+        staff.rename(columns={"Teacher ID": SENTINEL_PII}).assign(**{"Teacher ID": staff["Teacher ID"]}).to_csv(
+            gde_input / "StaffInformationEnhanced.txt", index=False
+        )
+        with caplog.at_level(logging.DEBUG), pytest.raises(SourceSchemaError) as exc_info:
+            run_pipeline(self._SD83, str(gde_input), str(gde_output))
         assert SENTINEL_PII.lower() not in str(exc_info.value).lower()
         assert SENTINEL_PII.lower() not in caplog.text.lower()
         # Non-vacuity: the failure line WAS logged, carrying the typed message.
-        assert "Pipeline failed" in caplog.text and "Parent Auth / Guardian" in caplog.text
+        assert "Pipeline failed" in caplog.text and "Prefix" in caplog.text
 
     def test_an_unparseable_required_file_records_input_unreadable(
         self, gde_input: Path, gde_output: Path, monkeypatch
@@ -1218,8 +1261,8 @@ def _kinds(stored: dict) -> dict[str, tuple[str, str]]:
 class TestEntityOutcomesReachTheRecord:
     """``entity_outcomes`` rides EVERY record both entry points write: one outcome per
     configured entity, in configured order, the log line and the store sharing one dict —
-    and ``None`` exactly where no ledger existed. Recording only: every failure below still
-    fails the run exactly as before S2."""
+    and ``None`` exactly where no ledger existed. Since S4 an ISOLATABLE entity's failure
+    completes the run without it; a CRITICAL one still fails the run exactly as before S2."""
 
     _UNITY = TestTypedCategoriesReachTheRecord._UNITY
 
@@ -1241,29 +1284,56 @@ class TestEntityOutcomesReachTheRecord:
         assert [o.entity for o in result.entity_outcomes] == _MYEDBC_ORDER
         assert {o.entity: o.rows for o in result.entity_outcomes} == result.entity_counts
 
-    def test_the_unity_plain_report_records_family_failed_and_the_rest_not_run(
+    def test_the_unity_plain_report_records_family_failed_and_the_rest_built(
         self, gde_input: Path, gde_output: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
-        from src.etl.errors import SourceSchemaError
-
+        """Plan 0053 S4 changed this row: Family is ISOLATABLE, so the run completes without it
+        (S2 recorded Classes/Enrollments NOT_RUN and failed the run)."""
         TestTypedCategoriesReachTheRecord._plain_emergency_report(gde_input)
-        with caplog.at_level(logging.INFO, logger="src.etl.pipeline"), pytest.raises(SourceSchemaError):
+        with caplog.at_level(logging.INFO, logger="src.etl.pipeline"):
             run_pipeline(self._UNITY, str(gde_input), str(gde_output))
         records = read_run_records()
         assert records is not None and len(records) == 1
         stored = records[0]
-        assert stored["status"] == "failed" and stored["error_category"] == "source_schema"
+        assert stored["status"] == "success" and stored["error_category"] == "none"
         assert _kinds(stored) == {
             "Students": ("built", "none"),
             "Staff": ("built", "none"),
             "Family": ("failed", "missing_source_column"),
-            "Classes": ("not_run", "run_aborted"),
-            "Enrollments": ("not_run", "run_aborted"),
+            "Classes": ("built", "none"),
+            "Enrollments": ("built", "none"),
         }
+        assert _log_payload(caplog)["entity_outcomes"] == stored["entity_outcomes"]
+        # The flat count keys and the outcome rows agree for BUILT entities; Family reached nothing.
+        assert stored["Students"] == stored["entity_outcomes"]["Students"]["rows"] == 2
+        assert stored["Family"] == 0
+        assert sorted(p.name for p in gde_output.glob("*.csv")) == [
+            "Classes.csv",
+            "Enrollments.csv",
+            "Staff.csv",
+            "Students.csv",
+        ]
+
+    def test_a_critical_raise_records_that_entity_failed_and_the_rest_not_run(
+        self, gde_input: Path, gde_output: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The CRITICAL twin (SD83's Staff, missing its ``Prefix`` role column): the run
+        fails exactly as before the bulkhead, and nothing is written."""
+        from src.etl.errors import SourceSchemaError
+
+        with caplog.at_level(logging.INFO, logger="src.etl.pipeline"), pytest.raises(SourceSchemaError):
+            run_pipeline(TestTypedCategoriesReachTheRecord._SD83, str(gde_input), str(gde_output))
+        records = read_run_records()
+        assert records is not None and len(records) == 1
+        stored = records[0]
+        assert stored["status"] == "failed" and stored["error_category"] == "source_schema"
+        kinds = _kinds(stored)
+        assert kinds["Students"] == ("built", "none")
+        assert kinds["Staff"] == ("failed", "missing_source_column")
+        assert list(kinds)[2:] and set(list(kinds.values())[2:]) == {("not_run", "run_aborted")}
         assert _log_payload(caplog)["entity_outcomes"] == stored["entity_outcomes"]
         # The flat count keys keep their meaning: nothing reached `outputs` on this run.
         assert stored["Students"] == 0 and stored["entity_outcomes"]["Students"]["rows"] == 2
-        # Nothing was written — S2 changes no behaviour.
         assert not list(gde_output.glob("*.csv"))
 
     def test_a_family_with_no_usable_contact_is_empty_no_rows_after_transform(

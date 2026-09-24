@@ -494,7 +494,7 @@ class TestRunTransformRecords:
         ledger = OutcomeLedger(configured_entity_order(mappings, _GC))
         with pytest.raises(type(exc)) as raised:
             run_transform(raw, mappings, _GC, ledger=ledger)
-        assert raised.value is exc, "the ORIGINAL object propagates — no containment in S2"
+        assert raised.value is exc, "an unlisted (so CRITICAL) entity's raise propagates the ORIGINAL object"
         assert ledger.complete() == (
             EntityOutcome.built("First", 1),
             EntityOutcome.failed("Middle", reason),

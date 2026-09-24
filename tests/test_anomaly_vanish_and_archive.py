@@ -204,3 +204,57 @@ class TestConvertJobVanishGate:
         assert len(archives) == 1
         assert (archives[0] / "CourseInfo.csv").read_text(encoding="utf-8") == "stale cross-config file"
         assert "CourseInfo.csv" not in {p.name for p in gde_output.glob("*.csv")}
+
+
+class TestConvertLeavesAFailedEntityOut:
+    """Plan 0053 S4 on the Convert path: Unity's contacts export flips to the PLAIN report.
+
+    Family is ISOLATABLE, so the conversion COMPLETES without it — and because a previous
+    ``Family.csv`` sits in the output folder, the vanished-entity anomaly still fires and the
+    ack gate still asks before anything is written (``compute_anomalies`` is unchanged). The
+    prompt now says WHY the file is missing, so "convert anyway" is consent to a known cause.
+    """
+
+    _SIS = "unitychristianmyedbc"
+
+    def test_the_gate_still_asks_names_the_reason_and_the_ack_writes_a_partial_run(self, tmp_path: Path) -> None:
+        from src.etl.outcomes import EntityOutcome, OutcomeReason
+        from src.ui_flet.convert_result import summarize
+        from src.ui_flet.verdict import Verdict
+        from tests.test_contract import (
+            _create_unitychristian_inputs,
+            _create_unitychristian_plain_report_inputs,
+        )
+
+        enhanced, plain, out = tmp_path / "enhanced", tmp_path / "plain", tmp_path / "out"
+        for d in (enhanced, plain, out):
+            d.mkdir()
+        _create_unitychristian_inputs(enhanced)
+        _create_unitychristian_plain_report_inputs(plain)
+        AppConfig(input_dir=str(enhanced), output_dir=str(out), sis_type=self._SIS).save()
+
+        first = convert_job(self._SIS, str(enhanced))
+        assert first.entity_counts.get("Family", 0) > 0
+        family_before = (out / "Family.csv").read_bytes()
+
+        gated = convert_job(self._SIS, str(plain))
+        assert gated.status is ConvertStatus.NEEDS_ANOMALY_ACK
+        assert any("Family produced no output this run" in a for a in gated.anomalies)
+        assert gated.entity_outcomes is not None
+        assert EntityOutcome.failed("Family", OutcomeReason.MISSING_SOURCE_COLUMN) in gated.entity_outcomes
+        _verdict, _headline, prompt = summarize(gated)
+        assert "Family contacts were left out of this sync" in prompt
+        assert "missing a column this district's mapping needs" in prompt
+        assert (out / "Family.csv").read_bytes() == family_before, "nothing is written before the ack"
+
+        acked = convert_job(self._SIS, str(plain), anomaly_ack=run_identity(self._SIS, str(plain)))
+        assert acked.status is ConvertStatus.DELIVERED
+        verdict, headline, _detail = summarize(acked)
+        assert verdict is Verdict.WARNING and headline == "Your sync completed without family contacts"
+        assert not (out / "Family.csv").exists()
+        archives = _archive_dirs(out)
+        assert len(archives) == 1 and (archives[0] / "Family.csv").read_bytes() == family_before
+        records = read_run_records()
+        assert records is not None and records[0]["source"] == "manual"
+        assert records[0]["status"] == "success"
+        assert records[0]["entity_outcomes"]["Family"]["kind"] == "failed"

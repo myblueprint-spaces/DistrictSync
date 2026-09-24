@@ -402,6 +402,43 @@ class TestCLIvsUIParity:
             assert data.startswith(b"\xef\xbb\xbf"), f"{out_dir.name}/Students.csv must keep the BOM"
 
 
+class TestCLIvsUIParityOverAPartialRun:
+    """Plan 0053 S4: the entity bulkhead lives in the SHARED ``run_transform``, so a run that
+    leaves an ISOLATABLE entity out (Unity's plain contact report) is the same run on both
+    paths — the same files, byte for byte, the same outcomes, and no ``Family.csv`` on
+    either."""
+
+    _SIS = "unitychristianmyedbc"
+
+    def test_both_paths_leave_family_out_and_agree_on_everything_else(self, tmp_path):
+        from src.history.store import read_run_records
+        from tests.test_contract import _create_unitychristian_plain_report_inputs
+
+        input_dir, cli_out, ui_out = tmp_path / "in", tmp_path / "cli_out", tmp_path / "ui_out"
+        for d in (input_dir, cli_out, ui_out):
+            d.mkdir()
+        _create_unitychristian_plain_report_inputs(input_dir)
+
+        cli_result = run_pipeline(self._SIS, str(input_dir), str(cli_out))
+        AppConfig(input_dir=str(input_dir), output_dir=str(ui_out), sis_type=self._SIS).save()
+        ui_result = convert_job(self._SIS, str(input_dir))
+        assert ui_result.status is ConvertStatus.DELIVERED
+
+        cli_files = sorted(p.name for p in cli_out.glob("*.csv"))
+        assert cli_files == sorted(p.name for p in ui_out.glob("*.csv"))
+        assert "Family.csv" not in cli_files and "Students.csv" in cli_files
+        for name in cli_files:
+            assert (cli_out / name).read_bytes() == (ui_out / name).read_bytes(), f"{name} differs"
+        assert ui_result.entity_outcomes == cli_result.entity_outcomes
+        assert [(o.entity, o.kind.value) for o in cli_result.entity_outcomes if o.kind.value != "built"] == [
+            ("Family", "failed")
+        ]
+        records = read_run_records()
+        assert records is not None
+        by_source = {r["source"]: r["entity_outcomes"] for r in reversed(records)}
+        assert by_source["manual"] == by_source["cli"]
+
+
 class TestUIWriteFailsLoud:
     """The deliberate, desirable behavior change: a missing field-map column makes
     the UI write path raise (DataLoader.save_all → _write_csv) instead of writing a

@@ -37,9 +37,13 @@ from src.etl.loader import DataLoader, output_target_problem
 from src.etl.outcomes import (
     OUTCOMES_RECORD_KEY,
     ROSTER_ANCHOR_ENTITY,
+    EntityCriticality,
     EntityOutcome,
+    OutcomeKind,
     OutcomeLedger,
     OutcomeReason,
+    criticality_of,
+    failed_entities,
     outcomes_to_record,
     reason_for,
 )
@@ -71,6 +75,12 @@ _RECORD_ENTITY_KEYS: tuple[str, ...] = (
 )
 
 _SOURCE_ENV_VAR = "DSYNC_SOURCE"  # scheduled/cron/Docker set this; the registered task passes --source
+
+# The ONE log line the entity bulkhead writes for an ISOLATABLE entity it left out (plan 0053 S4),
+# at ERROR with the traceback. `ENTITY NOT BUILT` is the grep anchor the partner troubleshooting
+# page tells an admin to search `etl_tool.log` for (pinned by
+# tests/test_partner_doc_schedule_copy_parity.py). Arguments: the entity, the reason's value.
+_ENTITY_NOT_BUILT_LOG_FORMAT = "ENTITY NOT BUILT [%s] reason=%s — left out of this run; every other entity continues."
 
 # `ROSTER_ANCHOR_ENTITY` (the referential root of a delivery) moved to `src.etl.outcomes`
 # with plan 0053 S2, beside the criticality table it forces; imported above.
@@ -288,11 +298,35 @@ def run_transform(
     :func:`configured_entity_order`, before the input is read) so a failure BEFORE
     this function still yields a complete ledger through its failure sink. Every
     skip branch below records EMPTY with its reason and every emitted entity BUILT
-    with its row count. A raise from an entity's transform is recorded FAILED
-    (:func:`~src.etl.outcomes.reason_for`) with every later entity NOT_RUN, and then
-    re-raised BARE — the same object, so the category and exit code are exactly what
-    they were. There is no isolation here yet: every entity's raise still fails the
-    run (the ISOLATABLE bulkhead is plan 0053 S4).
+    with its row count.
+
+    **The entity bulkhead (plan 0053 S4, ``failure-policy.md`` §2/§3) — the ONE
+    entity-scope boundary in the product, shared by the CLI and Convert.** A raise from
+    an entity's transform is recorded FAILED (:func:`~src.etl.outcomes.reason_for`, by
+    type) and then decided by the entity's DECLARED criticality
+    (:func:`~src.etl.outcomes.criticality_of` — anything unlisted is CRITICAL):
+
+    * **CRITICAL** — every later entity is recorded NOT_RUN and the exception is
+      re-raised BARE: the same object, so its category and the exit code are exactly
+      what they were before the bulkhead existed.
+    * **ISOLATABLE** — the entity's own data-error entries are rolled back (a dropped
+      entity must not inflate the run's "N data warnings"), ONE ``ENTITY NOT BUILT``
+      ERROR line is logged with its traceback, and the loop CONTINUES. The entity is
+      absent from ``outputs`` — never substituted — so the loader archives its previous
+      CSV out of the delivery glob and the manifest cannot carry it; the run record's
+      FAILED outcome is what keeps the run PARTIAL (WARNING) every night it persists.
+
+    ``BaseException`` (a Ctrl+C, a ``SystemExit``) is never caught. There is no
+    dependent-withholding branch: nothing ISOLATABLE is ever depended on
+    (``outcomes.DEPENDS_ON`` — pinned), so a failed isolatable entity has no dependent.
+
+    **Nothing built ⇒ the first isolated failure fails the run.** When the loop ends
+    with no entity BUILT and at least one FAILED (a single-entity config such as
+    ``sd51attendance`` with a broken absence code; or every other entity legitimately
+    empty), the FIRST isolated exception is re-raised — its own traceback, its own
+    category — rather than letting :func:`check_delivery_integrity` report the vaguer
+    ``no_output``. Isolation may never turn a precise failure into a vaguer one, and
+    ``no_output`` keeps its meaning: nothing to build.
     """
     configured = configured_entity_order(mappings, global_config)
     if ledger.configured != tuple(configured):
@@ -344,6 +378,9 @@ def run_transform(
             f"resolved={sy}. academic start={transformer.academic_start}, end={transformer.academic_end}"
         )
 
+    # The first exception the bulkhead contained — re-raised after the loop if NOTHING was built.
+    first_isolated: Exception | None = None
+
     for position, entity_name in enumerate(configured):
         entity_cfg = mappings.get(entity_name, {})
         source_config = entity_cfg.get("source_files", {})
@@ -372,15 +409,26 @@ def run_transform(
             continue
         primary_df = source_frames[0]  # may be empty for a role-resolved entity (period-only attendance)
 
+        # Where this entity's data-error entries begin, so an ISOLATED failure can take back
+        # exactly its own (earlier entities' entries are untouched).
+        mark = transformer.data_errors_mark()
         try:
             transformed = transformer.transform(primary_df, entity_cfg, entity_name, raw_data, global_config)
-        except Exception as exc:
-            # RECORD, then re-raise the ORIGINAL object — no containment in plan 0053 S2 (the
-            # entity bulkhead is S4). `Exception`, never `BaseException`: a Ctrl+C or a
-            # SystemExit is not an entity outcome; the caller's failure sink marks what is left.
-            ledger.record(EntityOutcome.failed(entity_name, reason_for(exc)))
-            ledger.mark_not_run(configured[position + 1 :])
-            raise
+        except Exception as exc:  # noqa: BLE001 — entity bulkhead, failure-policy §2
+            # `Exception`, never `BaseException`: a Ctrl+C or a SystemExit is not an entity
+            # outcome; the caller's failure sink marks what is left.
+            reason = reason_for(exc)
+            ledger.record(EntityOutcome.failed(entity_name, reason))
+            if criticality_of(entity_name) is not EntityCriticality.ISOLATABLE:
+                # CRITICAL (or unlisted): the run fails exactly as it always has — the ORIGINAL
+                # object, so its category and the exit code are unchanged.
+                ledger.mark_not_run(configured[position + 1 :])
+                raise
+            transformer.rollback_data_errors(mark)
+            logger.error(_ENTITY_NOT_BUILT_LOG_FORMAT, entity_name, reason.value, exc_info=True)
+            if first_isolated is None:
+                first_isolated = exc
+            continue
 
         if transformed.empty:
             logger.warning(f"No data transformed for entity '{entity_name}'; skipping.")
@@ -390,6 +438,13 @@ def run_transform(
         outputs[entity_name] = transformed
         field_orders[entity_name] = list(entity_cfg.get("field_map", {}).keys())
         ledger.record(EntityOutcome.built(entity_name, len(transformed)))
+
+    # Nothing built and something FAILED: the bulkhead contained a failure that is, in effect,
+    # the whole run. Re-raise the first one (its own traceback and category) rather than let the
+    # delivery-integrity gate report the vaguer "no output".
+    if first_isolated is not None and not any(o.kind is OutcomeKind.BUILT for o in ledger.outcomes):
+        logger.error("NO ENTITY BUILT — every entity that could be built failed; the run fails with the first failure.")
+        raise first_isolated
 
     # The shared per-run TransformContext accumulates fail-loud field-transform
     # errors across every entity; surface them on the same axis as the outputs.
@@ -1097,13 +1152,15 @@ def run_pipeline(
         # CI-PINNED STRING — do not reword the banner without updating the smoke.
         # `scripts/ci_flet_pack_smoke.py` (smoke 2, run against the PACKED exe in
         # `.github/workflows/flet-pack.yml`) asserts the literal "=== DRY RUN"
-        # banner plus the entity names printed below (never the row counts — the
-        # SD74 golden owns values). Same discipline as the `--version` string in
+        # banner plus a BUILT line per entity (`<Entity>: <n> rows` — never the
+        # count's value; the SD74 golden owns values). An entity the bulkhead left
+        # out prints in a DISTINCT shape (`dry_run_entity_lines`), so it can never
+        # satisfy that check. Same discipline as the `--version` string in
         # `src/main.py` (smoke 1).
         if dry_run:
             print("\n=== DRY RUN (no files written) ===")
-            for name, df in outputs.items():
-                print(f"  {name}: {len(df)} rows, columns: {list(df.columns)}")
+            for line in dry_run_entity_lines(outputs, transform_outputs.outcomes):
+                print(line)
             print()
 
         # Diff against existing output
@@ -1118,7 +1175,15 @@ def run_pipeline(
             )
             print(report.to_text())
 
-        logger.info("ETL process completed successfully.")
+        left_out = failed_entities(transform_outputs.outcomes)
+        if left_out:
+            # A PARTIAL run (plan 0053 S4): it completed, but not whole — never the success line.
+            logger.warning(
+                "ETL process completed WITHOUT %s — see the ENTITY NOT BUILT line(s) above.",
+                ", ".join(outcome.entity for outcome in left_out),
+            )
+        else:
+            logger.info("ETL process completed successfully.")
 
         # Build the run record ONCE (D2a) → the diagnostic-log line AND the durable store.
         # The store write is best-effort/non-fatal and positioned AFTER the output commit,
@@ -1269,6 +1334,21 @@ def _sftp_upload(
             host = "<unknown host>"
         logger.error(f"SFTP upload FAILED — output files were NOT delivered to {host}: {e}")
         return False
+
+
+def dry_run_entity_lines(outputs: Mapping[str, pd.DataFrame], outcomes: Iterable[EntityOutcome]) -> list[str]:
+    """The ``--dry-run`` summary's per-entity lines.
+
+    A BUILT entity prints ``  <Entity>: <n> rows, columns: [...]`` — the shape the packed-exe
+    smoke (``scripts/ci_flet_pack_smoke.py``) asserts per entity. An entity the bulkhead left
+    out (plan 0053 S4) prints ``  ! not built: <Entity> (<reason>)`` AFTER them — a DIFFERENT
+    shape on purpose, so a check for the built line can never be satisfied by a line saying
+    the entity was not built. EMPTY entities are not listed (unchanged: each logs its own
+    skip). The reason is the closed-set code; a line carries no path, column or value.
+    """
+    lines = [f"  {name}: {len(df)} rows, columns: {list(df.columns)}" for name, df in outputs.items()]
+    lines += [f"  ! not built: {outcome.entity} ({outcome.reason.value})" for outcome in failed_entities(outcomes)]
+    return lines
 
 
 def _print_diff(outputs: dict[str, pd.DataFrame], output_path: str) -> None:

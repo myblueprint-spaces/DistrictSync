@@ -37,6 +37,7 @@ from src.config.authoring import (
     write_overlay,
 )
 from src.config.loader import load_config
+from src.etl.outcomes import EntityOutcome
 from src.history.store import read_run_records
 from src.ui_flet import components, tokens
 from src.ui_flet.config_editor import CEDS_GRADE_ORDER, CreatorForm
@@ -81,6 +82,11 @@ SD48_ADMIN = "roster.admin@sd48.bc.ca"
 #: ``tests/test_ui_flet_filtered_pickers.py`` so Mapping's card note and the creator's copy
 #: face ONE list.
 BANNED_COPY_WORDS = ("soon", "later", "coming")
+
+
+#: A test conversion that PASSES the creator gate carries a real outcome per entity (plan 0053
+#: S4): the gate reads them, and an empty tuple is "no outcome", never a pass.
+_PASSING_OUTCOMES = (EntityOutcome.built("Students", 3),)
 
 
 def _this_module():  # noqa: ANN202
@@ -927,7 +933,7 @@ class TestTheGateRefusesWithoutAUsableOutputFolder:
 
         def _fake(sis_type, input_path, output_path, **kwargs):  # noqa: ANN001, ANN202
             calls.append({"sis": sis_type, "input": input_path, "output": output_path, **kwargs})
-            return pipeline_mod.PipelineResult(entity_outcomes=(), entity_counts={"Students": 3})
+            return pipeline_mod.PipelineResult(entity_outcomes=_PASSING_OUTCOMES, entity_counts={"Students": 3})
 
         monkeypatch.setattr(pipeline_mod, "run_pipeline", _fake)
         return calls
@@ -1026,7 +1032,7 @@ class _PassingGate:
         from src.etl.pipeline import PipelineResult
 
         self.calls.append((sis_id, input_dir, output_dir))
-        return PipelineResult(entity_outcomes=(), entity_counts={"Students": 12, "Classes": 4})
+        return PipelineResult(entity_outcomes=_PASSING_OUTCOMES, entity_counts={"Students": 12, "Classes": 4})
 
 
 def _wizard_at_the_gate(monkeypatch: pytest.MonkeyPatch, cfg: AppConfig) -> tuple[ft.Control, _PassingGate]:
@@ -1037,6 +1043,48 @@ def _wizard_at_the_gate(monkeypatch: pytest.MonkeyPatch, cfg: AppConfig) -> tupl
     root = build_setup(_driving_page())
     assert setup_screen.FILES_STEP_TITLE in _texts(root)
     return root, gate
+
+
+class TestTheGateHeadlineSaysWhetherTheRunFinished:
+    """Plan 0053 S4: a test conversion can now FINISH without an entity. "didn't finish"
+    above a note naming what was left out would be false, so the headline follows the pure
+    gate's bounded ``completed`` flag — and a run that raised keeps "didn't finish"."""
+
+    def _run_with(self, monkeypatch, tmp_path, job) -> ft.Control:  # noqa: ANN001
+        _write_sd93()
+        cfg = _cfg(creator_pending_sis="sd93custom", **_valid_folders(tmp_path))
+        root, _gate = _wizard_at_the_gate(monkeypatch, cfg)
+        monkeypatch.setattr(creator_screen, "creator_gate_job", job)
+        _button(root, creator_screen.GATE_RUN_LABEL).on_click(None)
+        return root
+
+    def test_a_finished_run_that_left_family_out_is_not_headlined_didnt_finish(self, monkeypatch, tmp_path) -> None:
+        from src.etl.outcomes import OutcomeReason
+        from src.etl.pipeline import PipelineResult
+
+        outcomes = (
+            EntityOutcome.built("Students", 3),
+            EntityOutcome.failed("Family", OutcomeReason.MISSING_SOURCE_COLUMN),
+        )
+        root = self._run_with(
+            monkeypatch,
+            tmp_path,
+            lambda *_a, **_kw: PipelineResult(entity_outcomes=outcomes, entity_counts={"Students": 3}),
+        )
+        blob = _blob(root)
+        assert creator_screen.GATE_NOT_BUILT_HEADLINE in blob
+        assert creator_screen.GATE_FAILED_HEADLINE not in blob, "a finished run was headlined didn't finish"
+        assert "Family contacts couldn't be built" in blob
+        assert not _has_button(root, creator_screen.GATE_CONFIRM_LABEL), "a left-out entity must not be activatable"
+
+    def test_the_twin_a_raised_run_keeps_didnt_finish(self, monkeypatch, tmp_path) -> None:
+        def _raise(*_a, **_kw):  # noqa: ANN202
+            raise FileNotFoundError("sd93custom_mapping.yaml")
+
+        root = self._run_with(monkeypatch, tmp_path, _raise)
+        blob = _blob(root)
+        assert creator_screen.GATE_FAILED_HEADLINE in blob
+        assert creator_screen.GATE_NOT_BUILT_HEADLINE not in blob
 
 
 class TestActivation:
@@ -2495,7 +2543,9 @@ class TestTheOutputFolderPreconditionOnMapping:
         monkeypatch.setattr(
             pipeline_mod,
             "run_pipeline",
-            lambda *a, **kw: calls.append(kw) or pipeline_mod.PipelineResult(entity_outcomes=(), entity_counts={}),  # noqa: ARG005
+            lambda *a, **kw: (
+                calls.append(kw) or pipeline_mod.PipelineResult(entity_outcomes=_PASSING_OUTCOMES, entity_counts={})
+            ),  # noqa: ARG005
         )
         root = _mapping(monkeypatch, cfg)
 
@@ -2521,7 +2571,7 @@ class TestTheOutputFolderPreconditionOnMapping:
 
         def _fake(sis_type, input_path, output_path, **kwargs):  # noqa: ANN001, ANN202
             calls.append({"sis": sis_type, **kwargs})
-            return pipeline_mod.PipelineResult(entity_outcomes=(), entity_counts={"Students": 3})
+            return pipeline_mod.PipelineResult(entity_outcomes=_PASSING_OUTCOMES, entity_counts={"Students": 3})
 
         monkeypatch.setattr(pipeline_mod, "run_pipeline", _fake)
         root = _mapping(monkeypatch, cfg)
