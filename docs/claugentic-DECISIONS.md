@@ -44,6 +44,14 @@ Supersedes: the message-substring branch of `pipeline._classify_error_category` 
 
 **Deliberately NOT changed:** the pipeline's config-load block still records `config` via `_record_early_failure` and exits 1 (converting it would double-record and defeat `humanize_config_error`'s type-based branches); `ConfigLoadError` is defined but first raised by Convert in S5. Scope is unchanged — every typed error still fails the RUN until S4's entity boundary. `config_editor.humanize_config_error` still reads message text to pick its bounded sentence; it is a creator-screen copy mapper, not the run-record classifier, and is out of S1's scope.
 
+## 2026-09-24 — plan 0053 owner decisions D14 and D5
+
+Supersedes: nothing — answers two open rows of the plan's Owner-decisions table.
+
+**D14 (owner, 2026-09-24): a FAILED manual Convert never sets Home's verdict; a SUCCESSFUL one still does.** The plan's option (b), narrowed by the owner on clarification: Home's verdict skips records with `source == "manual"` AND `status == "failed"`, and keys on the newest remaining record. A manual success after a failed nightly still turns Home green (today's behaviour, kept), and a manual-only install (no nightly) still gets its verdict from its manual successes. The failed manual attempt shows in Run History (S5 records it) and on the Convert screen at the time. **Why:** Home answers "is the sync healthy?"; one failed hand-run attempt after a good nightly does not make the nightly unhealthy, while a hand-run fix of a failed nightly genuinely repairs it. Applied in S5 (one source filter in the shared classifier, so Home, the Run History banner and the nav badge cannot disagree).
+
+**D5 (owner, 2026-09-24): option (a)** — a standing amber while an enabled entity produces nothing because every row was filtered out or a mapped column is missing; neutral when a `MAY_BE_EMPTY` entity's source is simply empty. S8 measures which bundled districts turn amber before landing (SD51's Family is the known case: its contacts export lacks the configured Email column).
+
 ## 2026-09-24 — plan 0053 lands as ONE integration PR; the owner tests the exe and merges once
 
 Supersedes: 2026-09-23 plan 0053 execution scaffolding — "owner merges each slice" and "cut a release after S4".
