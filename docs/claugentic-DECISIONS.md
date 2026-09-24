@@ -4,6 +4,12 @@
 
 
 
+## 2026-09-24 — Gate A (plan 0053): §3 and §5 of the failure policy approved as written
+
+Supersedes: nothing — completes Gate A of the 2026-09-23 failure-policy entry below.
+
+**Approved by the owner, 2026-09-24:** `docs/developer/failure-policy.md` §3 (entity criticality) and §5 (missing-column matrix + site catalogue), unchanged. Three consequences were put to the owner explicitly and confirmed: (1) an entity NOT in the §3 table is CRITICAL, and becomes ISOLATABLE only through the promotion rule (evidence + a dated entry here); (2) a missing LINKING column (class (b) — student/class/school IDs, co-teacher columns included) fails the night rather than ship a deactivating file with rows silently missing, subject to S10's measurement gate (every bundled config + the real local drops; STOP and escalate if any would newly fail); (3) a missing NICE-TO-HAVE column (class (d) — e.g. class grade, class name, homeroom teacher name) leaves the value blank with a warning instead of failing the run (site #35 stops failing the run in S10). S1 may start.
+
 ## 2026-09-23 — failure is scoped to the entity; criticality is declared; conservative default until Q5
 
 Supersedes: nothing — first written ETL failure policy (plan 0053, `.claude/plans/0053-etl-failure-policy.md`).
