@@ -13,6 +13,7 @@ helpers it needs are now imported from the focused helper modules.)
 """
 
 import logging
+from collections.abc import Sequence
 from typing import Any, NamedTuple, Optional
 
 import pandas as pd
@@ -25,7 +26,8 @@ from src.etl.column_names import (
     SCHOOL_NUMBER,
     TEACHER_NAME,
 )
-from src.etl.transformers.columns import Previously, resolve_source_column
+from src.etl.errors import GuardKind
+from src.etl.transformers.columns import Previously, require_columns, resolve_source_column, source_column_label
 from src.etl.transformers.context import TransformContext
 from src.etl.transformers.course_codes import filter_excluded_course_codes, resolve_course_code_column
 from src.etl.transformers.grades import (
@@ -52,6 +54,9 @@ logger = logging.getLogger(__name__)
 #: automatically reaches the class NAME and the two cannot drift. School and
 #: teacher are deliberately NOT here: they are constant within a blend and already
 #: carried by the Class ID.
+#:
+#: WHICH of them a district's key uses is the Classes ``session_components`` declaration
+#: (plan 0053 S10, owner ruling 2026-09-25 — :func:`session_time_roles`): absent = all four.
 SESSION_TIME_COMPONENTS: dict[str, str] = {
     "session_term": "term",
     "session_semester": "semester",
@@ -60,12 +65,52 @@ SESSION_TIME_COMPONENTS: dict[str, str] = {
 }
 
 
-def session_time_components(source_columns: dict[str, Any]) -> tuple[str, ...]:
-    """The resolved time-slot columns, in key order, from the Classes ``source_columns``."""
+def session_time_roles(declared: Sequence[str] | None) -> tuple[str, ...]:
+    """The time-slot ROLES in force, in the fixed key order: all four, or only the DECLARED ones.
+
+    ``declared`` is the Classes mapping's ``session_components`` (``None`` when absent — every
+    role, byte-identical to before the key existed). The ORDER is always
+    :data:`SESSION_TIME_COMPONENTS`' whatever order the declaration lists, so a declaration
+    decides membership only and the key and the block label never reorder. An unknown role,
+    a repeated one or an empty declaration RAISES ``ValueError`` — config validation refuses
+    all three first (``models.EntityConfig.check_session_components``); this is the runtime
+    floor for a context a caller builds by hand. A declared-away component is never read.
+    """
+    if declared is None:
+        return tuple(SESSION_TIME_COMPONENTS)
+    names = list(declared)
+    unknown = [role for role in names if role not in SESSION_TIME_COMPONENTS]
+    if not names or unknown or len(set(names)) != len(names):
+        raise ValueError(
+            f"session_components must name each of {list(SESSION_TIME_COMPONENTS)} at most once, and at "
+            f"least one of them; got {names}"
+        )
+    return tuple(role for role in SESSION_TIME_COMPONENTS if role in names)
+
+
+def session_time_components(source_columns: dict[str, Any], *, roles: Sequence[str]) -> tuple[str, ...]:
+    """The resolved time-slot columns for ``roles`` (:func:`session_time_roles`), in key order.
+
+    ``roles`` is REQUIRED keyword-only with no default: which components are in the key
+    decides which sections become ONE class, so no caller may get "all four" by omission.
+    """
     return tuple(
-        resolve_source_column(source_columns, role, default=default, previously=Previously.DEFAULT)
-        for role, default in SESSION_TIME_COMPONENTS.items()
+        resolve_source_column(
+            source_columns, role, default=SESSION_TIME_COMPONENTS[role], previously=Previously.DEFAULT
+        )
+        for role in roles
     )
+
+
+def session_time_labels(source_columns: dict[str, Any], *, roles: Sequence[str]) -> tuple[str, ...]:
+    """:func:`session_time_components` in CONFIG spelling — what a typed error names.
+
+    What :meth:`BlendedClassDetector.detect` REQUIRES in its working frame (§5 #39, plan
+    0053 S10): EVERY time-slot component IN FORCE (``roles`` — all four unless the district
+    declared fewer), configured or left to its MyEd BC default — a component absent from the
+    key merges distinct sections into one blended class.
+    """
+    return tuple(source_column_label(source_columns, role, default=SESSION_TIME_COMPONENTS[role]) for role in roles)
 
 
 #: Smallest course-title budget :meth:`BlendedClassDetector.create_name` will
@@ -126,7 +171,9 @@ class BlendedClassDetector:
         # The SAME schedule grade column Classes' and Enrollments' subject splits
         # read — the enrollable map below must classify exactly their rows.
         grade_col = schedule_grade_column(field_map)
-        components = session_time_components(mapping.get("source_columns") or {})
+        source_columns = mapping.get("source_columns") or {}
+        roles = session_time_roles(mapping.get("session_components"))
+        components = session_time_components(source_columns, roles=roles)
 
         loaded = self._load_reference_frames(mapping, context)
         if loaded is None:
@@ -146,6 +193,20 @@ class BlendedClassDetector:
         if working is None:
             return BlendedDetection.empty()
 
+        # §5 #39 (plan 0053 S10): the school and EVERY time-slot component IN FORCE
+        # (configured or default; all four unless the district's `session_components`
+        # declares fewer) are required — an absent school let a blend cross schools and
+        # ship a blank School ID, and an absent time column merged distinct sections into
+        # one blended class, re-keying their students to a BLENDED_ Class ID. SD40's
+        # export has no term column, so its config DECLARES the three it has (owner ruling
+        # 2026-09-25) — the key it effectively used before S10, byte-identical.
+        # failure-policy: join_key
+        require_columns(
+            working.columns,
+            [SCHOOL_NUMBER, *session_time_labels(source_columns, roles=roles)],
+            entity="Classes",
+            guard=GuardKind.JOIN_KEY,
+        )
         working = self._add_session_key(working, teacher_id_col, components=components)
         return self._register_blends(
             working,
@@ -237,10 +298,13 @@ class BlendedClassDetector:
         """Join the available session components into a ``session_key`` column.
 
         Sections sharing a session_key (school + teacher + time slot) are
-        candidates for blending. Only components present in the frame
-        participate; they are stringified with NaN → "" first. ``components`` is
-        :func:`session_time_components` — keyword-only with no default, because
-        the key decides which sections become ONE class.
+        candidates for blending. School, teacher and every time-slot component
+        are present by the time this runs on the pipeline path (``detect``
+        requires them — §5 #39); a caller that skips ``detect`` gets only the
+        components its frame carries. The participating columns are stringified
+        with NaN → "" first.
+        ``components`` is :func:`session_time_components` — keyword-only with no
+        default, because the key decides which sections become ONE class.
         """
         session_components = [SCHOOL_NUMBER, teacher_id_col, *components]
         available = [col for col in session_components if col in working.columns]

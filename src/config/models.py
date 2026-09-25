@@ -58,6 +58,18 @@ def _ceds_grade_codes() -> frozenset[str]:
     return CEDS_GRADE_CODES
 
 
+def _session_time_roles() -> tuple[str, ...]:
+    """The blended time-slot ROLES (``session_term`` …), in key order, for validation.
+
+    DEFERRED import for the same reason as :func:`_ceds_grade_codes`:
+    ``src.etl.transformers.blended`` owns ``SESSION_TIME_COMPONENTS`` (single source —
+    never restated here) and importing it at module level would be circular.
+    """
+    from src.etl.transformers.blended import SESSION_TIME_COMPONENTS
+
+    return tuple(SESSION_TIME_COMPONENTS)
+
+
 def _require_ceds_grade_list(
     field: str,
     value: list,
@@ -266,11 +278,25 @@ class FieldAppendYear(ConfiguredField):
         entity: str,
         context: TransformContextLike,
     ) -> Any:
+        """The column with the school year appended — an ID, so its column is REQUIRED.
+
+        With ``append_year_to_id`` on, the value is an identity (a Class ID), and an
+        absent source column used to give every row a blank one (§5 #29). It now
+        fails CLOSED with a typed ``SourceSchemaError`` (``JOIN_KEY``) naming the
+        column as configured (plan 0053 S10); the field-map engine re-raises typed
+        errors, so the orchestrator decides the scope. DEFERRED import, as in
+        :func:`_ceds_grade_codes`: ``columns`` imports this module.
+        """
+        from src.etl.errors import GuardKind
+        from src.etl.transformers.columns import require_columns
+
         col_name = self.column.lower()
         if not self.append_year_to_id:
             # Legacy fallthrough: append disabled reads the column directly
             # (absent column → intended blank, not recorded).
             return working[col_name] if col_name in working.columns else pd.NA
+        # failure-policy: join_key
+        require_columns(working.columns, [self.column], entity=entity, guard=GuardKind.JOIN_KEY)
         return working.apply(
             lambda row: host.generate_class_id(row, mt_id_col=col_name, append_year=True, context=context),
             axis=1,
@@ -461,6 +487,35 @@ class EntityConfig(BaseModel):
     # (default, back-compatible). Output-keyed source columns are configured
     # through field_map entries instead (string or {column: ...}).
     source_columns: dict[str, str] = Field(default_factory=dict)
+    # Opt-in, Classes only (plan 0053 S10 — owner ruling 2026-09-25; config format 1.14): the
+    # blended-class TIME-SLOT components this district's export actually CARRIES, named by their
+    # Classes ``source_columns`` ROLES (``session_term`` / ``session_semester`` / ``session_day`` /
+    # ``session_period``). ``None`` (absent) = all four, byte-identical. Blended detection keys
+    # sections on — and REQUIRES (failure-policy §5 #39) — exactly the declared ones, in the fixed
+    # term → semester → day → period order whatever order they are listed in. It exists because a
+    # blank or null role reads its DEFAULT column (the resolver's one shape policy), so "this export
+    # has no term column" had no other explicit spelling; a component is never dropped silently.
+    session_components: Optional[list[str]] = None
+
+    @field_validator("session_components")
+    @classmethod
+    def check_session_components(cls, value: Optional[list[str]]) -> Optional[list[str]]:
+        """A declared component list is non-empty, names only known roles, each once."""
+        if value is None:
+            return value
+        roles = _session_time_roles()
+        if not value:
+            raise ValueError(
+                "session_components is empty: blended classes would then be keyed on school and "
+                f"teacher alone, merging every section a teacher teaches. Declare the roles your "
+                f"export carries (from {list(roles)}), or remove the key to use all four."
+            )
+        unknown = [role for role in value if role not in roles]
+        if unknown:
+            raise ValueError(f"session_components names unknown role(s) {unknown}; the roles are {list(roles)}.")
+        if len(set(value)) != len(value):
+            raise ValueError("session_components lists a role more than once.")
+        return value
 
     @model_validator(mode="before")
     @classmethod
@@ -1053,6 +1108,37 @@ class MappingConfig(BaseModel):
             "in enabled_entities, or remove student_rostering_grades."
         )
 
+    @model_validator(mode="after")
+    def check_session_components_placement(self):
+        """``session_components`` is read by Classes' blended detection ONLY — and must agree with it.
+
+        Rejects the two ways the key could be silently inert or contradicted: declared on any
+        other entity (nothing reads it there), and a time-slot role CONFIGURED in the Classes
+        ``source_columns`` while left out of ``session_components`` (the column would be named
+        and then never used). Plan 0053 S10 (owner ruling 2026-09-25).
+        """
+        for name, entity in self.mappings.items():
+            if name != "Classes" and entity.session_components is not None:
+                raise ValueError(
+                    f"mappings.{name}.session_components: only the Classes entity reads session_components "
+                    f"(blended class detection); here it would do nothing. Move it to Classes or remove it."
+                )
+        classes = self.mappings.get("Classes")
+        if classes is None or classes.session_components is None:
+            return self
+        undeclared = [
+            role
+            for role in _session_time_roles()
+            if role in classes.source_columns and role not in classes.session_components
+        ]
+        if undeclared:
+            raise ValueError(
+                f"mappings.Classes.source_columns configures {undeclared}, but session_components leaves "
+                f"{'it' if len(undeclared) == 1 else 'them'} out, so the column would never be read. Add "
+                f"{'it' if len(undeclared) == 1 else 'them'} to session_components or remove the source_columns entry."
+            )
+        return self
+
     def get_entity(self, name: str) -> Optional[EntityConfig]:
         return self.mappings.get(name)
 
@@ -1087,6 +1173,8 @@ class MappingConfig(BaseModel):
                 entry["row_filters"] = [rf.model_dump() for rf in entity_cfg.row_filters]
             if entity_cfg.source_columns:
                 entry["source_columns"] = dict(entity_cfg.source_columns)
+            if entity_cfg.session_components is not None:
+                entry["session_components"] = list(entity_cfg.session_components)
             mappings_raw[entity_name] = entry
 
         global_raw: dict[str, Any] = {

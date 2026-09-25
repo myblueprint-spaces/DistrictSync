@@ -11,6 +11,42 @@ Per-release download links and auto-generated commit notes live on the
 
 ### Changed
 
+- **A missing column that links records now stops the run instead of sending a
+  file with rows quietly missing.** When an export is missing a column DistrictSync
+  needs to link records — a student, teacher, class or school ID, the homeroom
+  column, or the term, semester, day or period column blended classes are detected
+  on — the students, staff, classes or enrollments file that needs it is no longer
+  built with those rows left out: the whole run stops, nothing new is written or
+  sent that night (SpacesEDU keeps the last successful sync), the run log names the
+  missing column, and Home, Run History and the Convert screen say an export file is
+  missing a column the district's mapping needs. It used to send, for example, an
+  enrollments file with every timetable student or every homeroom teacher left out —
+  which, depending on the district's SpacesEDU import settings, can remove those
+  people from their classes — a roster whose students had no IDs, or classes from
+  different terms merged into one blended class, and a missing homeroom or course
+  column used to fail with an unexplained error. A mapping set up in DistrictSync
+  itself over a schedule whose student column is not the standard `Student ID` now
+  stops here too, where it used to send its enrollments without any timetable
+  student.
+- **Co-teachers a Class Information export cannot link are left out with a
+  warning, never in silence.** When a Class Information file is present but missing
+  a column co-teachers are linked by — the primary-teacher flag (the basic report
+  lacks it), or the Master Timetable ID when blended classes exist — the enrollments
+  file is built and delivered without those co-teachers, as before, but the run log
+  now names the missing column and Home and Run History show a warning ("Your roster
+  synced without some co-teachers", "co-teachers left out") every night until the
+  export carries the column again — except on a night that also sees an unusual drop,
+  when the drop's warning shows instead, so this one can never hide it. It used to
+  happen with no sign anywhere. The run record carries it as a `notes` entry on the
+  enrollments outcome.
+- **A missing homeroom teacher-name column no longer stops the run.** Homeroom
+  classes are named without the teacher's name, and the run log carries one warning
+  saying how many. It used to fail the whole run.
+- **A district mapping can now say which class-time columns its export has**
+  (config format 1.14): the Classes `session_components` list names the ones blended
+  classes are keyed on, when an export genuinely lacks one. The SD40 (New
+  Westminster) mapping declares its three — its schedule has no Term column — so its
+  classes and enrollments files are unchanged.
 - **Home now warns when a file your district's mapping produces came out empty.**
   When an output ends up with nothing in it — every row was filtered out (for
   example every family contact had a blank email address), or its export file is

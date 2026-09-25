@@ -4,11 +4,13 @@ import inspect
 import logging
 
 import pandas as pd
+import pytest
 
 import src.etl.transformers.blended as blended_module
 import src.etl.transformers.grades as grades_module
+from src.etl.errors import GuardKind, SourceSchemaError
 from src.etl.transformer import DataTransformer
-from src.etl.transformers.blended import BlendedClassDetector, session_time_components
+from src.etl.transformers.blended import BlendedClassDetector, session_time_components, session_time_roles
 
 
 class TestValidateBlendedClass:
@@ -820,10 +822,15 @@ class TestCourseCodeColumnGuard:
         same space as the course catalogue's `course code` — so the blend is
         named with genuine titles. Before the guard this exact input raised
         KeyError('course code') and exited the run with code 1.
+
+        The schedule carries the four time-slot columns, BLANK: since plan 0053 S10
+        (§5 #39) detection requires every one of them, and blank values add no
+        ``Block`` segment, so the name under test is unchanged.
         """
         class_info_without_mt_id = pd.DataFrame({"school number": ["300"], "teacher id": ["T010"]})
+        schedule = blended_schedule_df.assign(term="", semester="", day="", period="")
 
-        metadata = self._detect(class_info_without_mt_id, blended_schedule_df, blended_course_info_df)
+        metadata = self._detect(class_info_without_mt_id, schedule, blended_course_info_df)
 
         names = [meta["Name"] for meta in metadata.values()]
         assert names == ["Adams English 1 / English 2 / Science 3 (01/02/03) 2025"]
@@ -989,20 +996,47 @@ class TestBlendNameIdentifiesTheBlend:
             "English 1 / Science 1 (Block 1 1 A 4) (08/09) 2025",
         ]
 
-    def test_a_frame_with_NONE_of_the_components_is_named_exactly_as_before(self):
-        """The no-regression floor.
-
-        `_add_session_key` keys only on components PRESENT in the frame, so a
-        district whose export carries none of them must still be named — and
-        indexing a missing column would raise KeyError and kill the Classes
-        entity rather than degrade.
-        """
+    def test_a_frame_with_NONE_of_the_components_fails_closed_naming_all_four(self):
+        """Before plan 0053 S10 a frame with none of the time-slot columns keyed only on
+        school + teacher, so every section one teacher taught at a school, at ANY time,
+        became one blended class. Since S10 (§5 #39) detection requires every component
+        and names all of the missing ones at once, in config spelling (the defaults)."""
         class_info = pd.DataFrame(
             {
                 "school number": ["500", "500"],
                 "teacher id": ["T500", "T500"],
                 "course code": ["ENG01", "SCI01"],
                 "master timetable id": ["MT1", "MT2"],
+            }
+        )
+        schedule = pd.DataFrame(
+            {
+                "school number": ["500", "500"],
+                "master timetable id": ["MT1", "MT2"],
+                "grade": ["08", "09"],
+            }
+        )
+
+        with pytest.raises(SourceSchemaError) as exc:
+            self._detect(class_info, schedule, self._course_info())
+        assert (exc.value.entity, exc.value.guard, exc.value.columns) == (
+            "Classes",
+            GuardKind.JOIN_KEY,
+            ("term", "semester", "day", "period"),
+        )
+
+    def test_twin_blank_components_are_named_exactly_as_before(self):
+        """The naming floor survives: the columns present but BLANK add no ``Block`` segment."""
+        class_info = pd.DataFrame(
+            {
+                "school number": ["500", "500"],
+                "teacher id": ["T500", "T500"],
+                "course code": ["ENG01", "SCI01"],
+                "master timetable id": ["MT1", "MT2"],
+                "term": ["", ""],
+                "semester": ["", ""],
+                "day": ["", ""],
+                "period": ["", ""],
             }
         )
         schedule = pd.DataFrame(
@@ -1037,6 +1071,11 @@ class TestBlendNameIdentifiesTheBlend:
                 "teacher id": ["T500 ", "T500 "],
                 "course code": ["ENG01", "SCI01"],
                 "master timetable id": ["MT1", "MT2"],
+                # present (§5 #39 requires them) but blank: no Block segment
+                "term": ["", ""],
+                "semester": ["", ""],
+                "day": ["", ""],
+                "period": ["", ""],
             }
         )
         schedule = pd.DataFrame(
@@ -1083,7 +1122,7 @@ class TestBlendNameBudgetsTheCourseSegment:
             self.context,
             course_code_col="course code",
             teacher_name=teacher_name,
-            session_components=session_time_components({}),
+            session_components=session_time_components({}, roles=session_time_roles(None)),
         )
 
     def test_the_block_grades_and_year_SURVIVE_a_course_list_that_overflows(self):

@@ -43,7 +43,8 @@ from datetime import datetime
 from enum import Enum
 
 from src.config.app_config import AppConfig
-from src.ui_flet.failure_copy import data_warnings_clause, partial_copy
+from src.etl.outcomes import EntityOutcome
+from src.ui_flet.failure_copy import data_warnings_clause, partial_copy, partial_label
 from src.ui_flet.home_status import (
     _MYBLUEPRINT_ENTITIES,
     _ROSTERING_ENTITIES,
@@ -513,13 +514,17 @@ def _row_entity_counts(record: dict) -> dict[str, int]:
     return counts
 
 
-def _status_label(reason: LatestReason, record: dict, *, sftp: SftpDelivery, left_out: int) -> str:
+def _status_label(
+    reason: LatestReason, record: dict, *, sftp: SftpDelivery, left_out: tuple[EntityOutcome, ...]
+) -> str:
     """The plain per-run category label from the shared ``LatestReason`` (no emoji, no raw string).
 
-    ``PARTIAL`` (plan 0053 S3) reads "<Delivered|Completed> · N file(s) skipped" — the files
-    the run was set up to build and left out (``left_out``, a count only; the banner names
-    them). A delivery-only record's form is "Delivered saved files · N file(s) skipped": the
-    saved files it shipped are the partial build's.
+    ``PARTIAL`` (plan 0053 S3) reads "<Delivered|Completed> · <suffix>", the suffix worded by
+    ``failure_copy.partial_label`` over ``left_out`` (the outcomes that warn; the banner names
+    them): "N file(s) skipped" for files the run was set up to build and left out, and since
+    plan 0053 S10 a note's own words for a file that BUILT without part of itself
+    ("co-teachers left out") — never counted as skipped. A delivery-only record's form is
+    "Delivered saved files · <suffix>": the saved files it shipped are the partial build's.
 
     ``DATA_WARNINGS`` and ``CLEAN`` both open with "Delivered" ONLY when the SFTP axis says the
     run genuinely shipped, else "Completed" (SFTP not attempted — a local-only run must never
@@ -538,7 +543,7 @@ def _status_label(reason: LatestReason, record: dict, *, sftp: SftpDelivery, lef
             word = "Delivered saved files"
         else:
             word = "Delivered" if sftp is SftpDelivery.DELIVERED else "Completed"
-        return f"{word} · {left_out} {pluralize('file', left_out)} skipped"
+        return f"{word} · {partial_label(left_out)}"
     if reason is LatestReason.DATA_WARNINGS:
         total = _data_errors_total(record)
         word = "Delivered" if sftp is SftpDelivery.DELIVERED else "Completed"
@@ -616,7 +621,7 @@ def to_run_row(
     sftp = _sftp_delivery(record)
     reason = classify_latest_reason(record, prior_build=prior_build)
     counts = _row_entity_counts(record)
-    left_out = len(left_out_outcomes(record, prior_build=prior_build))
+    left_out = left_out_outcomes(record, prior_build=prior_build)
     return RunRow(
         when=friendly_timestamp(str(record.get("timestamp", "")), now=now),
         status_label=_status_label(reason, record, sftp=sftp, left_out=left_out),

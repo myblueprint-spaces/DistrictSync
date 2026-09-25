@@ -356,7 +356,33 @@ Pointing `class_info` at the non-Enhanced `ClassInformation.txt` is **not** a
 workaround: without a Master Timetable ID, blended detection falls back to a
 deduplicated schedule using the SAME session key (same false merges), and
 without a Primary Teacher column the co-teacher enrollments this switch
-preserves would drop to zero.
+preserves are left out — with one `CO-TEACHERS LEFT OUT` warning in the log and
+a standing warning on Home and Run History every night (plan 0053 S10, owner
+ruling 2026-09-25; `failure-policy.md` §5 #15).
+
+**When the export lacks a time-slot column (`session_components`).** Blended
+detection keys sections on school + teacher + the time-slot columns
+`term` / `semester` / `day` / `period` (the Classes `source_columns` roles
+`session_term` / `session_semester` / `session_day` / `session_period` rename
+them), and since plan 0053 S10 every component in force is REQUIRED
+(`failure-policy.md` §5 #39) — an absent one used to be dropped from the key,
+which can merge sections from different terms into one blended class. If the
+district's export genuinely has no such column, DECLARE the ones it has on the
+Classes entity, by role:
+
+```yaml
+  Classes:
+    session_components: [session_semester, session_day, session_period]
+```
+
+Absent = all four (every other district, byte-identical). The list decides
+membership only — the key and the class name keep the fixed term → semester →
+day → period order — and it is validated at load: known roles only, each once,
+never empty, on Classes only, and never leaving out a role the same entity's
+`source_columns` configures. It is config format 1.14 (the config declares
+`version: '1.14'`); `sd40myedbc` is the first to use it (its schedule has no
+Term column), and declaring the components an export really has keeps its
+blends byte-identical to the key it used before S10.
 
 If a district's K-7 (or equivalent) grades are already `homeroom_grades`, the
 existing blend-suppression gate (a blend none of whose grades receives
@@ -732,6 +758,16 @@ Then run it like any other config (point `DISTRICTSYNC_DATA_DIR` at a scratch pr
 python -m src.main --sis sd93custom --input tests/snapshots/input --output data/output --dry-run
 ```
 
+Over the frozen snapshot that dry run STOPS, since plan 0053 S10, with a typed
+`source_schema` error on Enrollments naming `Student ID`: the snapshot's schedule
+calls its student column `Student Number`, a `_base: myedbc` overlay inherits the
+base's `student_id_col: Student ID`, and the timetable enrollments now require it
+(`failure-policy.md` §5 #28) where they used to ship with every timetable student
+left out. The owner kept that stop (2026-09-25); the creator cannot set
+`student_id_col` yet (ROADMAP). To see a run pass, point it at a COPY of the
+extract whose schedule also carries a `Student ID` column —
+`tests/test_config_authoring.snapshot_input_with_base_student_id` builds one.
+
 `write_overlay` builds → load-backs through the real `validate_overlay` → only then writes, atomically, so the user dir never holds a file the app cannot read. The packed-exe path has its own gate: the `user-overlay` phase of `scripts/ci_flet_pack_smoke.py` plants an overlay in a throwaway profile and converts through it, with a pre-plant negative control.
 
 ---
@@ -741,7 +777,7 @@ python -m src.main --sis sd93custom --input tests/snapshots/input --output data/
 | Config name | `_base` | Purpose |
 |-------------|---------|---------|
 | `myedbc` | (none — base) | Standard MyEdBC filenames; defines all 7 entity templates; enables the 5 rostering entities by default |
-| `sd40myedbc` | `myedbc` | CSV files with SD-40_/SD40- prefix; Student Schedule is headerless (`file_headers:` used) |
+| `sd40myedbc` | `myedbc` | CSV files with SD-40_/SD40- prefix; Student Schedule is headerless (`file_headers:` used); declares Classes `session_components` (its schedule has no Term column — config format 1.14) |
 | `sd48myedbc` | `myedbc` | Student Demographic Enhanced, Staff Information (non-enhanced) |
 | `sd51myedbc` | `myedbc` | Boundary — Student Demographic Enhanced, Class Info Enhanced (10-row early-year extract expected); `blended_classes: false` (2026-09-16) — the export's `Day` column never rotates, so the session key can't disambiguate secondary sections |
 | `sd54myedbc` | `myedbc` | Bulkley Valley — lowercase filenames; Staff non-Enhanced; Emergency Contact + Class Info Enhanced; ATT--AM/PM/Daily excluded |

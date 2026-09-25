@@ -27,6 +27,13 @@ admin-facing copy is allowed to print. Those pass :func:`safe_label`, the ONE me
 shape check (a member of the RESOLVED config's own vocabulary, printable, at most
 :data:`MAX_LABEL_LENGTH` characters), and are produced in exactly one place,
 :func:`apply_labels`. Never an OBSERVED header, a path, a cell value or ``str(exc)`` (§8).
+
+**Notes (plan 0053 S10, owner ruling 2026-09-25 — the carrier S11 extends).** An outcome
+may also carry ``notes``: closed :class:`OutcomeNote` codes, each with a COUNT, that a
+transformer recorded through ``TransformContext.record_outcome_note`` while it ran — a fact
+about a BUILT (or EMPTY) entity that its kind and reason cannot say, such as "built, but the
+co-teacher rows were left out". A code and a count only: never a column name, a value or a
+path. Whether a note makes the run PARTIAL is decided in ONE place, ``failure_copy.NOTE_TIER``.
 """
 
 from __future__ import annotations
@@ -171,6 +178,27 @@ VALID_REASONS: Final[Mapping[OutcomeKind, frozenset[OutcomeReason]]] = MappingPr
     }
 )
 
+
+class OutcomeNote(StrEnum):
+    """A closed fact a transformer records about an entity it DID build (persisted values — never
+    change; additive only). Plan 0053 S10 introduces the carrier with the one member owner ruling
+    2026-09-25 needs; S11 adds the rest of its catalogue as further members.
+    """
+
+    # Enrollments: a present, non-empty ClassInformation lacked a column the co-teacher rows are
+    # linked by (primary-teacher flag, its teacher id, Path 1's section column, Path 2's Master
+    # Timetable ID), so those co-teacher rows were left out and the rest was built (§5 #15). The
+    # count is the ClassInformation rows AFFECTED: the whole file when an entry column is missing,
+    # the primary-teacher rows when a path column is — with one path missing, the other path may
+    # still have linked some of those same rows, so it is never a count of rows "not used".
+    COTEACHER_SOURCE_UNUSABLE = "coteacher_source_unusable"
+
+
+#: The outcome kinds that may carry notes: an entity whose transform RAN TO COMPLETION. A FAILED
+#: entity's file is left out whole (its reason says why) and a NOT_RUN one never ran, so a note
+#: about what a finished transform left out can only describe a BUILT or EMPTY outcome.
+NOTE_BEARING_KINDS: Final[frozenset[OutcomeKind]] = frozenset({OutcomeKind.BUILT, OutcomeKind.EMPTY})
+
 OUTCOMES_RECORD_KEY: Final = "entity_outcomes"
 """The run-record key carrying the per-entity outcomes (additive JSON beside ``run_as``)."""
 
@@ -183,8 +211,15 @@ LABELS_KEY: Final = "labels"
 FILE_LABEL_KEY: Final = "file_label"
 """The per-entity entry key carrying :attr:`EntityOutcome.file_label` (plan 0053 S7, additive)."""
 
+NOTES_KEY: Final = "notes"
+"""The per-entity entry key carrying :attr:`EntityOutcome.notes` as ``{note: count}`` (plan 0053 S10,
+additive)."""
+
 MAX_LABEL_LENGTH: Final = 120
 """The longest config-declared label a record or a sentence may carry (plan 0053 S7, D4)."""
+
+#: One note on one outcome: the closed code and how many rows it concerns (at least one).
+Note = tuple[OutcomeNote, int]
 
 
 @dataclass(frozen=True)
@@ -208,6 +243,11 @@ class EntityOutcome:
     through :func:`safe_label` against the resolved config's own vocabulary; the constructor
     re-checks their SHAPE (it cannot know the config) and refuses the states that could never
     come from there: labels on any other reason, a file label without a column label.
+
+    ``notes`` (plan 0053 S10) are ``(OutcomeNote, count)`` pairs the entity's transform recorded
+    (``TransformContext.record_outcome_note``), in the order recorded: each note once, each count
+    an ``int`` of at least 1, and only on a :data:`NOTE_BEARING_KINDS` outcome (the transform ran
+    to completion). Everything else is refused.
     """
 
     entity: str
@@ -217,6 +257,7 @@ class EntityOutcome:
     missing_mapped: tuple[str, ...] = ()
     labels: tuple[str, ...] = ()
     file_label: str = ""
+    notes: tuple[Note, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.entity, str) or not self.entity.strip():
@@ -238,14 +279,15 @@ class EntityOutcome:
             raise ValueError(f"{self.entity}: a {self.kind.value!r} outcome has no rows ({self.rows})")
         _check_missing_mapped(self.entity, self.missing_mapped)
         _check_labels(self.entity, self.reason, self.labels, self.file_label)
+        _check_notes(self.entity, self.kind, self.notes)
 
     @classmethod
-    def built(cls, entity: str, rows: int) -> EntityOutcome:
-        return cls(entity, OutcomeKind.BUILT, OutcomeReason.NONE, rows)
+    def built(cls, entity: str, rows: int, *, notes: tuple[Note, ...] = ()) -> EntityOutcome:
+        return cls(entity, OutcomeKind.BUILT, OutcomeReason.NONE, rows, notes=notes)
 
     @classmethod
-    def empty(cls, entity: str, reason: OutcomeReason) -> EntityOutcome:
-        return cls(entity, OutcomeKind.EMPTY, reason, 0)
+    def empty(cls, entity: str, reason: OutcomeReason, *, notes: tuple[Note, ...] = ()) -> EntityOutcome:
+        return cls(entity, OutcomeKind.EMPTY, reason, 0, notes=notes)
 
     @classmethod
     def failed(cls, entity: str, reason: OutcomeReason) -> EntityOutcome:
@@ -414,6 +456,28 @@ def _check_missing_mapped(entity: str, columns: object) -> None:
         raise ValueError(f"{entity}: missing_mapped names must be non-blank, trimmed and printable")
     if len(set(columns)) != len(columns):
         raise ValueError(f"{entity}: missing_mapped lists a column more than once")
+
+
+def _note_shaped(note: object) -> bool:
+    """One ``(OutcomeNote, count)`` pair: a member of the enum and an ``int`` count of at least 1
+    (``bool`` is an ``int``, and a True/False count is a caller bug, not a count)."""
+    if not isinstance(note, tuple) or len(note) != 2:
+        return False
+    code, count = note
+    return isinstance(code, OutcomeNote) and isinstance(count, int) and not isinstance(count, bool) and count >= 1
+
+
+def _check_notes(entity: str, kind: OutcomeKind, notes: object) -> None:
+    """Refuse ``notes`` that are not distinct ``(OutcomeNote, count ≥ 1)`` pairs on a note-bearing kind."""
+    if not isinstance(notes, tuple):
+        raise TypeError(f"{entity}: notes must be a tuple, not {type(notes).__name__}")
+    if not all(_note_shaped(note) for note in notes):
+        raise ValueError(f"{entity}: each note must be an (OutcomeNote, count >= 1) pair")
+    codes = [code for code, _count in notes]
+    if len(set(codes)) != len(codes):
+        raise ValueError(f"{entity}: notes lists a note more than once")
+    if notes and kind not in NOTE_BEARING_KINDS:
+        raise ValueError(f"{entity}: a {kind.value!r} outcome carries no notes — its transform did not complete")
 
 
 def apply_observation(outcome: EntityOutcome, missing_mapped: tuple[str, ...]) -> EntityOutcome:
@@ -611,8 +675,9 @@ def outcomes_to_record(outcomes: Iterable[EntityOutcome]) -> dict[str, dict[str,
     ``{"Family": {"kind": "failed", "reason": "missing_source_column", "rows": 0}, ...}`` —
     plain ``str``/``int``/``list`` only, so the store's ``json.dumps`` and the log line agree.
     ``"missing_mapped"`` (a list of config-spelling column names, plan 0053 S6) is written only
-    when the observation found something, and ``"labels"`` / ``"file_label"`` (plan 0053 S7)
-    only when the outcome names something, so every other entry is byte-identical to before.
+    when the observation found something, ``"labels"`` / ``"file_label"`` (plan 0053 S7)
+    only when the outcome names something, and ``"notes"`` (plan 0053 S10, ``{note: count}``)
+    only when the transform recorded one, so every other entry is byte-identical to before.
     """
     record: dict[str, dict[str, Any]] = {}
     for outcome in outcomes:
@@ -623,6 +688,8 @@ def outcomes_to_record(outcomes: Iterable[EntityOutcome]) -> dict[str, dict[str,
             entry[LABELS_KEY] = list(outcome.labels)
         if outcome.file_label:
             entry[FILE_LABEL_KEY] = outcome.file_label
+        if outcome.notes:
+            entry[NOTES_KEY] = {code.value: count for code, count in outcome.notes}
         record[outcome.entity] = entry
     return record
 
@@ -661,6 +728,30 @@ def _labels_from(entry: Mapping[Any, Any], reason: OutcomeReason) -> tuple[tuple
     return labels, file_label
 
 
+def _notes_from(raw: Any, kind: OutcomeKind) -> tuple[Note, ...]:
+    """A stored ``notes`` value → usable ``(OutcomeNote, count)`` pairs, or ``()`` (never raises).
+
+    Not a mapping, or on a kind that carries no notes → ``()``. Within the mapping each pair is
+    kept only when its key is a note this build knows and its count is an ``int`` of at least 1;
+    anything else is dropped, never the entry's kind and reason. A note code this build does not
+    know — written by a NEWER build — is DROPPED rather than read as a warning: most of the
+    catalogue S11 adds is Run-History detail only, so erring toward amber would light an older
+    build's Home on facts that are not warnings (DECISIONS 2026-09-25).
+    """
+    if not isinstance(raw, Mapping) or kind not in NOTE_BEARING_KINDS:
+        return ()
+    kept: list[Note] = []
+    for key, count in raw.items():
+        try:
+            code = OutcomeNote(key)
+        except (TypeError, ValueError):
+            continue
+        note = (code, count)
+        if _note_shaped(note):
+            kept.append(note)
+    return tuple(kept)
+
+
 def _outcome_from_entry(entity: Any, entry: Any) -> EntityOutcome | None:
     """One stored entry → an outcome, or ``None`` when the entry is unusable (never raises)."""
     if not isinstance(entity, str) or not entity.strip() or not isinstance(entry, Mapping):
@@ -677,8 +768,9 @@ def _outcome_from_entry(entity: Any, entry: Any) -> EntityOutcome | None:
         # Read it as a failure: an unknown code must err toward a warning, never toward green.
         return EntityOutcome(entity, OutcomeKind.FAILED, OutcomeReason.TRANSFORM_ERROR, 0, missing_mapped)
     labels, file_label = _labels_from(entry, reason)
+    notes = _notes_from(entry.get(NOTES_KEY), kind)
     try:
-        return EntityOutcome(entity, kind, reason, raw_rows, missing_mapped, labels, file_label)
+        return EntityOutcome(entity, kind, reason, raw_rows, missing_mapped, labels, file_label, notes)
     except (TypeError, ValueError):
         # Known codes in an impossible combination (or a corrupt row count): not evidence of anything.
         return None
@@ -715,7 +807,9 @@ def outcomes_from_record(record: Any) -> tuple[EntityOutcome, ...]:
     duplicate) reads as ``()``; it never costs the entry its kind and reason. Likewise unusable
     ``labels`` / ``file_label`` (plan 0053 S7 — not label-shaped, a duplicate, on a reason that
     names nothing, a file without a column) read as ``()`` / ``""``; an unknown kind or reason,
-    read as FAILED/``transform_error``, names nothing.
+    read as FAILED/``transform_error``, names nothing. Unusable ``notes`` (plan 0053 S10 — not a
+    mapping, an unknown code, a count that is not an ``int`` ≥ 1, on a kind that carries none) are
+    dropped pair by pair (:func:`_notes_from`).
     """
     if not isinstance(record, Mapping):
         return ()

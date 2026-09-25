@@ -3,6 +3,7 @@
 import pandas as pd
 import pytest
 
+from src.etl.errors import GuardKind, SourceSchemaError
 from src.etl.transformer import DataTransformer
 
 
@@ -259,9 +260,13 @@ class TestStudentsCrossEnrollmentCollapse:
         assert len(result) == 3
 
     def test_missing_home_school_column_raises(self):
+        # Asserted by TYPE since plan 0053 S10 (the message is `require_columns`' one
+        # shape and no longer spells the config key): the column in config spelling.
         df = self._cross_df().drop(columns="home school number")
-        with pytest.raises(ValueError, match="home_school_column"):
+        with pytest.raises(SourceSchemaError) as exc:
             self.transformer.transform(df, self._MAPPING, "Students", {"Demo.txt": df}, self._gc())
+        assert (exc.value.entity, exc.value.guard) == ("Students", GuardKind.JOIN_KEY)
+        assert [c.lower() for c in exc.value.columns] == ["home school number"]
 
 
 class TestStudentEmailGeneration:
@@ -334,9 +339,12 @@ class TestStudentEmailGeneration:
         assert result["Email Address"].iloc[0] == "alicesmith@learn60.ca"
 
     def test_missing_derived_column_raises(self):
+        # Asserted by TYPE since plan 0053 S10 (the message no longer spells the key).
         df = self._df("Alice", "Smith", "15-Sep-2018").drop(columns="admission date")
-        with pytest.raises(ValueError, match="derived_dates"):
+        with pytest.raises(SourceSchemaError) as exc:
             self._run(self._SD60_EMAIL, df)
+        assert (exc.value.entity, exc.value.guard) == ("Students", GuardKind.JOIN_KEY)
+        assert [c.lower() for c in exc.value.columns] == ["admission date"]
 
     def test_pseudo_column_not_leaked_into_output(self):
         # The injected pseudo-column lives only on the local copy — it must not

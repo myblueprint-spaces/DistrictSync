@@ -5,10 +5,11 @@ from typing import Any
 
 import pandas as pd
 
+from src.config.models import FieldAppendYear, FieldTransform, ensure_field_mapping
 from src.etl.column_names import GRADE, SCHOOL_NUMBER, STUDENT_NUMBER
-from src.etl.errors import GuardKind, SourceSchemaError, available_columns_note
+from src.etl.errors import GuardKind
 from src.etl.transformers.base import BaseTransformer
-from src.etl.transformers.columns import Previously, resolve_source_column, source_column_label
+from src.etl.transformers.columns import Previously, require_columns, resolve_source_column, source_column_label
 from src.etl.transformers.context import TransformContext
 from src.etl.transformers.grades import filter_to_grade_scope, resolve_student_scope
 from src.etl.transformers.ids import clean_invalid_ids, normalize_id_series
@@ -34,6 +35,7 @@ class StudentTransformer(BaseTransformer):
         result["EnrollStatus"] = working["EnrollStatus"]
         self._generate_emails(working, result, field_map, context)
 
+        self._require_user_id_source(working, field_map)
         result = self.apply_field_map(working, result, field_map, "Students", context)
         if "Date of Birth" in result.columns:
             result["Date of Birth"] = result["Date of Birth"].apply(self.normalize_iso_date)
@@ -50,6 +52,35 @@ class StudentTransformer(BaseTransformer):
             context.active_student_ids = set(normalize_id_series(result["User ID"]))
 
         return result
+
+    @staticmethod
+    def _require_user_id_source(working: pd.DataFrame, field_map: dict[str, Any]) -> None:
+        """The mapped ``User ID`` SOURCE column must exist (§5 #27(ii), plan 0053 S10).
+
+        It is the student's identity AND the roster every other entity filters against.
+        Absent, ``apply_field_map`` wrote a blank ``User ID`` column and the published
+        roster became ``{'<NA>'}`` — which the empty-roster guard does not catch, so
+        every downstream active-roster filter dropped EVERY student row in Family,
+        homeroom classes, Enrollments and StudentCourses while ``Students.csv`` shipped
+        with blank IDs: a silent shrink of deactivating files (H2). Now the entity fails
+        with a typed error naming the column; Students is CRITICAL, so the run fails.
+
+        Only when the mapping names a ``User ID`` at all: a config mapping none publishes
+        no roster, which is §5 #27(i)'s fail-open posture (S11), not this one. And only
+        when that entry READS a column (a bare string or a ``column:`` entry): a fixed
+        ``value:`` or an email ``format:`` reads none, so nothing is required.
+        """
+        if "User ID" not in field_map:
+            return
+        if not isinstance(ensure_field_mapping(field_map["User ID"]), (str, FieldTransform, FieldAppendYear)):
+            return
+        # failure-policy: join_key
+        require_columns(
+            working.columns,
+            [source_column_label(field_map, "User ID", default=STUDENT_NUMBER)],
+            entity="Students",
+            guard=GuardKind.JOIN_KEY,
+        )
 
     @staticmethod
     def _coalesce_required_names(result: pd.DataFrame) -> None:
@@ -125,11 +156,14 @@ class StudentTransformer(BaseTransformer):
         Source column names resolve from the Students ``field_map`` (Configurable
         Columns) through the one resolver: ``User ID`` and ``SchoolCode`` — a
         bare string or a ``{column: ...}`` entry alike. Fail-loud (validate at
-        boundary): a configured ``home_school_column`` absent from the frame
-        raises :class:`~src.etl.errors.SourceSchemaError` (guard ``JOIN_KEY``,
-        the column named in the config's spelling, the source's column COUNT
-        only — never its header names). Never drops a student entirely (always ≥ 1 row per
-        User ID). Logs only the collapsed COUNT (no PII).
+        boundary, ``columns.require_columns``): the ``User ID``, ``SchoolCode``
+        and ``home_school_column`` columns are all checked before any row is
+        touched, and every absent one is named in ONE
+        :class:`~src.etl.errors.SourceSchemaError` (guard ``JOIN_KEY``, config
+        spelling, the source's column COUNT only — never its header names; §5
+        #2/#2a — the first two used to be raw pandas ``KeyError``s). Never drops a
+        student entirely (always ≥ 1 row per User ID). Logs only the collapsed
+        COUNT (no PII).
         """
         cc = (context.global_config or {}).get("cross_enrollment") or {}
         if not cc.get("collapse"):
@@ -143,15 +177,17 @@ class StudentTransformer(BaseTransformer):
         )
         home_col = resolve_source_column(cc, "home_school_column", default="", previously=Previously.UNCHANGED)
 
-        if home_col not in working.columns:
-            configured = str(cc.get("home_school_column", ""))
-            raise SourceSchemaError(
-                f"[Students] cross_enrollment home_school_column {configured!r} not found in the "
-                f"source ({available_columns_note(len(working.columns))}).",
-                entity="Students",
-                columns=(configured,),
-                guard=GuardKind.JOIN_KEY,
-            )
+        # failure-policy: join_key
+        require_columns(
+            working.columns,
+            [
+                source_column_label(field_map, "User ID", default=STUDENT_NUMBER),
+                source_column_label(field_map, "SchoolCode", default=SCHOOL_NUMBER),
+                str(cc.get("home_school_column", "")),
+            ],
+            entity="Students",
+            guard=GuardKind.JOIN_KEY,
+        )
 
         before = len(working)
         working = working.copy()
@@ -299,16 +335,17 @@ class StudentTransformer(BaseTransformer):
 
         if derived:
             src = working.copy()
+            # Every derived-date column is checked before any is derived, so one run
+            # names them all (§5 #3).
+            # failure-policy: join_key
+            require_columns(
+                src.columns,
+                [str(spec["column"]) for spec in derived.values()],
+                entity="Students",
+                guard=GuardKind.JOIN_KEY,
+            )
             for pseudo, spec in derived.items():
                 col = str(spec["column"]).strip().lower()
-                if col not in src.columns:
-                    raise SourceSchemaError(
-                        f"[Students] Email 'derived_dates' column {spec['column']!r} not found in the "
-                        f"source ({available_columns_note(len(src.columns))}).",
-                        entity="Students",
-                        columns=(str(spec["column"]),),
-                        guard=GuardKind.JOIN_KEY,
-                    )
                 strf = self.friendly_date_format_to_strftime(str(spec["date_format"]))
                 src[str(pseudo).strip().lower()] = src[col].apply(lambda v, f=strf: self.derive_date_part(v, f))
         else:

@@ -20,7 +20,6 @@ a mechanism that does not work at all.
 from __future__ import annotations
 
 import logging
-import shutil
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -49,6 +48,7 @@ from src.utils.version import app_version
 
 # Single-sourced from the S4a sweep — a second hand-typed banned-word list is a list that
 # drifts, and the identification-is-not-authentication promise rests on it.
+from tests.test_config_authoring import snapshot_input_with_base_student_id
 from tests.test_ui_flet_identity_page import (
     _assert_no_banned_vocabulary,
 )
@@ -991,12 +991,13 @@ class TestTheGateRunIsInvisibleToRunHistory:
         Drives the REAL ``run_pipeline(dry_run=True)`` over the real SD74 snapshot inputs
         through the REAL gate button, with an ``sd93custom`` overlay whose renames match those
         files. "No Run History row" on its own is satisfied by a run that never happened; the
-        ``__DISTRICTSYNC_RUN__`` line is the proof that one did.
+        ``__DISTRICTSYNC_RUN__`` line is the proof that one did. (The copy's schedule also
+        carries the base's ``Student ID`` — plan 0053 S10; see the helper.)
         """
         _write_sd93(renames=SD74_RENAMES)
         cfg = _cfg(
             creator_pending_sis="sd93custom",
-            input_dir=str(SNAPSHOT_INPUT),
+            input_dir=str(snapshot_input_with_base_student_id(tmp_path / "input")),
             output_dir=str(tmp_path / "out"),
         )
         _pin(monkeypatch, cfg)
@@ -1753,11 +1754,12 @@ class TestTheHeadlineFlow:
         four names its extract really uses are set and saved — and the WRITTEN overlay moves
         Classes, Enrollments AND ``global_config.school_year_sources`` together, the recorded
         test stops matching, the step re-closes, and a fresh test conversion re-opens it.
+        (The copy's schedule also carries the base's ``Student ID`` — plan 0053 S10.)
         """
         _write_sd93()
         cfg = _cfg(
             creator_pending_sis="sd93custom",
-            input_dir=str(SNAPSHOT_INPUT),
+            input_dir=str(snapshot_input_with_base_student_id(tmp_path / "input")),
             output_dir=str(tmp_path / "out"),
         )
         _pin(monkeypatch, cfg)
@@ -1925,18 +1927,19 @@ class TestThePreflightColumnReport:
     observing nothing could satisfy the absence halves trivially.
     """
 
-    #: What the STANDARD MyEd BC mapping names that the FROZEN snapshot extract genuinely
-    #: does not carry. Asserted EXACTLY rather than as "nothing", because it is not
-    #: nothing: two are columns the base names for optional outputs (a pre-registration
-    #: school code, a student email address), and two are names the transformers resolve
-    #: with a fallback of their own, which this layer deliberately does not read (plan 0044
-    #: §5.2 — no transformer knowledge here). A change to that set is a change to what an
-    #: admin is told, so it fails HERE rather than drifting.
+    #: What the STANDARD MyEd BC mapping names that the snapshot extract genuinely does
+    #: not carry. Asserted EXACTLY rather than as "nothing", because it is not nothing: two
+    #: are columns the base names for optional outputs (a pre-registration school code, a
+    #: student email address), and one is a name a transformer resolves with a fallback of
+    #: its own, which this layer deliberately does not read (plan 0044 §5.2 — no transformer
+    #: knowledge here). A change to that set is a change to what an admin is told, so it
+    #: fails HERE rather than drifting. (``Student ID`` left this set with plan 0053 S10: the
+    #: timetable enrollments now REQUIRE it, so the copy these tests run over carries it —
+    #: ``snapshot_input_with_base_student_id``; without it the gate run stops, typed.)
     BASELINE = (
         "Next school code",
         "Student email address",
         "Course Title",
-        "Student ID",
     )
     RENAMED_HEADER = ("Legal surname,", "Family name,")
     #: The config's own spelling of the header renamed above — what the line must quote.
@@ -1951,8 +1954,7 @@ class TestThePreflightColumnReport:
         drop: str | None = None,
     ) -> tuple[ft.Control, AppConfig]:
         """A resumed creator walk on its gate step, pointed at a WRITABLE copy of the extract."""
-        source = tmp_path / "input"
-        shutil.copytree(SNAPSHOT_INPUT, source)
+        source = snapshot_input_with_base_student_id(tmp_path / "input")
         if rename_header:
             target = source / "StudentDemographicInformation.txt"
             text = target.read_text(encoding="utf-8")
@@ -2367,12 +2369,20 @@ def _spy_reset_through(monkeypatch: pytest.MonkeyPatch) -> list[int]:
 
 
 def _configured(tmp_path: Path, **over) -> AppConfig:  # noqa: ANN003
-    """A finished install with a shipped district and a registered nightly — S6's population."""
+    """A finished install with a shipped district and a registered nightly — S6's population.
+
+    Its input folder is a copy of the SD74 snapshot whose schedule also carries the base's
+    ``Student ID`` (plan 0053 S10 — ``snapshot_input_with_base_student_id``), so the creator
+    door's REAL test conversion can pass; made once per ``tmp_path``.
+    """
+    source = tmp_path / "snapshot_input"
+    if not source.exists():
+        snapshot_input_with_base_student_id(source)
     base = {
         "setup_completed": True,
         "sis_type": "sd48myedbc",
         "schedule_registered": True,
-        "input_dir": str(SNAPSHOT_INPUT),
+        "input_dir": str(source),
         "output_dir": str(tmp_path / "out"),
     }
     base.update(over)

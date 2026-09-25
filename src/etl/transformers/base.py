@@ -34,7 +34,7 @@ import pandas as pd
 from src.config.models import ALLOWED_TRANSFORMS as _ALLOWED_TRANSFORMS
 from src.config.models import ConfiguredField, ensure_field_mapping
 from src.etl.column_names import MASTER_TIMETABLE_ID
-from src.etl.errors import EtlError, GuardKind, SourceSchemaError, available_columns_note
+from src.etl.errors import EtlError, GuardKind
 from src.etl.transformers import course_codes as _course_codes
 from src.etl.transformers import dates as _dates
 from src.etl.transformers import emails as _emails
@@ -42,7 +42,7 @@ from src.etl.transformers import grades as _grades
 from src.etl.transformers import ids as _ids
 from src.etl.transformers import naming as _naming
 from src.etl.transformers import sources as _sources
-from src.etl.transformers.columns import Previously, resolve_source_column
+from src.etl.transformers.columns import Previously, require_columns, resolve_source_column, source_column_label
 from src.etl.transformers.context import TransformContext
 from src.utils.helpers import describe_exception_for_log as _describe_exception
 from src.utils.helpers import describe_value_for_log as _describe_value
@@ -473,7 +473,8 @@ class BaseTransformer(ABC):
         strip+lower treatment.
 
         Fail-loud (validate at boundary): EVERY filter column is checked before
-        any filtering, and one or more absent columns raise ONE
+        any filtering, through :func:`~src.etl.transformers.columns.require_columns`
+        — one or more absent columns raise ONE
         :class:`~src.etl.errors.SourceSchemaError` (guard ``PII_SCOPE``) naming
         them all in the CONFIG's spelling — a renamed source column must never
         silently keep everyone or no one, and an admin fixing the export should
@@ -484,20 +485,13 @@ class BaseTransformer(ABC):
         """
         if not filters:
             return df
-        missing = tuple(
-            str(row_filter["column"])
-            for row_filter in filters
-            if str(row_filter["column"]).strip().lower() not in df.columns
+        # failure-policy: pii_scope
+        require_columns(
+            df.columns,
+            [str(row_filter["column"]) for row_filter in filters],
+            entity=entity_name,
+            guard=GuardKind.PII_SCOPE,
         )
-        if missing:
-            raise SourceSchemaError(
-                f"[{entity_name}] row_filter column(s) {list(missing)} not found in the source "
-                f"({available_columns_note(len(df.columns))}). The filter decides which rows may be "
-                f"delivered, so it cannot be skipped.",
-                entity=entity_name,
-                columns=missing,
-                guard=GuardKind.PII_SCOPE,
-            )
         total = len(df)
         mask = pd.Series(True, index=df.index)
         for row_filter in filters:
@@ -544,29 +538,37 @@ class BaseTransformer(ABC):
             return f"{mt_id}_{context.school_year}"
         return mt_id
 
-    def assign_class_ids(self, df: pd.DataFrame, field_map: dict, context: TransformContext) -> pd.DataFrame:
+    def assign_class_ids(
+        self, df: pd.DataFrame, field_map: dict, context: TransformContext, *, entity: str
+    ) -> pd.DataFrame:
         """Assign Class ID column using blended_class_map with generate_class_id fallback.
 
         Shared by ClassTransformer and EnrollmentTransformer to ensure IDs
         are computed identically across Classes and Enrollments output.
+
+        Fail-closed (plan 0053 S10, ``failure-policy.md`` §5 #29): the Class ID
+        source column (the ``Class ID`` mapping's column, default Master Timetable
+        ID) is REQUIRED — without it every subject ``Class ID`` used to ship
+        blank. ``entity`` is the caller's (required keyword-only: the error names
+        whose source lacks the column; ``run_transform`` decides the scope).
         """
         mt_id_col = resolve_source_column(
             field_map, "Class ID", default=MASTER_TIMETABLE_ID, previously=Previously.COLUMN_KEY_ONLY
         )
-
-        if mt_id_col in df.columns:
-            df[mt_id_col] = _ids.normalize_id_series(df[mt_id_col])
-            df["Class ID"] = df[mt_id_col].map(context.blended_class_map)
-            fallback = df.apply(
-                lambda row: self.generate_class_id(row, mt_id_col=mt_id_col, append_year=True, context=context),
-                axis=1,
-            )
-            df["Class ID"] = df["Class ID"].fillna(fallback)
-        else:
-            df["Class ID"] = df.apply(
-                lambda row: self.generate_class_id(row, mt_id_col=mt_id_col, append_year=True, context=context),
-                axis=1,
-            )
+        # failure-policy: join_key
+        require_columns(
+            df.columns,
+            [source_column_label(field_map, "Class ID", default=MASTER_TIMETABLE_ID)],
+            entity=entity,
+            guard=GuardKind.JOIN_KEY,
+        )
+        df[mt_id_col] = _ids.normalize_id_series(df[mt_id_col])
+        df["Class ID"] = df[mt_id_col].map(context.blended_class_map)
+        fallback = df.apply(
+            lambda row: self.generate_class_id(row, mt_id_col=mt_id_col, append_year=True, context=context),
+            axis=1,
+        )
+        df["Class ID"] = df["Class ID"].fillna(fallback)
         return df
 
     def generate_class_name(

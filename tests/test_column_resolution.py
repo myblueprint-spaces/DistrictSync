@@ -33,8 +33,9 @@ from src.etl.pipeline import configured_entity_order, run_transform
 from src.etl.preflight import label_vocabulary_by_entity
 from src.etl.transformer import DataTransformer
 from src.etl.transformers import columns
-from src.etl.transformers.blended import BlendedClassDetector
-from src.etl.transformers.columns import Previously, resolve_source_column, source_column_label
+from src.etl.transformers.base import BaseTransformer
+from src.etl.transformers.blended import BlendedClassDetector, session_time_components, session_time_labels
+from src.etl.transformers.columns import Previously, require_columns, resolve_source_column, source_column_label
 from src.etl.transformers.context import TransformContext
 
 BUNDLED = Path("config/mappings")
@@ -617,11 +618,13 @@ class TestBlendedTimeSlotIsConfigurable:
         assert class_map == class_map_default
         assert metadata == metadata_default
 
-    def test_twin_an_unconfigured_rename_drops_the_component_and_merges_another_slot(self):
-        """What the knob prevents: an absent component is dropped from the key, so MT102
-        (another day) joins the blend. S10 makes that fail closed; S9 makes it fixable."""
-        class_map, _ = _detect(*_blend_frames("cycle day"))
-        assert set(class_map) == {"MT100", "MT101", "MT102"}
+    def test_twin_an_unconfigured_rename_fails_closed_naming_the_default(self):
+        """What the knob fixes: before S10 an absent component was dropped from the key, so
+        MT102 (another day) joined the blend. S10 fails closed on it (§5 #39, the default
+        named); S9's role makes it fixable."""
+        with pytest.raises(SourceSchemaError) as exc:
+            _detect(*_blend_frames("cycle day"))
+        assert (exc.value.entity, exc.value.columns) == ("Classes", ("day",))
 
 
 class TestBlendedDetectionReadsTheScheduleGradeKey:
@@ -701,9 +704,15 @@ class TestCoteacherColumnsAreConfigurable:
         )
         pd.testing.assert_frame_equal(renamed, default)
 
-    def test_twin_an_unconfigured_rename_omits_the_coteacher(self, base_mapping):
-        enrollments = _coteacher_run(base_mapping, primary_col="is primary")
+    def test_twin_an_unconfigured_rename_omits_the_coteacher_and_says_so(self, base_mapping, caplog):
+        """The twin: a renamed flag the mapping does NOT name leaves the co-teacher row out —
+        as before plan 0053 S10, but no longer in silence (§5 #15, owner ruling 2026-09-25):
+        ONE warning names the default column it looked for (and the run records a note)."""
+        with caplog.at_level(logging.WARNING):
+            enrollments = _coteacher_run(base_mapping, primary_col="is primary")
         assert "T777" not in set(enrollments["User ID"])
+        (line,) = _warnings(caplog, "CO-TEACHERS LEFT OUT")
+        assert "['primary teacher']" in line
 
     def test_a_renamed_students_homeroom_attaches_the_coteacher_identically(self, base_mapping):
         """The co-teacher's homeroom lookup reads the Students `Homeroom` key too — the
@@ -760,6 +769,16 @@ class TestUndefaultedKeywords:
             (BlendedClassDetector._add_session_key, "components"),
             (BlendedClassDetector._register_blends, "components"),
             (BlendedClassDetector.create_name, "session_components"),
+            # plan 0053 S10 (owner ruling 2026-09-25) — which time-slot components are in force
+            # decides which sections become ONE class; "all four" may never come by omission.
+            (session_time_components, "roles"),
+            (session_time_labels, "roles"),
+            # plan 0053 S10 — which entity's scope a fail-closed guard is decided at, and
+            # what it guards: a defaulted `entity` would mislabel a caller's failure (its
+            # labels are kept only when `exc.entity` matches) and pass the §5 parity.
+            (require_columns, "entity"),
+            (require_columns, "guard"),
+            (BaseTransformer.assign_class_ids, "entity"),
         ],
         ids=lambda v: v if isinstance(v, str) else v.__qualname__,
     )

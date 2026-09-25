@@ -17,11 +17,17 @@ from src.etl.column_names import (
     SECTION_LETTER,
     TEACHER_NAME,
 )
+from src.etl.errors import GuardKind
 from src.etl.transformers.base import BaseTransformer
 from src.etl.transformers.blended import BlendedClassDetector, BlendedDetection
-from src.etl.transformers.columns import Previously, resolve_source_column
+from src.etl.transformers.columns import Previously, require_columns, resolve_source_column, source_column_label
 from src.etl.transformers.context import ClassArtifacts, TransformContext
-from src.etl.transformers.grades import resolve_timetable_scope, schedule_grade_column, split_by_homeroom_grades
+from src.etl.transformers.grades import (
+    resolve_timetable_scope,
+    schedule_grade_column,
+    schedule_grade_label,
+    split_by_homeroom_grades,
+)
 from src.etl.transformers.ids import normalize_id_series
 
 logger = logging.getLogger(__name__)
@@ -153,6 +159,13 @@ class ClassTransformer(BaseTransformer):
         # The Students mapping names the DEMOGRAPHIC columns (plan 0053 S9: read
         # through `context.entity_mappings`; before S9 this path never saw it).
         grade_col = resolve_source_column(students_field_map, "Grade", default=GRADE, previously=Previously.DEFAULT)
+        # failure-policy: pii_scope
+        require_columns(
+            student_demo_df.columns,
+            [source_column_label(students_field_map, "Grade", default=GRADE)],
+            entity="Classes",
+            guard=GuardKind.PII_SCOPE,
+        )
         homeroom_students = split_by_homeroom_grades(student_demo_df, grade_col, homeroom_grades, keep="homeroom")
 
         if homeroom_students.empty:
@@ -161,13 +174,22 @@ class ClassTransformer(BaseTransformer):
         homeroom_col = resolve_source_column(
             students_field_map, "Homeroom", default=HOMEROOM, previously=Previously.DEFAULT
         )
+        # Checked HERE, where the columns are first read (§5 #30) — not on config
+        # state, and not before the split: a district with no homeroom-grade student
+        # reads neither. A missing homeroom column used to be a raw KeyError from the
+        # dedup below, behind which sat a guard that would have skipped every homeroom
+        # class silently.
+        # failure-policy: join_key
+        require_columns(
+            homeroom_students.columns,
+            [SCHOOL_NUMBER, source_column_label(students_field_map, "Homeroom", default=HOMEROOM)],
+            entity="Classes",
+            guard=GuardKind.JOIN_KEY,
+        )
         dedup_cols = [SCHOOL_NUMBER, homeroom_col]
         if teacher_id_col in homeroom_students.columns:
             dedup_cols.append(teacher_id_col)
         unique_homerooms = homeroom_students.drop_duplicates(subset=dedup_cols)
-
-        if unique_homerooms.empty or homeroom_col not in unique_homerooms.columns:
-            return pd.DataFrame()
 
         hc = unique_homerooms.copy()
         # Build the homeroom Class ID row-wise ("{school}_{homeroom}_{year}"). A
@@ -186,8 +208,9 @@ class ClassTransformer(BaseTransformer):
 
         self._check_homeroom_id_collisions(hc, homeroom_col, teacher_id_col, context)
 
+        teacher_name_col = self._homeroom_teacher_name_column(hc)
         hc["Name"] = hc.apply(
-            lambda row: self._homeroom_name(row, homeroom_col, TEACHER_NAME, context.school_year),
+            lambda row: self._homeroom_name(row, homeroom_col, teacher_name_col, context.school_year),
             axis=1,
         )
         hc["Grade"] = hc[grade_col]
@@ -274,11 +297,30 @@ class ClassTransformer(BaseTransformer):
         )
 
     @staticmethod
-    def _homeroom_name(row, homeroom_col: str, teacher_name_col: str, year: int) -> str:
+    def _homeroom_teacher_name_column(hc: pd.DataFrame) -> str | None:
+        """The homeroom teacher-name column, or ``None`` — with ONE WARNING when it is absent.
+
+        An OPTIONAL display value (§5 #35, class (d)): the teacher's name is only a
+        segment of the homeroom class NAME, so a demographic export without it names
+        every homeroom class without its teacher — never a run failure (owner, Gate A
+        2026-09-24). It used to be a raw ``KeyError`` that failed the whole run. One
+        aggregated line per Classes transform, a count only.
+        """
+        if TEACHER_NAME in hc.columns:
+            return TEACHER_NAME
+        # failure-policy: optional_field
+        logger.warning(
+            f"[Classes] No '{TEACHER_NAME}' column in the student demographic source, so the "
+            f"{len(hc)} homeroom class name(s) omit the teacher's name. Everything else is built as usual."
+        )
+        return None
+
+    @staticmethod
+    def _homeroom_name(row, homeroom_col: str, teacher_name_col: str | None, year: int) -> str:
         homeroom = row[homeroom_col]
-        teacher = row[teacher_name_col]
+        teacher = row[teacher_name_col] if teacher_name_col is not None else None
         has_hr = pd.notna(homeroom) and str(homeroom).strip() != ""
-        has_teacher = pd.notna(teacher) and str(teacher).strip() != ""
+        has_teacher = teacher is not None and pd.notna(teacher) and str(teacher).strip() != ""
         parts = [str(homeroom) if has_hr else "Unassigned Homeroom"]
         if has_teacher:
             parts.append(f"- {teacher}")
@@ -312,6 +354,13 @@ class ClassTransformer(BaseTransformer):
         if schedule_df.empty:
             return
 
+        # failure-policy: pii_scope
+        require_columns(
+            schedule_df.columns,
+            [schedule_grade_label(field_map)],
+            entity="Classes",
+            guard=GuardKind.PII_SCOPE,
+        )
         non_homeroom_df = split_by_homeroom_grades(
             schedule_df,
             schedule_grade_column(field_map),
@@ -322,6 +371,20 @@ class ClassTransformer(BaseTransformer):
         if non_homeroom_df.empty:
             return
 
+        # Every subject row takes its Class ID and School ID from these two schedule
+        # columns — each used to ship BLANK when absent (§5 #29). Checked in ONE call so
+        # an export missing both names both; ``assign_class_ids`` re-checks the first as
+        # its own guard.
+        # failure-policy: join_key
+        require_columns(
+            non_homeroom_df.columns,
+            [
+                source_column_label(field_map, "Class ID", default=MASTER_TIMETABLE_ID),
+                source_column_label(field_map, "School ID", default=SCHOOL_NUMBER),
+            ],
+            entity="Classes",
+            guard=GuardKind.JOIN_KEY,
+        )
         merged = self._merge_course_and_staff(non_homeroom_df, normalized_sources, teacher_id_col, context)
         merged = self._assign_class_ids(merged, field_map, context)
 
@@ -333,7 +396,8 @@ class ClassTransformer(BaseTransformer):
         school_col = resolve_source_column(
             field_map, "School ID", default=SCHOOL_NUMBER, previously=Previously.COLUMN_KEY_ONLY
         )
-        subject_output["School ID"] = merged.get(school_col, "")
+        # Present: required on the schedule above, and the course/staff merges only add columns.
+        subject_output["School ID"] = merged[school_col]
         subject_output["Start Date"] = self.resolve_date(field_map, "Start Date", context)
         subject_output["End Date"] = self.resolve_date(field_map, "End Date", context)
 
@@ -390,12 +454,28 @@ class ClassTransformer(BaseTransformer):
     def _merge_course_and_staff(
         self, df: pd.DataFrame, normalized_sources: dict, teacher_id_col: str, context: TransformContext
     ) -> pd.DataFrame:
+        """Left-join the course title and the teacher's last name onto the schedule rows.
+
+        Each join runs only when its file is present and non-empty (an absent optional
+        file is not a missing column), and then fails CLOSED on a missing join column
+        on EITHER side (§5 #8/#9): one typed error naming every absent column, where a
+        raw pandas ``KeyError`` used to fail the run with the category ``unknown``.
+        """
         merged = df
         course_df = self.get_source_file(context, normalized_sources, "course_info")
         if not course_df.empty:
             course_df = self.normalize_columns(course_df)
             if DISTRICT_COURSE_CODE in merged.columns and COURSE_CODE not in merged.columns:
                 merged = merged.rename(columns={DISTRICT_COURSE_CODE: COURSE_CODE})
+            # failure-policy: join_key
+            require_columns(
+                course_df.columns,
+                [SCHOOL_NUMBER, COURSE_CODE, COURSE_TITLE],
+                entity="Classes",
+                guard=GuardKind.JOIN_KEY,
+            )
+            # failure-policy: join_key
+            require_columns(merged.columns, [SCHOOL_NUMBER, COURSE_CODE], entity="Classes", guard=GuardKind.JOIN_KEY)
             merged = merged.merge(
                 course_df[[SCHOOL_NUMBER, COURSE_CODE, COURSE_TITLE]],
                 on=[SCHOOL_NUMBER, COURSE_CODE],
@@ -405,8 +485,12 @@ class ClassTransformer(BaseTransformer):
         staff_df = self.get_source_file(context, normalized_sources, "staff_info")
         if not staff_df.empty:
             staff_df = self.normalize_columns(staff_df)
-            if teacher_id_col in staff_df.columns:
-                staff_df[teacher_id_col] = normalize_id_series(staff_df[teacher_id_col])
+            teacher_id_label = context.get_teacher_id_label()
+            # failure-policy: join_key
+            require_columns(staff_df.columns, [teacher_id_label, LAST_NAME], entity="Classes", guard=GuardKind.JOIN_KEY)
+            # failure-policy: join_key
+            require_columns(merged.columns, [teacher_id_label], entity="Classes", guard=GuardKind.JOIN_KEY)
+            staff_df[teacher_id_col] = normalize_id_series(staff_df[teacher_id_col])
             merged = merged.merge(
                 staff_df[[teacher_id_col, LAST_NAME]],
                 on=teacher_id_col,
@@ -415,7 +499,7 @@ class ClassTransformer(BaseTransformer):
         return merged
 
     def _assign_class_ids(self, merged: pd.DataFrame, field_map: dict, context: TransformContext) -> pd.DataFrame:
-        return self.assign_class_ids(merged, field_map, context)
+        return self.assign_class_ids(merged, field_map, context, entity="Classes")
 
     def _assign_class_names(
         self, output: pd.DataFrame, merged: pd.DataFrame, field_map: dict, context: TransformContext

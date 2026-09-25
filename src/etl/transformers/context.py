@@ -11,8 +11,9 @@ from typing import Any, Optional
 import pandas as pd
 
 from src.etl.column_names import STUDENT_NUMBER, TEACHER_ID
-from src.etl.transformers.columns import Previously, resolve_source_column
-from src.etl.transformers.grades import schedule_grade_column
+from src.etl.outcomes import Note, OutcomeNote
+from src.etl.transformers.columns import Previously, resolve_source_column, source_column_label
+from src.etl.transformers.grades import schedule_grade_column, schedule_grade_label
 
 
 @dataclass(frozen=True)
@@ -79,6 +80,14 @@ class TransformContext:
     #   {"entity": str, "field": str, "failed_rows": int, "sample": str}
     data_errors: list[dict[str, Any]] = field(default_factory=list)
 
+    # Per-run outcome notes (plan 0053 S10 — the carrier S11 extends): closed
+    # `OutcomeNote` facts a transformer records about an entity it DID build,
+    # as `(entity, note, count)`. Written ONLY through `record_outcome_note` (a
+    # method on state the context already owns — never a new attribute, so the
+    # S2 publisher pin holds); read by `run_transform`, which attaches an
+    # entity's notes to its BUILT/EMPTY outcome. A code and a count only.
+    outcome_notes: list[tuple[str, OutcomeNote, int]] = field(default_factory=list)
+
     # Cross-entity state: published ONCE by ClassTransformer as a frozen
     # bundle, asserted + consumed by EnrollmentTransformer. None until Classes
     # runs — the read-only properties below give safe empty defaults for the
@@ -127,6 +136,28 @@ class TransformContext:
         self.academic_start = f"{year - 1}-{start_month_day}"
         self.academic_end = f"{year}-{end_month_day}"
 
+    def record_outcome_note(self, entity: str, note: OutcomeNote, count: int) -> None:
+        """Record ``note`` (with ``count`` rows) on ``entity``'s outcome for this run.
+
+        ONE note per ``(entity, note)`` per run: a second call for the same pair is ignored
+        and the first count stands, so a transformer that reaches the same fact twice still
+        yields one note (each site already aggregates its own log line). ``note`` must be an
+        :class:`~src.etl.outcomes.OutcomeNote` and ``count`` an ``int`` of at least 1 —
+        anything else is a caller bug and raises here, at the call, rather than when the
+        outcome is built.
+        """
+        if not isinstance(note, OutcomeNote):
+            raise TypeError(f"note must be an OutcomeNote, not {type(note).__name__}")
+        if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+            raise ValueError(f"{entity}: a note's count is an int of at least 1, got {count!r}")
+        if any(recorded == entity and code is note for recorded, code, _count in self.outcome_notes):
+            return
+        self.outcome_notes.append((entity, note, count))
+
+    def outcome_notes_for(self, entity: str) -> tuple[Note, ...]:
+        """``entity``'s notes for this run as ``(note, count)`` pairs, in the order recorded."""
+        return tuple((note, count) for recorded, note, count in self.outcome_notes if recorded == entity)
+
     def _mappings(self) -> dict[str, Any]:
         """The config's per-entity mappings: :attr:`entity_mappings` FIRST.
 
@@ -150,6 +181,18 @@ class TransformContext:
         return resolve_source_column(
             user_id_map, "staff_id_col", default=TEACHER_ID, previously=Previously.AS_CONFIGURED
         )
+
+    def get_teacher_id_label(self) -> str:
+        """:meth:`get_teacher_id_col` in CONFIG spelling — what a typed error names (plan 0053 S10).
+
+        The same resolution (``columns.source_column_label`` shares the resolver's shape
+        policy), untouched by case: ``outcomes.safe_label`` matches config spelling only.
+        """
+        enrollment_map = self._mappings().get("Enrollments", {}).get("field_map", {})
+        user_id_map = enrollment_map.get("User ID", {})
+        if not isinstance(user_id_map, dict):
+            return TEACHER_ID
+        return source_column_label(user_id_map, "staff_id_col", default=TEACHER_ID)
 
     def get_students_config(self) -> dict[str, Any]:
         """The Students entity's mapping, read from :attr:`entity_mappings` first (plan 0053 S9).
@@ -175,6 +218,15 @@ class TransformContext:
         return resolve_source_column(
             students_field_map, "User ID", default=STUDENT_NUMBER, previously=Previously.DEFAULT
         )
+
+    def get_demo_student_label(self) -> str:
+        """:meth:`get_demo_student_col` in CONFIG spelling — what a typed error names (plan 0053 S10)."""
+        students_field_map = self.get_students_config().get("field_map", {})
+        return source_column_label(students_field_map, "User ID", default=STUDENT_NUMBER)
+
+    def get_schedule_grade_label(self) -> str:
+        """:meth:`get_schedule_grade_col` in CONFIG spelling — what a typed error names (plan 0053 S10)."""
+        return schedule_grade_label(self._mappings().get("Classes", {}).get("field_map", {}))
 
     def get_schedule_grade_col(self) -> str:
         """The schedule's grade column — the Classes mapping's ``Grade`` (plan 0053 S9).

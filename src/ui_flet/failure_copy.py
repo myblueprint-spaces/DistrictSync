@@ -21,8 +21,10 @@ Two closed vocabularies are humanised here:
   completed without one or more of its files.
 
 **Which outcomes warn** is decided here too, once: :func:`OUTCOME_TIER` (entity, kind, reason)
-→ :class:`Verdict`, and :func:`warning_outcomes`, the PARTIAL predicate Home, Run History and
-Convert all select through (plan 0053 S8, owner decision D5).
+→ :class:`Verdict`, :data:`NOTE_TIER` (an outcome note → :class:`Verdict`, plan 0053 S10),
+:func:`outcome_tier` (the two combined over one whole outcome) and :func:`warning_outcomes`,
+the PARTIAL predicate Home, Run History and Convert all select through (plan 0053 S8, owner
+decision D5; notes since S10, owner ruling 2026-09-25).
 
 **PII floor (§8, P9).** Nothing here interpolates a path, a cell value, exception text or an
 OBSERVED header. The variable text is an entity's phrase, taken from the authored
@@ -46,7 +48,7 @@ from types import MappingProxyType
 from typing import Final
 
 from src.etl.errors import RunErrorCategory, classify_error_category
-from src.etl.outcomes import MAY_BE_EMPTY, VALID_REASONS, EntityOutcome, OutcomeKind, OutcomeReason
+from src.etl.outcomes import MAY_BE_EMPTY, VALID_REASONS, EntityOutcome, OutcomeKind, OutcomeNote, OutcomeReason
 from src.ui_flet.humanize import SIZE_NOUNS, pluralize
 from src.ui_flet.verdict import Verdict
 
@@ -234,6 +236,42 @@ def OUTCOME_TIER(entity: object, kind: OutcomeKind, reason: OutcomeReason) -> Ve
     return Verdict.WARNING
 
 
+# How much ONE outcome note says about the run (plan 0053 S10, owner ruling 2026-09-25) — TOTAL
+# over `OutcomeNote` (pinned, and mirrored by the `note-tier` table in failure-policy.md §7). A
+# WARNING note makes an otherwise-HEALTHY outcome warn: the entity built, but the note says what it
+# left out, every night it persists. S11's detail-only notes will be HEALTHY here (Run History
+# detail, no amber). RESTRICTIVE BY DEFAULT for a new member: no entry → the totality test is red.
+NOTE_TIER: Final[Mapping[OutcomeNote, Verdict]] = MappingProxyType(
+    {
+        # Co-teacher rows left out of a BUILT Enrollments: a shrink in a deactivating file the
+        # owner accepted ONLY with a standing amber (ruling 2026-09-25) — never silent.
+        OutcomeNote.COTEACHER_SOURCE_UNUSABLE: Verdict.WARNING,
+    }
+)
+
+_TIER_RANK: Final[Mapping[Verdict, int]] = MappingProxyType({Verdict.HEALTHY: 0, Verdict.WARNING: 1, Verdict.FAILED: 2})
+
+
+def outcome_tier(outcome: EntityOutcome) -> Verdict:
+    """ONE whole outcome's tier: :func:`OUTCOME_TIER` of its (entity, kind, reason), raised to the
+    worst :data:`NOTE_TIER` of any note it carries (plan 0053 S10).
+
+    Takes the WHOLE outcome, so a caller cannot forget the notes — a forgotten note is the
+    quieter answer, which a tier may never default to. A note never LOWERS a tier.
+    """
+    tier = OUTCOME_TIER(outcome.entity, outcome.kind, outcome.reason)
+    for note, _count in outcome.notes:
+        noted = NOTE_TIER[note]
+        if _TIER_RANK[noted] > _TIER_RANK[tier]:
+            tier = noted
+    return tier
+
+
+def warning_notes(outcome: EntityOutcome) -> tuple[OutcomeNote, ...]:
+    """The notes on ``outcome`` whose :data:`NOTE_TIER` is WARNING, in recorded order."""
+    return tuple(note for note, _count in outcome.notes if NOTE_TIER[note] is Verdict.WARNING)
+
+
 def warning_outcomes(outcomes: Iterable[EntityOutcome]) -> tuple[EntityOutcome, ...]:
     """The outcomes whose tier is WARNING — the ONE PARTIAL predicate (P7, D5), configured order.
 
@@ -241,12 +279,11 @@ def warning_outcomes(outcomes: Iterable[EntityOutcome]) -> tuple[EntityOutcome, 
     (``convert_result.summarize``) all select through this, so a run is PARTIAL on one
     surface exactly when it is on the others. A superset of
     :func:`~src.etl.outcomes.failed_entities` (every FAILED outcome warns — pinned); since S8
-    it also holds each EMPTY outcome :func:`OUTCOME_TIER` rates WARNING. Only a
-    success-shaped record reaches the question: a failed one is FAILED first.
+    it also holds each EMPTY outcome :func:`OUTCOME_TIER` rates WARNING, and since S10 each
+    BUILT outcome carrying a WARNING-tier note (:func:`outcome_tier` — "built, but co-teachers
+    left out"). Only a success-shaped record reaches the question: a failed one is FAILED first.
     """
-    return tuple(
-        outcome for outcome in outcomes if OUTCOME_TIER(outcome.entity, outcome.kind, outcome.reason) is Verdict.WARNING
-    )
+    return tuple(outcome for outcome in outcomes if outcome_tier(outcome) is Verdict.WARNING)
 
 
 # The next step a PARTIAL detail gives when its ONE warning outcome is an EMPTY one (plan 0053
@@ -295,6 +332,80 @@ def _reexport_cures(outcome: EntityOutcome) -> bool:
     )
 
 
+# --------------------------------------------------------------------------- #
+# Outcome notes (plan 0053 S10, owner ruling 2026-09-25)                       #
+# --------------------------------------------------------------------------- #
+
+# What a WARNING-tier note on a BUILT entity says — one entry per note (pinned TOTAL over
+# `OutcomeNote`, whatever its tier, so S11's members arrive with copy). Authored words only: the
+# note's count and the column it concerns stay in the record and the log (no slot, no label).
+#   * `phrase`   — the headline's object: "Your roster synced without <phrase>";
+#   * `label`    — Run History's row suffix: "Delivered · <label>";
+#   * `sentence` — what happened, true on every path that records the note;
+#   * `next_step`— what would change it (the warning repeats every sync until something does).
+_NOTE_COPY: Final[Mapping[OutcomeNote, Mapping[str, str]]] = MappingProxyType(
+    {
+        OutcomeNote.COTEACHER_SOURCE_UNUSABLE: MappingProxyType(
+            {
+                "phrase": "some co-teachers",
+                "label": "co-teachers left out",
+                "sentence": (
+                    "Enrollments were built without some co-teachers: the Class Information export is "
+                    "missing a column this district's mapping uses to link co-teachers to their classes."
+                ),
+                "next_step": (
+                    "Re-export Class Information with its co-teacher columns and the next sync adds them "
+                    "automatically — if your export doesn't include them, the Help page has our support contact."
+                ),
+            }
+        ),
+    }
+)
+
+
+def note_sentence(note: OutcomeNote) -> str:
+    """The plain sentence for one outcome note — TOTAL over :class:`OutcomeNote` (pinned)."""
+    return _NOTE_COPY[note]["sentence"]
+
+
+def _noted_parts(noted: Sequence[EntityOutcome]) -> tuple[OutcomeNote, ...]:
+    """The distinct WARNING notes across ``noted`` outcomes, in first-seen order."""
+    seen: list[OutcomeNote] = []
+    for outcome in noted:
+        for note in warning_notes(outcome):
+            if note not in seen:
+                seen.append(note)
+    return tuple(seen)
+
+
+def _split_left_out(failed: Sequence[EntityOutcome]) -> tuple[tuple[EntityOutcome, ...], tuple[OutcomeNote, ...]]:
+    """``(skipped, notes)``: the outcomes whose FILE was left out (FAILED / EMPTY), and the
+    WARNING notes of the ones that BUILT — a built file is never "left out", only what its
+    note names is."""
+    skipped = tuple(outcome for outcome in failed if outcome.kind is not OutcomeKind.BUILT)
+    notes = _noted_parts([outcome for outcome in failed if outcome.kind is OutcomeKind.BUILT])
+    if not skipped and not notes:
+        # Only BUILT outcomes and none of them carries a WARNING note: nothing here warns, so
+        # the selection did not come from `warning_outcomes` — a caller bug, never worded.
+        raise ValueError("no outcome here warns: a BUILT outcome without a WARNING note is not partial")
+    return skipped, notes
+
+
+def partial_label(failed: Sequence[EntityOutcome]) -> str:
+    """Run History's PARTIAL row suffix for ``failed`` (:func:`warning_outcomes`) — one source.
+
+    "N file(s) skipped" for the outcomes whose file was left out, each WARNING note's
+    ``label`` for a BUILT one ("co-teachers left out"), joined by " · " — so a row never
+    counts a delivered file as skipped. Raises on an empty selection, like :func:`partial_copy`.
+    """
+    if not failed:
+        raise ValueError("partial_label needs at least one outcome that warns")
+    skipped, notes = _split_left_out(failed)
+    parts = [f"{len(skipped)} {pluralize('file', len(skipped))} skipped"] if skipped else []
+    parts += [_NOTE_COPY[note]["label"] for note in notes]
+    return " · ".join(parts)
+
+
 def _joined(phrases: Sequence[str]) -> str:
     if len(phrases) == 1:
         return phrases[0]
@@ -302,20 +413,44 @@ def _joined(phrases: Sequence[str]) -> str:
 
 
 def partial_copy(failed: Sequence[EntityOutcome], *, delivered: bool) -> tuple[str, str]:
-    """The PARTIAL verdict's ``(headline, detail)``: a completed run left files out.
+    """The PARTIAL verdict's ``(headline, detail)``: a completed run left files — or part of one — out.
 
     ``failed`` is :func:`warning_outcomes` of the run's outcomes (FAILED, and since plan
-    0053 S8 an EMPTY outcome that warns) and must not be empty (a run with nothing left out
-    is not partial — asking is a caller bug, so it raises). One entity → its own
-    :func:`outcome_sentence` — for an EMPTY one followed by the "everything else" sentence
-    and that reason's next step, since an EMPTY sentence states no next step of its own;
-    several → one sentence naming them all (unknown keys counted as "other files" — or, when
-    nothing known precedes the count, as "N of your files" — never echoed) and ending "Re-export
-    those files" only when a re-export can cure every one of them, else a neutral step. Home, Run
-    History and Convert render exactly this pair.
+    0053 S8 an EMPTY outcome that warns, and since S10 a BUILT one carrying a WARNING note)
+    and must not be empty (a run with nothing left out is not partial — asking is a caller
+    bug, so it raises). One entity → its own :func:`outcome_sentence` — for an EMPTY one
+    followed by the "everything else" sentence and that reason's next step, since an EMPTY
+    sentence states no next step of its own; several → one sentence naming them all (unknown
+    keys counted as "other files" — or, when nothing known precedes the count, as "N of your
+    files" — never echoed) and ending "Re-export those files" only when a re-export can cure
+    every one of them, else a neutral step. Home, Run History and Convert render exactly this
+    pair.
+
+    **A BUILT outcome with a WARNING note (plan 0053 S10)** is never called "left out": its
+    FILE was delivered. With nothing else left out, the headline names what the note names
+    ("Your roster synced without some co-teachers") and the detail is the note's sentence, the
+    "everything else" sentence and its next step; beside files that WERE left out, the headline
+    and detail are theirs, exactly as without the note, followed by the note's sentence and
+    next step.
     """
     if not failed:
         raise ValueError("partial_copy needs at least one entity that was left out")
+    skipped, notes = _split_left_out(failed)
+    if not notes:
+        return _left_out_copy(skipped, delivered=delivered)
+    note_details = " ".join(f"{note_sentence(n)} {_NOTE_COPY[n]['next_step']}" for n in notes)
+    if skipped:
+        headline, detail = _left_out_copy(skipped, delivered=delivered)
+        return headline, f"{detail} {note_details}"
+    phrase = _joined([_NOTE_COPY[note]["phrase"] for note in notes])
+    headline = f"Your roster synced without {phrase}" if delivered else f"Your sync completed without {phrase}"
+    sentences = " ".join(note_sentence(note) for note in notes)
+    steps = " ".join(_NOTE_COPY[note]["next_step"] for note in notes)
+    return headline, f"{sentences} {_everything_else(delivered=delivered)} {steps}"
+
+
+def _left_out_copy(failed: Sequence[EntityOutcome], *, delivered: bool) -> tuple[str, str]:
+    """:func:`partial_copy` for outcomes whose FILE was left out (FAILED / EMPTY) — the S3/S8 pair."""
     phrase = entity_phrase(failed[0].entity) if len(failed) == 1 else f"{len(failed)} of your files"
     headline = f"Your roster synced without {phrase}" if delivered else f"Your sync completed without {phrase}"
     if len(failed) == 1:

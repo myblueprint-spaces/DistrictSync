@@ -882,3 +882,155 @@ class TestMissingMappedRoundTrip:
         assert outcomes_from_record({OUTCOMES_RECORD_KEY: stored}) == (
             EntityOutcome("Family", OutcomeKind.FAILED, OutcomeReason.TRANSFORM_ERROR, 0, ("Email Address",)),
         )
+
+
+# --------------------------------------------------------------------------- #
+# Outcome notes (plan 0053 S10 — owner ruling 2026-09-25; the carrier S11 extends) #
+# --------------------------------------------------------------------------- #
+_COTEACHER_NOTE = outcomes.OutcomeNote.COTEACHER_SOURCE_UNUSABLE
+
+
+class TestOutcomeNotesOnTheOutcome:
+    def test_a_built_and_an_empty_outcome_may_carry_notes(self):
+        built = EntityOutcome.built("Enrollments", 9, notes=((_COTEACHER_NOTE, 4),))
+        empty = EntityOutcome.empty("Enrollments", OutcomeReason.NO_ROWS_AFTER_TRANSFORM, notes=((_COTEACHER_NOTE, 1),))
+        assert built.notes == ((_COTEACHER_NOTE, 4),) and empty.notes == ((_COTEACHER_NOTE, 1),)
+        # The twin: no note is the default, and the pre-S10 constructors are unchanged.
+        assert EntityOutcome.built("Enrollments", 9).notes == ()
+
+    @pytest.mark.parametrize(
+        ("kind", "reason"),
+        [(OutcomeKind.FAILED, OutcomeReason.TRANSFORM_ERROR), (OutcomeKind.NOT_RUN, OutcomeReason.RUN_ABORTED)],
+    )
+    def test_an_outcome_whose_transform_did_not_complete_carries_none(self, kind, reason):
+        with pytest.raises(ValueError, match="carries no notes"):
+            EntityOutcome("Enrollments", kind, reason, 0, notes=((_COTEACHER_NOTE, 1),))
+
+    @pytest.mark.parametrize(
+        "notes",
+        [
+            [(_COTEACHER_NOTE, 1)],  # not a tuple
+            (("coteacher_source_unusable", 1),),  # a str, not the enum
+            ((_COTEACHER_NOTE, 0),),  # a count below one
+            ((_COTEACHER_NOTE, True),),  # a bool is not a count
+            ((_COTEACHER_NOTE, 1.0),),  # nor a float
+            ((_COTEACHER_NOTE,),),  # not a pair
+            ((_COTEACHER_NOTE, 1), (_COTEACHER_NOTE, 2)),  # a note twice
+        ],
+    )
+    def test_malformed_notes_are_refused(self, notes):
+        with pytest.raises((TypeError, ValueError)):
+            EntityOutcome.built("Enrollments", 9, notes=notes)
+
+    def test_notes_are_written_as_a_code_to_count_map_only_when_present(self):
+        stored = outcomes_to_record(
+            [EntityOutcome.built("Enrollments", 9, notes=((_COTEACHER_NOTE, 4),)), EntityOutcome.built("Classes", 3)]
+        )
+        assert stored["Enrollments"] == {
+            "kind": "built",
+            "reason": "none",
+            "rows": 9,
+            "notes": {"coteacher_source_unusable": 4},
+        }
+        # The twin: an entity without a note is byte-identical to the pre-S10 entry.
+        assert stored["Classes"] == {"kind": "built", "reason": "none", "rows": 3}
+
+    def test_a_round_trip_through_json_is_lossless(self):
+        import json
+
+        sample = (EntityOutcome.built("Enrollments", 9, notes=((_COTEACHER_NOTE, 4),)),)
+        record = json.loads(json.dumps({OUTCOMES_RECORD_KEY: outcomes_to_record(sample)}))
+        assert outcomes_from_record(record) == sample
+
+    @pytest.mark.parametrize(
+        "garbage",
+        [
+            "coteacher_source_unusable",
+            ["coteacher_source_unusable"],
+            {"coteacher_source_unusable": 0},
+            {"coteacher_source_unusable": True},
+            {"coteacher_source_unusable": "4"},
+            {"a_note_from_a_newer_build": 3},
+            None,
+        ],
+    )
+    def test_the_reader_drops_unusable_notes_and_keeps_the_entry(self, garbage):
+        stored = {"Enrollments": {"kind": "built", "reason": "none", "rows": 9, "notes": garbage}}
+        assert outcomes_from_record({OUTCOMES_RECORD_KEY: stored}) == (EntityOutcome.built("Enrollments", 9),)
+
+    def test_the_reader_keeps_the_usable_pair_beside_an_unknown_one(self):
+        """A newer build's unknown note is DROPPED (not read as a warning — DECISIONS 2026-09-25);
+        a known one beside it survives."""
+        notes = {"a_note_from_a_newer_build": 3, "coteacher_source_unusable": 2}
+        stored = {"Enrollments": {"kind": "built", "reason": "none", "rows": 9, "notes": notes}}
+        (outcome,) = outcomes_from_record({OUTCOMES_RECORD_KEY: stored})
+        assert outcome.notes == ((_COTEACHER_NOTE, 2),)
+
+    def test_a_note_on_a_failed_entry_is_dropped_never_the_entry(self):
+        entry = {"kind": "failed", "reason": "transform_error", "rows": 0, "notes": {"coteacher_source_unusable": 1}}
+        assert outcomes_from_record({OUTCOMES_RECORD_KEY: {"Family": entry}}) == (
+            EntityOutcome.failed("Family", OutcomeReason.TRANSFORM_ERROR),
+        )
+
+
+class TestTheContextCarriesNotes:
+    def test_one_note_per_entity_and_note_the_first_count_stands(self):
+        from src.etl.transformers.context import TransformContext
+
+        context = TransformContext()
+        context.record_outcome_note("Enrollments", _COTEACHER_NOTE, 3)
+        context.record_outcome_note("Enrollments", _COTEACHER_NOTE, 9)
+        assert context.outcome_notes_for("Enrollments") == ((_COTEACHER_NOTE, 3),)
+        assert context.outcome_notes_for("Classes") == ()
+
+    @pytest.mark.parametrize(
+        ("note", "count"), [("coteacher_source_unusable", 1), (_COTEACHER_NOTE, 0), (_COTEACHER_NOTE, True)]
+    )
+    def test_a_caller_bug_raises_at_the_call(self, note, count):
+        from src.etl.transformers.context import TransformContext
+
+        with pytest.raises((TypeError, ValueError)):
+            TransformContext().record_outcome_note("Enrollments", note, count)
+
+
+class TestRunTransformAttachesNotes:
+    def test_a_built_and_an_empty_entity_carry_the_notes_their_transform_recorded(self, monkeypatch):
+        mappings = {
+            "Built": _entity("built.txt", {"Out": "in_col"}),
+            "Quiet": _entity("quiet.txt", {"Out": "in_col"}),
+            "NoRows": _entity("norows.txt", {"Out": "in_col"}),
+        }
+        raw = {name: pd.DataFrame({"in_col": ["a"]}) for name in ("built.txt", "quiet.txt", "norows.txt")}
+        original = DataTransformer.transform
+
+        def _stub(self, df, mapping, entity, raw_data, global_config):
+            if entity in {"Built", "NoRows"}:
+                self._context.record_outcome_note(entity, _COTEACHER_NOTE, 2)
+            if entity == "NoRows":
+                return pd.DataFrame()
+            return original(self, df, mapping, entity, raw_data, global_config)
+
+        monkeypatch.setattr(DataTransformer, "transform", _stub)
+        result, _ledger = _run(raw, mappings)
+        assert result.outcomes == (
+            EntityOutcome.built("Built", 1, notes=((_COTEACHER_NOTE, 2),)),
+            EntityOutcome.built("Quiet", 1),  # the twin: no note recorded, none attached
+            EntityOutcome.empty("NoRows", OutcomeReason.NO_ROWS_AFTER_TRANSFORM, notes=((_COTEACHER_NOTE, 2),)),
+        )
+
+    def test_an_isolated_failure_drops_its_notes_with_its_file(self, monkeypatch):
+        """A FAILED outcome carries no notes (its file is left out whole); the run goes on."""
+        mappings = {"Students": _entity("s.txt", {"Out": "in_col"}), "Family": _entity("f.txt", {"Out": "in_col"})}
+        raw = {"s.txt": pd.DataFrame({"in_col": ["a"]}), "f.txt": pd.DataFrame({"in_col": ["b"]})}
+        original = DataTransformer.transform
+
+        def _stub(self, df, mapping, entity, raw_data, global_config):
+            if entity == "Family":
+                self._context.record_outcome_note(entity, _COTEACHER_NOTE, 1)
+                raise ValueError("boom")
+            return original(self, df, mapping, entity, raw_data, global_config)
+
+        monkeypatch.setattr(DataTransformer, "transform", _stub)
+        result, _ledger = _run(raw, mappings)
+        family = next(o for o in result.outcomes if o.entity == "Family")
+        assert family.kind is OutcomeKind.FAILED and family.notes == ()

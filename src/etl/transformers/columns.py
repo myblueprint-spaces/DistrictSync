@@ -43,12 +43,21 @@ entity's ``source_columns`` block: each is a mapping from a key to a column spel
 Every name in either line is CONFIG vocabulary (a key, a configured spelling or a
 default) — never an observed header or a cell value (§8).
 
+**Presence is :func:`require_columns`** (plan 0053 S10, ``failure-policy.md`` §5 (a)/(b)):
+the ONE check a fail-closed guard makes before it reads a column that decides WHO may be
+delivered (``GuardKind.PII_SCOPE``) or LINKS rows (``GuardKind.JOIN_KEY``). It collects
+every missing column at once and raises one typed
+:class:`~src.etl.errors.SourceSchemaError`; each call site carries a
+``# failure-policy: pii_scope|join_key`` tag and a row in the §5 ``require-columns`` table
+(pinned both ways by ``tests/test_failure_policy_parity.py``).
+
 Pandas-free: a composed module beside ``grades.py``/``sources.py`` (P10 — new shared
 behaviour goes in composed modules, not new ``BaseTransformer`` methods).
 """
 
 import logging
-from collections.abc import Mapping
+import re
+from collections.abc import Iterable, Mapping
 from enum import StrEnum
 from typing import Any, Final
 
@@ -61,6 +70,7 @@ from src.config.models import (
     ensure_field_mapping,
 )
 from src.etl.column_names import normalize_column_name
+from src.etl.errors import GuardKind, SourceSchemaError, available_columns_note
 
 logger = logging.getLogger(__name__)
 
@@ -212,3 +222,108 @@ def source_column_label(field_map: Mapping[str, Any], key: str, *, default: str)
     if not isinstance(field_map, Mapping):
         raise TypeError(f"source_column_label needs a mapping for '{key}', got {type(field_map).__name__}")
     return _configured_spelling(field_map.get(key, _ABSENT), key) or default
+
+
+# --------------------------------------------------------------------------- #
+# Presence — the fail-closed guards (plan 0053 S10, failure-policy.md §5 (a)/(b)) #
+# --------------------------------------------------------------------------- #
+
+#: What a missing column of each guard kind costs: the sentence every
+#: :func:`require_columns` message ends with. TOTAL over :class:`GuardKind` (pinned), so a
+#: new guard kind cannot raise a message that says nothing about its consequence.
+GUARD_CONSEQUENCE: Final[Mapping[GuardKind, str]] = {
+    GuardKind.PII_SCOPE: "It decides which rows may be delivered, so this step cannot be skipped.",
+    GuardKind.JOIN_KEY: (
+        "It links these rows to other records, so this step cannot run without it and nothing is built "
+        "from a partial result."
+    ),
+}
+
+#: A header name that looks like a VALUE rather than a column name: digits with date/time/
+#: number punctuation only ("2025/2026", "100", "12:30").
+_VALUE_LIKE_HEADER: Final = re.compile(r"^[\d\s.,:/+-]+$")
+
+#: The hint a message carries when :func:`header_looks_like_data` is true.
+_HEADERLESS_HINT: Final = (
+    " The file's first row looks like data rather than column names — if this export has no "
+    "header row, its mapping needs a `headers:` block for it."
+)
+
+
+def header_looks_like_data(names: Iterable[object]) -> bool:
+    """True when a quarter or more of a file's header names look like VALUES, not names.
+
+    A headerless export read without its ``headers:`` block makes row 1 — a pupil — the
+    header: its "names" are numbers, dates, an email address, or blank cells (which the
+    reader labels ``Unnamed: N``). This answers that question as ONE boolean, so a
+    missing-column message can say "this file probably has no header row" without ever
+    printing an observed name (§8). Real MyEd BC headers are words; one blank trailing
+    column in a 20-column export stays well under the threshold.
+    """
+    labels = [str(name).strip() for name in names]
+    if not labels:
+        return False
+    value_like = sum(
+        1
+        for label in labels
+        if not label or "@" in label or label.lower().startswith("unnamed:") or _VALUE_LIKE_HEADER.match(label)
+    )
+    return value_like * 4 >= len(labels)
+
+
+def absent_columns(available: Iterable[object], wanted: Iterable[str]) -> tuple[str, ...]:
+    """The ``wanted`` columns ``available`` lacks — config spelling, config order, each once.
+
+    The ONE presence comparison (trim + lower-case on both sides, through
+    :func:`~src.etl.column_names.normalize_column_name`), shared by :func:`require_columns`
+    and by the one site whose owner-approved posture is to go on WITHOUT a column rather than
+    stop (§5 #15, the ClassInformation co-teacher columns — owner ruling 2026-09-25). Decides
+    nothing and logs nothing; ``()`` when nothing is absent.
+    """
+    present = {normalize_column_name(str(column)) for column in available}
+    missing: list[str] = []
+    for name in wanted:
+        label = str(name)
+        if normalize_column_name(label) not in present and label not in missing:
+            missing.append(label)
+    return tuple(missing)
+
+
+def require_columns(
+    available: Iterable[object],
+    required: Iterable[str],
+    *,
+    entity: str,
+    guard: GuardKind,
+) -> None:
+    """Raise ONE :class:`~src.etl.errors.SourceSchemaError` naming every ``required`` column absent.
+
+    ``available`` is what the source carries (a frame's ``columns``); ``required`` the
+    columns the guard reads, in CONFIG spelling (``source_column_label`` for a configured
+    column, the ``column_names`` constant for a structural one). Both sides are compared
+    through :func:`~src.etl.column_names.normalize_column_name` (trim + lower-case, what
+    the extractor applies to every header), so case and surrounding whitespace never
+    decide presence. EVERY missing column is collected before raising — an admin fixing
+    the export learns all of them from one run — and named in config spelling and config
+    order, each once.
+
+    The message carries the missing names, the COUNT of source columns
+    (:func:`~src.etl.errors.available_columns_note`) and ``header_looks_like_data`` (see
+    :func:`header_looks_like_data`) — never an observed header (§8). ``entity`` and
+    ``guard`` are required keyword-only, as on the error itself: which entity's scope the
+    fault is decided at is ``pipeline.run_transform``'s choice (§3), never this function's.
+    Returns ``None`` when nothing is missing (including an empty ``required``).
+    """
+    observed = [str(column) for column in available]
+    missing = absent_columns(observed, required)
+    if not missing:
+        return
+    looks_like_data = header_looks_like_data(observed)
+    raise SourceSchemaError(
+        f"[{entity}] column(s) {list(missing)} not found in the source ({available_columns_note(len(observed))}; "
+        f"header_looks_like_data={'yes' if looks_like_data else 'no'}). {GUARD_CONSEQUENCE[guard]}"
+        + (_HEADERLESS_HINT if looks_like_data else ""),
+        entity=entity,
+        columns=missing,
+        guard=guard,
+    )

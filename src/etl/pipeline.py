@@ -518,14 +518,18 @@ def run_transform(
                 first_isolated = exc
             continue
 
+        # The facts the transform recorded about what it left out (plan 0053 S10) ride on its
+        # outcome — a BUILT one included, which is how "built, but co-teachers left out" reaches
+        # Home as a standing warning (`failure_copy.NOTE_TIER`).
+        notes = transformer.outcome_notes_for(entity_name)
         if transformed.empty:
             logger.warning(f"No data transformed for entity '{entity_name}'; skipping.")
-            ledger.record(EntityOutcome.empty(entity_name, OutcomeReason.NO_ROWS_AFTER_TRANSFORM))
+            ledger.record(EntityOutcome.empty(entity_name, OutcomeReason.NO_ROWS_AFTER_TRANSFORM, notes=notes))
             continue
 
         outputs[entity_name] = transformed
         field_orders[entity_name] = list(entity_cfg.get("field_map", {}).keys())
-        ledger.record(EntityOutcome.built(entity_name, len(transformed)))
+        ledger.record(EntityOutcome.built(entity_name, len(transformed), notes=notes))
 
     # Nothing built and something FAILED: the bulkhead contained a failure that is, in effect,
     # the whole run. Re-raise the first one (its own traceback and category) rather than let the

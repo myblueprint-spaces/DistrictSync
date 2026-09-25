@@ -55,7 +55,7 @@ from datetime import datetime
 from enum import Enum
 
 from src.config.app_config import AppConfig
-from src.etl.outcomes import EntityOutcome, outcomes_from_record
+from src.etl.outcomes import EntityOutcome, OutcomeKind, outcomes_from_record
 from src.etl.sync_window import in_sync_window, next_resume_date
 from src.ui_flet.failure_copy import data_warnings_clause, failed_copy_for, partial_copy, warning_outcomes
 from src.ui_flet.humanize import (
@@ -491,9 +491,11 @@ class LatestReason(Enum):
     FAILED_ETL = "failed_etl"  # status != "success" — the dominant fault
     FAILED_DELIVERY = "failed_delivery"  # ETL ok, SFTP attempted + failed (exit-3 shape)
     # Plan 0053 S3: the run completed but at least one configured entity was left out — FAILED,
-    # or since S8 (owner decision D5) EMPTY for a reason that warns (``failure_copy.warning_outcomes``).
+    # or since S8 (owner decision D5) EMPTY for a reason that warns, or since S10 BUILT with a
+    # WARNING-tier note such as co-teachers left out (``failure_copy.warning_outcomes``).
     # Below both failures (a completed run is not a failed one), above ANOMALY: a vanished file's
-    # anomaly fires once, the missing entity every night (P7).
+    # anomaly fires once, the missing entity every night (P7) — EXCEPT a note-only PARTIAL (every
+    # warning outcome BUILT), which ranks below ANOMALY because its file was delivered (S10).
     PARTIAL = "partial"
     ANOMALY = "anomaly"  # succeeded but a >20% drop looked off
     DATA_WARNINGS = "data_warnings"  # succeeded, some rows had field problems + were skipped
@@ -522,15 +524,26 @@ def classify_latest_reason(record: dict, *, prior_build: dict | None) -> LatestR
 
     A record written before ``entity_outcomes`` existed has no outcomes, so it classifies
     exactly as it did before PARTIAL existed (pinned by a legacy-record snapshot).
+
+    One exception to the PARTIAL → anomalies order (plan 0053 S10): a PARTIAL made only of
+    NOTES — every warning outcome BUILT, i.e. its file was delivered — ranks BELOW an anomaly,
+    so a note that stands every night can never hide a one-night drop.
     """
     if record.get("status") != "success":
         return LatestReason.FAILED_ETL
     if bool(record.get("sftp_attempted")) and not bool(record.get("sftp_ok")):
         return LatestReason.FAILED_DELIVERY
-    if left_out_outcomes(record, prior_build=prior_build):
-        return LatestReason.PARTIAL
+    left_out = left_out_outcomes(record, prior_build=prior_build)
     anomalies = record.get("anomalies") or []
-    if isinstance(anomalies, list) and anomalies:
+    has_anomalies = isinstance(anomalies, list) and bool(anomalies)
+    # A PARTIAL made only of NOTES (every warning outcome BUILT — "co-teachers left out") sits
+    # BELOW an anomaly: the file WAS delivered, so the "a vanished file's anomaly fires once"
+    # reasoning that ranks PARTIAL above ANOMALY does not cover it, and on a district whose note
+    # stands every night it would otherwise hide every one-night drop for good (plan 0053 S10,
+    # DECISIONS 2026-09-25). The noted amber returns the next night the anomaly does not.
+    if left_out and not (has_anomalies and all(o.kind is OutcomeKind.BUILT for o in left_out)):
+        return LatestReason.PARTIAL
+    if has_anomalies:
         return LatestReason.ANOMALY
     if _data_errors_total(record) > 0:
         return LatestReason.DATA_WARNINGS
@@ -541,9 +554,11 @@ def left_out_outcomes(record: dict, *, prior_build: dict | None) -> tuple[Entity
     """The outcomes that WARN in the build behind ``record`` — TOTAL, never raises.
 
     The selection is :func:`~src.ui_flet.failure_copy.warning_outcomes` (plan 0053 S8, owner
-    decision D5): every FAILED outcome, and each EMPTY one whose tier is WARNING (every row
+    decision D5): every FAILED outcome, each EMPTY one whose tier is WARNING (every row
     filtered out or a mapped column missing, on any entity; nothing to send, on an entity not
-    in ``outcomes.MAY_BE_EMPTY``). Run History's "N files skipped" counts exactly these.
+    in ``outcomes.MAY_BE_EMPTY``), and since plan 0053 S10 each BUILT one carrying a
+    WARNING-tier note (``failure_copy.NOTE_TIER`` — "built, but co-teachers left out"). Run
+    History's row suffix (``failure_copy.partial_label``) words exactly these.
 
     A build record answers from its OWN ``entity_outcomes``; a delivery-only record answers
     from ``prior_build`` (see :func:`classify_latest_reason`). Read through the total

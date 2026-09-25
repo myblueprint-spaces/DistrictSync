@@ -71,6 +71,40 @@ SD74_RENAMES = {
     "ClassInformationEnh.txt": "ClassInfoEnhanced.txt",
 }
 
+#: The Enrollments student column a self-service overlay inherits from ``_base: myedbc``
+#: (``User ID.student_id_col``), which the frozen SD74 schedule does not carry — it has
+#: ``Student Number`` — and which the creator cannot set (ROADMAP, owner ruling 2026-09-25).
+BASE_SCHEDULE_STUDENT_COLUMN = "Student ID"
+
+
+def snapshot_input_with_base_student_id(dest: Path) -> Path:
+    """A COPY of the SD74 snapshot extract whose schedule ALSO carries the base's ``Student ID``.
+
+    Plan 0053 S10 made that column REQUIRED where the timetable enrollments read it (§5 #28):
+    over the unmodified snapshot a self-service overlay now stops with a typed
+    ``source_schema`` error instead of shipping an ``Enrollments.csv`` with every timetable
+    student left out (owner ruling 2026-09-25 keeps that stop —
+    ``TestEndToEndAgainstSnapshotInputs.test_an_overlay_over_a_schedule_without_the_base_student_id_stops_typed``).
+    Tests whose subject is the creator flow itself feed this copy: an export whose schedule
+    carries the column the overlay's mapping reads. The new column duplicates ``Student
+    Number`` value for value; nothing else in the extract changes. Synthetic data only.
+    """
+    import csv
+    import shutil
+
+    shutil.copytree(SNAPSHOT_INPUT, dest)
+    schedule = dest / SD74_RENAMES["StudentSchedule.txt"]
+    with schedule.open(encoding="utf-8", newline="") as handle:
+        rows = list(csv.reader(handle))
+    header = rows[0]
+    assert BASE_SCHEDULE_STUDENT_COLUMN not in header, "the frozen schedule already carries it"
+    source = header.index("Student Number")
+    rows = [header + [BASE_SCHEDULE_STUDENT_COLUMN]] + [row + [row[source]] for row in rows[1:]]
+    with schedule.open("w", encoding="utf-8", newline="") as handle:
+        csv.writer(handle, lineterminator="\n").writerows(rows)
+    return dest
+
+
 #: The base ``myedbc`` homeroom list, restated so the chain-companion assertions
 #: read as intent rather than as "whatever the base says".
 BASE_HOMEROOM = ["IT", "PR", "PK", "TK", "KG", "01", "02", "03", "04", "05", "06", "07"]
@@ -650,6 +684,8 @@ class TestEndToEndAgainstSnapshotInputs:
     """A self-service overlay whose renames match the SD74 extract's real filenames."""
 
     def test_renamed_overlay_runs_the_pipeline_over_the_snapshot_inputs(self, tmp_path, caplog):
+        # The schedule carries the base's `Student ID` too (plan 0053 S10 — see the helper).
+        source = snapshot_input_with_base_student_id(tmp_path / "input")
         write_overlay(
             _spec(district_name="SD93 - Snapshot filenames", source_file_renames=SD74_RENAMES),
             overwrite=False,
@@ -657,7 +693,7 @@ class TestEndToEndAgainstSnapshotInputs:
         with caplog.at_level(logging.WARNING):
             result = run_pipeline(
                 "sd93custom",
-                str(SNAPSHOT_INPUT),
+                str(source),
                 str(tmp_path / "out"),
                 dry_run=True,
             )
@@ -672,11 +708,12 @@ class TestEndToEndAgainstSnapshotInputs:
 
     def test_the_same_overlay_WITHOUT_renames_cannot_find_those_files(self, tmp_path, caplog):
         """The positive twin: the renames are what made the run above work."""
+        source = snapshot_input_with_base_student_id(tmp_path / "input")
         write_overlay(_spec(district_name="SD93 - Standard filenames"), overwrite=False)
         with caplog.at_level(logging.WARNING):
             result = run_pipeline(
                 "sd93custom",
-                str(SNAPSHOT_INPUT),
+                str(source),
                 str(tmp_path / "out"),
                 dry_run=True,
             )
@@ -700,9 +737,29 @@ class TestEndToEndAgainstSnapshotInputs:
             _spec(district_name="SD93 - Snapshot filenames", source_file_renames=SD74_RENAMES),
             overwrite=False,
         )
-        renamed = run_pipeline("sd93custom", str(SNAPSHOT_INPUT), str(tmp_path / "out2"), dry_run=True)
+        renamed = run_pipeline("sd93custom", str(source), str(tmp_path / "out2"), dry_run=True)
         for entity in ("Classes", "Enrollments"):
             assert result.entity_counts.get(entity, 0) < renamed.entity_counts[entity], entity
+
+    def test_an_overlay_over_a_schedule_without_the_base_student_id_stops_typed(self, tmp_path):
+        """Owner ruling 2026-09-25 (plan 0053 S10, §5 #28) — the self-service stop is KEPT.
+
+        The UNMODIFIED snapshot schedule calls its student column ``Student Number``; the
+        overlay inherits ``_base: myedbc``'s ``Student ID``. Before S10 this run passed while
+        shipping an ``Enrollments.csv`` with every timetable student left out; it now stops
+        with a typed ``source_schema`` error on Enrollments naming the column. The positive
+        twin is the renamed run above, over a copy whose schedule carries the column.
+        """
+        from src.etl.errors import SourceSchemaError
+
+        write_overlay(
+            _spec(district_name="SD93 - Snapshot filenames", source_file_renames=SD74_RENAMES),
+            overwrite=False,
+        )
+        with pytest.raises(SourceSchemaError) as exc:
+            run_pipeline("sd93custom", str(SNAPSHOT_INPUT), str(tmp_path / "out"), dry_run=True)
+        assert exc.value.entity == "Enrollments"
+        assert exc.value.columns == (BASE_SCHEDULE_STUDENT_COLUMN,)
 
 
 # ---------------------------------------------------------------------------

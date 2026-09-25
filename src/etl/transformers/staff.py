@@ -34,8 +34,9 @@ from typing import Any
 import pandas as pd
 
 from src.etl.column_names import STAFF_SOURCEID, STAFF_STATUS
+from src.etl.errors import GuardKind
 from src.etl.transformers.base import BaseTransformer
-from src.etl.transformers.columns import Previously, resolve_source_column
+from src.etl.transformers.columns import Previously, require_columns, resolve_source_column
 from src.etl.transformers.context import TransformContext
 from src.etl.transformers.ids import is_blank_series, normalize_id_series
 
@@ -223,10 +224,22 @@ class StaffTransformer(BaseTransformer):
 
         Safe before Classes runs: ``raw_data`` is filled by the extractor ahead
         of every transformer. An empty set is a legitimate answer (a config
-        declaring none of these roles rescues nobody) and never an error.
+        declaring none of these roles rescues nobody, and an ABSENT or EMPTY file
+        is simply not evidence) and never an error.
+
+        **Fail-closed on a present file** (§5 #22a, plan 0053 S10 — owner Gate A,
+        2026-09-24): a file that IS present and non-empty but lacks the teacher-id
+        column raises a typed ``SourceSchemaError`` (``JOIN_KEY``). It used to be
+        skipped in silence, so the rescue found nobody and every un-roled teacher
+        was DROPPED from ``Staff.csv`` — a shrink caused by a detected fault (H2).
+        Staff is CRITICAL, so the run fails. Reached only when some staff row is
+        un-roled (the caller returns before asking otherwise). One exception: a file
+        serving ONLY the ``student_demographic`` role on a config with no
+        ``homeroom_grades`` — its teacher id is the homeroom teacher, which links
+        nothing there, so its absence is no evidence, as before S10.
         """
         teacher_id_col = context.get_teacher_id_col()
-        filenames: set[str] = set()
+        roles_by_file: dict[str, set[str]] = {}
         # UNION over Classes AND Enrollments. They name the same schedule file in
         # all 20 bundled configs, but `source_files` is a dict and deep merge
         # takes a PARTIAL override happily — a district overriding one entity's
@@ -236,13 +249,28 @@ class StaffTransformer(BaseTransformer):
         for entity in ("Classes", "Enrollments"):
             entity_config = context.entity_mappings.get(entity, {}) or {}
             sources = self.normalize_source_config(entity_config.get("source_files", {}))
-            filenames.update(sources.get(role, "") for role in TEACHING_ASSIGNMENT_SOURCE_ROLES)
+            for role in TEACHING_ASSIGNMENT_SOURCE_ROLES:
+                filename = sources.get(role, "")
+                if filename:
+                    roles_by_file.setdefault(filename, set()).add(role)
 
+        # The demographic's teacher id is the HOMEROOM teacher: with no homeroom grade it
+        # links nothing (Classes and Enrollments never read it), so its absence there is
+        # no evidence rather than a detected fault.
+        homeroom_rostering = bool(context.global_config.get("homeroom_grades") or [])
         found: set[str] = set()
-        for filename in sorted(filenames - {""}):
+        for filename in sorted(roles_by_file):
             frame = context.raw_data.get(filename)
-            if frame is None or frame.empty or teacher_id_col not in frame.columns:
+            if frame is None or frame.empty:
                 continue
+            if (
+                teacher_id_col not in frame.columns
+                and not homeroom_rostering
+                and roles_by_file[filename] == {"student_demographic"}
+            ):
+                continue
+            # failure-policy: join_key
+            require_columns(frame.columns, [context.get_teacher_id_label()], entity="Staff", guard=GuardKind.JOIN_KEY)
             values = normalize_id_series(frame[teacher_id_col])
             found.update(values[~is_blank_series(frame[teacher_id_col])].unique())
         return found
@@ -322,7 +350,14 @@ class StaffTransformer(BaseTransformer):
         return resolve_source_column(aux, "staff_status", default=STAFF_STATUS, previously=Previously.UNCHANGED)
 
     def _merge_roster(self, working: pd.DataFrame, mapping: dict[str, Any], context: TransformContext) -> pd.DataFrame:
-        """Merge staff with roster to add 'staff sourceid' when available."""
+        """Merge staff with roster to add 'staff sourceid' when available.
+
+        The merge's own guard (either file empty, the teacher id absent from the STAFF
+        file, ``staff sourceid`` absent from the roster) still skips it — §5 #13, an
+        (e) posture whose recorded signal is S11's. Once that guard lets it run, the
+        roster's teacher-id JOIN column is required (§5 #13a, plan 0053 S10): its
+        absence used to be a raw pandas ``KeyError`` (category ``unknown``).
+        """
         source_config = mapping.get("source_files", {})
         normalized = self.normalize_source_config(source_config)
         teacher_id_col = context.get_teacher_id_col()
@@ -342,6 +377,10 @@ class StaffTransformer(BaseTransformer):
             and teacher_id_col in staff_df.columns
             and STAFF_SOURCEID in roster_df.columns
         ):
+            # failure-policy: join_key
+            require_columns(
+                roster_df.columns, [context.get_teacher_id_label()], entity="Staff", guard=GuardKind.JOIN_KEY
+            )
             working = staff_df.merge(
                 roster_df[[teacher_id_col, STAFF_SOURCEID]].drop_duplicates(subset=[teacher_id_col]),  # type: ignore[call-overload]
                 on=teacher_id_col,

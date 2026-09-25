@@ -62,7 +62,8 @@ global_config:
   # `ClassInformation.txt` is NOT a fix: that file has no Master Timetable ID
   # (so blended falls back to the schedule dedup, which uses the SAME
   # session_key and produces the same false merges) and no Primary Teacher
-  # column (so co-teacher enrollments would drop to zero). See
+  # column (so co-teacher enrollments would be left out, with a standing
+  # warning on Home — plan 0053 S10, owner ruling 2026-09-25). See
   # docs/claugentic-DECISIONS.md (2026-09-16) and the session_key ROADMAP item.
   blended_classes: false
 
