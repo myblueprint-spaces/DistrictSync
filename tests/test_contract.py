@@ -1861,12 +1861,16 @@ class TestUnityPlainContactReport:
         record = records[0]
         assert record["status"] == "success" and record["error_category"] == "none"
         # Plan 0053 S6: the FAILED entry also names the two mapped columns the plain report lacks
-        # (config spelling); kind and reason are the bulkhead's, unchanged.
+        # (config spelling); kind and reason are the bulkhead's, unchanged. Plan 0053 S7: its labels
+        # are the RAISING error's column only (the guardian filter), never the observation's whole
+        # list, plus Family's one configured source file.
         assert record["entity_outcomes"]["Family"] == {
             "kind": "failed",
             "reason": "missing_source_column",
             "rows": 0,
             "missing_mapped": ["Email Address", "Parent Auth / Guardian"],
+            "labels": ["Parent Auth / Guardian"],
+            "file_label": "EmergencyContactInformation.txt",
         }
         for entity in _UNITY_REST:
             assert record["entity_outcomes"][entity]["kind"] == "built"

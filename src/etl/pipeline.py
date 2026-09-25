@@ -45,9 +45,8 @@ from src.etl.outcomes import (
     criticality_of,
     failed_entities,
     outcomes_to_record,
-    reason_for,
 )
-from src.etl.preflight import missing_columns_by_entity
+from src.etl.preflight import label_vocabulary_by_entity, missing_columns_by_entity
 from src.etl.transformer import DataTransformer
 from src.etl.transformers.dates import SchoolYearDetermination
 from src.etl.transformers.grades import resolve_timetable_scope
@@ -267,7 +266,26 @@ def observe_source_columns(
     name the ledger refuses never reaches the log line. An entity the ledger was not
     configured with (a hand-written ``entity_order`` omitting an enabled entity) is skipped,
     never noted. Guards are enforced once, where a column is USED (§5), never here.
+
+    **It also hands the ledger each entity's config-declared label vocabulary** (plan 0053 S7,
+    D4 — :func:`~src.etl.preflight.label_vocabulary_by_entity`), so a
+    ``missing_source_column`` outcome can name its column (and, for a single-file entity, its
+    file) through ``outcomes.safe_label``. Under the same never-enforces guards, separately
+    from the observation: a failure there costs labels only, never the observation.
     """
+    try:
+        vocabularies = label_vocabulary_by_entity(config)
+    except Exception as exc:  # noqa: BLE001 — labels are advisory; never enforces (failure-policy §8, P11)
+        logger.debug("Label vocabulary skipped (%s)", type(exc).__name__)
+        vocabularies = {}
+    for entity, vocabulary in vocabularies.items():
+        if entity not in ledger.configured:
+            continue
+        try:
+            ledger.note_label_vocabulary(entity, vocabulary)
+        except Exception as exc:  # noqa: BLE001 — one entity's vocabulary never costs another's (P11)
+            logger.debug("Label vocabulary skipped for %s (%s)", entity, type(exc).__name__)
+
     try:
         findings = missing_columns_by_entity(config, observed_input_columns(raw_data))
     except Exception as exc:  # noqa: BLE001 — source observation never enforces (failure-policy §10, P11)
@@ -366,8 +384,9 @@ def run_transform(
 
     **The entity bulkhead (plan 0053 S4, ``failure-policy.md`` §2/§3) — the ONE
     entity-scope boundary in the product, shared by the CLI and Convert.** A raise from
-    an entity's transform is recorded FAILED (:func:`~src.etl.outcomes.reason_for`, by
-    type) and then decided by the entity's DECLARED criticality
+    an entity's transform is recorded FAILED (:meth:`~src.etl.outcomes.OutcomeLedger.record_failure`:
+    the reason by type, plus any config-declared labels from a ``SourceSchemaError``'s own
+    columns — plan 0053 S7) and then decided by the entity's DECLARED criticality
     (:func:`~src.etl.outcomes.criticality_of` — anything unlisted is CRITICAL):
 
     * **CRITICAL** — every later entity is recorded NOT_RUN and the exception is
@@ -481,8 +500,9 @@ def run_transform(
         except Exception as exc:  # noqa: BLE001 — entity bulkhead, failure-policy §2
             # `Exception`, never `BaseException`: a Ctrl+C or a SystemExit is not an entity
             # outcome; the caller's failure sink marks what is left.
-            reason = reason_for(exc)
-            ledger.record(EntityOutcome.failed(entity_name, reason))
+            # The reason by TYPE, and any config-declared labels from the error's own columns
+            # (plan 0053 S7) — never its message.
+            reason = ledger.record_failure(entity_name, exc)
             if criticality_of(entity_name) is not EntityCriticality.ISOLATABLE:
                 # CRITICAL (or unlisted): the run fails exactly as it always has — the ORIGINAL
                 # object, so its category and the exit code are unchanged.

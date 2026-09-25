@@ -20,11 +20,15 @@ Two closed vocabularies are humanised here:
   and :func:`partial_copy`, the PARTIAL verdict's headline + detail for a run that
   completed without one or more of its files.
 
-**PII floor (§8, P9).** Nothing here interpolates a filename, a column, a path, a cell
-value or exception text. The ONLY variable text is an entity's phrase, taken from the
-authored ``humanize.SIZE_NOUNS`` vocabulary — an entity key that vocabulary does not know
-(a hand-dropped YAML's invention) reads as :data:`UNKNOWN_ENTITY_PHRASE`, never echoed —
-and counts. Config-declared file and column labels are plan 0053 S7 (D4), not this module.
+**PII floor (§8, P9).** Nothing here interpolates a path, a cell value, exception text or an
+OBSERVED header. The variable text is an entity's phrase, taken from the authored
+``humanize.SIZE_NOUNS`` vocabulary — an entity key that vocabulary does not know (a
+hand-dropped YAML's invention) reads as :data:`UNKNOWN_ENTITY_PHRASE`, never echoed —
+counts, and, since plan 0053 S7 (owner decision D4), an outcome's config-DECLARED
+``labels`` / ``file_label``: names that passed ``outcomes.safe_label`` (a member of the
+resolved config's own vocabulary, printable, at most ``outcomes.MAX_LABEL_LENGTH``
+characters) when the run recorded them, and whose shape the total record reader re-checks.
+No other value reaches a sentence. An outcome without labels reads exactly as before.
 
 **Import direction.** This module imports ``humanize`` (the vocabulary), ``errors`` and
 ``outcomes``; it never imports ``home_status``, which imports it (the reason the entity
@@ -124,6 +128,35 @@ _OUTCOME_TEMPLATES: Final[Mapping[tuple[OutcomeKind, OutcomeReason], str]] = Map
 )
 
 
+# The label-aware variants (plan 0053 S7, D4): one per pair that can carry labels — exactly the
+# `missing_source_column` pairs, since `EntityOutcome` refuses labels on any other reason (pinned).
+# Each is its unlabelled twin above with the "a column" wording replaced by the NAMED column(s)
+# and, when the outcome names one, the export file — the only values interpolated are those
+# config-declared labels (see the module docstring's PII floor).
+_LABELLED_TEMPLATES: Final[Mapping[tuple[OutcomeKind, OutcomeReason], str]] = MappingProxyType(
+    {
+        (OutcomeKind.EMPTY, OutcomeReason.MISSING_SOURCE_COLUMN): (
+            "{Subject} {were} not built: none of {their} rows could be used, and {their} export "
+            "file{file_clause} is missing {columns_clause} this district's mapping reads."
+        ),
+        (OutcomeKind.FAILED, OutcomeReason.MISSING_SOURCE_COLUMN): (
+            "{Subject} {were} left out of this sync: {their} export file{file_clause} is missing "
+            "{columns_clause} this district's mapping needs — often because a different report was "
+            "saved under the same name. {everything_else} Re-export that file and the next sync "
+            "picks it up automatically."
+        ),
+    }
+)
+
+
+def _label_clauses(outcome: EntityOutcome) -> dict[str, str]:
+    """The two label slots: ``, <file>,`` (or nothing) and ``the column(s) “…”, which``."""
+    quoted = [f"“{label}”" for label in outcome.labels]
+    noun = "column" if len(quoted) == 1 else "columns"
+    file_clause = f", {outcome.file_label}," if outcome.file_label else ""
+    return {"file_clause": file_clause, "columns_clause": f"the {noun} {_joined(quoted)}, which"}
+
+
 def outcome_sentence(outcome: EntityOutcome, *, delivered: bool) -> str:
     """One plain sentence for one entity's outcome — TOTAL over every valid (kind, reason).
 
@@ -132,9 +165,16 @@ def outcome_sentence(outcome: EntityOutcome, *, delivered: bool) -> str:
     ignored by the other kinds. An :class:`EntityOutcome` cannot hold an invalid pair (its
     constructor refuses one), so the lookup cannot miss; the ``KeyError`` guard is the
     totality test's tripwire for a new enum member added without a template.
+
+    **Label-aware (plan 0053 S7).** An outcome carrying config-declared ``labels`` reads its
+    :data:`_LABELLED_TEMPLATES` variant, naming the column(s) — and the export file when the
+    outcome names one; an outcome without labels reads its unlabelled template exactly as
+    before (pinned byte-for-byte).
     """
-    template = _OUTCOME_TEMPLATES[(outcome.kind, outcome.reason)]
-    return template.format(**_grammar(outcome.entity), everything_else=_everything_else(delivered=delivered))
+    words = {**_grammar(outcome.entity), "everything_else": _everything_else(delivered=delivered)}
+    if outcome.labels:
+        return _LABELLED_TEMPLATES[(outcome.kind, outcome.reason)].format(**words, **_label_clauses(outcome))
+    return _OUTCOME_TEMPLATES[(outcome.kind, outcome.reason)].format(**words)
 
 
 # How much one outcome, on its own, says about the run it belongs to. S3's rule is the kind

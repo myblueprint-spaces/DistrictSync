@@ -25,6 +25,10 @@ file — ``Classes`` reads five source files and its entries name bare columns.
   field_map is actually read from is transformer knowledge, so it is declared
   once, per entity, in :data:`OBSERVATION_SCOPE` (verified transformer by
   transformer, and completeness-pinned against the registry).
+* :func:`label_vocabulary_by_entity` (plan 0053 S7, owner decision D4) derives,
+  from the SAME expectations and source-file list, each entity's config-declared
+  label vocabulary — what ``outcomes.safe_label`` checks a name against before
+  the record or the copy may print it.
 
 Nothing here resolves a transformer's own fallback (``base.resolve_column``'s
 ``default=``): that stays transformer knowledge, and this layer stays config-only
@@ -69,6 +73,7 @@ from src.config.models import (
     ensure_field_mapping,
 )
 from src.etl.column_names import normalize_column_name
+from src.etl.outcomes import LabelVocabulary
 
 logger = logging.getLogger(__name__)
 
@@ -623,6 +628,50 @@ def missing_columns_by_entity(
         found.setdefault(entity, []).append(_clean(item.source_column))
 
     return {entity: tuple(columns) for entity, columns in found.items()}
+
+
+def label_vocabulary_by_entity(config: MappingConfig) -> dict[str, LabelVocabulary]:
+    """Per ACTIVE entity, the config-DECLARED names its outcome may carry as labels (plan 0053 S7).
+
+    Built on the same derivation as :func:`missing_columns_by_entity` — never a second
+    reading of the config:
+
+    * ``columns`` — the entity's ``field_map`` + ``row_filters`` expectations
+      (:func:`expected_columns`, so already through :func:`_looks_like_header`), in CONFIG
+      spelling (trimmed, never lowercased). Never its ``source_columns``: those are cross-file
+      auxiliary reads. Empty for an :attr:`ObservationScope.NO_CLAIM` entity, whose field_map
+      values are placeholders rather than columns it reads — naming one would be false;
+    * ``files`` — its configured ``source_files`` (config spelling, deduped);
+    * ``reads_own_files`` — :attr:`ObservationScope.OWN_FILES` only. An ALL_FILES entity
+      (Enrollments) may read a mapped column from ANOTHER entity's file, so its own file
+      must never be named beside that column.
+
+    Membership itself is decided in ONE place, ``outcomes.safe_label``; this only says what
+    the resolved config declares. TOTAL: never raises (``{}`` at worst — no labels).
+    """
+    try:
+        expected = expected_columns(config)
+        sources = _entity_source_files(config)
+    except Exception as exc:  # noqa: BLE001 — total by contract; no vocabulary names nothing
+        logger.debug(f"Pre-flight: no label vocabulary ({type(exc).__name__})")
+        return {}
+
+    vocabularies: dict[str, LabelVocabulary] = {}
+    for entity, files in sources.items():
+        scope = observation_scope(entity)
+        columns: frozenset[str] = frozenset()
+        if scope is not ObservationScope.NO_CLAIM:
+            columns = frozenset(
+                _clean(item.source_column)
+                for item in expected
+                if item.entity == entity and item.origin is not ExpectationOrigin.SOURCE_COLUMN
+            ) - {""}
+        vocabularies[entity] = LabelVocabulary(
+            columns=columns,
+            files=files,
+            reads_own_files=scope is ObservationScope.OWN_FILES,
+        )
+    return vocabularies
 
 
 def _pool_for(

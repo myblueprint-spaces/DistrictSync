@@ -250,12 +250,18 @@ class TestConvertLeavesAFailedEntityOut:
                 OutcomeReason.MISSING_SOURCE_COLUMN,
                 0,
                 ("Email Address", "Parent Auth / Guardian"),
+                ("Parent Auth / Guardian",),
+                "EmergencyContactInformation.txt",
             )
             in gated.entity_outcomes
         )
         _verdict, _headline, prompt = summarize(gated)
         assert "Family contacts were left out of this sync" in prompt
-        assert "missing a column this district's mapping needs" in prompt
+        # Plan 0053 S7: the prompt names the file and the column, as the district's mapping spells them.
+        assert (
+            "their export file, EmergencyContactInformation.txt, is missing the column "
+            "“Parent Auth / Guardian”, which this district's mapping needs"
+        ) in prompt
         assert (out / "Family.csv").read_bytes() == family_before, "nothing is written before the ack"
 
         acked = convert_job(self._SIS, str(plain), anomaly_ack=run_identity(self._SIS, str(plain)))

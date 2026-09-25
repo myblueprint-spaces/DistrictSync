@@ -1149,11 +1149,15 @@ class TestTypedCategoriesReachTheRecord:
         assert records[0]["error_category"] == "none"
         # Plan 0053 S6: the FAILED entry also carries what the source observation saw (the
         # guardian column, in CONFIG spelling); its kind and reason are the bulkhead's, unchanged.
+        # Plan 0053 S7: and the labels the copy may name — the raising error's column and, Family
+        # having ONE configured source file, that file — both in config spelling.
         assert records[0]["entity_outcomes"]["Family"] == {
             "kind": "failed",
             "reason": "missing_source_column",
             "rows": 0,
             "missing_mapped": ["Parent Auth / Guardian"],
+            "labels": ["Parent Auth / Guardian"],
+            "file_label": "EmergencyContactInformation.txt",
         }
         assert "Family" not in result.entity_counts
 
@@ -1562,11 +1566,15 @@ class TestSourceObservation:
         assert records is not None and len(records) == 1
         stored = records[0]
         assert stored["status"] == "success" and stored["error_category"] == "none"
+        # Plan 0053 S7: the labels the copy may name come from `missing_mapped` on the EMPTY path,
+        # and Family's one configured source file is named beside the column.
         assert stored["entity_outcomes"]["Family"] == {
             "kind": "empty",
             "reason": "missing_source_column",
             "rows": 0,
             "missing_mapped": ["Email Address"],
+            "labels": ["Email Address"],
+            "file_label": "EmergencyContactInformation.txt",
         }
         family = next(o for o in result.entity_outcomes if o.entity == "Family")
         assert family.missing_mapped == ("Email Address",)
@@ -1694,6 +1702,68 @@ class TestSourceObservation:
         assert records is not None and [r["status"] for r in records] == ["success", "success"]
         assert records[0]["entity_outcomes"]["Family"]["reason"] == "no_rows_after_transform"
         assert records[1]["entity_outcomes"]["Family"]["reason"] == "missing_source_column"
+
+    def test_convert_records_the_same_labels(self, sd67_input: Path, gde_output: Path) -> None:
+        """Plan 0053 S7: the label vocabulary is handed over by the SAME shared observation, so a
+        Convert names the same file and column the CLI does."""
+        from src.ui_flet.screens.convert import convert_job
+
+        AppConfig(input_dir=str(sd67_input), output_dir=str(gde_output), sis_type=self._SD67).save()
+        result = convert_job(self._SD67, str(sd67_input))
+        assert result.entity_outcomes is not None
+        family = next(o for o in result.entity_outcomes if o.entity == "Family")
+        assert (family.file_label, family.labels) == ("EmergencyContactInformation.txt", ("Email Address",))
+        records = read_run_records()
+        assert records is not None and records[0]["entity_outcomes"]["Family"]["labels"] == ["Email Address"]
+
+    @pytest.mark.parametrize("seam", ["label_vocabulary_by_entity", "note_label_vocabulary"])
+    def test_a_raising_label_vocabulary_costs_the_labels_only(
+        self, seam: str, sd67_input: Path, tmp_path: Path, monkeypatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Plan 0053 S7's raise-isolation twin: the vocabulary raising (in the derivation, or in the
+        ledger) changes nothing delivered and does NOT cost the S6 observation — only the labels.
+        The first run is the positive twin: it DID label Family."""
+        from src.etl.outcomes import OutcomeLedger
+
+        labelled_out = tmp_path / "labelled"
+        broken_out = tmp_path / "broken"
+        labelled_out.mkdir()
+        broken_out.mkdir()
+        labelled = run_pipeline(self._SD67, str(sd67_input), str(labelled_out))
+
+        def _boom(*_a: object, **_kw: object) -> None:
+            raise RuntimeError("vocabulary bug")
+
+        if seam == "label_vocabulary_by_entity":
+            monkeypatch.setattr(pipeline, "label_vocabulary_by_entity", _boom)
+        else:
+            monkeypatch.setattr(OutcomeLedger, "note_label_vocabulary", _boom)
+        caplog.clear()
+        with caplog.at_level(logging.DEBUG, logger="src.etl.pipeline"):
+            broken = run_pipeline(self._SD67, str(sd67_input), str(broken_out))
+
+        names = sorted(p.name for p in labelled_out.glob("*.csv"))
+        assert names and names == sorted(p.name for p in broken_out.glob("*.csv"))
+        for name in names:
+            assert (labelled_out / name).read_bytes() == (broken_out / name).read_bytes()
+        assert labelled.entity_counts == broken.entity_counts
+        records = read_run_records()
+        assert records is not None and len(records) == 2
+        broken_record, labelled_record = records
+        for key in ("status", "error_category", *pipeline._RECORD_ENTITY_KEYS):
+            assert broken_record[key] == labelled_record[key]
+        assert labelled_record["entity_outcomes"]["Family"]["labels"] == ["Email Address"]
+        # The observation survives; only the labels are gone.
+        assert broken_record["entity_outcomes"]["Family"] == {
+            "kind": "empty",
+            "reason": "missing_source_column",
+            "rows": 0,
+            "missing_mapped": ["Email Address"],
+        }
+        debug = [r for r in caplog.records if r.getMessage().startswith("Label vocabulary skipped")]
+        assert debug and all(r.levelno == logging.DEBUG for r in debug)
+        assert not [r for r in debug if "vocabulary bug" in r.getMessage()], "the type only, never the text"
+        assert [r for r in _mapped_missing_lines(caplog) if "[Family]" in r.getMessage()], "the warning still fires"
 
 
 class TestObservationIsolatesEachEntity:

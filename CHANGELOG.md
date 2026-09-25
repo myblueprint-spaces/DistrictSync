@@ -70,6 +70,18 @@ Per-release download links and auto-generated commit notes live on the
   the family-contact, course and attendance exports are the exception described at
   the top of this list.
 
+- **The "synced without family contacts" warning now names the file and the column.**
+  When family contacts are left out because the contacts export is missing a column the
+  district's mapping needs, Home, Run History and the Convert screen now say which file and
+  which column, using the names in the district's mapping — for example
+  `EmergencyContactInformation.txt` and its `Parent Auth / Guardian` column. Only names the
+  district's mapping declares are ever shown — never a column name read from the export
+  itself — and a name that looks like an email address or a folder path is not shown at all.
+  The run record's `entity_outcomes` entry carries the same names (`labels`, `file_label`),
+  also for a file that came out empty because a mapped column was missing (for example a
+  contacts export with no email column); a file type built from several exports (classes,
+  enrollments) is recorded with the column only, and attendance with neither.
+
 ### Privacy
 
 - **Column names read from an export file no longer appear in error messages or

@@ -19,7 +19,9 @@ derives two PII-free things the Run History view renders:
 **Privacy (LIVE/top):** the record's free-text ``error`` (``str(e)`` in the emitter — path /
 ``sis_type`` / column risk) and the raw ``ANOMALY:``-prefixed strings are **NEVER** read into a
 ``RunRow`` field or a banner headline/detail. ``RunRow`` carries **no** ``error`` field at all, so
-a future view edit cannot render one; faults are named by CATEGORY, counts are safe scalars. This
+a future view edit cannot render one; faults are named by CATEGORY, counts are safe scalars (the
+PARTIAL banner's ``failure_copy`` sentence may name a left-out entity's config-declared file and
+column — validated labels, plan 0053 S7, D4 — never an observed header). This
 is the concrete fix for the Streamlit page's raw-``error`` column + log-path caption (dropped).
 The ONE deliberate identity fact surfaced (0034 Slice 4) is the DISTRICT: when a record's
 ``sis_type`` differs from the active district, ``district_note`` carries the friendly district

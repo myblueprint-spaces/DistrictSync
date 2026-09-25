@@ -24,7 +24,12 @@ which can carry a filesystem path / ``sis_type`` / column name) is **NEVER inter
 into the admin-facing ``headline``/``detail``** — faults are named by CATEGORY from the
 record's structured fields only (status / ``error_category`` / sftp / ``entity_outcomes`` /
 anomalies / data_errors), humanised through the total tables in ``failure_copy`` (plan 0053
-S3). The raw ``error`` belongs solely to IA-6's raw-log expander.
+S3). The ONE kind of name a headline/detail may carry is a config-declared file or column
+label, validated (plan 0053 S7, owner decision D4): an ``entity_outcomes`` entry's ``labels`` /
+``file_label``, which passed ``outcomes.safe_label`` against the resolved config's own
+vocabulary when the run recorded them and whose shape the total reader re-checks — never
+observed header text, ``str(e)``, paths or cell values. The raw ``error`` belongs solely to
+IA-6's raw-log expander.
 
 Rule order (first-match-wins; failures above warnings above healthy — a failed sync is
 never masked by a later "healthy") mirrors ``03_Run_History._status_cell``'s proven

@@ -6,8 +6,10 @@ What is pinned here, and why each pin has a twin:
   raises); ``outcome_sentence`` covers every valid ``(OutcomeKind, OutcomeReason)``;
   ``OUTCOME_TIER`` covers every ``OutcomeKind``. Each is derived from the ENUM, so a new member
   without copy is RED.
-* **Bounded surfacing (P9).** No copy string carries an interpolation slot, a filename, a path,
-  an unknown entity key or exception text — swept with a sentinel that would be visible anywhere.
+* **Bounded surfacing (P9).** No copy string carries an interpolation slot, a path, an unknown
+  entity key or exception text — swept with a sentinel that would be visible anywhere. The ONE
+  name a sentence may carry is an outcome's config-declared label (plan 0053 S7, D4): the sweep
+  includes labelled outcomes, and a record whose stored labels are junk renders none of them.
 * **The misdirection this replaced.** Only ``NO_INPUT`` and ``INPUT_UNREADABLE`` mention the input
   folder — asserted in both directions (the two that must, do).
 * **One copy source.** Home, Run History and Convert's card render the SAME category detail, and
@@ -107,8 +109,28 @@ def _every_copy_string() -> list[str]:
     ):
         for delivered in (True, False):
             out.extend(partial_copy(failed, delivered=delivered))
+    # Plan 0053 S7: labelled outcomes — a known and an unknown entity, both label-carrying pairs.
+    for entity in ("Family", SENTINEL):
+        for kind in (OutcomeKind.FAILED, OutcomeKind.EMPTY):
+            for file_label in (_CONTACTS, ""):
+                labelled = _labelled_outcome(entity, kind, (_GUARDIAN, _EMAIL), file_label=file_label)
+                for delivered in (True, False):
+                    out.append(outcome_sentence(labelled, delivered=delivered))
+                    if kind is OutcomeKind.FAILED:
+                        out.extend(partial_copy([labelled], delivered=delivered))
     out.append(data_warnings_clause(3))
     return out
+
+
+_GUARDIAN = "Parent Auth / Guardian"
+_EMAIL = "Email Address"
+_CONTACTS = "EmergencyContactInformation.txt"
+
+
+def _labelled_outcome(
+    entity: str, kind: OutcomeKind, labels: tuple[str, ...], *, file_label: str = ""
+) -> EntityOutcome:
+    return EntityOutcome(entity, kind, OutcomeReason.MISSING_SOURCE_COLUMN, 0, (), labels, file_label)
 
 
 # --------------------------------------------------------------------------- #
@@ -159,8 +181,9 @@ class TestOutcomeSentence:
 
     def test_the_observed_missing_column_sentence_never_names_the_column(self) -> None:
         """Plan 0053 S6: EMPTY / MISSING_SOURCE_COLUMN carries ``missing_mapped`` on the outcome,
-        but the sentence names only the entity — config-declared labels in copy are S7 (D4).
-        The column is planted as a sentinel so a leak would be visible."""
+        but ``missing_mapped`` alone never reaches a sentence — since S7 only ``labels`` (which
+        passed ``safe_label``) do, and this outcome has none. The column is planted as a sentinel
+        so a leak would be visible; the labelled twin is ``TestLabelAwareSentences``."""
         outcome = EntityOutcome("Family", OutcomeKind.EMPTY, OutcomeReason.MISSING_SOURCE_COLUMN, 0, ("SENTINEL_COL",))
         sentence = outcome_sentence(outcome, delivered=True)
         assert sentence == (
@@ -174,6 +197,69 @@ class TestOutcomeSentence:
             _outcome(SENTINEL, OutcomeKind.FAILED, OutcomeReason.MISSING_SOURCE_COLUMN), delivered=True
         )
         assert sentence.startswith("One of your files was left out of this sync: its export file")
+
+
+class TestLabelAwareSentences:
+    """Plan 0053 S7 (D4): an outcome carrying config-declared labels NAMES them; one without
+    labels reads exactly as S3 wrote it."""
+
+    def test_the_labelled_templates_cover_exactly_the_pairs_that_may_carry_labels(self) -> None:
+        may_carry = {(kind, reason) for kind, reason in _VALID_PAIRS if reason is OutcomeReason.MISSING_SOURCE_COLUMN}
+        assert set(failure_copy._LABELLED_TEMPLATES) == may_carry
+        assert len(may_carry) == 2  # non-vacuity: FAILED and EMPTY
+        for kind, reason in _VALID_PAIRS:
+            if (kind, reason) not in may_carry:
+                with pytest.raises(ValueError):  # the outcome refuses labels, so no template is owed
+                    EntityOutcome("Family", kind, reason, 5 if kind is OutcomeKind.BUILT else 0, (), (_GUARDIAN,))
+
+    def test_the_unity_plain_report_sentence_names_the_file_and_the_column(self) -> None:
+        outcome = _labelled_outcome("Family", OutcomeKind.FAILED, (_GUARDIAN,), file_label=_CONTACTS)
+        assert outcome_sentence(outcome, delivered=True) == (
+            "Family contacts were left out of this sync: their export file, EmergencyContactInformation.txt, "
+            "is missing the column “Parent Auth / Guardian”, which this district's mapping needs — often "
+            "because a different report was saved under the same name. Everything else was delivered. "
+            "Re-export that file and the next sync picks it up automatically."
+        )
+
+    def test_the_twin_without_labels_the_s3_sentence_is_byte_identical(self) -> None:
+        for kind, reason in _VALID_PAIRS:
+            unlabelled = _outcome("Family", kind, reason)
+            for delivered in (True, False):
+                assert outcome_sentence(unlabelled, delivered=delivered) == failure_copy._OUTCOME_TEMPLATES[
+                    (kind, reason)
+                ].format(
+                    **failure_copy._grammar("Family"),
+                    everything_else=failure_copy._everything_else(delivered=delivered),
+                )
+
+    def test_the_empty_sentence_names_the_column_it_reads(self) -> None:
+        outcome = _labelled_outcome("Family", OutcomeKind.EMPTY, (_EMAIL,), file_label=_CONTACTS)
+        assert outcome_sentence(outcome, delivered=True) == (
+            "Family contacts were not built: none of their rows could be used, and their export file, "
+            "EmergencyContactInformation.txt, is missing the column “Email Address”, which this "
+            "district's mapping reads."
+        )
+
+    def test_a_column_only_outcome_names_no_file_and_several_columns_are_joined(self) -> None:
+        outcome = _labelled_outcome("Classes", OutcomeKind.FAILED, ("Grade", "Course Title", "Section"))
+        sentence = outcome_sentence(outcome, delivered=False)
+        assert sentence.startswith(
+            "Classes were left out of this sync: their export file is missing the columns “Grade”, "
+            "“Course Title” and “Section”, which this district's mapping needs"
+        )
+        assert ".txt" not in sentence
+
+    def test_an_unknown_entity_keeps_its_generic_singular_phrase(self) -> None:
+        outcome = _labelled_outcome(SENTINEL, OutcomeKind.FAILED, (_GUARDIAN,))
+        sentence = outcome_sentence(outcome, delivered=True)
+        assert sentence.startswith("One of your files was left out of this sync: its export file is missing the column")
+        assert "SENTINEL" not in sentence
+
+    def test_the_partial_detail_is_the_labelled_sentence(self) -> None:
+        outcome = _labelled_outcome("Family", OutcomeKind.FAILED, (_GUARDIAN,), file_label=_CONTACTS)
+        headline, detail = partial_copy([outcome], delivered=True)
+        assert headline == "Your roster synced without family contacts"  # the headline names no label
+        assert detail == outcome_sentence(outcome, delivered=True)
 
 
 class TestOutcomeTier:
@@ -363,6 +449,12 @@ class TestNothingUnboundedReachesCopy:
             assert ":\\" not in text
             assert "{" not in text and "}" not in text
 
+    def test_the_sweep_reaches_the_labelled_sentences(self) -> None:
+        # Non-vacuity for S7: the label path IS in the sweep above, so its assertions cover it.
+        strings = _every_copy_string()
+        assert any(_CONTACTS in s and f"“{_GUARDIAN}”" in s for s in strings)
+        assert any("“Email Address”" in s and _CONTACTS not in s for s in strings)
+
 
 # --------------------------------------------------------------------------- #
 # One copy source across Home, Run History and Convert                         #
@@ -442,6 +534,87 @@ class TestTheThreeSurfacesWordAFailureIdentically:
         # WERE sent. The doctored shape the old parity fixture used would have claimed otherwise.
         home, banner = _surfaces(_pipeline_failed_record(RunErrorCategory.UNKNOWN, attempted=True, ok=True))
         assert NOTHING_SENT_TAIL not in home and NOTHING_SENT_TAIL not in banner
+
+
+def _partial_record(family_entry: dict) -> dict:
+    """A success record (built by the pipeline's builder) whose Family entry is replaced as stored."""
+    record = build_run_record(
+        status="success",
+        elapsed=1.0,
+        entity_counts={"Students": 10},
+        sftp_attempted=True,
+        sftp_ok=True,
+        source="scheduled",
+        sis_type="sd48myedbc",
+        error_category=RunErrorCategory.NONE,
+        entity_outcomes=[
+            EntityOutcome.built("Students", 10),
+            EntityOutcome.failed("Family", OutcomeReason.MISSING_SOURCE_COLUMN),
+        ],
+        timestamp=(_NOW - timedelta(hours=5)).isoformat(timespec="seconds"),
+    )
+    record["entity_outcomes"]["Family"] = family_entry
+    record["error"] = SENTINEL
+    return record
+
+
+class TestTheThreeSurfacesNameTheLabels:
+    """Plan 0053 S7: Home, the Run History banner and Convert render the SAME labelled sentence,
+    and a stored label that fails the shape check never reaches any of them."""
+
+    _LABELLED = {
+        "kind": "failed",
+        "reason": "missing_source_column",
+        "rows": 0,
+        "missing_mapped": [_EMAIL, _GUARDIAN],
+        "labels": [_GUARDIAN],
+        "file_label": _CONTACTS,
+    }
+
+    def test_all_three_surfaces_name_the_file_and_the_column(self) -> None:
+        from src.ui_flet.convert_result import ConvertResult, ConvertStatus, summarize
+
+        record = _partial_record(dict(self._LABELLED))
+        home = derive_home_status([record], _CFG, now=_NOW)
+        banner = derive_history_banner([record], _CFG, now=_NOW)
+        outcome = _labelled_outcome("Family", OutcomeKind.FAILED, (_GUARDIAN,), file_label=_CONTACTS)
+        convert = summarize(
+            ConvertResult(
+                status=ConvertStatus.DELIVERED,
+                sftp_attempted=True,
+                sftp_ok=True,
+                entity_outcomes=(EntityOutcome.built("Students", 10), outcome),
+                delivery_requested=True,
+            )
+        )
+        expected = outcome_sentence(outcome, delivered=True)
+        assert home.verdict is banner.verdict is convert[0] is Verdict.WARNING
+        for detail in (home.detail, banner.detail, convert[2]):
+            assert expected in detail
+            assert _CONTACTS in detail and f"“{_GUARDIAN}”" in detail
+            assert "SENTINEL" not in detail
+
+    @pytest.mark.parametrize(
+        ("labels", "file_label"),
+        [
+            (["Parent\nGuardian"], _CONTACTS),  # a newline
+            (["x" * 121], _CONTACTS),  # over the cap
+            ([SENTINEL], ""),  # path-shaped
+            (["guardian@example.org"], ""),  # email-shaped
+        ],
+    )
+    def test_the_twin_a_junk_stored_label_is_never_rendered(self, labels: list, file_label: str) -> None:
+        entry = {**self._LABELLED, "labels": labels, "file_label": file_label}
+        record = _partial_record(entry)
+        unlabelled = outcome_sentence(
+            _outcome("Family", OutcomeKind.FAILED, OutcomeReason.MISSING_SOURCE_COLUMN), delivered=True
+        )
+        for detail in (
+            derive_home_status([record], _CFG, now=_NOW).detail,
+            derive_history_banner([record], _CFG, now=_NOW).detail,
+        ):
+            assert unlabelled in detail  # still PARTIAL, still worded — just names nothing
+            assert _CONTACTS not in detail and "SENTINEL" not in detail and "@" not in detail and "xxxx" not in detail
 
 
 # --------------------------------------------------------------------------- #

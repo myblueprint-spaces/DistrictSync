@@ -17,7 +17,9 @@ strings can carry an entity name (``"Students dropped from …"``) and the raw
 input path / ``sis_type`` / column names live only in the log — NONE of them is
 interpolated into the admin-facing ``headline``/``detail``. Faults are named by
 CATEGORY only; counts (entity/warning/anomaly totals) are safe scalars, never
-identifiers.
+identifiers. The one exception is ``failure_copy``'s: a left-out entity's config-declared
+file and column labels (plan 0053 S7, D4 — validated by ``outcomes.safe_label`` when the run
+recorded them), never an observed header.
 
 Reuses IA-3's verdict spine (``Verdict`` + ``home_status``'s voice, esp. the
 exit-3 "built but didn't reach SpacesEDU" headline) so setup / health / convert
@@ -119,7 +121,8 @@ def summarize(result: ConvertResult) -> tuple[Verdict, str, str]:
     programming-error guard surfaced loudly by the totality test, never reached at
     runtime. NEVER interpolates a raw path / ``sis_type`` / column name / raw
     anomaly string into the copy — faults are named by CATEGORY; only safe count
-    scalars (and ``failure_copy``'s authored entity phrases) appear.
+    scalars (and ``failure_copy``'s authored entity phrases and validated, config-declared
+    outcome labels — plan 0053 S7) appear.
 
     **PARTIAL (plan 0053 S3).** A success-shaped status (``DELIVERED``,
     ``DELIVERED_WITH_DATA_ERRORS``, ``BUILT_WITH_DATA_ERRORS``) whose ``entity_outcomes``

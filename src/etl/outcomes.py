@@ -21,14 +21,19 @@ is why :func:`reason_for` lives here rather than beside the taxonomy.
 since plan 0053 S6 — ``missing_mapped``: mapped column names in the CONFIG's spelling, taken
 from the resolved config's own ``field_map`` / ``row_filters`` by the source observation
 (``preflight.missing_columns_by_entity``), so their membership in the config's vocabulary
-holds by construction, and refused unless printable. Never an OBSERVED header, a path, a cell
-value or ``str(exc)`` (§8).
+holds by construction, and refused unless printable. Since plan 0053 S7 (owner decision D4)
+it may also carry ``labels`` / ``file_label`` — the config-DECLARED column and file names the
+admin-facing copy is allowed to print. Those pass :func:`safe_label`, the ONE membership +
+shape check (a member of the RESOLVED config's own vocabulary, printable, at most
+:data:`MAX_LABEL_LENGTH` characters), and are produced in exactly one place,
+:func:`apply_labels`. Never an OBSERVED header, a path, a cell value or ``str(exc)`` (§8).
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+import re
+from collections.abc import Collection, Iterable, Mapping, Sequence
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from types import MappingProxyType
 from typing import Any, Final
@@ -153,6 +158,15 @@ OUTCOMES_RECORD_KEY: Final = "entity_outcomes"
 MISSING_MAPPED_KEY: Final = "missing_mapped"
 """The per-entity entry key carrying :attr:`EntityOutcome.missing_mapped` (plan 0053 S6, additive)."""
 
+LABELS_KEY: Final = "labels"
+"""The per-entity entry key carrying :attr:`EntityOutcome.labels` (plan 0053 S7, additive)."""
+
+FILE_LABEL_KEY: Final = "file_label"
+"""The per-entity entry key carrying :attr:`EntityOutcome.file_label` (plan 0053 S7, additive)."""
+
+MAX_LABEL_LENGTH: Final = 120
+"""The longest config-declared label a record or a sentence may carry (plan 0053 S7, D4)."""
+
 
 @dataclass(frozen=True)
 class EntityOutcome:
@@ -168,6 +182,13 @@ class EntityOutcome:
     the INPUT, so any kind may carry it (a BUILT entity with a blank column; a FAILED one). It
     changes a reason in exactly one place, :func:`apply_observation`. Each name must be a
     non-blank, trimmed, printable ``str``, listed once.
+
+    ``labels`` / ``file_label`` (plan 0053 S7, D4) are what the admin-facing copy may NAME: the
+    config-declared columns (and, only when it is unambiguous, the one export file) behind a
+    ``missing_source_column`` outcome. Produced only by :func:`apply_labels`, which passes each
+    through :func:`safe_label` against the resolved config's own vocabulary; the constructor
+    re-checks their SHAPE (it cannot know the config) and refuses the states that could never
+    come from there: labels on any other reason, a file label without a column label.
     """
 
     entity: str
@@ -175,6 +196,8 @@ class EntityOutcome:
     reason: OutcomeReason
     rows: int
     missing_mapped: tuple[str, ...] = ()
+    labels: tuple[str, ...] = ()
+    file_label: str = ""
 
     def __post_init__(self) -> None:
         if not isinstance(self.entity, str) or not self.entity.strip():
@@ -195,6 +218,7 @@ class EntityOutcome:
         if self.kind is not OutcomeKind.BUILT and self.rows != 0:
             raise ValueError(f"{self.entity}: a {self.kind.value!r} outcome has no rows ({self.rows})")
         _check_missing_mapped(self.entity, self.missing_mapped)
+        _check_labels(self.entity, self.reason, self.labels, self.file_label)
 
     @classmethod
     def built(cls, entity: str, rows: int) -> EntityOutcome:
@@ -214,7 +238,153 @@ class EntityOutcome:
 
 
 def _usable_column_name(value: object) -> bool:
+    """The ONE shape test for a column/file name an outcome may carry: a non-blank, trimmed,
+    printable ``str`` (``isprintable`` refuses a newline, a tab and every other control)."""
     return isinstance(value, str) and bool(value) and value == value.strip() and value.isprintable()
+
+
+# A drive-letter path (`C:\...`, `C:/...`) or a URL scheme. With `@` (an email address or a
+# `user@host`), a backslash, and a leading `/` or `~`, these are the shapes a label may never
+# have, whatever the config declares: they would carry a person or a machine's folder layout
+# into the record and the copy. A mid-name `/` stays legal ("Parent Auth / Guardian").
+_PATH_OR_URL = re.compile(r"^[A-Za-z]:[\\/]|://")
+
+
+def _email_or_path_shaped(value: str) -> bool:
+    return "@" in value or "\\" in value or value.startswith(("/", "~")) or bool(_PATH_OR_URL.search(value))
+
+
+def _label_shaped(value: object) -> bool:
+    """A label's shape — the ONE definition, shared by :func:`safe_label`, the constructor and
+    the record reader: :func:`_usable_column_name`, at most :data:`MAX_LABEL_LENGTH` characters,
+    and neither email- nor path-shaped."""
+    return (
+        isinstance(value, str)
+        and _usable_column_name(value)
+        and len(value) <= MAX_LABEL_LENGTH
+        and not _email_or_path_shaped(value)
+    )
+
+
+def _file_label_shaped(value: object) -> bool:
+    """A FILE label's shape — :func:`_label_shaped` AND a bare filename: no ``/`` (in a file
+    name it is always a directory separator, unlike a column's "Parent Auth / Guardian"), no
+    ``:`` (a drive-relative ``C:x.txt`` or an NTFS stream — the rule
+    ``authoring._require_bare_filename`` applies to creator-written overlays) and never ``.`` or
+    ``..``. The ONE file-label test, shared by :func:`derive_labels`, the constructor and the
+    record reader, because ``source_files`` itself is unvalidated and a hand-dropped YAML may
+    declare a relative path that would carry a folder layout into the record and the copy."""
+    return (
+        isinstance(value, str)
+        and _label_shaped(value)
+        and "/" not in value
+        and ":" not in value
+        and value not in {".", ".."}
+    )
+
+
+def safe_label(text: object, *, vocabulary: Collection[str]) -> str | None:
+    """``text`` when the copy may print it as a config-declared label, else ``None`` (plan 0053 S7).
+
+    D4 (owner, 2026-09-23): a file or column may be NAMED only when it is config-DECLARED —
+    a member of ``vocabulary``, the RESOLVED config's own spelling of that entity's source
+    files or mapped columns (never lowercased, never an observed header) — AND it is a
+    non-blank, trimmed, printable ``str`` of at most :data:`MAX_LABEL_LENGTH` characters (no
+    newline) that is neither email- nor path-shaped (no ``@``, no backslash, no leading ``/``
+    or ``~``, no drive letter, no URL scheme — even a config-declared one). A FILE label must
+    further be a bare filename (:func:`_file_label_shaped`, applied by :func:`derive_labels`).
+    Anything else is dropped, never repaired: a label that fails is simply not named.
+
+    Membership is EXACT ``str`` equality. A bare ``str`` vocabulary is refused (``TypeError``) —
+    ``in`` would test a SUBSTRING and let a fragment of a declared name through.
+    """
+    if isinstance(vocabulary, str):
+        raise TypeError("vocabulary must be a collection of labels, not a str")
+    if not isinstance(text, str) or not _label_shaped(text):
+        return None
+    return text if text in vocabulary else None
+
+
+@dataclass(frozen=True)
+class LabelVocabulary:
+    """One entity's config-declared label vocabulary (plan 0053 S7) — built by
+    ``preflight.label_vocabulary_by_entity`` from the RESOLVED config.
+
+    * ``columns`` — the entity's ``field_map`` + ``row_filters`` columns in config spelling
+      (never its ``source_columns``: those are cross-file reads, so naming the entity's own
+      file beside one would point at the wrong export);
+    * ``files`` — the entity's configured ``source_files`` names, config spelling;
+    * ``reads_own_files`` — whether every mapped column is read from the entity's OWN files
+      (``preflight.OBSERVATION_SCOPE`` is ``OWN_FILES``). Only then can a file be named.
+    """
+
+    columns: frozenset[str] = frozenset()
+    files: tuple[str, ...] = ()
+    reads_own_files: bool = False
+
+
+def derive_labels(columns: Iterable[object], vocabulary: LabelVocabulary) -> tuple[str, tuple[str, ...]]:
+    """``(file_label, column labels)`` the copy may print for ``columns``.
+
+    Each column passes :func:`safe_label` against ``vocabulary.columns`` (duplicates dropped,
+    order kept). **The single-file rule:** the file is named ONLY when at least one column
+    survived, the entity reads its mapped columns from its own files, it has EXACTLY ONE
+    configured source file, and that name passes :func:`safe_label` against the entity's
+    files AND is a bare filename (:func:`_file_label_shaped`). So an entity with several
+    files (Classes: five) never names one, and a column the vocabulary does not know never
+    drags a file name in beside it.
+    """
+    kept: list[str] = []
+    for column in columns:
+        label = safe_label(column, vocabulary=vocabulary.columns)
+        if label is not None and label not in kept:
+            kept.append(label)
+    if not kept:
+        return "", ()
+    file_label = ""
+    if vocabulary.reads_own_files and len(vocabulary.files) == 1:
+        candidate = safe_label(vocabulary.files[0], vocabulary=vocabulary.files)
+        if candidate is not None and _file_label_shaped(candidate):
+            file_label = candidate
+    return file_label, tuple(kept)
+
+
+def _check_labels(entity: str, reason: OutcomeReason, labels: object, file_label: object) -> None:
+    """Refuse labels that are not distinct label-shaped names, or sit where no producer puts them."""
+    if not isinstance(labels, tuple):
+        raise TypeError(f"{entity}: labels must be a tuple, not {type(labels).__name__}")
+    if not all(_label_shaped(label) for label in labels):
+        raise ValueError(f"{entity}: labels must be non-blank, trimmed, printable and at most {MAX_LABEL_LENGTH} long")
+    if len(set(labels)) != len(labels):
+        raise ValueError(f"{entity}: labels lists a name more than once")
+    if not isinstance(file_label, str):
+        raise TypeError(f"{entity}: file_label must be a str, not {type(file_label).__name__}")
+    if file_label and not _file_label_shaped(file_label):
+        raise ValueError(
+            f"{entity}: file_label must be a bare filename — trimmed, printable, at most {MAX_LABEL_LENGTH} long"
+        )
+    if file_label and not labels:
+        raise ValueError(f"{entity}: a file is named only beside the column it is missing")
+    if labels and reason is not OutcomeReason.MISSING_SOURCE_COLUMN:
+        raise ValueError(f"{entity}: only a missing_source_column outcome names a column")
+
+
+def _check_vocabulary(entity: str, vocabulary: LabelVocabulary) -> None:
+    """Refuse a vocabulary whose FIELDS are not the declared types (plan 0053 S7, S7-BEH-1).
+
+    :class:`LabelVocabulary` does not validate itself, and labelling runs inside
+    :meth:`OutcomeLedger.record` — on the delivery path, where a raise would fail the run (or,
+    in ``record_failure``, replace the entity's own exception). Checking here, at note time,
+    lets ``observe_source_columns``' guard turn a malformed vocabulary into "no labels".
+    """
+    columns: Any = vocabulary.columns
+    files: Any = vocabulary.files
+    if not isinstance(columns, frozenset) or not all(isinstance(column, str) for column in columns):
+        raise TypeError(f"{entity}: vocabulary columns must be a frozenset of str")
+    if not isinstance(files, tuple) or not all(isinstance(name, str) for name in files):
+        raise TypeError(f"{entity}: vocabulary files must be a tuple of str")
+    if not isinstance(vocabulary.reads_own_files, bool):
+        raise TypeError(f"{entity}: vocabulary reads_own_files must be a bool")
 
 
 def _check_missing_mapped(entity: str, columns: object) -> None:
@@ -246,7 +416,34 @@ def apply_observation(outcome: EntityOutcome, missing_mapped: tuple[str, ...]) -
     reason = outcome.reason
     if outcome.kind is OutcomeKind.EMPTY and reason is OutcomeReason.NO_ROWS_AFTER_TRANSFORM:
         reason = OutcomeReason.MISSING_SOURCE_COLUMN
-    return EntityOutcome(outcome.entity, outcome.kind, reason, outcome.rows, missing_mapped)
+    return replace(outcome, reason=reason, missing_mapped=missing_mapped)
+
+
+def apply_labels(
+    outcome: EntityOutcome,
+    vocabulary: LabelVocabulary | None,
+    *,
+    error_columns: Sequence[str],
+) -> EntityOutcome:
+    """``outcome`` with its config-declared labels attached — the ONE label producer (plan 0053 S7).
+
+    Only a ``missing_source_column`` outcome is labelled, and only from a config-declared source:
+
+    * FAILED → ``error_columns``, the raising :class:`~src.etl.errors.SourceSchemaError`'s own
+      ``columns`` (config spelling) — never ``str(exc)``;
+    * EMPTY → the outcome's ``missing_mapped`` (the source observation's config-spelling names).
+
+    Each goes through :func:`derive_labels` (``safe_label`` + the single-file rule). No
+    vocabulary, an outcome already labelled, any other reason, or nothing surviving → the
+    outcome unchanged.
+    """
+    if vocabulary is None or outcome.labels or outcome.reason is not OutcomeReason.MISSING_SOURCE_COLUMN:
+        return outcome
+    source = error_columns if outcome.kind is OutcomeKind.FAILED else outcome.missing_mapped
+    file_label, labels = derive_labels(source, vocabulary)
+    if not labels:
+        return outcome
+    return replace(outcome, labels=labels, file_label=file_label)
 
 
 def reason_for(exc: BaseException) -> OutcomeReason:
@@ -278,6 +475,7 @@ class OutcomeLedger:
         self._configured: tuple[str, ...] = names
         self._outcomes: dict[str, EntityOutcome] = {}
         self._missing_mapped: dict[str, tuple[str, ...]] = {}
+        self._vocabularies: dict[str, LabelVocabulary] = {}
 
     @property
     def configured(self) -> tuple[str, ...]:
@@ -307,17 +505,58 @@ class OutcomeLedger:
         if observed:
             self._missing_mapped[entity] = observed
 
+    def note_label_vocabulary(self, entity: str, vocabulary: LabelVocabulary) -> None:
+        """Hold ``entity``'s config-declared label vocabulary until its outcome is recorded (plan 0053 S7).
+
+        Called by ``pipeline.observe_source_columns`` before the transform, beside the source
+        observation. Refuses an entity not configured, one already recorded, a second
+        vocabulary and a non-:class:`LabelVocabulary` — each a caller bug, which that caller's
+        guard turns into a DEBUG line (no labels), never a changed run. Without a vocabulary an
+        outcome simply carries no labels.
+        """
+        if entity not in self._configured:
+            raise ValueError(f"{entity!r} is not an entity this run is configured to produce")
+        if entity in self._outcomes:
+            raise ValueError(f"{entity!r} already has an outcome; note its vocabulary before the transform")
+        if entity in self._vocabularies:
+            raise ValueError(f"{entity!r} already has a label vocabulary for this run")
+        if not isinstance(vocabulary, LabelVocabulary):
+            raise TypeError(f"{entity}: vocabulary must be a LabelVocabulary, not {type(vocabulary).__name__}")
+        _check_vocabulary(entity, vocabulary)
+        self._vocabularies[entity] = vocabulary
+
     def record(self, outcome: EntityOutcome) -> None:
         """Record ``outcome``; refuses an entity not configured, or one already recorded.
 
         A held source observation (:meth:`note_missing_mapped`) is attached on the way in —
-        :func:`apply_observation`, the one refinement.
+        :func:`apply_observation`, the one refinement — and then its config-declared labels
+        (:func:`apply_labels`, from ``missing_mapped`` for an EMPTY outcome).
         """
+        self._record(outcome, error_columns=())
+
+    def record_failure(self, entity: str, exc: BaseException) -> OutcomeReason:
+        """Record ``entity`` FAILED for ``exc`` and return the reason — the bulkhead's one call.
+
+        The reason is :func:`reason_for` (by TYPE). Labels come from the exception's own
+        config-spelling ``columns`` — only a :class:`~src.etl.errors.SourceSchemaError`
+        attributed to THIS entity carries any — never from its message.
+        """
+        reason = reason_for(exc)
+        error_columns: tuple[str, ...] = ()
+        if isinstance(exc, SourceSchemaError) and exc.entity == entity:
+            error_columns = exc.columns
+        self._record(EntityOutcome.failed(entity, reason), error_columns=error_columns)
+        return reason
+
+    def _record(self, outcome: EntityOutcome, *, error_columns: Sequence[str]) -> None:
         if outcome.entity not in self._configured:
             raise ValueError(f"{outcome.entity!r} is not an entity this run is configured to produce")
         if outcome.entity in self._outcomes:
             raise ValueError(f"{outcome.entity!r} already has an outcome for this run")
-        self._outcomes[outcome.entity] = apply_observation(outcome, self._missing_mapped.get(outcome.entity, ()))
+        observed = apply_observation(outcome, self._missing_mapped.get(outcome.entity, ()))
+        self._outcomes[outcome.entity] = apply_labels(
+            observed, self._vocabularies.get(outcome.entity), error_columns=error_columns
+        )
 
     def mark_not_run(self, entities: Iterable[str]) -> None:
         """Record every one of ``entities`` NOT_RUN/RUN_ABORTED (each must still be unrecorded)."""
@@ -353,13 +592,18 @@ def outcomes_to_record(outcomes: Iterable[EntityOutcome]) -> dict[str, dict[str,
     ``{"Family": {"kind": "failed", "reason": "missing_source_column", "rows": 0}, ...}`` —
     plain ``str``/``int``/``list`` only, so the store's ``json.dumps`` and the log line agree.
     ``"missing_mapped"`` (a list of config-spelling column names, plan 0053 S6) is written only
-    when the observation found something, so every other entry is byte-identical to before.
+    when the observation found something, and ``"labels"`` / ``"file_label"`` (plan 0053 S7)
+    only when the outcome names something, so every other entry is byte-identical to before.
     """
     record: dict[str, dict[str, Any]] = {}
     for outcome in outcomes:
         entry: dict[str, Any] = {"kind": outcome.kind.value, "reason": outcome.reason.value, "rows": outcome.rows}
         if outcome.missing_mapped:
             entry[MISSING_MAPPED_KEY] = list(outcome.missing_mapped)
+        if outcome.labels:
+            entry[LABELS_KEY] = list(outcome.labels)
+        if outcome.file_label:
+            entry[FILE_LABEL_KEY] = outcome.file_label
         record[outcome.entity] = entry
     return record
 
@@ -374,6 +618,28 @@ def _missing_mapped_from(raw: Any) -> tuple[str, ...]:
     except (TypeError, ValueError):
         return ()
     return columns
+
+
+def _labels_from(entry: Mapping[Any, Any], reason: OutcomeReason) -> tuple[tuple[str, ...], str]:
+    """Stored ``labels`` / ``file_label`` → a usable pair, or ``((), "")`` (never raises).
+
+    The reader cannot re-check MEMBERSHIP (the config that produced the record may have
+    changed since); it re-checks the SHAPE, the reason and the pairing, so a damaged or
+    hand-edited record can name less — never something unprintable, over-long or multi-line —
+    and never costs the entry its kind and reason. A file label that is unusable on its own
+    is dropped and the column labels kept.
+    """
+    raw_labels: Any = entry.get(LABELS_KEY)
+    raw_file: Any = entry.get(FILE_LABEL_KEY, "")
+    if not isinstance(raw_labels, (list, tuple)):
+        return (), ""
+    labels = tuple(raw_labels)
+    file_label = raw_file if _file_label_shaped(raw_file) else ""
+    try:
+        _check_labels("stored", reason, labels, file_label)
+    except (TypeError, ValueError):
+        return (), ""
+    return labels, file_label
 
 
 def _outcome_from_entry(entity: Any, entry: Any) -> EntityOutcome | None:
@@ -391,8 +657,9 @@ def _outcome_from_entry(entity: Any, entry: Any) -> EntityOutcome | None:
         # A kind or reason this build does not know — most likely written by a NEWER build.
         # Read it as a failure: an unknown code must err toward a warning, never toward green.
         return EntityOutcome(entity, OutcomeKind.FAILED, OutcomeReason.TRANSFORM_ERROR, 0, missing_mapped)
+    labels, file_label = _labels_from(entry, reason)
     try:
-        return EntityOutcome(entity, kind, reason, raw_rows, missing_mapped)
+        return EntityOutcome(entity, kind, reason, raw_rows, missing_mapped, labels, file_label)
     except (TypeError, ValueError):
         # Known codes in an impossible combination (or a corrupt row count): not evidence of anything.
         return None
@@ -423,7 +690,10 @@ def outcomes_from_record(record: Any) -> tuple[EntityOutcome, ...]:
     key is dropped; an unknown kind or reason reads as FAILED/TRANSFORM_ERROR; a known
     kind/reason in an illegal combination, or an unusable row count, is dropped. An absent or
     unusable ``missing_mapped`` (plan 0053 S6 — not a list, a non-``str`` or blank name, a
-    duplicate) reads as ``()``; it never costs the entry its kind and reason.
+    duplicate) reads as ``()``; it never costs the entry its kind and reason. Likewise unusable
+    ``labels`` / ``file_label`` (plan 0053 S7 — not label-shaped, a duplicate, on a reason that
+    names nothing, a file without a column) read as ``()`` / ``""``; an unknown kind or reason,
+    read as FAILED/``transform_error``, names nothing.
     """
     if not isinstance(record, Mapping):
         return ()
