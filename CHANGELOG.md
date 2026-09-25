@@ -94,6 +94,19 @@ Per-release download links and auto-generated commit notes live on the
   first. Home, Run History and Convert read it: a run that finished with a file left
   out shows the warning described under *Changed*. An older DistrictSync sharing the
   same history simply ignores the new entry, and shows such a run as a plain success.
+- **The log now names a column the district's mapping reads but an export file does
+  not have.** Before building, each run checks every file type — Students, Staff,
+  Family contacts and so on — against the columns the district's mapping reads from
+  that file type's own export, and `etl_tool.log` gets one `MAPPED COLUMNS MISSING`
+  warning per file type naming the missing columns as the mapping spells them. The run
+  record's `entity_outcomes` entry carries the same names (`missing_mapped`), and when
+  family contacts come out empty because of it (for example a contacts export with no
+  email column), the record now says a mapped column was missing
+  (`missing_source_column`) instead of "no usable rows". The check itself changes
+  nothing about the run — the same files are written and sent,
+  with the same result; Home, Run History and the Convert screen look the same as
+  before. The check is skipped for a file type when one of its export files is
+  missing, and for attendance.
 
 ## [3.25.0] - 2026-09-23
 

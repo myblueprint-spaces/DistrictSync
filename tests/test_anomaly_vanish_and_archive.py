@@ -218,7 +218,7 @@ class TestConvertLeavesAFailedEntityOut:
     _SIS = "unitychristianmyedbc"
 
     def test_the_gate_still_asks_names_the_reason_and_the_ack_writes_a_partial_run(self, tmp_path: Path) -> None:
-        from src.etl.outcomes import EntityOutcome, OutcomeReason
+        from src.etl.outcomes import EntityOutcome, OutcomeKind, OutcomeReason
         from src.ui_flet.convert_result import summarize
         from src.ui_flet.verdict import Verdict
         from tests.test_contract import (
@@ -241,7 +241,18 @@ class TestConvertLeavesAFailedEntityOut:
         assert gated.status is ConvertStatus.NEEDS_ANOMALY_ACK
         assert any("Family produced no output this run" in a for a in gated.anomalies)
         assert gated.entity_outcomes is not None
-        assert EntityOutcome.failed("Family", OutcomeReason.MISSING_SOURCE_COLUMN) in gated.entity_outcomes
+        # Plan 0053 S6: the FAILED outcome also carries what the source observation saw (the plain
+        # report lacks both columns Family maps from it); kind and reason are the bulkhead's.
+        assert (
+            EntityOutcome(
+                "Family",
+                OutcomeKind.FAILED,
+                OutcomeReason.MISSING_SOURCE_COLUMN,
+                0,
+                ("Email Address", "Parent Auth / Guardian"),
+            )
+            in gated.entity_outcomes
+        )
         _verdict, _headline, prompt = summarize(gated)
         assert "Family contacts were left out of this sync" in prompt
         assert "missing a column this district's mapping needs" in prompt

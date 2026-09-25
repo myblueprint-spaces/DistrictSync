@@ -157,6 +157,18 @@ class TestOutcomeSentence:
         )
         assert "Everything else completed." in outcome_sentence(outcome, delivered=False)
 
+    def test_the_observed_missing_column_sentence_never_names_the_column(self) -> None:
+        """Plan 0053 S6: EMPTY / MISSING_SOURCE_COLUMN carries ``missing_mapped`` on the outcome,
+        but the sentence names only the entity — config-declared labels in copy are S7 (D4).
+        The column is planted as a sentinel so a leak would be visible."""
+        outcome = EntityOutcome("Family", OutcomeKind.EMPTY, OutcomeReason.MISSING_SOURCE_COLUMN, 0, ("SENTINEL_COL",))
+        sentence = outcome_sentence(outcome, delivered=True)
+        assert sentence == (
+            "Family contacts were not built: none of their rows could be used, and their export "
+            "file is missing a column this district's mapping reads."
+        )
+        assert "SENTINEL" not in sentence
+
     def test_an_unknown_entity_is_worded_in_the_singular(self) -> None:
         sentence = outcome_sentence(
             _outcome(SENTINEL, OutcomeKind.FAILED, OutcomeReason.MISSING_SOURCE_COLUMN), delivered=True

@@ -41,6 +41,7 @@ from src.etl.outcomes import (
     OutcomeKind,
     OutcomeLedger,
     OutcomeReason,
+    apply_observation,
     criticality_of,
     outcomes_from_record,
     outcomes_to_record,
@@ -92,6 +93,7 @@ class TestEntityOutcomeRefusesIllegalStates:
             (OutcomeKind.EMPTY, OutcomeReason.NO_SOURCE_FILES_DECLARED, 0),
             (OutcomeKind.EMPTY, OutcomeReason.SOURCE_FILES_EMPTY, 0),
             (OutcomeKind.EMPTY, OutcomeReason.NO_ROWS_AFTER_TRANSFORM, 0),
+            (OutcomeKind.EMPTY, OutcomeReason.MISSING_SOURCE_COLUMN, 0),  # plan 0053 S6's refinement
             (OutcomeKind.FAILED, OutcomeReason.MISSING_SOURCE_COLUMN, 0),
             (OutcomeKind.FAILED, OutcomeReason.TRANSFORM_ERROR, 0),
             (OutcomeKind.NOT_RUN, OutcomeReason.RUN_ABORTED, 0),
@@ -105,7 +107,7 @@ class TestEntityOutcomeRefusesIllegalStates:
         legal = {(k, r) for k, reasons in VALID_REASONS.items() for r in reasons}
         assert set(VALID_REASONS) == set(OutcomeKind), "every kind has its reason set"
         assert {r for _, r in legal} == set(OutcomeReason), "every reason is valid for some kind"
-        assert len(legal) == 7
+        assert len(legal) == 8  # S6 added EMPTY/MISSING_SOURCE_COLUMN
 
     @pytest.mark.parametrize(
         "bad",
@@ -708,3 +710,175 @@ class TestOnlyCriticalEntitiesPublishContextState:
     def test_a_method_call_is_not_a_publication(self):
         source = "def f(context):\n    context.data_errors.append(1)\n    context.record_outcome_note('x', 1)\n"
         assert _context_assignments(source) == []
+
+
+# --------------------------------------------------------------------------- #
+# The source observation on the outcome (plan 0053 S6)                          #
+# --------------------------------------------------------------------------- #
+class TestMissingMappedOnTheOutcome:
+    def test_any_kind_may_carry_it(self):
+        for outcome in (
+            EntityOutcome("Students", OutcomeKind.BUILT, OutcomeReason.NONE, 3, ("Next school code",)),
+            EntityOutcome("Family", OutcomeKind.FAILED, OutcomeReason.MISSING_SOURCE_COLUMN, 0, ("Email Address",)),
+            EntityOutcome("Family", OutcomeKind.EMPTY, OutcomeReason.MISSING_SOURCE_COLUMN, 0, ("Email Address",)),
+            EntityOutcome("Classes", OutcomeKind.NOT_RUN, OutcomeReason.RUN_ABORTED, 0, ("Course Title",)),
+        ):
+            assert outcome.missing_mapped
+
+    def test_the_default_is_empty(self):
+        assert EntityOutcome.built("Students", 1).missing_mapped == ()
+
+    @pytest.mark.parametrize(
+        ("value", "error"),
+        [
+            (["Email Address"], TypeError),  # a list, not a tuple
+            (("",), ValueError),  # blank
+            (("  Email Address",), ValueError),  # untrimmed
+            (("Email\nAddress",), ValueError),  # not printable
+            ((5,), ValueError),  # not a str
+            (("Email Address", "Email Address"), ValueError),  # listed twice
+        ],
+    )
+    def test_an_unusable_list_is_refused(self, value, error):
+        with pytest.raises(error):
+            EntityOutcome("Family", OutcomeKind.EMPTY, OutcomeReason.NO_ROWS_AFTER_TRANSFORM, 0, value)
+
+
+class TestApplyObservation:
+    def test_empty_no_rows_is_refined_to_missing_source_column(self):
+        refined = apply_observation(
+            EntityOutcome.empty("Family", OutcomeReason.NO_ROWS_AFTER_TRANSFORM), ("Email Address",)
+        )
+        assert (refined.kind, refined.reason, refined.missing_mapped) == (
+            OutcomeKind.EMPTY,
+            OutcomeReason.MISSING_SOURCE_COLUMN,
+            ("Email Address",),
+        )
+
+    def test_the_twin_nothing_observed_changes_nothing(self):
+        outcome = EntityOutcome.empty("Family", OutcomeReason.NO_ROWS_AFTER_TRANSFORM)
+        assert apply_observation(outcome, ()) is outcome
+
+    @pytest.mark.parametrize(
+        "outcome",
+        [
+            EntityOutcome.failed("Family", OutcomeReason.MISSING_SOURCE_COLUMN),
+            EntityOutcome.failed("Family", OutcomeReason.TRANSFORM_ERROR),
+            EntityOutcome.built("Family", 4),
+            EntityOutcome.empty("Family", OutcomeReason.SOURCE_FILES_EMPTY),
+            EntityOutcome.empty("Family", OutcomeReason.NO_SOURCE_FILES_DECLARED),
+            EntityOutcome.not_run("Family"),
+        ],
+        ids=lambda o: f"{o.kind.value}-{o.reason.value}",
+    )
+    def test_every_other_kind_and_reason_is_kept_and_only_annotated(self, outcome):
+        observed = apply_observation(outcome, ("Email Address",))
+        assert (observed.kind, observed.reason, observed.rows) == (outcome.kind, outcome.reason, outcome.rows)
+        assert observed.missing_mapped == ("Email Address",)
+
+    def test_an_outcome_already_observed_is_not_rewritten(self):
+        outcome = EntityOutcome("Family", OutcomeKind.BUILT, OutcomeReason.NONE, 1, ("First Name",))
+        assert apply_observation(outcome, ("Email Address",)) is outcome
+
+
+class TestLedgerHoldsTheObservation:
+    def test_a_noted_observation_is_attached_when_the_outcome_is_recorded(self):
+        ledger = OutcomeLedger(["Students", "Family"])
+        ledger.note_missing_mapped("Family", ("Email Address",))
+        ledger.record(EntityOutcome.built("Students", 2))
+        ledger.record(EntityOutcome.empty("Family", OutcomeReason.NO_ROWS_AFTER_TRANSFORM))
+        students, family = ledger.complete()
+        assert students.missing_mapped == ()  # the twin: an unobserved entity is untouched
+        assert (family.reason, family.missing_mapped) == (OutcomeReason.MISSING_SOURCE_COLUMN, ("Email Address",))
+
+    def test_not_run_via_finalize_carries_it_too(self):
+        ledger = OutcomeLedger(["Classes"])
+        ledger.note_missing_mapped("Classes", ["Course Title"])
+        (classes,) = ledger.finalize_aborted()
+        assert (classes.kind, classes.missing_mapped) == (OutcomeKind.NOT_RUN, ("Course Title",))
+
+    def test_an_empty_observation_holds_nothing(self):
+        ledger = OutcomeLedger(["Family"])
+        ledger.note_missing_mapped("Family", ())
+        ledger.record(EntityOutcome.empty("Family", OutcomeReason.NO_ROWS_AFTER_TRANSFORM))
+        assert ledger.complete()[0].reason is OutcomeReason.NO_ROWS_AFTER_TRANSFORM
+
+    def test_an_unconfigured_entity_is_refused(self):
+        with pytest.raises(ValueError):
+            OutcomeLedger(["Students"]).note_missing_mapped("Family", ("Email Address",))
+
+    def test_an_observation_after_the_outcome_is_refused(self):
+        ledger = OutcomeLedger(["Family"])
+        ledger.record(EntityOutcome.empty("Family", OutcomeReason.NO_ROWS_AFTER_TRANSFORM))
+        with pytest.raises(ValueError):
+            ledger.note_missing_mapped("Family", ("Email Address",))
+
+    def test_a_second_observation_is_refused(self):
+        ledger = OutcomeLedger(["Family"])
+        ledger.note_missing_mapped("Family", ("Email Address",))
+        with pytest.raises(ValueError):
+            ledger.note_missing_mapped("Family", ("First Name",))
+
+    def test_an_unusable_column_list_is_refused_and_nothing_is_held(self):
+        ledger = OutcomeLedger(["Family"])
+        with pytest.raises(ValueError):
+            ledger.note_missing_mapped("Family", ("",))
+        ledger.record(EntityOutcome.empty("Family", OutcomeReason.NO_ROWS_AFTER_TRANSFORM))
+        assert ledger.complete()[0].missing_mapped == ()
+
+    def test_a_bare_str_is_refused_rather_than_split_into_characters(self):
+        # "Email" has no blank and no repeated letter, so split into characters it would pass
+        # every other check and be held as ('E', 'm', 'a', 'i', 'l').
+        ledger = OutcomeLedger(["Family"])
+        with pytest.raises(TypeError, match="not a str"):
+            ledger.note_missing_mapped("Family", "Email")
+        ledger.record(EntityOutcome.empty("Family", OutcomeReason.NO_ROWS_AFTER_TRANSFORM))
+        assert ledger.complete()[0].missing_mapped == ()
+
+    def test_the_twin_a_list_of_names_is_held_as_a_tuple(self):
+        ledger = OutcomeLedger(["Family"])
+        ledger.note_missing_mapped("Family", ["Email"])
+        ledger.record(EntityOutcome.empty("Family", OutcomeReason.NO_ROWS_AFTER_TRANSFORM))
+        assert ledger.complete()[0].missing_mapped == ("Email",)
+
+
+_OBSERVED_SAMPLE = (
+    EntityOutcome("Students", OutcomeKind.BUILT, OutcomeReason.NONE, 667, ("Next school code",)),
+    EntityOutcome("Family", OutcomeKind.EMPTY, OutcomeReason.MISSING_SOURCE_COLUMN, 0, ("Email Address",)),
+    EntityOutcome.built("Staff", 46),
+)
+
+
+class TestMissingMappedRoundTrip:
+    def test_it_is_written_only_when_something_was_observed(self):
+        stored = outcomes_to_record(_OBSERVED_SAMPLE)
+        assert stored["Family"] == {
+            "kind": "empty",
+            "reason": "missing_source_column",
+            "rows": 0,
+            "missing_mapped": ["Email Address"],
+        }
+        # The twin: an entity with nothing observed is byte-identical to the pre-S6 entry.
+        assert stored["Staff"] == {"kind": "built", "reason": "none", "rows": 46}
+
+    def test_a_round_trip_through_json_is_lossless(self):
+        import json
+
+        record = json.loads(json.dumps({OUTCOMES_RECORD_KEY: outcomes_to_record(_OBSERVED_SAMPLE)}))
+        assert outcomes_from_record(record) == _OBSERVED_SAMPLE
+
+    @pytest.mark.parametrize(
+        "garbage",
+        ["Email Address", 5, None, {"a": 1}, [5], [""], ["  padded"], ["dup", "dup"], ["tab\there"], [None]],
+    )
+    def test_garbage_reads_as_empty_and_keeps_the_entry(self, garbage):
+        stored = {"Family": {"kind": "empty", "reason": "missing_source_column", "rows": 0, "missing_mapped": garbage}}
+        assert outcomes_from_record({OUTCOMES_RECORD_KEY: stored}) == (
+            EntityOutcome("Family", OutcomeKind.EMPTY, OutcomeReason.MISSING_SOURCE_COLUMN, 0),
+        )
+
+    def test_an_unknown_kind_keeps_its_observation(self):
+        stored = {"Family": {"kind": "quarantined", "reason": "none", "rows": 0, "missing_mapped": ["Email Address"]}}
+        assert outcomes_from_record({OUTCOMES_RECORD_KEY: stored}) == (
+            EntityOutcome("Family", OutcomeKind.FAILED, OutcomeReason.TRANSFORM_ERROR, 0, ("Email Address",)),
+        )

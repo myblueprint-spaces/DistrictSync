@@ -25,7 +25,7 @@ import yaml
 
 from src.config.app_config import AppConfig
 from src.config.loader import load_config
-from src.config.models import filter_enabled_entities
+from src.config.models import MappingConfig, filter_enabled_entities
 from src.etl.errors import (
     EtlError,
     NoUsableInputError,
@@ -47,6 +47,7 @@ from src.etl.outcomes import (
     outcomes_to_record,
     reason_for,
 )
+from src.etl.preflight import missing_columns_by_entity
 from src.etl.transformer import DataTransformer
 from src.etl.transformers.dates import SchoolYearDetermination
 from src.etl.transformers.grades import resolve_timetable_scope
@@ -81,6 +82,17 @@ _SOURCE_ENV_VAR = "DSYNC_SOURCE"  # scheduled/cron/Docker set this; the register
 # page tells an admin to search `etl_tool.log` for (pinned by
 # tests/test_partner_doc_schedule_copy_parity.py). Arguments: the entity, the reason's value.
 _ENTITY_NOT_BUILT_LOG_FORMAT = "ENTITY NOT BUILT [%s] reason=%s — left out of this run; every other entity continues."
+
+# The ONE line the source observation writes per entity whose mapped columns are absent from the
+# file(s) it reads (plan 0053 S6, failure-policy §10). WARNING, not ERROR: the observation never
+# changes the run (P11). Arguments: the entity, the columns in CONFIG spelling (never an observed
+# header — §8).
+# The line states only what the observation KNOWS: it runs BEFORE the transform, so it cannot
+# say what the transform then does with the gap (a field falls back to another column, a missing
+# row-filter column fails the entity closed, ...) — never claim "blank" here.
+_MAPPED_COLUMNS_MISSING_LOG_FORMAT = (
+    "MAPPED COLUMNS MISSING [%s] %s — named by this district's mapping but not in the export file(s) this entity reads."
+)
 
 # `ROSTER_ANCHOR_ENTITY` (the referential root of a delivery) moved to `src.etl.outcomes`
 # with plan 0053 S2, beside the criticality table it forces; imported above.
@@ -217,6 +229,58 @@ def has_no_usable_input(raw_data: Mapping[str, pd.DataFrame]) -> bool:
     it.
     """
     return not raw_data or all(df.empty for df in raw_data.values())
+
+
+def observed_input_columns(raw_data: Mapping[str, pd.DataFrame]) -> dict[str, tuple[str, ...]]:
+    """The run's RAW observation of its input headers: ``{configured filename: its columns}``.
+
+    The ONE derivation behind ``PipelineResult.input_columns`` and the source observation
+    (:func:`observe_source_columns`). The extractor already normalised every frame's columns,
+    so this is a copy — never a re-read or a second normalisation; ``str()`` so nothing but
+    ``str`` leaves the pipeline. A file not on disk keeps its key with an empty tuple.
+    """
+    return {filename: tuple(str(column) for column in df.columns) for filename, df in raw_data.items()}
+
+
+def observe_source_columns(
+    config: MappingConfig,
+    raw_data: Mapping[str, pd.DataFrame],
+    ledger: OutcomeLedger,
+) -> None:
+    """The SOURCE OBSERVATION (plan 0053 S6, ``failure-policy.md`` §10, P11) — shared by BOTH
+    entry points, called after the input is read and before :func:`run_transform`.
+
+    For every configured entity whose mapped columns are absent from the file(s) it reads
+    (:func:`~src.etl.preflight.missing_columns_by_entity` — own files, soundness rule, config
+    spelling), it logs ONE WARNING naming them and holds them on the ``ledger``
+    (:meth:`~src.etl.outcomes.OutcomeLedger.note_missing_mapped`), so the entity's outcome
+    carries ``missing_mapped`` and an EMPTY / NO_ROWS_AFTER_TRANSFORM outcome is refined to
+    EMPTY / MISSING_SOURCE_COLUMN (:func:`~src.etl.outcomes.apply_observation`).
+
+    **It never enforces.** It raises nothing, gates nothing and changes no delivered byte: the
+    derivation sits in a broad handler, and so does EACH entity's note + warning, both logging
+    at DEBUG (the exception's type only), so a bug here can at worst leave the record without
+    an observation — the run's result, exit code and files are exactly what they would have
+    been without it (raise-isolation twin, ``tests/test_pipeline_run_store.py``). The
+    per-entity handler is what keeps one entity's refused note (an unusable column name) from
+    costing every LATER entity its observation; the note is taken BEFORE the warning, so a
+    name the ledger refuses never reaches the log line. An entity the ledger was not
+    configured with (a hand-written ``entity_order`` omitting an enabled entity) is skipped,
+    never noted. Guards are enforced once, where a column is USED (§5), never here.
+    """
+    try:
+        findings = missing_columns_by_entity(config, observed_input_columns(raw_data))
+    except Exception as exc:  # noqa: BLE001 — source observation never enforces (failure-policy §10, P11)
+        logger.debug("Source-column observation skipped (%s)", type(exc).__name__)
+        return
+    for entity, columns in findings.items():
+        if entity not in ledger.configured:
+            continue
+        try:
+            ledger.note_missing_mapped(entity, columns)
+            logger.warning(_MAPPED_COLUMNS_MISSING_LOG_FORMAT, entity, ", ".join(f"'{column}'" for column in columns))
+        except Exception as exc:  # noqa: BLE001 — one entity's observation never costs another's (P11)
+            logger.debug("Source-column observation skipped for %s (%s)", entity, type(exc).__name__)
 
 
 def configured_entity_order(mappings: dict, global_config: dict) -> list[str]:
@@ -1064,6 +1128,10 @@ def run_pipeline(
                 "the export job, and that the files are not locked."
             )
 
+        # The source observation (plan 0053 S6): advisory, never raises, never gates — shared
+        # with `convert_job`, at the same point, so both record the same outcomes.
+        observe_source_columns(config, raw_data, ledger)
+
         # Shared transform-orchestration (school-year + per-entity loop +
         # enabled_entities filter + field-order collection).
         transform_outputs = run_transform(raw_data, mappings, global_config, ledger=ledger)
@@ -1210,11 +1278,9 @@ def run_pipeline(
             sftp_attempted=sftp_attempted,
             sftp_ok=sftp_ok,
             anomalies=anomalies,
-            # The observed headers, carried verbatim (see PipelineResult): the
-            # extractor already normalised them, so this is a copy — never a
-            # re-read, a second normalisation or a new extractor seam. `str()` so
-            # nothing but `str` leaves the pipeline.
-            input_columns={filename: tuple(str(column) for column in df.columns) for filename, df in raw_data.items()},
+            # The observed headers, carried verbatim (see PipelineResult and
+            # `observed_input_columns`, the one derivation the source observation shares).
+            input_columns=observed_input_columns(raw_data),
             entity_outcomes=transform_outputs.outcomes,
         )
 

@@ -130,6 +130,7 @@ from src.etl.pipeline import (
     configured_entity_order,
     extract_required_files,
     has_no_usable_input,
+    observe_source_columns,
     run_transform,
 )
 from src.history.store import write_run_record
@@ -382,6 +383,10 @@ def convert_job(
                 entity_outcomes=ledger.finalize_aborted(),
                 delivery_requested=sftp_requested,
             )
+
+        # The source observation (plan 0053 S6) — the pipeline's own function at the pipeline's
+        # own point, so a Convert records the same `missing_mapped` and refined reasons as the CLI.
+        observe_source_columns(config, raw_data, ledger)
 
         transform_outputs = run_transform(raw_data, mappings, global_config, ledger=ledger)
         outputs = transform_outputs.outputs

@@ -99,6 +99,14 @@ _OUTCOME_TEMPLATES: Final[Mapping[tuple[OutcomeKind, OutcomeReason], str]] = Map
         (OutcomeKind.EMPTY, OutcomeReason.NO_ROWS_AFTER_TRANSFORM): (
             "{Subject} {were} not built: none of the rows in {their} export file could be used."
         ),
+        # Plan 0053 S6: the NO_ROWS case the source observation saw ALONGSIDE a mapped column absent
+        # from the export. It states the two facts together, never one as the cause of the other —
+        # the observation proves co-occurrence only. The column is deliberately NOT named here
+        # (config-declared labels in copy are S7, D4); only the entity phrase varies.
+        (OutcomeKind.EMPTY, OutcomeReason.MISSING_SOURCE_COLUMN): (
+            "{Subject} {were} not built: none of {their} rows could be used, and {their} export "
+            "file is missing a column this district's mapping reads."
+        ),
         (OutcomeKind.FAILED, OutcomeReason.MISSING_SOURCE_COLUMN): (
             "{Subject} {were} left out of this sync: {their} export file is missing a column this "
             "district's mapping needs — often because a different report was saved under the same "

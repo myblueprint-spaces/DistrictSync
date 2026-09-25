@@ -13,6 +13,7 @@ Runs under the autouse isolation fixture, so the store lands in a per-test tmp p
 
 from __future__ import annotations
 
+import ast
 import json
 import logging
 from collections.abc import Collection
@@ -1146,10 +1147,13 @@ class TestTypedCategoriesReachTheRecord:
         assert records is not None and len(records) == 1
         assert records[0]["status"] == "success"
         assert records[0]["error_category"] == "none"
+        # Plan 0053 S6: the FAILED entry also carries what the source observation saw (the
+        # guardian column, in CONFIG spelling); its kind and reason are the bulkhead's, unchanged.
         assert records[0]["entity_outcomes"]["Family"] == {
             "kind": "failed",
             "reason": "missing_source_column",
             "rows": 0,
+            "missing_mapped": ["Parent Auth / Guardian"],
         }
         assert "Family" not in result.entity_counts
 
@@ -1509,3 +1513,307 @@ class TestConvertRecordsTheSameOutcomes:
         delivery, build = records[0], records[1]
         assert delivery["delivery_only"] is True and delivery["entity_outcomes"] is None
         assert list(build["entity_outcomes"]) == _MYEDBC_ORDER
+
+
+# --------------------------------------------------------------------------- #
+# The source observation (plan 0053 S6): own-file, advisory, never enforces      #
+# --------------------------------------------------------------------------- #
+_MAPPED_MISSING_ANCHOR = "MAPPED COLUMNS MISSING"
+_SENTINEL_HEADER = "Zzsentinelpupilname"
+
+
+def _mapped_missing_lines(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    return [r for r in caplog.records if r.getMessage().startswith(_MAPPED_MISSING_ANCHOR)]
+
+
+def _sd67_without_contact_email(d: Path) -> None:
+    """The SD67 2026-09-22 shape: Family maps ``Email Address``; its contacts file lacks it.
+
+    The staff export beside it DOES carry an ``Email Address`` column — the file-agnostic
+    union would have hidden the miss. A planted extra header proves no OBSERVED header text
+    reaches the warning (a headerless file read without its header makes row 1 a pupil)."""
+    from tests.test_contract import _create_sd67_inputs
+
+    _create_sd67_inputs(d)
+    contacts = d / "EmergencyContactInformation.txt"
+    frame = pd.read_csv(contacts, dtype=str)
+    frame = frame.drop(columns=["Email Address"])
+    frame[_SENTINEL_HEADER] = "x"
+    frame.to_csv(contacts, index=False)
+    assert "Email Address" in pd.read_csv(d / "StaffInformationEnhanced.txt", dtype=str).columns
+
+
+class TestSourceObservation:
+    _SD67 = "sd67myedbc"
+
+    @pytest.fixture()
+    def sd67_input(self, tmp_path: Path) -> Path:
+        d = tmp_path / "sd67"
+        d.mkdir()
+        _sd67_without_contact_email(d)
+        return d
+
+    def test_family_is_empty_missing_source_column_with_the_config_spelling(
+        self, sd67_input: Path, gde_output: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.INFO, logger="src.etl.pipeline"):
+            result = run_pipeline(self._SD67, str(sd67_input), str(gde_output))
+        records = read_run_records()
+        assert records is not None and len(records) == 1
+        stored = records[0]
+        assert stored["status"] == "success" and stored["error_category"] == "none"
+        assert stored["entity_outcomes"]["Family"] == {
+            "kind": "empty",
+            "reason": "missing_source_column",
+            "rows": 0,
+            "missing_mapped": ["Email Address"],
+        }
+        family = next(o for o in result.entity_outcomes if o.entity == "Family")
+        assert family.missing_mapped == ("Email Address",)
+        # ONE warning for Family, naming the column in CONFIG spelling — never an observed header.
+        family_lines = [r for r in _mapped_missing_lines(caplog) if "[Family]" in r.getMessage()]
+        assert len(family_lines) == 1 and family_lines[0].levelno == logging.WARNING
+        assert "'Email Address'" in family_lines[0].getMessage()
+        assert not [r for r in caplog.records if _SENTINEL_HEADER.lower() in r.getMessage().lower()]
+        assert _SENTINEL_HEADER.lower() not in json.dumps(stored).lower()
+
+    def test_the_twin_the_canonical_contacts_file_builds_family_with_no_family_warning(
+        self, tmp_path: Path, gde_output: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from tests.test_contract import _create_sd67_inputs
+
+        d = tmp_path / "canonical"
+        d.mkdir()
+        _create_sd67_inputs(d)
+        with caplog.at_level(logging.INFO, logger="src.etl.pipeline"):
+            run_pipeline(self._SD67, str(d), str(gde_output))
+        records = read_run_records()
+        assert records is not None
+        assert records[0]["entity_outcomes"]["Family"]["kind"] == "built"
+        assert "missing_mapped" not in records[0]["entity_outcomes"]["Family"]
+        assert not [r for r in _mapped_missing_lines(caplog) if "[Family]" in r.getMessage()]
+
+    def test_convert_records_the_same_observation(self, sd67_input: Path, gde_output: Path, tmp_path: Path) -> None:
+        from src.ui_flet.screens.convert import convert_job
+
+        cli_output = tmp_path / "cli_output"
+        cli_output.mkdir()
+        run_pipeline(self._SD67, str(sd67_input), str(cli_output))
+        AppConfig(input_dir=str(sd67_input), output_dir=str(gde_output), sis_type=self._SD67).save()
+        result = convert_job(self._SD67, str(sd67_input))
+
+        records = read_run_records()
+        assert records is not None and len(records) == 2
+        assert records[0]["entity_outcomes"] == records[1]["entity_outcomes"]
+        assert records[0]["entity_outcomes"]["Family"]["reason"] == "missing_source_column"
+        assert result.entity_outcomes is not None
+        assert next(o for o in result.entity_outcomes if o.entity == "Family").missing_mapped == ("Email Address",)
+
+    @pytest.mark.parametrize("seam", ["missing_columns_by_entity", "note_missing_mapped"])
+    def test_a_raising_observation_leaves_the_run_byte_identical(
+        self, seam: str, sd67_input: Path, tmp_path: Path, monkeypatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """P11's raise-isolation twin: the observation raising (in the derivation, or in the
+        ledger) changes NOTHING the run delivers — same files byte for byte, same status,
+        category, counts and kinds — and only the record loses what it would have said. The
+        first run (observation working) is the positive twin: it DID refine Family."""
+        from src.etl.outcomes import OutcomeLedger
+
+        observed_out = tmp_path / "observed"
+        broken_out = tmp_path / "broken"
+        observed_out.mkdir()
+        broken_out.mkdir()
+        observed = run_pipeline(self._SD67, str(sd67_input), str(observed_out))
+
+        def _boom(*_a: object, **_kw: object) -> None:
+            raise RuntimeError("observation bug")
+
+        if seam == "missing_columns_by_entity":
+            monkeypatch.setattr(pipeline, "missing_columns_by_entity", _boom)
+        else:
+            monkeypatch.setattr(OutcomeLedger, "note_missing_mapped", _boom)
+        caplog.clear()  # only the broken run's lines are asserted below
+        with caplog.at_level(logging.DEBUG, logger="src.etl.pipeline"):
+            broken = run_pipeline(self._SD67, str(sd67_input), str(broken_out))
+
+        observed_csvs = sorted(p.name for p in observed_out.glob("*.csv"))
+        assert observed_csvs == sorted(p.name for p in broken_out.glob("*.csv")) and observed_csvs
+        for name in observed_csvs:
+            assert (observed_out / name).read_bytes() == (broken_out / name).read_bytes()
+        assert observed.entity_counts == broken.entity_counts
+        assert [(o.entity, o.kind) for o in observed.entity_outcomes] == [
+            (o.entity, o.kind) for o in broken.entity_outcomes
+        ]
+        records = read_run_records()
+        assert records is not None and len(records) == 2
+        broken_record, observed_record = records
+        for key in ("status", "error_category", *pipeline._RECORD_ENTITY_KEYS):
+            assert broken_record[key] == observed_record[key]
+        # Positive twin: the working observation refined Family; the broken one could not.
+        assert observed_record["entity_outcomes"]["Family"]["reason"] == "missing_source_column"
+        assert broken_record["entity_outcomes"]["Family"] == {
+            "kind": "empty",
+            "reason": "no_rows_after_transform",
+            "rows": 0,
+        }
+        debug = [r for r in caplog.records if r.getMessage().startswith("Source-column observation skipped")]
+        if seam == "missing_columns_by_entity":
+            assert len(debug) == 1  # the derivation failed: one line, nothing observed
+        else:
+            # Each entity's note is isolated: one line per entity the derivation reported.
+            assert len(debug) >= 1 and any("Family" in r.getMessage() for r in debug)
+        assert all(r.levelno == logging.DEBUG for r in debug)
+        assert not [r for r in debug if "observation bug" in r.getMessage()], "the type only, never the text"
+        assert not _mapped_missing_lines(caplog), "a refused note never reaches the warning"
+
+    def test_a_raising_observation_leaves_convert_unchanged_too(
+        self, sd67_input: Path, tmp_path: Path, monkeypatch
+    ) -> None:
+        from src.ui_flet.screens.convert import convert_job
+
+        observed_out = tmp_path / "observed"
+        broken_out = tmp_path / "broken"
+        observed_out.mkdir()
+        broken_out.mkdir()
+        AppConfig(input_dir=str(sd67_input), output_dir=str(observed_out), sis_type=self._SD67).save()
+        observed = convert_job(self._SD67, str(sd67_input))
+
+        def _boom(*_a: object, **_kw: object) -> None:
+            raise RuntimeError("observation bug")
+
+        monkeypatch.setattr(pipeline, "missing_columns_by_entity", _boom)
+        AppConfig(input_dir=str(sd67_input), output_dir=str(broken_out), sis_type=self._SD67).save()
+        broken = convert_job(self._SD67, str(sd67_input))
+
+        assert broken.status is observed.status
+        names = sorted(p.name for p in observed_out.glob("*.csv"))
+        assert names and names == sorted(p.name for p in broken_out.glob("*.csv"))
+        for name in names:
+            assert (observed_out / name).read_bytes() == (broken_out / name).read_bytes()
+        records = read_run_records()
+        assert records is not None and [r["status"] for r in records] == ["success", "success"]
+        assert records[0]["entity_outcomes"]["Family"]["reason"] == "no_rows_after_transform"
+        assert records[1]["entity_outcomes"]["Family"]["reason"] == "missing_source_column"
+
+
+class TestObservationIsolatesEachEntity:
+    """``observe_source_columns``' per-entity handling, driven through a stubbed derivation so
+    each branch is reached exactly: one entity's refused note, or an entity the ledger was not
+    configured with, costs ONLY that entity — never a later one's note or warning."""
+
+    @staticmethod
+    def _observe(monkeypatch, findings: dict[str, tuple[str, ...]], configured: list[str]):
+        from src.config.loader import load_config
+        from src.etl.outcomes import OutcomeLedger
+
+        monkeypatch.setattr(pipeline, "missing_columns_by_entity", lambda *_a, **_kw: findings)
+        ledger = OutcomeLedger(configured)
+        pipeline.observe_source_columns(load_config("myedbc"), {}, ledger)
+        return ledger
+
+    @staticmethod
+    def _recorded(ledger, entity: str):
+        from src.etl.outcomes import EntityOutcome, OutcomeReason
+
+        ledger.record(EntityOutcome.empty(entity, OutcomeReason.NO_ROWS_AFTER_TRANSFORM))
+        return next(o for o in ledger.outcomes if o.entity == entity)
+
+    def test_an_unusable_name_costs_only_its_own_entity(self, monkeypatch, caplog: pytest.LogCaptureFixture) -> None:
+        # An internal non-breaking space survives the derivation's strip() but is not printable,
+        # so the ledger refuses it. Students comes FIRST, so a loop-wide handler would lose Family.
+        findings = {"Students": ("Next school code",), "Family": ("Email Address",)}
+        with caplog.at_level(logging.DEBUG, logger="src.etl.pipeline"):
+            ledger = self._observe(monkeypatch, findings, ["Students", "Family"])
+        lines = _mapped_missing_lines(caplog)
+        assert [r.getMessage().split("]")[0] for r in lines] == ["MAPPED COLUMNS MISSING [Family"]
+        assert lines[0].levelno == logging.WARNING
+        skipped = [r for r in caplog.records if r.getMessage().startswith("Source-column observation skipped")]
+        assert [r.getMessage() for r in skipped] == ["Source-column observation skipped for Students (ValueError)"]
+        assert all(r.levelno == logging.DEBUG for r in skipped)
+        assert self._recorded(ledger, "Students").missing_mapped == ()
+        family = self._recorded(ledger, "Family")
+        assert family.missing_mapped == ("Email Address",)
+        assert family.reason.value == "missing_source_column"
+
+    def test_an_unconfigured_entity_is_skipped_without_abandoning_the_loop(
+        self, monkeypatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # A hand-written entity_order that omits an enabled entity: the derivation reports it,
+        # the ledger was never configured with it. It comes FIRST, so the skip must `continue`.
+        findings = {"Students": ("Next school code",), "Family": ("Email Address",)}
+        with caplog.at_level(logging.DEBUG, logger="src.etl.pipeline"):
+            ledger = self._observe(monkeypatch, findings, ["Family"])
+        lines = _mapped_missing_lines(caplog)
+        assert len(lines) == 1 and "[Family]" in lines[0].getMessage()
+        assert not [r for r in caplog.records if "Students" in r.getMessage()]
+        assert ledger.configured == ("Family",)
+        assert self._recorded(ledger, "Family").missing_mapped == ("Email Address",)
+
+    def test_the_warning_states_only_what_the_observation_knows(
+        self, monkeypatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # It runs BEFORE the transform: a fallback may fill the value, a missing row-filter column
+        # fails the entity closed — so the line never claims the values are blank.
+        with caplog.at_level(logging.INFO, logger="src.etl.pipeline"):
+            self._observe(monkeypatch, {"Family": ("Email Address",)}, ["Family"])
+        (line,) = _mapped_missing_lines(caplog)
+        assert "blank" not in line.getMessage()
+
+
+# The AST pin: BOTH entry points call the ONE shared observation, after the input is read and
+# before the transform — so neither can drift into its own spelling, or skip it.
+_PIPELINE_SRC = Path(pipeline.__file__)
+_CONVERT_SRC = Path(pipeline.__file__).resolve().parents[1] / "ui_flet" / "screens" / "convert.py"
+
+
+def _call_lines(source: str, function: str) -> dict[str, list[int]]:
+    tree = ast.parse(source)
+    func = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == function)
+    lines: dict[str, list[int]] = {}
+    for node in ast.walk(func):
+        if isinstance(node, ast.Call):
+            target = node.func
+            name = target.attr if isinstance(target, ast.Attribute) else getattr(target, "id", "")
+            lines.setdefault(name, []).append(node.lineno)
+    return lines
+
+
+def _observation_order_problems(source: str, function: str) -> list[str]:
+    calls = _call_lines(source, function)
+    observe = calls.get("observe_source_columns", [])
+    if len(observe) != 1:
+        return [f"{function}: calls observe_source_columns {len(observe)} time(s), expected exactly once"]
+    problems = []
+    if not calls.get("load_data") or observe[0] < max(calls["load_data"]):
+        problems.append(f"{function}: observes before the input is read")
+    if not calls.get("run_transform") or observe[0] > min(calls["run_transform"]):
+        problems.append(f"{function}: observes after the transform")
+    return problems
+
+
+class TestBothEntryPointsObserve:
+    @pytest.mark.parametrize(("path", "function"), [(_PIPELINE_SRC, "run_pipeline"), (_CONVERT_SRC, "convert_job")])
+    def test_each_entry_point_observes_once_between_the_read_and_the_transform(self, path: Path, function: str):
+        assert _observation_order_problems(path.read_text(encoding="utf-8"), function) == []
+
+    def test_non_vacuity_the_pin_finds_the_real_calls(self):
+        calls = _call_lines(_PIPELINE_SRC.read_text(encoding="utf-8"), "run_pipeline")
+        assert calls["observe_source_columns"] and calls["load_data"] and calls["run_transform"]
+
+    def test_doctored_a_removed_call_is_red(self):
+        source = _CONVERT_SRC.read_text(encoding="utf-8").replace(
+            "observe_source_columns(config, raw_data, ledger)", "pass"
+        )
+        assert _observation_order_problems(source, "convert_job") == [
+            "convert_job: calls observe_source_columns 0 time(s), expected exactly once"
+        ]
+
+    def test_doctored_a_call_after_the_transform_is_red(self):
+        source = _PIPELINE_SRC.read_text(encoding="utf-8")
+        moved = source.replace("        observe_source_columns(config, raw_data, ledger)\n", "", 1).replace(
+            "        outputs = transform_outputs.outputs\n",
+            "        outputs = transform_outputs.outputs\n        observe_source_columns(config, raw_data, ledger)\n",
+            1,
+        )
+        assert moved != source
+        assert _observation_order_problems(moved, "run_pipeline") == ["run_pipeline: observes after the transform"]

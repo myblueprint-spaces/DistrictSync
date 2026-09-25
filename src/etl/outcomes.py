@@ -17,8 +17,12 @@ FAILED, the rest of the run continues) while a CRITICAL one still fails the whol
 never imports it (``errors ← outcomes ← {transformers, pipeline} ← ui``). That direction
 is why :func:`reason_for` lives here rather than beside the taxonomy.
 
-**PII floor.** An outcome carries an entity NAME, two closed-set codes and a row COUNT —
-never a column, a header, a path or ``str(exc)`` (§8).
+**PII floor.** An outcome carries an entity NAME, two closed-set codes, a row COUNT and —
+since plan 0053 S6 — ``missing_mapped``: mapped column names in the CONFIG's spelling, taken
+from the resolved config's own ``field_map`` / ``row_filters`` by the source observation
+(``preflight.missing_columns_by_entity``), so their membership in the config's vocabulary
+holds by construction, and refused unless printable. Never an OBSERVED header, a path, a cell
+value or ``str(exc)`` (§8).
 """
 
 from __future__ import annotations
@@ -133,6 +137,9 @@ VALID_REASONS: Final[Mapping[OutcomeKind, frozenset[OutcomeReason]]] = MappingPr
                 OutcomeReason.NO_SOURCE_FILES_DECLARED,
                 OutcomeReason.SOURCE_FILES_EMPTY,
                 OutcomeReason.NO_ROWS_AFTER_TRANSFORM,
+                # Plan 0053 S6: NO_ROWS_AFTER_TRANSFORM refined by the source observation — the
+                # entity kept no row AND a mapped column is absent from the file(s) it reads.
+                OutcomeReason.MISSING_SOURCE_COLUMN,
             }
         ),
         OutcomeKind.FAILED: frozenset({OutcomeReason.MISSING_SOURCE_COLUMN, OutcomeReason.TRANSFORM_ERROR}),
@@ -143,6 +150,9 @@ VALID_REASONS: Final[Mapping[OutcomeKind, frozenset[OutcomeReason]]] = MappingPr
 OUTCOMES_RECORD_KEY: Final = "entity_outcomes"
 """The run-record key carrying the per-entity outcomes (additive JSON beside ``run_as``)."""
 
+MISSING_MAPPED_KEY: Final = "missing_mapped"
+"""The per-entity entry key carrying :attr:`EntityOutcome.missing_mapped` (plan 0053 S6, additive)."""
+
 
 @dataclass(frozen=True)
 class EntityOutcome:
@@ -151,12 +161,20 @@ class EntityOutcome:
     ``rows`` is the number of rows the entity's TRANSFORM produced — positive for BUILT, zero
     for everything else. It is deliberately a separate fact from the run record's flat
     per-entity count keys (see ``pipeline.build_run_record``).
+
+    ``missing_mapped`` (plan 0053 S6) is what the SOURCE OBSERVATION saw before the transform
+    ran: the entity's mapped columns absent from the file(s) it reads, in CONFIG spelling —
+    ``()`` when nothing was missing or no sound claim could be made. It is an observation about
+    the INPUT, so any kind may carry it (a BUILT entity with a blank column; a FAILED one). It
+    changes a reason in exactly one place, :func:`apply_observation`. Each name must be a
+    non-blank, trimmed, printable ``str``, listed once.
     """
 
     entity: str
     kind: OutcomeKind
     reason: OutcomeReason
     rows: int
+    missing_mapped: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.entity, str) or not self.entity.strip():
@@ -176,6 +194,7 @@ class EntityOutcome:
             raise ValueError(f"{self.entity}: a BUILT outcome has at least one row")
         if self.kind is not OutcomeKind.BUILT and self.rows != 0:
             raise ValueError(f"{self.entity}: a {self.kind.value!r} outcome has no rows ({self.rows})")
+        _check_missing_mapped(self.entity, self.missing_mapped)
 
     @classmethod
     def built(cls, entity: str, rows: int) -> EntityOutcome:
@@ -192,6 +211,42 @@ class EntityOutcome:
     @classmethod
     def not_run(cls, entity: str) -> EntityOutcome:
         return cls(entity, OutcomeKind.NOT_RUN, OutcomeReason.RUN_ABORTED, 0)
+
+
+def _usable_column_name(value: object) -> bool:
+    return isinstance(value, str) and bool(value) and value == value.strip() and value.isprintable()
+
+
+def _check_missing_mapped(entity: str, columns: object) -> None:
+    """Refuse a ``missing_mapped`` that is not a tuple of distinct, usable column names."""
+    if not isinstance(columns, tuple):
+        raise TypeError(f"{entity}: missing_mapped must be a tuple, not {type(columns).__name__}")
+    if not all(_usable_column_name(column) for column in columns):
+        raise ValueError(f"{entity}: missing_mapped names must be non-blank, trimmed and printable")
+    if len(set(columns)) != len(columns):
+        raise ValueError(f"{entity}: missing_mapped lists a column more than once")
+
+
+def apply_observation(outcome: EntityOutcome, missing_mapped: tuple[str, ...]) -> EntityOutcome:
+    """``outcome`` with the source observation attached — the ONE reason refinement (plan 0053 S6).
+
+    * nothing observed missing, or the outcome already carries an observation → ``outcome``
+      itself, unchanged;
+    * otherwise ``missing_mapped`` is attached, and an EMPTY / NO_ROWS_AFTER_TRANSFORM outcome
+      becomes EMPTY / MISSING_SOURCE_COLUMN — "it kept no row" is then explained by "a column it
+      maps is not in its file" (SD51's Family: the contacts export carries no email column, so
+      every contact is excluded for a blank email).
+
+    Every other kind and reason is kept as it is: a FAILED outcome's reason came from the
+    exception's TYPE (:func:`reason_for`) and a BUILT one built — the observation never changes
+    what happened, only what the record can say about why.
+    """
+    if not missing_mapped or outcome.missing_mapped:
+        return outcome
+    reason = outcome.reason
+    if outcome.kind is OutcomeKind.EMPTY and reason is OutcomeReason.NO_ROWS_AFTER_TRANSFORM:
+        reason = OutcomeReason.MISSING_SOURCE_COLUMN
+    return EntityOutcome(outcome.entity, outcome.kind, reason, outcome.rows, missing_mapped)
 
 
 def reason_for(exc: BaseException) -> OutcomeReason:
@@ -222,18 +277,47 @@ class OutcomeLedger:
             raise ValueError(f"an entity may be configured once per run; listed more than once: {duplicates}")
         self._configured: tuple[str, ...] = names
         self._outcomes: dict[str, EntityOutcome] = {}
+        self._missing_mapped: dict[str, tuple[str, ...]] = {}
 
     @property
     def configured(self) -> tuple[str, ...]:
         return self._configured
 
+    def note_missing_mapped(self, entity: str, columns: Sequence[str]) -> None:
+        """Hold the source observation for ``entity`` until its outcome is recorded (plan 0053 S6).
+
+        Called by ``pipeline.observe_source_columns`` after the input is read and BEFORE the
+        transform, so :meth:`record` can attach it through :func:`apply_observation`. Refuses an
+        entity not configured, one already recorded (an observation cannot rewrite an outcome
+        after the fact), a second observation, and an unusable column list — each a caller bug,
+        which that caller's own guard turns into a DEBUG line, never a changed run.
+        """
+        if entity not in self._configured:
+            raise ValueError(f"{entity!r} is not an entity this run is configured to produce")
+        if entity in self._outcomes:
+            raise ValueError(f"{entity!r} already has an outcome; observe before the transform")
+        if entity in self._missing_mapped:
+            raise ValueError(f"{entity!r} was already observed for this run")
+        if isinstance(columns, str):
+            # A bare str is a Sequence[str] to the type checker, so `tuple()` would split it into
+            # characters and a name with no blank or repeated letter would pass every check below.
+            raise TypeError(f"{entity}: missing_mapped must be a sequence of column names, not a str")
+        observed = tuple(columns)
+        _check_missing_mapped(entity, observed)
+        if observed:
+            self._missing_mapped[entity] = observed
+
     def record(self, outcome: EntityOutcome) -> None:
-        """Record ``outcome``; refuses an entity not configured, or one already recorded."""
+        """Record ``outcome``; refuses an entity not configured, or one already recorded.
+
+        A held source observation (:meth:`note_missing_mapped`) is attached on the way in —
+        :func:`apply_observation`, the one refinement.
+        """
         if outcome.entity not in self._configured:
             raise ValueError(f"{outcome.entity!r} is not an entity this run is configured to produce")
         if outcome.entity in self._outcomes:
             raise ValueError(f"{outcome.entity!r} already has an outcome for this run")
-        self._outcomes[outcome.entity] = outcome
+        self._outcomes[outcome.entity] = apply_observation(outcome, self._missing_mapped.get(outcome.entity, ()))
 
     def mark_not_run(self, entities: Iterable[str]) -> None:
         """Record every one of ``entities`` NOT_RUN/RUN_ABORTED (each must still be unrecorded)."""
@@ -267,12 +351,29 @@ def outcomes_to_record(outcomes: Iterable[EntityOutcome]) -> dict[str, dict[str,
     """The JSON value stored at :data:`OUTCOMES_RECORD_KEY` — keyed by entity, in the given order.
 
     ``{"Family": {"kind": "failed", "reason": "missing_source_column", "rows": 0}, ...}`` —
-    plain ``str``/``int`` only, so the store's ``json.dumps`` and the log line agree.
+    plain ``str``/``int``/``list`` only, so the store's ``json.dumps`` and the log line agree.
+    ``"missing_mapped"`` (a list of config-spelling column names, plan 0053 S6) is written only
+    when the observation found something, so every other entry is byte-identical to before.
     """
-    return {
-        outcome.entity: {"kind": outcome.kind.value, "reason": outcome.reason.value, "rows": outcome.rows}
-        for outcome in outcomes
-    }
+    record: dict[str, dict[str, Any]] = {}
+    for outcome in outcomes:
+        entry: dict[str, Any] = {"kind": outcome.kind.value, "reason": outcome.reason.value, "rows": outcome.rows}
+        if outcome.missing_mapped:
+            entry[MISSING_MAPPED_KEY] = list(outcome.missing_mapped)
+        record[outcome.entity] = entry
+    return record
+
+
+def _missing_mapped_from(raw: Any) -> tuple[str, ...]:
+    """A stored ``missing_mapped`` value → a usable tuple, or ``()`` for anything else (never raises)."""
+    if not isinstance(raw, (list, tuple)):
+        return ()
+    columns = tuple(raw)
+    try:
+        _check_missing_mapped("stored", columns)
+    except (TypeError, ValueError):
+        return ()
+    return columns
 
 
 def _outcome_from_entry(entity: Any, entry: Any) -> EntityOutcome | None:
@@ -282,15 +383,16 @@ def _outcome_from_entry(entity: Any, entry: Any) -> EntityOutcome | None:
     raw_kind: Any = entry.get("kind")
     raw_reason: Any = entry.get("reason")
     raw_rows: Any = entry.get("rows")
+    missing_mapped = _missing_mapped_from(entry.get(MISSING_MAPPED_KEY))
     try:
         kind = OutcomeKind(raw_kind)
         reason = OutcomeReason(raw_reason)
     except (TypeError, ValueError):
         # A kind or reason this build does not know — most likely written by a NEWER build.
         # Read it as a failure: an unknown code must err toward a warning, never toward green.
-        return EntityOutcome.failed(entity, OutcomeReason.TRANSFORM_ERROR)
+        return EntityOutcome(entity, OutcomeKind.FAILED, OutcomeReason.TRANSFORM_ERROR, 0, missing_mapped)
     try:
-        return EntityOutcome(entity, kind, reason, raw_rows)
+        return EntityOutcome(entity, kind, reason, raw_rows, missing_mapped)
     except (TypeError, ValueError):
         # Known codes in an impossible combination (or a corrupt row count): not evidence of anything.
         return None
@@ -319,7 +421,9 @@ def outcomes_from_record(record: Any) -> tuple[EntityOutcome, ...]:
     ``None`` value (an attempt that ended before the ledger existed, or a delivery-only
     record), or any non-mapping → ``()``. Within the mapping: a blank or non-``str`` entity
     key is dropped; an unknown kind or reason reads as FAILED/TRANSFORM_ERROR; a known
-    kind/reason in an illegal combination, or an unusable row count, is dropped.
+    kind/reason in an illegal combination, or an unusable row count, is dropped. An absent or
+    unusable ``missing_mapped`` (plan 0053 S6 — not a list, a non-``str`` or blank name, a
+    duplicate) reads as ``()``; it never costs the entry its kind and reason.
     """
     if not isinstance(record, Mapping):
         return ()

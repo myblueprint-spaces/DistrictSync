@@ -1860,7 +1860,14 @@ class TestUnityPlainContactReport:
         assert records is not None and len(records) == 1
         record = records[0]
         assert record["status"] == "success" and record["error_category"] == "none"
-        assert record["entity_outcomes"]["Family"] == {"kind": "failed", "reason": "missing_source_column", "rows": 0}
+        # Plan 0053 S6: the FAILED entry also names the two mapped columns the plain report lacks
+        # (config spelling); kind and reason are the bulkhead's, unchanged.
+        assert record["entity_outcomes"]["Family"] == {
+            "kind": "failed",
+            "reason": "missing_source_column",
+            "rows": 0,
+            "missing_mapped": ["Email Address", "Parent Auth / Guardian"],
+        }
         for entity in _UNITY_REST:
             assert record["entity_outcomes"][entity]["kind"] == "built"
         assert classify_latest_reason(record, prior_build=build_record_for(records, 0)) is LatestReason.PARTIAL
