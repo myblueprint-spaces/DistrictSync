@@ -86,10 +86,10 @@ class SourceSchemaError(EtlError, ValueError):
     record of WHICH entity, WHICH configured columns and WHAT they guard, and a default
     for any of them would let a raise site say less than it knows. ``columns`` hold the
     CONFIG's spelling (what the admin wrote), never an observed header; an empty tuple is
-    refused — an error that names no column is not a schema error. One exception until
-    plan 0053 S9's resolver lands: site #4 (``grades.filter_to_grade_scope``) carries the
-    RESOLVED, lower-cased grade column (or the default ``grade``), because it only ever
-    receives what ``BaseTransformer.resolve_column`` returned.
+    refused — an error that names no column is not a schema error. Site #4
+    (``grades.filter_to_grade_scope``) names the grade column through
+    ``columns.source_column_label`` (plan 0053 S9) — the config's spelling, or the
+    default ``grade`` when the mapping names none.
 
     Also a ``ValueError`` so every existing ``except ValueError`` / ``pytest.raises(
     ValueError)`` keeps working; classification never relies on that base (the

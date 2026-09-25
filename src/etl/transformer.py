@@ -13,7 +13,7 @@ import pandas as pd
 from src.etl.transformers import naming as _naming
 from src.etl.transformers import sources as _sources
 from src.etl.transformers.base import BaseTransformer
-from src.etl.transformers.blended import BlendedClassDetector
+from src.etl.transformers.blended import BlendedClassDetector, session_time_components
 from src.etl.transformers.context import ClassArtifacts, TransformContext
 from src.etl.transformers.course_codes import resolve_course_code_column
 from src.etl.transformers.dates import SchoolYearDetermination
@@ -244,6 +244,10 @@ class DataTransformer:
         once per detection off a frame this shim does not hold, so the name
         falls back to the group's own teacher column — which is exactly the
         documented fallback, not a degraded path.
+
+        The time-slot columns are the MyEd BC defaults: this shim is handed the
+        `field_map` alone, never the Classes `source_columns` block that could
+        rename them (`blended.session_time_components`).
         """
         return self._blended_detector.create_name(
             session_group,
@@ -253,6 +257,7 @@ class DataTransformer:
             self._context,
             course_code_col=resolve_course_code_column(session_group),
             teacher_name="",
+            session_components=session_time_components({}),
         )
 
     def _detect_blended_classes(

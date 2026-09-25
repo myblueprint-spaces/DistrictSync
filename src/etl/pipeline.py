@@ -48,6 +48,7 @@ from src.etl.outcomes import (
 )
 from src.etl.preflight import label_vocabulary_by_entity, missing_columns_by_entity
 from src.etl.transformer import DataTransformer
+from src.etl.transformers.columns import reset_run_notices as reset_column_notices
 from src.etl.transformers.dates import SchoolYearDetermination
 from src.etl.transformers.grades import resolve_timetable_scope
 from src.history.store import VALID_SOURCES, write_run_record
@@ -422,6 +423,9 @@ def run_transform(
     # Before the entity loop: an entity may need a source file that ANOTHER
     # entity declares (Staff resolves the Classes timetable roles).
     transformer.set_entity_mappings(mappings)
+    # Open this run's window for the column resolver's once-per-run notices (the
+    # default-fallback DEBUG line and plan 0053 S9's transitional WARNING).
+    reset_column_notices()
 
     outputs: dict[str, pd.DataFrame] = {}
     field_orders: dict[str, list[str]] = {}

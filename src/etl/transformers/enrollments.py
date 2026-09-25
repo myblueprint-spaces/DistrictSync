@@ -14,8 +14,18 @@ from typing import Any, Optional
 
 import pandas as pd
 
-from src.etl.column_names import MASTER_TIMETABLE_ID, SCHOOL_NUMBER
+from src.etl.column_names import (
+    GRADE,
+    HOMEROOM,
+    MASTER_TIMETABLE_ID,
+    PRIMARY_TEACHER,
+    SCHOOL_NUMBER,
+    SECTION_LETTER,
+    STUDENT_NUMBER,
+    TEACHER_ID,
+)
 from src.etl.transformers.base import BaseTransformer
+from src.etl.transformers.columns import Previously, resolve_source_column
 from src.etl.transformers.context import ClassArtifacts, TransformContext
 from src.etl.transformers.grades import resolve_timetable_scope, split_by_homeroom_grades
 from src.etl.transformers.ids import normalize_id_series
@@ -54,8 +64,12 @@ class EnrollmentTransformer(BaseTransformer):
         schedule_df = self.normalize_columns(schedule_df)
 
         user_id_config = field_map.get("User ID", {})
-        student_id_col = user_id_config.get("student_id_col", "student number").lower()
-        staff_id_col = user_id_config.get("staff_id_col", "teacher id").lower()
+        student_id_col = resolve_source_column(
+            user_id_config, "student_id_col", default=STUDENT_NUMBER, previously=Previously.AS_CONFIGURED
+        )
+        staff_id_col = resolve_source_column(
+            user_id_config, "staff_id_col", default=TEACHER_ID, previously=Previously.AS_CONFIGURED
+        )
 
         student_demo_df = self._load_student_demo(normalized_sources, staff_id_col, context)
 
@@ -65,7 +79,9 @@ class EnrollmentTransformer(BaseTransformer):
             self._subject_enrollments(
                 schedule_df, homeroom_grades, student_id_col, staff_id_col, field_map, artifacts, context
             ),
-            self._classinfo_coteacher_enrollments(staff_id_col, artifacts, context),
+            self._classinfo_coteacher_enrollments(
+                staff_id_col, mapping.get("source_columns") or {}, artifacts, context
+            ),
         ]
         final = [frame for frame in sources if frame is not None]
 
@@ -111,9 +127,13 @@ class EnrollmentTransformer(BaseTransformer):
         # Work on a copy to avoid mutating the shared raw_data DataFrame
         student_demo_df = student_demo_df.copy()
 
+        # The Students mapping names the DEMOGRAPHIC columns (plan 0053 S9: read
+        # through `context.entity_mappings`; before S9 this path never saw it).
         students_field_map = context.get_students_config().get("field_map", {})
-        grade_col = self.resolve_column(students_field_map, "Grade", "grade")
-        homeroom_col = students_field_map.get("Homeroom", "homeroom").lower()
+        grade_col = resolve_source_column(students_field_map, "Grade", default=GRADE, previously=Previously.DEFAULT)
+        homeroom_col = resolve_source_column(
+            students_field_map, "Homeroom", default=HOMEROOM, previously=Previously.DEFAULT
+        )
         # The demographic student-ID column comes from Students config (not the
         # schedule-targeted Enrollments ID config) — see get_demo_student_col.
         demo_student_col = context.get_demo_student_col()
@@ -189,9 +209,11 @@ class EnrollmentTransformer(BaseTransformer):
         if schedule_df.empty:
             return None
 
+        # The SAME schedule grade column Classes' split reads (the Classes
+        # mapping's `Grade`), so the two keep the same rows (zero-orphan).
         non_homeroom = split_by_homeroom_grades(
             schedule_df,
-            "grade",
+            context.get_schedule_grade_col(),
             homeroom_grades,
             keep="subject",
             timetable_scope=resolve_timetable_scope(context.global_config, homeroom_grades),
@@ -263,6 +285,7 @@ class EnrollmentTransformer(BaseTransformer):
     def _classinfo_coteacher_enrollments(
         self,
         staff_id_col: str,
+        source_columns: dict[str, Any],
         artifacts: ClassArtifacts,
         context: TransformContext,
     ) -> Optional[pd.DataFrame]:
@@ -276,6 +299,11 @@ class EnrollmentTransformer(BaseTransformer):
         drop_duplicates(subset=["Class ID","User ID","Role"]) in transform()
         deduplicates against any teacher rows already produced by the
         student_schedule path.
+
+        The two ClassInformation columns it reads resolve from the Enrollments
+        entity's ``source_columns`` block (plan 0053 S9, §5 #11): roles
+        ``class_info_primary_teacher`` and ``class_info_section_letter``, MyEd BC
+        defaults ``primary teacher`` / ``section letter`` when unset.
         """
         class_info_df = artifacts.class_info_df
         if class_info_df.empty:
@@ -285,8 +313,12 @@ class EnrollmentTransformer(BaseTransformer):
         # but take a copy so we don't mutate the published artifact frame.
         class_info_df = class_info_df.copy()
 
-        primary_col = "primary teacher"
-        section_col = "section letter"
+        primary_col = resolve_source_column(
+            source_columns, "class_info_primary_teacher", default=PRIMARY_TEACHER, previously=Previously.DEFAULT
+        )
+        section_col = resolve_source_column(
+            source_columns, "class_info_section_letter", default=SECTION_LETTER, previously=Previously.DEFAULT
+        )
         if primary_col not in class_info_df.columns or SCHOOL_NUMBER not in class_info_df.columns:
             return None
         if staff_id_col not in class_info_df.columns:
@@ -309,7 +341,9 @@ class EnrollmentTransformer(BaseTransformer):
         hr_df = artifacts.homeroom_classes_df
         if not hr_df.empty and section_col in primary_rows.columns:
             students_field_map = context.get_students_config().get("field_map", {})
-            homeroom_col = students_field_map.get("Homeroom", "homeroom").lower()
+            homeroom_col = resolve_source_column(
+                students_field_map, "Homeroom", default=HOMEROOM, previously=Previously.DEFAULT
+            )
             if homeroom_col in hr_df.columns and SCHOOL_NUMBER in hr_df.columns:
                 hr_lookup = hr_df[[SCHOOL_NUMBER, homeroom_col, "Class ID"]].copy()
                 hr_lookup[SCHOOL_NUMBER] = normalize_id_series(hr_lookup[SCHOOL_NUMBER])

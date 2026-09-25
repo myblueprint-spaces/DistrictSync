@@ -30,7 +30,7 @@ file — ``Classes`` reads five source files and its entries name bare columns.
   label vocabulary — what ``outcomes.safe_label`` checks a name against before
   the record or the copy may print it.
 
-Nothing here resolves a transformer's own fallback (``base.resolve_column``'s
+Nothing here resolves a transformer's own fallback (``columns.resolve_source_column``'s
 ``default=``): that stays transformer knowledge, and this layer stays config-only
 (CLAUDE.md → Configurable Columns).
 

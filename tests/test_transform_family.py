@@ -97,14 +97,15 @@ class TestFamilyTransform:
         for field in family_mapping["field_map"]:
             assert field in result.columns, f"Missing expected output column: {field}"
 
-    def test_contacts_filtered_to_active_roster(self, emergency_contact_df, family_mapping, global_config, raw_data):
+    def test_contacts_filtered_to_active_roster(
+        self, emergency_contact_df, family_mapping, students_mapping, global_config, raw_data
+    ):
         """Zero-orphan invariant: a withdrawn (non-rostered) student's contacts are
         dropped; active students' contacts are kept.
 
         The fixture has contacts for S001 (x2), S002, S003, S004 — publishing a
         roster without S002 must drop exactly Robert's row.
         """
-        students_mapping = global_config["mappings"]["Students"]
         # Run Students first (registry order in the real pipeline) with S002
         # withdrawn so the published roster excludes them.
         demo = pd.DataFrame(

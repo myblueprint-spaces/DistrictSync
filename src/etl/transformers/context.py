@@ -10,6 +10,10 @@ from typing import Any, Optional
 
 import pandas as pd
 
+from src.etl.column_names import STUDENT_NUMBER, TEACHER_ID
+from src.etl.transformers.columns import Previously, resolve_source_column
+from src.etl.transformers.grades import schedule_grade_column
+
 
 @dataclass(frozen=True)
 class ClassArtifacts:
@@ -45,14 +49,14 @@ class TransformContext:
 
     # The WHOLE config's per-entity `mappings` block, published once per run by
     # `run_transform`. Distinct from `global_config` above, which is only the
-    # config's `global_config` SECTION — it has never carried `mappings`, which
-    # is why `get_teacher_id_col`/`get_demo_student_col` below have always
-    # silently resolved to their defaults (harmless today: every bundled config
-    # agrees with those defaults, verified across all 20 — see
-    # `docs/claugentic-ROADMAP.md`). Read by Staff to find the timetable files
-    # an entity other than its own declares; empty in a directly-constructed
-    # context, which callers must treat as "no cross-entity config available"
-    # rather than as an error.
+    # config's `global_config` SECTION — it has never carried `mappings`. Every
+    # cross-entity config read goes through it: the accessors below (the teacher
+    # id, the Students config, the schedule grade column) and Staff's timetable
+    # files. Before plan 0053 S9 the Students accessors read the dead
+    # `global_config["mappings"]` path, so a renamed demographic column was
+    # silently ignored on the Classes/Enrollments homeroom path. Empty in a
+    # directly-constructed context, which callers must treat as "no cross-entity
+    # config available" rather than as an error.
     entity_mappings: dict[str, Any] = field(default_factory=dict)
 
     # Active roster: normalized `User ID` strings of the students retained by
@@ -123,30 +127,39 @@ class TransformContext:
         self.academic_start = f"{year - 1}-{start_month_day}"
         self.academic_end = f"{year}-{end_month_day}"
 
+    def _mappings(self) -> dict[str, Any]:
+        """The config's per-entity mappings: :attr:`entity_mappings` FIRST.
+
+        ``global_config["mappings"]`` is still consulted as a fallback for a
+        context a test builds by hand; production never populates it
+        (`run_transform` passes the config's ``global_config`` SECTION).
+        """
+        return self.entity_mappings or self.global_config.get("mappings", {})
+
     def get_teacher_id_col(self) -> str:
         """Teacher-ID column name, resolved from the Enrollments ``User ID`` config.
 
-        Reads :attr:`entity_mappings` FIRST. It used to read only
-        ``global_config["mappings"]``, which `run_transform` never populates (it
-        passes the config's ``global_config`` SECTION), so this silently fell
-        through to the hardcoded default for every district — harmless in
-        practice, since all 20 bundled configs resolve to exactly that value,
-        but a Configurable Columns violation waiting for the first district to
-        rename the column. Repointed at 0052, when the resolution started
-        gating whether staff are DROPPED rather than merely joined.
-
-        ``global_config`` is still consulted as a fallback: tests build a
-        context by hand and pass ``mappings`` inside that section.
+        Reads :attr:`entity_mappings` FIRST (repointed at 0052, when the
+        resolution started gating whether staff are DROPPED rather than merely
+        joined), through the one resolver (plan 0053 S9).
         """
-        mappings = self.entity_mappings or self.global_config.get("mappings", {})
-        enrollment_map = mappings.get("Enrollments", {}).get("field_map", {})
+        enrollment_map = self._mappings().get("Enrollments", {}).get("field_map", {})
         user_id_map = enrollment_map.get("User ID", {})
         if not isinstance(user_id_map, dict):
-            return "teacher id"
-        return str(user_id_map.get("staff_id_col", "teacher id")).lower()
+            return TEACHER_ID
+        return resolve_source_column(
+            user_id_map, "staff_id_col", default=TEACHER_ID, previously=Previously.AS_CONFIGURED
+        )
 
     def get_students_config(self) -> dict[str, Any]:
-        return self.global_config.get("mappings", {}).get("Students", {})
+        """The Students entity's mapping, read from :attr:`entity_mappings` first (plan 0053 S9).
+
+        Mirrors :meth:`get_teacher_id_col`. Before S9 it read only
+        ``global_config["mappings"]`` — never populated in a real run — so the
+        Classes/Enrollments homeroom path always used the hardcoded Grade /
+        Homeroom / student-number defaults, whatever the district mapped.
+        """
+        return self._mappings().get("Students", {})
 
     def get_demo_student_col(self) -> str:
         """Demographic student-ID column, resolved from the Students ``User ID`` config.
@@ -155,9 +168,20 @@ class TransformContext:
         schedule (MyEd BC: "Student Number" vs "Student ID"), so the
         schedule-targeted Enrollments ID config can't be reused. This is the
         same value space as ``active_student_ids``; used by Classes (homeroom)
-        and Enrollments (homeroom) to filter to the active roster.
+        and Enrollments (homeroom) to filter to the active roster — so a
+        renamed student-number column must reach it (plan 0053 S9).
         """
-        user_id_config = self.get_students_config().get("field_map", {}).get("User ID", "student number")
-        if isinstance(user_id_config, dict):
-            return str(user_id_config.get("column", "student number")).lower()
-        return str(user_id_config).lower()
+        students_field_map = self.get_students_config().get("field_map", {})
+        return resolve_source_column(
+            students_field_map, "User ID", default=STUDENT_NUMBER, previously=Previously.DEFAULT
+        )
+
+    def get_schedule_grade_col(self) -> str:
+        """The schedule's grade column — the Classes mapping's ``Grade`` (plan 0053 S9).
+
+        For Enrollments' subject split, which must keep exactly the rows
+        Classes' split keeps; both go through
+        :func:`~src.etl.transformers.grades.schedule_grade_column`.
+        """
+        classes_field_map = self._mappings().get("Classes", {}).get("field_map", {})
+        return schedule_grade_column(classes_field_map)

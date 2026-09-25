@@ -321,11 +321,32 @@ def base_mapping():
 
 @pytest.fixture
 def global_config(base_mapping):
-    """Global config section from the real mapping."""
-    return {
-        **base_mapping.get("global_config", {}),
-        "mappings": base_mapping.get("mappings", {}),
-    }
+    """The real mapping's ``global_config`` SECTION — exactly the shape production passes.
+
+    Plan 0053 S9 deleted the nested ``mappings`` this fixture used to inject: production
+    never puts ``mappings`` inside the section (``run_transform`` publishes them through
+    ``DataTransformer.set_entity_mappings``), so the injection let the tests read a
+    config path a real run never had. A test that needs another entity's mapping
+    publishes it the production way — ``transformer.set_entity_mappings(...)``.
+    """
+    return dict(base_mapping.get("global_config", {}))
+
+
+@pytest.fixture
+def published_transformer(base_mapping):
+    """A ``DataTransformer`` with the base mapping's entity ``mappings`` PUBLISHED — production's shape.
+
+    ``run_transform`` calls ``set_entity_mappings`` once per run, before any entity, so
+    Classes/Enrollments read the Students mapping (``Grade``/``Homeroom``/``User ID``) and
+    the Classes ``Grade`` through ``context.entity_mappings``. A bare ``DataTransformer()``
+    answers every one of those reads with the resolver DEFAULT — the dead-path shape the
+    deleted ``global_config["mappings"]`` injection hid (plan 0053 S9). The mapping
+    fixtures (``students_mapping`` …) are the SAME objects published here, as in a run.
+    The school year is left to the caller.
+    """
+    transformer = DataTransformer()
+    transformer.set_entity_mappings(base_mapping["mappings"])
+    return transformer
 
 
 @pytest.fixture

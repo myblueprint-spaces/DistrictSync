@@ -290,9 +290,10 @@ class TestStudentsUnderAScope:
         self, students_transformer, students_mapping, global_config
     ):
         """`{value: ""}` is legal config (SD83 does it for Date of Birth) and
-        `resolve_column` does not honour a bare string, so "column absent" is
-        reachable in ordinary config — and fail-open here delivers the PII of
-        students the district is not licensed to send."""
+        reads the documented default column (`columns.resolve_source_column`),
+        which the export may not carry, so "column absent" is reachable in
+        ordinary config — and fail-open here delivers the PII of students the
+        district is not licensed to send."""
         mapping = {**students_mapping, "field_map": {**students_mapping["field_map"], "Grade": {"value": ""}}}
         demographic = _demographic(["K", "12"]).drop(columns="grade")
         # Plan 0053 S1: a typed SourceSchemaError (PII_SCOPE), was a bare KeyError.
@@ -311,7 +312,8 @@ class TestStudentsUnderAScope:
         self, students_transformer, students_mapping, global_config
     ):
         """Configurable Columns: a district that renames the source column keeps
-        working, through the SAME `resolve_column` seam Classes/Enrollments use."""
+        working, through the ONE resolver Classes/Enrollments use too
+        (`columns.resolve_source_column`)."""
         mapping = {
             **students_mapping,
             "field_map": {
@@ -329,6 +331,21 @@ class TestStudentsUnderAScope:
         )
         assert set(result["User ID"]) == {"S001"}
         assert list(result["Grade"]) == ["KG"]
+
+    def test_a_bare_string_grade_rename_scopes_the_roster(self, students_transformer, students_mapping, global_config):
+        """Plan 0053 S9, §5 #6: the retired `resolve_column` IGNORED a bare-string
+        `Grade` and scoped on `grade`, a column this export does not carry (so the run
+        failed); the one resolver reads the column the district named."""
+        mapping = {**students_mapping, "field_map": {**students_mapping["field_map"], "Grade": "Grade Level"}}
+        demographic = _demographic(["K", "12"]).rename(columns={"grade": "grade level"})
+        result = _run_students(
+            students_transformer,
+            mapping,
+            global_config,
+            demographic,
+            student_rostering_grades=["KG"],
+        )
+        assert set(result["User ID"]) == {"S001"}
 
     @pytest.mark.parametrize(
         ("home_grade", "other_grade", "expected"),

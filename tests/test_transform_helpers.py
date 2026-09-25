@@ -6,8 +6,9 @@ Covers the NEW seams introduced by the BaseTransformer decomposition:
   ID/join-key normalization (T2.4 DRY).
 - `grades.split_by_homeroom_grades` — the hoisted grade→CEDS→homeroom split
   (T3.4; previously 4 duplicated sites in Classes/Enrollments).
-- `BaseTransformer.resolve_column` — the shared field_map
-  resolve-with-default idiom (T3.8).
+- (`BaseTransformer.resolve_column` — retired by plan 0053 S9; the one
+  resolver, `columns.resolve_source_column`, is pinned in
+  `tests/test_column_resolution.py`.)
 - `dates` — the SINGLE input-format grid (withdraw + general dates merged)
   and the pure school-year determination.
 - `BlendedClassDetector` — now a plain service class (LSP fix), with the
@@ -115,33 +116,6 @@ class TestSplitByHomeroomGrades:
         df = pd.DataFrame({"other": ["x"]})
         with pytest.raises(KeyError):
             grades.split_by_homeroom_grades(df, "grade", ["KG"], keep="homeroom")
-
-
-# ---------------------------------------------------------------------------
-# BaseTransformer.resolve_column (T3.8)
-# ---------------------------------------------------------------------------
-
-
-class TestResolveColumn:
-    def test_dict_with_column_lowercased(self):
-        fm = {"Grade": {"column": "Grade Level", "transform": "grade_to_ceds"}}
-        assert BaseTransformer.resolve_column(fm, "Grade", "grade") == "grade level"
-
-    def test_dict_without_column_falls_back(self):
-        fm = {"Grade": {"value": "01"}}
-        assert BaseTransformer.resolve_column(fm, "Grade", "grade") == "grade"
-
-    def test_missing_key_falls_back(self):
-        assert BaseTransformer.resolve_column({}, "Grade", "grade") == "grade"
-
-    def test_bare_string_yields_default_matching_legacy_sites(self):
-        # Documented: the legacy inline sites (Class ID / Grade / School ID)
-        # ignored a bare-string config — the shared helper preserves that.
-        fm = {"Grade": "grade level"}
-        assert BaseTransformer.resolve_column(fm, "Grade", "grade") == "grade"
-
-    def test_none_sentinel_yields_default(self):
-        assert BaseTransformer.resolve_column({"Grade": None}, "Grade", "grade") == "grade"
 
 
 # ---------------------------------------------------------------------------

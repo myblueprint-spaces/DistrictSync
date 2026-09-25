@@ -136,6 +136,31 @@ Per-release download links and auto-generated commit notes live on the
   with the same result; Home, Run History and the Convert screen look the same as
   before. The check is skipped for a file type when one of its export files is
   missing, and for attendance.
+- **Six more export columns can be renamed in a district's mapping,** through the
+  mapping's `source_columns` block: the four columns blended-class detection reads to
+  tell class times apart (Classes roles `session_term`, `session_semester`,
+  `session_day`, `session_period`) and the primary-teacher and section-letter columns of
+  the class-information export (Enrollments roles `class_info_primary_teacher`,
+  `class_info_section_letter`). The schedule's grade column is now read from the Classes
+  mapping's `Grade` entry everywhere it is used, not only for the class's grade. A mapping
+  that sets none of these roles and keeps the standard Classes `Grade` builds exactly what
+  it did before.
+
+### Fixed
+
+- **A district mapping that renames the student-number, grade or homeroom column is now
+  honoured everywhere.** A mapping could rename these columns for the Students file, but
+  the homeroom classes and homeroom enrollments ignored the rename and kept looking for
+  MyEd BC's standard names (`Student Number`, `Grade`, `Homeroom`) — so, depending on the
+  column, a withdrawn pupil could get a homeroom class of their own, homeroom enrollments
+  could go missing, or the run failed.
+  They now read the columns the district's mapping names. A column name written as plain
+  text in a mapping (rather than as `column: …`) is now honoured for the class ID, the
+  school ID and the student grade scope as well. No mapping that ships with DistrictSync
+  renames these columns, so their files do not change. When a district's own mapping has
+  a rename that now takes effect, `etl_tool.log` says so once per run, with a temporary
+  `[columns] '<key>' now reads source column …` warning naming the mapping key and both
+  column names.
 
 ## [3.25.0] - 2026-09-23
 

@@ -5,8 +5,10 @@ from typing import Any
 
 import pandas as pd
 
+from src.etl.column_names import GRADE, SCHOOL_NUMBER, STUDENT_NUMBER
 from src.etl.errors import GuardKind, SourceSchemaError, available_columns_note
 from src.etl.transformers.base import BaseTransformer
+from src.etl.transformers.columns import Previously, resolve_source_column, source_column_label
 from src.etl.transformers.context import TransformContext
 from src.etl.transformers.grades import filter_to_grade_scope, resolve_student_scope
 from src.etl.transformers.ids import clean_invalid_ids, normalize_id_series
@@ -121,7 +123,8 @@ class StudentTransformer(BaseTransformer):
         unchanged.
 
         Source column names resolve from the Students ``field_map`` (Configurable
-        Columns): ``User ID`` and ``SchoolCode``. Fail-loud (validate at
+        Columns) through the one resolver: ``User ID`` and ``SchoolCode`` — a
+        bare string or a ``{column: ...}`` entry alike. Fail-loud (validate at
         boundary): a configured ``home_school_column`` absent from the frame
         raises :class:`~src.etl.errors.SourceSchemaError` (guard ``JOIN_KEY``,
         the column named in the config's spelling, the source's column COUNT
@@ -132,9 +135,13 @@ class StudentTransformer(BaseTransformer):
         if not cc.get("collapse"):
             return working
 
-        user_id_col = str(field_map.get("User ID", "")).strip().lower()
-        school_col = str(field_map.get("SchoolCode", "")).strip().lower()
-        home_col = str(cc.get("home_school_column", "")).strip().lower()
+        user_id_col = resolve_source_column(
+            field_map, "User ID", default=STUDENT_NUMBER, previously=Previously.AS_CONFIGURED
+        )
+        school_col = resolve_source_column(
+            field_map, "SchoolCode", default=SCHOOL_NUMBER, previously=Previously.AS_CONFIGURED
+        )
+        home_col = resolve_source_column(cc, "home_school_column", default="", previously=Previously.UNCHANGED)
 
         if home_col not in working.columns:
             configured = str(cc.get("home_school_column", ""))
@@ -183,12 +190,14 @@ class StudentTransformer(BaseTransformer):
         ``split_by_homeroom_grades(keep="homeroom")`` — is the one used here.
 
         Fail-loud (Configurable Columns + validate-at-boundary): the grade column
-        resolves through the shared ``resolve_column`` seam, and an unresolvable
-        one RAISES. Keeping everyone would deliver the PII of students the
-        district is not licensed to send, and "column absent" is reachable in
-        ordinary config (a field mapped to a fixed ``{value: ""}``, or a
-        bare-string entry, both of which ``resolve_column`` resolves to its
-        default).
+        resolves through the one resolver
+        (:func:`~src.etl.transformers.columns.resolve_source_column` — a bare
+        string or a ``{column: ...}`` entry alike), and an unresolvable one
+        RAISES, naming the column in the config's spelling. Keeping everyone
+        would deliver the PII of students the district is not licensed to send,
+        and "column absent" is reachable in ordinary config (a field mapped to a
+        fixed ``{value: ""}`` resolves to the default, which the export may not
+        carry).
 
         Logs the kept/total COUNT only — a per-student or per-grade breakdown
         would put student data in ``etl_tool.log`` (grade is itself student
@@ -197,9 +206,15 @@ class StudentTransformer(BaseTransformer):
         scope = resolve_student_scope(context.global_config or {})
         if scope is None:
             return working
-        grade_col = self.resolve_column(field_map, "Grade", "grade")
+        grade_col = resolve_source_column(field_map, "Grade", default=GRADE, previously=Previously.COLUMN_KEY_ONLY)
         total = len(working)
-        filtered = filter_to_grade_scope(working, grade_col, scope, caller="Students")
+        filtered = filter_to_grade_scope(
+            working,
+            grade_col,
+            scope,
+            caller="Students",
+            column_label=source_column_label(field_map, "Grade", default=GRADE),
+        )
         logger.info(
             f"[Students] student_rostering_grades kept {len(filtered)}/{total} students (scope: {sorted(scope)})"
         )

@@ -8,7 +8,7 @@ import pandas as pd
 import src.etl.transformers.blended as blended_module
 import src.etl.transformers.grades as grades_module
 from src.etl.transformer import DataTransformer
-from src.etl.transformers.blended import BlendedClassDetector
+from src.etl.transformers.blended import BlendedClassDetector, session_time_components
 
 
 class TestValidateBlendedClass:
@@ -699,7 +699,7 @@ class TestEnrollableGradeMapIsRowSetIdentical:
     )
 
     def test_a_blank_grade_row_contributes_UG(self):
-        assert BlendedClassDetector._build_enrollable_grade_map(self.SCHEDULE) == {
+        assert BlendedClassDetector._build_enrollable_grade_map(self.SCHEDULE, grade_col="grade") == {
             "MT1": {"03", "UG"},
             "MT2": {"04"},
         }
@@ -709,8 +709,8 @@ class TestEnrollableGradeMapIsRowSetIdentical:
         `.dropna()` yields {'03', '04'} where the enrollable map yields
         {'03', '04', 'UG'} — and under the base homeroom grades that difference
         is the whole suppression decision."""
-        mode = BlendedClassDetector._build_grade_map(self.SCHEDULE)
-        enrollable = BlendedClassDetector._build_enrollable_grade_map(self.SCHEDULE)
+        mode = BlendedClassDetector._build_grade_map(self.SCHEDULE, grade_col="grade")
+        enrollable = BlendedClassDetector._build_enrollable_grade_map(self.SCHEDULE, grade_col="grade")
         assert set(mode.values()) == {"03", "04"}
         assert set().union(*enrollable.values()) == {"03", "04", "UG"}
         assert not set(mode.values()) - set(_HOMEROOM_KG_TO_07)
@@ -1083,6 +1083,7 @@ class TestBlendNameBudgetsTheCourseSegment:
             self.context,
             course_code_col="course code",
             teacher_name=teacher_name,
+            session_components=session_time_components({}),
         )
 
     def test_the_block_grades_and_year_SURVIVE_a_course_list_that_overflows(self):

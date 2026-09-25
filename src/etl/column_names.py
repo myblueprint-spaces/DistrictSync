@@ -34,6 +34,17 @@ COURSE_TITLE = "title"
 # Commonly-joined columns
 LAST_NAME = "last name"
 
+# MyEd BC defaults of CONFIGURABLE source columns. Read ONLY as the ``default=`` of
+# ``src.etl.transformers.columns.resolve_source_column`` — the district mapping names the
+# column, and these apply when it names none (plan 0053 S9). ``STAFF_STATUS`` above is the
+# same kind of constant.
+STUDENT_NUMBER = "student number"  # demographic / contacts / course-history student id
+GRADE = "grade"  # demographic + schedule grade
+HOMEROOM = "homeroom"  # demographic homeroom
+TEACHER_ID = "teacher id"  # schedule / staff teacher id
+SECTION_LETTER = "section letter"  # schedule + ClassInformation section letter
+PRIMARY_TEACHER = "primary teacher"  # ClassInformation primary-teacher flag
+
 
 def normalize_column_name(name: str) -> str:
     """The ONE spelling of "what a source column name IS" in this codebase.

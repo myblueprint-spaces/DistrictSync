@@ -9,15 +9,19 @@ from src.etl.column_names import (
     COURSE_CODE,
     COURSE_TITLE,
     DISTRICT_COURSE_CODE,
+    GRADE,
+    HOMEROOM,
     LAST_NAME,
     MASTER_TIMETABLE_ID,
     SCHOOL_NUMBER,
+    SECTION_LETTER,
     TEACHER_NAME,
 )
 from src.etl.transformers.base import BaseTransformer
 from src.etl.transformers.blended import BlendedClassDetector, BlendedDetection
+from src.etl.transformers.columns import Previously, resolve_source_column
 from src.etl.transformers.context import ClassArtifacts, TransformContext
-from src.etl.transformers.grades import resolve_timetable_scope, split_by_homeroom_grades
+from src.etl.transformers.grades import resolve_timetable_scope, schedule_grade_column, split_by_homeroom_grades
 from src.etl.transformers.ids import normalize_id_series
 
 logger = logging.getLogger(__name__)
@@ -146,13 +150,17 @@ class ClassTransformer(BaseTransformer):
         if student_demo_df.empty:
             return pd.DataFrame()
 
-        grade_col = self.resolve_column(students_field_map, "Grade", "grade")
+        # The Students mapping names the DEMOGRAPHIC columns (plan 0053 S9: read
+        # through `context.entity_mappings`; before S9 this path never saw it).
+        grade_col = resolve_source_column(students_field_map, "Grade", default=GRADE, previously=Previously.DEFAULT)
         homeroom_students = split_by_homeroom_grades(student_demo_df, grade_col, homeroom_grades, keep="homeroom")
 
         if homeroom_students.empty:
             return pd.DataFrame()
 
-        homeroom_col = students_field_map.get("Homeroom", "homeroom").lower()
+        homeroom_col = resolve_source_column(
+            students_field_map, "Homeroom", default=HOMEROOM, previously=Previously.DEFAULT
+        )
         dedup_cols = [SCHOOL_NUMBER, homeroom_col]
         if teacher_id_col in homeroom_students.columns:
             dedup_cols.append(teacher_id_col)
@@ -306,7 +314,7 @@ class ClassTransformer(BaseTransformer):
 
         non_homeroom_df = split_by_homeroom_grades(
             schedule_df,
-            "grade",
+            schedule_grade_column(field_map),
             homeroom_grades,
             keep="subject",
             timetable_scope=resolve_timetable_scope(context.global_config, homeroom_grades),
@@ -322,7 +330,9 @@ class ClassTransformer(BaseTransformer):
         self._assign_class_names(subject_output, merged, field_map, context)
         self._assign_grades(subject_output, merged, field_map, context)
 
-        school_col = self.resolve_column(field_map, "School ID", SCHOOL_NUMBER)
+        school_col = resolve_source_column(
+            field_map, "School ID", default=SCHOOL_NUMBER, previously=Previously.COLUMN_KEY_ONLY
+        )
         subject_output["School ID"] = merged.get(school_col, "")
         subject_output["Start Date"] = self.resolve_date(field_map, "Start Date", context)
         subject_output["End Date"] = self.resolve_date(field_map, "End Date", context)
@@ -417,11 +427,20 @@ class ClassTransformer(BaseTransformer):
         # The Name config uses the SPACED YAML authoring keys ("primary teacher
         # flag", ...) — the same shape the mapping files declare and
         # MappingConfig.to_raw_dict emits. (Regression pin: underscore keys here
-        # made the config dead and the hardcoded defaults always applied.)
-        teacher_flag = name_config.get("primary teacher flag", "").lower()
-        teacher_last = name_config.get("teacher last name", "last name").lower()
-        course_title = name_config.get("course title", "title").lower()
-        section = name_config.get("section letter", "section letter").lower()
+        # made the config dead and the hardcoded defaults always applied.) Each
+        # sub-key resolves through the one resolver (a blank one reads its default).
+        teacher_flag = resolve_source_column(
+            name_config, "primary teacher flag", default="", previously=Previously.AS_CONFIGURED
+        )
+        teacher_last = resolve_source_column(
+            name_config, "teacher last name", default=LAST_NAME, previously=Previously.AS_CONFIGURED
+        )
+        course_title = resolve_source_column(
+            name_config, "course title", default=COURSE_TITLE, previously=Previously.AS_CONFIGURED
+        )
+        section = resolve_source_column(
+            name_config, "section letter", default=SECTION_LETTER, previously=Previously.AS_CONFIGURED
+        )
 
         def get_name(row):
             blended_id = row["Class ID"]
@@ -434,17 +453,13 @@ class ClassTransformer(BaseTransformer):
     def _assign_grades(
         self, output: pd.DataFrame, merged: pd.DataFrame, field_map: dict, context: TransformContext
     ) -> None:
-        grade_config = field_map.get("Grade", "grade")
+        # The same key the schedule split reads (`schedule_grade_column`); here
+        # only the transitional notice differs — this read always honoured it.
+        col = resolve_source_column(field_map, "Grade", default=GRADE, previously=Previously.AS_CONFIGURED)
 
         def get_grade(row):
             if row["Class ID"] in context.blended_class_metadata:
                 return ""
-            if isinstance(grade_config, dict):
-                col = grade_config.get("column", "grade").lower()
-            elif isinstance(grade_config, str):
-                col = grade_config.lower()
-            else:
-                col = ""
-            return self.grade_to_ceds(row.get(col, "")) if col else ""
+            return self.grade_to_ceds(row.get(col, ""))
 
         output["Grade"] = merged.apply(get_grade, axis=1)

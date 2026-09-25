@@ -19,7 +19,6 @@ import pandas as pd
 import pytest
 from pandas.testing import assert_frame_equal
 
-from src.etl.transformer import DataTransformer
 from src.etl.transformers.grades import (
     CEDS_GRADE_CODES,
     resolve_timetable_scope,
@@ -305,9 +304,12 @@ def corpus_raw_data() -> dict[str, pd.DataFrame]:
     }
 
 
-def _run_shape(corpus_raw_data, classes_mapping, enrollments_mapping, global_config, **overrides):
-    """Run Classes then Enrollments over the corpus with `overrides` applied."""
-    transformer = DataTransformer()
+def _run_shape(transformer, corpus_raw_data, classes_mapping, enrollments_mapping, global_config, **overrides):
+    """Run Classes then Enrollments over the corpus with `overrides` applied.
+
+    ``transformer`` is the ``published_transformer`` fixture — production's shape, with
+    the base entity mappings on the context (plan 0053 S9).
+    """
     transformer.set_school_year(2026, "08-25", "07-25")
     gc = {**global_config, **overrides}
     classes = transformer.transform(
@@ -343,9 +345,11 @@ class TestShapeDefaultUnchanged:
     """
 
     def test_every_blend_and_every_subject_class_is_present(
-        self, corpus_raw_data, classes_mapping, enrollments_mapping, global_config
+        self, published_transformer, corpus_raw_data, classes_mapping, enrollments_mapping, global_config
     ):
-        classes, enrollments = _run_shape(corpus_raw_data, classes_mapping, enrollments_mapping, global_config)
+        classes, enrollments = _run_shape(
+            published_transformer, corpus_raw_data, classes_mapping, enrollments_mapping, global_config
+        )
         ids = _class_ids(classes)
         assert len(_blended_ids(ids)) == 4, "all four same-slot blends must survive with no scope in force"
         # Base homeroom_grades is KG-07, so MTA1 (07) and MTF (03) are homeroom-side
@@ -355,7 +359,7 @@ class TestShapeDefaultUnchanged:
         assert _class_ids(enrollments) <= ids, "zero-orphan"
 
     def test_the_MODE_masked_blend_survives_on_its_ONE_timetable_side_pupil(
-        self, corpus_raw_data, classes_mapping, enrollments_mapping, global_config
+        self, published_transformer, corpus_raw_data, classes_mapping, enrollments_mapping, global_config
     ):
         """Blend "D" is named (05/06) — both MODE grades are base homeroom
         grades — but MTD1 also carries one grade-10 pupil, who IS timetable-side.
@@ -367,7 +371,9 @@ class TestShapeDefaultUnchanged:
         `MTD1_2026` and GROWN Classes.csv. Pinned here as the default-path twin
         of `TestRowSetIdentityUnderBlankGrades`.
         """
-        classes, enrollments = _run_shape(corpus_raw_data, classes_mapping, enrollments_mapping, global_config)
+        classes, enrollments = _run_shape(
+            published_transformer, corpus_raw_data, classes_mapping, enrollments_mapping, global_config
+        )
         blends = _blended_ids(_class_ids(classes))
         survivor = {cid for cid in blends if "T013" in cid}
         assert survivor, f"the 05/06 blend with a grade-10 pupil vanished: {sorted(blends)}"
@@ -381,28 +387,47 @@ class TestShape1SentinelHomeroomOnly:
     OVERRIDES = {"class_rostering_grades": "homeroom"}
 
     def test_no_subject_and_no_blended_classes_remain(
-        self, corpus_raw_data, classes_mapping, enrollments_mapping, global_config
+        self, published_transformer, corpus_raw_data, classes_mapping, enrollments_mapping, global_config
     ):
-        classes, _ = _run_shape(corpus_raw_data, classes_mapping, enrollments_mapping, global_config, **self.OVERRIDES)
+        classes, _ = _run_shape(
+            published_transformer,
+            corpus_raw_data,
+            classes_mapping,
+            enrollments_mapping,
+            global_config,
+            **self.OVERRIDES,
+        )
         ids = _class_ids(classes)
         assert _blended_ids(ids) == set()
         assert _subject_ids(ids) == set()
         assert ids, "the homeroom classes themselves must survive"
 
     def test_homeroom_classes_for_every_homeroom_grade_survive(
-        self, corpus_raw_data, classes_mapping, enrollments_mapping, global_config
+        self, published_transformer, corpus_raw_data, classes_mapping, enrollments_mapping, global_config
     ):
-        classes, _ = _run_shape(corpus_raw_data, classes_mapping, enrollments_mapping, global_config, **self.OVERRIDES)
+        classes, _ = _run_shape(
+            published_transformer,
+            corpus_raw_data,
+            classes_mapping,
+            enrollments_mapping,
+            global_config,
+            **self.OVERRIDES,
+        )
         # Base homeroom_grades = IT..07; the corpus holds grades 03, 05, 06, 07.
         assert set(classes["Grade"]) == {"03", "05", "06", "07"}
 
     def test_suppressed_blends_are_absent_from_Classes_AND_Enrollments_together(
-        self, corpus_raw_data, classes_mapping, enrollments_mapping, global_config
+        self, published_transformer, corpus_raw_data, classes_mapping, enrollments_mapping, global_config
     ):
         """Two-sided: `enrolled ⊆ classes` alone is satisfiable by emptiness, so
         the pairing is asserted with a non-empty Enrollments frame."""
         classes, enrollments = _run_shape(
-            corpus_raw_data, classes_mapping, enrollments_mapping, global_config, **self.OVERRIDES
+            published_transformer,
+            corpus_raw_data,
+            classes_mapping,
+            enrollments_mapping,
+            global_config,
+            **self.OVERRIDES,
         )
         assert not enrollments.empty, "homeroom enrollments must still exist"
         assert _blended_ids(_class_ids(classes)) == set()
@@ -416,9 +441,16 @@ class TestShape2NoHomeroomsSeniorTimetableOnly:
     OVERRIDES = {"homeroom_grades": [], "class_rostering_grades": ["10", "11", "12"]}
 
     def test_no_homeroom_classes_and_only_senior_subject_classes(
-        self, corpus_raw_data, classes_mapping, enrollments_mapping, global_config
+        self, published_transformer, corpus_raw_data, classes_mapping, enrollments_mapping, global_config
     ):
-        classes, _ = _run_shape(corpus_raw_data, classes_mapping, enrollments_mapping, global_config, **self.OVERRIDES)
+        classes, _ = _run_shape(
+            published_transformer,
+            corpus_raw_data,
+            classes_mapping,
+            enrollments_mapping,
+            global_config,
+            **self.OVERRIDES,
+        )
         ids = _class_ids(classes)
         assert not any(cid.startswith("300_HR") for cid in ids), "a homeroom class was created for an empty list"
         # MTB2 / MTC1 / MTC2 ride the two 10-11 blends, and MTD1 rides blend D —
@@ -429,8 +461,17 @@ class TestShape2NoHomeroomsSeniorTimetableOnly:
         # Nothing at all for the wholly unrostered sections.
         assert not {"MTA1_2026", "MTA2_2026", "MTD1_2026", "MTD2_2026", "MTF_2026"} & ids
 
-    def test_a_ten_eleven_blend_survives(self, corpus_raw_data, classes_mapping, enrollments_mapping, global_config):
-        classes, _ = _run_shape(corpus_raw_data, classes_mapping, enrollments_mapping, global_config, **self.OVERRIDES)
+    def test_a_ten_eleven_blend_survives(
+        self, published_transformer, corpus_raw_data, classes_mapping, enrollments_mapping, global_config
+    ):
+        classes, _ = _run_shape(
+            published_transformer,
+            corpus_raw_data,
+            classes_mapping,
+            enrollments_mapping,
+            global_config,
+            **self.OVERRIDES,
+        )
         blends = _blended_ids(_class_ids(classes))
         assert any("T012" in cid for cid in blends), f"the 10/11 blend was suppressed: {sorted(blends)}"
         assert not any("T010" in cid for cid in blends), "the 07/08 blend survived an unrostered range"
@@ -445,8 +486,15 @@ class TestShape3SplitHomeroomAndTimetable:
     }
 
     @pytest.fixture
-    def shape3(self, corpus_raw_data, classes_mapping, enrollments_mapping, global_config):
-        return _run_shape(corpus_raw_data, classes_mapping, enrollments_mapping, global_config, **self.OVERRIDES)
+    def shape3(self, published_transformer, corpus_raw_data, classes_mapping, enrollments_mapping, global_config):
+        return _run_shape(
+            published_transformer,
+            corpus_raw_data,
+            classes_mapping,
+            enrollments_mapping,
+            global_config,
+            **self.OVERRIDES,
+        )
 
     def test_homerooms_only_for_seven_to_nine(self, shape3):
         classes, _ = shape3
@@ -621,14 +669,16 @@ def _blank_grade_corpus(*, with_blank_pupil: bool) -> dict[str, pd.DataFrame]:
     }
 
 
-def _run_students_classes_enrollments(raw_data, students_mapping, classes_mapping, enrollments_mapping, global_config):
+def _run_students_classes_enrollments(
+    transformer, raw_data, students_mapping, classes_mapping, enrollments_mapping, global_config
+):
     """Students FIRST, so `active_student_ids` is genuinely populated.
 
     `filter_to_active` fails SAFE on an empty roster (it keeps everyone), so a
     run that skipped Students would prove the blend carries a *row*, not a live
-    STUDENT — and a live student is the whole claim.
+    STUDENT — and a live student is the whole claim. ``transformer`` is the
+    ``published_transformer`` fixture (production's shape — plan 0053 S9).
     """
-    transformer = DataTransformer()
     transformer.set_school_year(2026, "08-25", "07-25")
     students = transformer.transform(
         raw_data["StudentDemographicInformation.txt"], students_mapping, "Students", raw_data, global_config
@@ -658,9 +708,10 @@ class TestRowSetIdentityUnderBlankGrades:
     """
 
     def test_the_blend_SURVIVES_and_keeps_the_blank_grade_pupil(
-        self, students_mapping, classes_mapping, enrollments_mapping, global_config
+        self, published_transformer, students_mapping, classes_mapping, enrollments_mapping, global_config
     ):
         students, classes, enrollments = _run_students_classes_enrollments(
+            published_transformer,
             _blank_grade_corpus(with_blank_pupil=True),
             students_mapping,
             classes_mapping,
@@ -682,7 +733,7 @@ class TestRowSetIdentityUnderBlankGrades:
         assert _class_ids(enrollments) <= _class_ids(classes), "orphan Class IDs in Enrollments"
 
     def test_WITHOUT_that_one_row_the_very_same_blend_is_suppressed(
-        self, students_mapping, classes_mapping, enrollments_mapping, global_config
+        self, published_transformer, students_mapping, classes_mapping, enrollments_mapping, global_config
     ):
         """The differential twin. Identical corpus minus the blank-grade row:
         now every pupil really is homeroom-side, the blend really is studentless
@@ -690,6 +741,7 @@ class TestRowSetIdentityUnderBlankGrades:
         per-section class behind (nothing was on the timetable side to key one).
         """
         students, classes, enrollments = _run_students_classes_enrollments(
+            published_transformer,
             _blank_grade_corpus(with_blank_pupil=False),
             students_mapping,
             classes_mapping,
@@ -731,18 +783,21 @@ class TestCoTeacherPathsUnderTheSentinel:
         return enrollments[enrollments["User ID"] == self.CO_TEACHER]
 
     def test_path_2_emits_a_blended_co_teacher_row_with_no_scope_in_force(
-        self, coteacher_raw_data, classes_mapping, enrollments_mapping, global_config
+        self, published_transformer, coteacher_raw_data, classes_mapping, enrollments_mapping, global_config
     ):
         """The positive twin — without it the suppressed-path assertion below
         would pass against a corpus where path 2 never fired at all."""
-        _classes, enrollments = _run_shape(coteacher_raw_data, classes_mapping, enrollments_mapping, global_config)
+        _classes, enrollments = _run_shape(
+            published_transformer, coteacher_raw_data, classes_mapping, enrollments_mapping, global_config
+        )
         rows = self._co_teacher_rows(enrollments)
         assert _blended_ids(set(rows["Class ID"])), sorted(set(rows["Class ID"]))
 
     def test_path_1_still_emits_the_homeroom_teacher_row_under_the_sentinel(
-        self, coteacher_raw_data, classes_mapping, enrollments_mapping, global_config
+        self, published_transformer, coteacher_raw_data, classes_mapping, enrollments_mapping, global_config
     ):
         _classes, enrollments = _run_shape(
+            published_transformer,
             coteacher_raw_data,
             classes_mapping,
             enrollments_mapping,
@@ -752,9 +807,10 @@ class TestCoTeacherPathsUnderTheSentinel:
         assert "300_HR07_2026" in set(self._co_teacher_rows(enrollments)["Class ID"])
 
     def test_path_2_emits_NOTHING_for_a_suppressed_blend(
-        self, coteacher_raw_data, classes_mapping, enrollments_mapping, global_config
+        self, published_transformer, coteacher_raw_data, classes_mapping, enrollments_mapping, global_config
     ):
         classes, enrollments = _run_shape(
+            published_transformer,
             coteacher_raw_data,
             classes_mapping,
             enrollments_mapping,

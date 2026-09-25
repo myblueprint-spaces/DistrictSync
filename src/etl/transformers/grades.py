@@ -60,7 +60,9 @@ import pandas as pd
 # `models` is still initialising). If a later slice wants layering purity, the
 # clean move is a neutral grade-vocabulary module both layers import.
 from src.config.models import CLASS_ROSTERING_HOMEROOM_SENTINEL
+from src.etl.column_names import GRADE
 from src.etl.errors import GuardKind, SourceSchemaError, available_columns_note
+from src.etl.transformers.columns import Previously, resolve_source_column
 
 # CEDS grade-level code table (single source of truth; keys are the upper-cased,
 # trimmed source values). Unknown values map to "UG" (ungraded).
@@ -111,6 +113,21 @@ CEDS_MAPPING: dict[str, str] = {
 # `src/config/models.py`). NOTE "Other" is the one mixed-case member, so a
 # consumer must compare EXACTLY, never case-normalise.
 CEDS_GRADE_CODES: frozenset[str] = frozenset(CEDS_MAPPING.values())
+
+
+def schedule_grade_column(classes_field_map: Mapping[str, Any]) -> str:
+    """The SCHEDULE's grade column — the Classes mapping's ``Grade`` key (plan 0053 S9).
+
+    ONE key for every reader that classifies timetable rows by grade: Classes'
+    subject split, blended detection's two section→grade maps, and Enrollments'
+    subject split (through ``TransformContext.get_schedule_grade_col``, which reads
+    the same Classes mapping). They must classify the SAME rows — a class the split
+    keeps with no enrollment the other split keeps is an orphan — so none of them
+    may spell the column on its own. Before S9 each read the literal ``"grade"``,
+    while that same key already named the column the subject class ``Grade`` was
+    read from.
+    """
+    return resolve_source_column(classes_field_map, "Grade", default=GRADE, previously=Previously.DEFAULT)
 
 
 def grade_to_ceds(grade_value: Any) -> str:
@@ -361,6 +378,7 @@ def filter_to_grade_scope(
     scope: set[str],
     *,
     caller: str,
+    column_label: str | None = None,
 ) -> pd.DataFrame:
     """Keep the rows whose CEDS grade is IN ``scope`` — an inclusion filter.
 
@@ -388,19 +406,23 @@ def filter_to_grade_scope(
     - ``grade_col`` absent ⇒ :class:`~src.etl.errors.SourceSchemaError` (guard
       ``PII_SCOPE``, entity = ``caller``) naming the column and the COUNT of
       source columns — never their names (plan 0053 S1; an observed header can
-      be a pupil). Before S1 this was a ``KeyError`` listing every header;
+      be a pupil). The column is named as ``column_label`` — the CONFIG's
+      spelling (``columns.source_column_label``, plan 0053 S9), so the S7 label
+      check can recognise it — or as ``grade_col`` when no label is passed.
+      Before S1 this was a ``KeyError`` listing every header;
       :func:`split_by_homeroom_grades` still raises pandas' own ``KeyError``
       (§5 site #5, plan 0053 S10);
     - the temporary column name already present ⇒ ``ValueError`` rather than a
       silent overwrite-and-drop of a real source column.
     """
     if grade_col not in df.columns:
+        named = column_label or grade_col
         raise SourceSchemaError(
-            f"[{caller}] grade column '{grade_col}' not found in the source "
+            f"[{caller}] grade column '{named}' not found in the source "
             f"({available_columns_note(len(df.columns))}), so the student_rostering_grades scope "
             f"cannot be applied.",
             entity=caller,
-            columns=(grade_col,),
+            columns=(named,),
             guard=GuardKind.PII_SCOPE,
         )
     if _SCOPE_CEDS_COLUMN in df.columns:

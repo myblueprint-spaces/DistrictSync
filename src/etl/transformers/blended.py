@@ -23,13 +23,16 @@ from src.etl.column_names import (
     DISTRICT_COURSE_CODE,
     MASTER_TIMETABLE_ID,
     SCHOOL_NUMBER,
+    TEACHER_NAME,
 )
+from src.etl.transformers.columns import Previously, resolve_source_column
 from src.etl.transformers.context import TransformContext
 from src.etl.transformers.course_codes import filter_excluded_course_codes, resolve_course_code_column
 from src.etl.transformers.grades import (
     ceds_grade_series,
     grade_to_ceds,
     resolve_timetable_scope,
+    schedule_grade_column,
     timetable_rostered_grades,
 )
 from src.etl.transformers.ids import normalize_id_series
@@ -39,14 +42,31 @@ from src.utils.helpers import normalize_columns
 
 logger = logging.getLogger(__name__)
 
-#: The session-key components that identify a blend's TIME SLOT, in key order.
+#: The session-key components that identify a blend's TIME SLOT, in key order:
+#: the Classes ``source_columns`` role → the MyEd BC column it defaults to (plan 0053
+#: S9, §5 #39 — a district whose export spells one differently sets that role).
 #:
-#: Read by BOTH :meth:`BlendedClassDetector._add_session_key` (which prefixes
-#: school + teacher) and :meth:`BlendedClassDetector._block_label`, so a
-#: component added to the key automatically reaches the class NAME and the two
-#: cannot drift. School and teacher are deliberately NOT here: they are
-#: constant within a blend and already carried by the Class ID.
-SESSION_TIME_COMPONENTS = ("term", "semester", "day", "period")
+#: Resolved ONCE per detection (:func:`session_time_components`) and read by BOTH
+#: :meth:`BlendedClassDetector._add_session_key` (which prefixes school + teacher)
+#: and :meth:`BlendedClassDetector._block_label`, so a component added to the key
+#: automatically reaches the class NAME and the two cannot drift. School and
+#: teacher are deliberately NOT here: they are constant within a blend and already
+#: carried by the Class ID.
+SESSION_TIME_COMPONENTS: dict[str, str] = {
+    "session_term": "term",
+    "session_semester": "semester",
+    "session_day": "day",
+    "session_period": "period",
+}
+
+
+def session_time_components(source_columns: dict[str, Any]) -> tuple[str, ...]:
+    """The resolved time-slot columns, in key order, from the Classes ``source_columns``."""
+    return tuple(
+        resolve_source_column(source_columns, role, default=default, previously=Previously.DEFAULT)
+        for role, default in SESSION_TIME_COMPONENTS.items()
+    )
+
 
 #: Smallest course-title budget :meth:`BlendedClassDetector.create_name` will
 #: hand to :func:`~src.etl.transformers.naming.truncate_name`.
@@ -103,14 +123,18 @@ class BlendedClassDetector:
 
         field_map = mapping.get("field_map", {})
         teacher_id_col = context.get_teacher_id_col()
+        # The SAME schedule grade column Classes' and Enrollments' subject splits
+        # read — the enrollable map below must classify exactly their rows.
+        grade_col = schedule_grade_column(field_map)
+        components = session_time_components(mapping.get("source_columns") or {})
 
         loaded = self._load_reference_frames(mapping, context)
         if loaded is None:
             return BlendedDetection.empty()
         schedule_df, course_df = loaded
 
-        mtid_to_grade = self._build_grade_map(schedule_df)
-        mtid_to_enrollable_grades = self._build_enrollable_grade_map(schedule_df)
+        mtid_to_grade = self._build_grade_map(schedule_df, grade_col=grade_col)
+        mtid_to_enrollable_grades = self._build_enrollable_grade_map(schedule_df, grade_col=grade_col)
         course_title_map = self._build_course_title_map(course_df)
         teacher_name_map = self._build_teacher_name_map(schedule_df, field_map, teacher_id_col)
 
@@ -122,7 +146,7 @@ class BlendedClassDetector:
         if working is None:
             return BlendedDetection.empty()
 
-        working = self._add_session_key(working, teacher_id_col)
+        working = self._add_session_key(working, teacher_id_col, components=components)
         return self._register_blends(
             working,
             field_map,
@@ -132,6 +156,7 @@ class BlendedClassDetector:
             course_title_map,
             teacher_name_map,
             context,
+            components=components,
         )
 
     # ------------------------------------------------------------------
@@ -208,14 +233,16 @@ class BlendedClassDetector:
         return working
 
     @staticmethod
-    def _add_session_key(working: pd.DataFrame, teacher_id_col: str) -> pd.DataFrame:
+    def _add_session_key(working: pd.DataFrame, teacher_id_col: str, *, components: tuple[str, ...]) -> pd.DataFrame:
         """Join the available session components into a ``session_key`` column.
 
         Sections sharing a session_key (school + teacher + time slot) are
         candidates for blending. Only components present in the frame
-        participate; they are stringified with NaN → "" first.
+        participate; they are stringified with NaN → "" first. ``components`` is
+        :func:`session_time_components` — keyword-only with no default, because
+        the key decides which sections become ONE class.
         """
-        session_components = [SCHOOL_NUMBER, teacher_id_col, *SESSION_TIME_COMPONENTS]
+        session_components = [SCHOOL_NUMBER, teacher_id_col, *components]
         available = [col for col in session_components if col in working.columns]
 
         for col in available:
@@ -233,6 +260,8 @@ class BlendedClassDetector:
         course_title_map: dict[str, str],
         teacher_name_map: dict[str, str],
         context: TransformContext,
+        *,
+        components: tuple[str, ...],
     ) -> BlendedDetection:
         """Validate each multi-section session and collect it into the returned maps.
 
@@ -350,6 +379,7 @@ class BlendedClassDetector:
                 context,
                 course_code_col=course_code_col,
                 teacher_name=self._session_teacher_name(group, teacher_id_col, teacher_name_map),
+                session_components=components,
             )
 
             result.metadata[blended_id] = {
@@ -479,6 +509,7 @@ class BlendedClassDetector:
         *,
         course_code_col: Optional[str],
         teacher_name: str,
+        session_components: tuple[str, ...],
     ) -> str:
         """Build the blend's display name from the parts the frame actually has.
 
@@ -506,9 +537,13 @@ class BlendedClassDetector:
         title on the partner's class list. Keyword-only with no default so no
         caller can silently re-acquire the unguarded lookup this replaced (it
         raised ``KeyError`` and killed the run at the Classes entity).
+
+        ``session_components`` is :func:`session_time_components` — the SAME
+        tuple the session key was built from, so the block label names exactly
+        the slot the blend was grouped on.
         """
         teacher = teacher_name.strip() or self._teacher_from_frame(session_group, field_map)
-        block = self._block_label(session_group)
+        block = self._block_label(session_group, session_components)
 
         head_parts = [teacher] if teacher else []
         tail_parts = []
@@ -557,18 +592,28 @@ class BlendedClassDetector:
         (where it is the same fact) and a district whose class-info export
         happens to include one.
         """
-        name_config = field_map.get("Name", {})
-        if not isinstance(name_config, dict):
-            return ""
-        # Spaced YAML authoring key (see ClassTransformer._assign_class_names).
-        teacher_col = name_config.get("teacher last name", "teacher name").lower()
-        if teacher_col not in session_group.columns:
+        teacher_col = BlendedClassDetector._teacher_name_column(field_map)
+        if teacher_col is None or teacher_col not in session_group.columns:
             return ""
         value = session_group[teacher_col].iloc[0]
         return str(value).strip() if pd.notna(value) else ""
 
     @staticmethod
-    def _block_label(session_group: pd.DataFrame) -> str:
+    def _teacher_name_column(field_map: dict[str, Any]) -> Optional[str]:
+        """The schedule's teacher-name column from the Classes ``Name`` block, or ``None``.
+
+        The spaced YAML authoring key (see ``ClassTransformer._assign_class_names``),
+        through the one resolver; ``None`` when ``Name`` is not a block at all.
+        """
+        name_config = field_map.get("Name", {})
+        if not isinstance(name_config, dict):
+            return None
+        return resolve_source_column(
+            name_config, "teacher last name", default=TEACHER_NAME, previously=Previously.AS_CONFIGURED
+        )
+
+    @staticmethod
+    def _block_label(session_group: pd.DataFrame, components: tuple[str, ...]) -> str:
         """The blend's time slot as a space-joined string, or ``""``.
 
         Built from the components PRESENT in the frame — ``_add_session_key``
@@ -583,7 +628,7 @@ class BlendedClassDetector:
         would assert an order the data does not guarantee. The ``Block`` prefix
         that :meth:`create_name` wraps this in carries the meaning instead.
         """
-        available = [col for col in SESSION_TIME_COMPONENTS if col in session_group.columns]
+        available = [col for col in components if col in session_group.columns]
         values = (str(session_group[col].iloc[0]).strip() for col in available)
         return " ".join(value for value in values if value)
 
@@ -608,11 +653,8 @@ class BlendedClassDetector:
 
         Missing columns → ``{}``; the segment is then simply omitted.
         """
-        name_config = field_map.get("Name", {})
-        if not isinstance(name_config, dict):
-            return {}
-        teacher_col = name_config.get("teacher last name", "teacher name").lower()
-        if teacher_col not in schedule_df.columns or teacher_id_col not in schedule_df.columns:
+        teacher_col = BlendedClassDetector._teacher_name_column(field_map)
+        if teacher_col is None or teacher_col not in schedule_df.columns or teacher_id_col not in schedule_df.columns:
             return {}
 
         pairs = schedule_df[[teacher_id_col, teacher_col]].dropna().drop_duplicates(subset=[teacher_id_col])
@@ -640,22 +682,23 @@ class BlendedClassDetector:
     # Reference lookup tables
     # ------------------------------------------------------------------
     @staticmethod
-    def _build_grade_map(schedule_df: pd.DataFrame) -> dict[str, str]:
+    def _build_grade_map(schedule_df: pd.DataFrame, *, grade_col: str) -> dict[str, str]:
         """Map each Master Timetable ID to its most common grade.
 
         Uses mode (most frequent grade) to handle cases where the same
         section has students from multiple grades in the schedule data.
+        ``grade_col`` is :func:`~src.etl.transformers.grades.schedule_grade_column`.
         """
-        if MASTER_TIMETABLE_ID in schedule_df.columns and "grade" in schedule_df.columns:
-            pairs = schedule_df[[MASTER_TIMETABLE_ID, "grade"]].dropna()
+        if MASTER_TIMETABLE_ID in schedule_df.columns and grade_col in schedule_df.columns:
+            pairs = schedule_df[[MASTER_TIMETABLE_ID, grade_col]].dropna()
             # Use most frequent grade per MT ID (mode) to handle multi-grade enrollment
-            mode = pairs.groupby(MASTER_TIMETABLE_ID)["grade"].agg(lambda x: x.mode().iloc[0])
+            mode = pairs.groupby(MASTER_TIMETABLE_ID)[grade_col].agg(lambda x: x.mode().iloc[0])
             return mode.to_dict()  # type: ignore[return-value]
-        logger.warning(f"Missing '{MASTER_TIMETABLE_ID}' or 'grade' in student schedule.")
+        logger.warning(f"Missing '{MASTER_TIMETABLE_ID}' or '{grade_col}' in student schedule.")
         return {}
 
     @staticmethod
-    def _build_enrollable_grade_map(schedule_df: pd.DataFrame) -> dict[str, set[str]]:
+    def _build_enrollable_grade_map(schedule_df: pd.DataFrame, *, grade_col: str) -> dict[str, set[str]]:
         """Map each Master Timetable ID to EVERY CEDS grade its schedule rows carry.
 
         A SIBLING OF ``split_by_homeroom_grades``, NOT of :meth:`_build_grade_map`.
@@ -677,14 +720,18 @@ class BlendedClassDetector:
         bounded by sections × distinct grades rather than over the raw schedule
         (hundreds of thousands of rows for the largest district).
 
+        ``grade_col`` is :func:`~src.etl.transformers.grades.schedule_grade_column`
+        — the column ``split_by_homeroom_grades`` is handed on the subject side,
+        which the row-set identity requires.
+
         Returns ``{}`` when the columns are absent, WITHOUT a second warning:
         :meth:`_build_grade_map` has already warned about the same two columns
         on the same frame, and with an empty mode map ``validate`` rejects every
         session, so the gate this feeds is unreachable.
         """
-        if MASTER_TIMETABLE_ID in schedule_df.columns and "grade" in schedule_df.columns:
-            pairs = schedule_df[[MASTER_TIMETABLE_ID, "grade"]].drop_duplicates()
-            per_row = ceds_grade_series(pairs["grade"])
+        if MASTER_TIMETABLE_ID in schedule_df.columns and grade_col in schedule_df.columns:
+            pairs = schedule_df[[MASTER_TIMETABLE_ID, grade_col]].drop_duplicates()
+            per_row = ceds_grade_series(pairs[grade_col])
             return {mt_id: set(grades) for mt_id, grades in per_row.groupby(pairs[MASTER_TIMETABLE_ID])}
         return {}
 

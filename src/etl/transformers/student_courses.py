@@ -31,6 +31,7 @@ import pandas as pd
 
 from src.etl.column_names import SCHOOL_NUMBER
 from src.etl.transformers.base import BaseTransformer
+from src.etl.transformers.columns import Previously, resolve_source_column
 from src.etl.transformers.context import TransformContext
 from src.etl.transformers.course_codes import course_grade, strip_trailing_hyphens
 from src.utils.helpers import describe_value_for_log as _describe_value
@@ -80,8 +81,9 @@ class StudentCoursesTransformer(BaseTransformer):
     # district config with the MyEd BC literals as defaults (bundled configs
     # declare no overrides -> byte-identical output).
     #
-    # Output-keyed reads resolve through the entity field_map (the family.py
-    # pattern): logical role -> (field_map output key, MyEd BC default column).
+    # Output-keyed reads resolve through the entity field_map (the one
+    # resolver, columns.resolve_source_column): logical role -> (field_map
+    # output key, MyEd BC default column).
     # One resolution per role is applied across all three source files
     # (history / selection / course-info), matching MyEd BC's shared GDE
     # column vocabulary.
@@ -151,28 +153,20 @@ class StudentCoursesTransformer(BaseTransformer):
 
         Output-keyed columns resolve through the entity ``field_map`` — a plain
         string value or a ``{column: ...}`` dict overrides the MyEd BC default
-        (the family.py pattern; the base config's ``{value: ""}`` placeholders
-        keep the defaults). Auxiliary inputs with no output counterpart resolve
-        through the entity-level ``source_columns`` block. All resolved names
-        are lower-cased to match ``normalize_columns`` output.
+        (the base config's ``{value: ""}`` placeholders keep the defaults).
+        Auxiliary inputs with no output counterpart resolve through the
+        entity-level ``source_columns`` block. Both go through the one resolver,
+        :func:`~src.etl.transformers.columns.resolve_source_column`, whose
+        answers are normalised to match ``normalize_columns`` output.
         """
         field_map = mapping.get("field_map", {})
         resolved: dict[str, str] = {}
         for role, (fm_key, default) in cls.FIELD_MAP_SOURCE_DEFAULTS.items():
-            resolved[role] = cls._field_map_source(field_map, fm_key, default)
+            resolved[role] = resolve_source_column(field_map, fm_key, default=default, previously=Previously.UNCHANGED)
         aux = mapping.get("source_columns") or {}
         for role, default in cls.AUX_SOURCE_DEFAULTS.items():
-            resolved[role] = str(aux.get(role) or default).strip().lower() or default
+            resolved[role] = resolve_source_column(aux, role, default=default, previously=Previously.UNCHANGED)
         return resolved
-
-    @staticmethod
-    def _field_map_source(field_map: dict[str, Any], key: str, default: str) -> str:
-        config = field_map.get(key, default)
-        if isinstance(config, dict):
-            return str(config.get("column") or default).strip().lower() or default
-        if isinstance(config, str) and config.strip():
-            return config.strip().lower()
-        return default
 
     # ------------------------------------------------------------------
     # Source loading

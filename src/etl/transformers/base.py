@@ -42,6 +42,7 @@ from src.etl.transformers import grades as _grades
 from src.etl.transformers import ids as _ids
 from src.etl.transformers import naming as _naming
 from src.etl.transformers import sources as _sources
+from src.etl.transformers.columns import Previously, resolve_source_column
 from src.etl.transformers.context import TransformContext
 from src.utils.helpers import describe_exception_for_log as _describe_exception
 from src.utils.helpers import describe_value_for_log as _describe_value
@@ -521,26 +522,9 @@ class BaseTransformer(ABC):
         return _sources.get_source_file(context, source_config, role)
 
     # -----------------------------------------------------------------------
-    # Field-map resolution + date resolution (per-entity contract)
+    # Date resolution (per-entity contract). Source-COLUMN resolution is
+    # ``columns.resolve_source_column`` — the one resolver (plan 0053 S9).
     # -----------------------------------------------------------------------
-    @staticmethod
-    def resolve_column(field_map: dict[str, Any], key: str, default: str) -> str:
-        """Resolve a source-column name from a field_map entry, with a default.
-
-        The shared spelling of the repeated resolve-with-default idiom
-        (Configurable Columns rule): a dict entry contributes its ``column``
-        value (lower-cased, ``default`` when the key is absent); ANY other
-        shape — missing entry, bare string, null sentinel — yields ``default``.
-        NOTE: a bare string is deliberately NOT honored here, matching the
-        legacy inline sites this replaces (Class ID / Grade / School ID); use
-        the entity's own resolver where a bare string must win (e.g.
-        ``FamilyTransformer._student_number_col``).
-        """
-        config = field_map.get(key, {})
-        if isinstance(config, dict):
-            return str(config.get("column", default)).lower()
-        return default
-
     def resolve_date(self, field_map: dict[str, Any], field_name: str, context: TransformContext) -> str:
         """Resolve a date field from config — either a fixed value or academic year date.
 
@@ -566,7 +550,9 @@ class BaseTransformer(ABC):
         Shared by ClassTransformer and EnrollmentTransformer to ensure IDs
         are computed identically across Classes and Enrollments output.
         """
-        mt_id_col = self.resolve_column(field_map, "Class ID", MASTER_TIMETABLE_ID)
+        mt_id_col = resolve_source_column(
+            field_map, "Class ID", default=MASTER_TIMETABLE_ID, previously=Previously.COLUMN_KEY_ONLY
+        )
 
         if mt_id_col in df.columns:
             df[mt_id_col] = _ids.normalize_id_series(df[mt_id_col])

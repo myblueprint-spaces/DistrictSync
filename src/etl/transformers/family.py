@@ -5,7 +5,9 @@ from typing import Any
 
 import pandas as pd
 
+from src.etl.column_names import STUDENT_NUMBER
 from src.etl.transformers.base import BaseTransformer
+from src.etl.transformers.columns import Previously, resolve_source_column
 from src.etl.transformers.context import TransformContext
 from src.etl.transformers.ids import clean_invalid_ids
 
@@ -30,7 +32,10 @@ class FamilyTransformer(BaseTransformer):
         # order); when the roster is unavailable (e.g. a tier without the
         # Students entity), filter_to_active warns and returns the frame
         # unchanged — the same convention as Enrollments.
-        working = self.filter_to_active(working, self._student_number_col(field_map), context, caller="Family")
+        student_col = resolve_source_column(
+            field_map, "Student User ID", default=STUDENT_NUMBER, previously=Previously.AS_CONFIGURED
+        )
+        working = self.filter_to_active(working, student_col, context, caller="Family")
         result = pd.DataFrame()
         result = self.apply_field_map(working, result, field_map, "Family", context)
         # Last, on the OUTPUT frame: a contact with no email cannot be imported.
@@ -74,15 +79,3 @@ class FamilyTransformer(BaseTransformer):
                 f"SpacesEDU does not import a family contact without one."
             )
         return kept
-
-    @staticmethod
-    def _student_number_col(field_map: dict[str, Any]) -> str:
-        """Source student-number column, resolved from the entity field_map.
-
-        Configurable Columns rule: the ``Student User ID`` output maps from a
-        district-configurable source column (default MyEd BC "Student Number").
-        """
-        config = field_map.get("Student User ID", "student number")
-        if isinstance(config, dict):
-            return str(config.get("column", "student number")).strip().lower()
-        return str(config).strip().lower()

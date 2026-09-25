@@ -35,6 +35,7 @@ import pandas as pd
 
 from src.etl.column_names import STAFF_SOURCEID, STAFF_STATUS
 from src.etl.transformers.base import BaseTransformer
+from src.etl.transformers.columns import Previously, resolve_source_column
 from src.etl.transformers.context import TransformContext
 from src.etl.transformers.ids import is_blank_series, normalize_id_series
 
@@ -313,14 +314,12 @@ class StaffTransformer(BaseTransformer):
         The status column has no output counterpart, so it resolves through the
         entity-level ``source_columns`` block rather than the field_map — the
         ``student_courses.py`` auxiliary-input pattern. Defaults to the canonical
-        MyEd BC spelling (:data:`~src.etl.column_names.STAFF_STATUS`); a blank or
-        non-string override falls back to it rather than resolving to nothing.
+        MyEd BC spelling (:data:`~src.etl.column_names.STAFF_STATUS`); a blank
+        override falls back to it rather than resolving to nothing — the one
+        resolver's policy (:func:`~src.etl.transformers.columns.resolve_source_column`).
         """
         aux = mapping.get("source_columns") or {}
-        override = aux.get("staff_status")
-        if override is None:
-            return STAFF_STATUS
-        return str(override).strip().lower() or STAFF_STATUS
+        return resolve_source_column(aux, "staff_status", default=STAFF_STATUS, previously=Previously.UNCHANGED)
 
     def _merge_roster(self, working: pd.DataFrame, mapping: dict[str, Any], context: TransformContext) -> pd.DataFrame:
         """Merge staff with roster to add 'staff sourceid' when available."""
