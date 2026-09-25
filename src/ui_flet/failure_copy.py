@@ -20,6 +20,10 @@ Two closed vocabularies are humanised here:
   and :func:`partial_copy`, the PARTIAL verdict's headline + detail for a run that
   completed without one or more of its files.
 
+**Which outcomes warn** is decided here too, once: :func:`OUTCOME_TIER` (entity, kind, reason)
+→ :class:`Verdict`, and :func:`warning_outcomes`, the PARTIAL predicate Home, Run History and
+Convert all select through (plan 0053 S8, owner decision D5).
+
 **PII floor (§8, P9).** Nothing here interpolates a path, a cell value, exception text or an
 OBSERVED header. The variable text is an entity's phrase, taken from the authored
 ``humanize.SIZE_NOUNS`` vocabulary — an entity key that vocabulary does not know (a
@@ -37,12 +41,12 @@ maps moved into ``humanize`` — pinned).
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from types import MappingProxyType
 from typing import Final
 
 from src.etl.errors import RunErrorCategory, classify_error_category
-from src.etl.outcomes import EntityOutcome, OutcomeKind, OutcomeReason
+from src.etl.outcomes import MAY_BE_EMPTY, VALID_REASONS, EntityOutcome, OutcomeKind, OutcomeReason
 from src.ui_flet.humanize import SIZE_NOUNS, pluralize
 from src.ui_flet.verdict import Verdict
 
@@ -177,18 +181,118 @@ def outcome_sentence(outcome: EntityOutcome, *, delivered: bool) -> str:
     return _OUTCOME_TEMPLATES[(outcome.kind, outcome.reason)].format(**words)
 
 
-# How much one outcome, on its own, says about the run it belongs to. S3's rule is the kind
-# alone: a FAILED entity in a completed run is the PARTIAL WARNING (it pairs exactly with
-# `outcomes.failed_entities` — pinned); EMPTY is per-entity skip-on-empty, not a fault; NOT_RUN
-# only exists inside a run that failed. Plan 0053 S8 refines EMPTY by entity and reason (D5).
-OUTCOME_TIER: Final[Mapping[OutcomeKind, Verdict]] = MappingProxyType(
+# --------------------------------------------------------------------------- #
+# Which outcomes warn (plan 0053 S8, owner decision D5)                        #
+# --------------------------------------------------------------------------- #
+
+# The EMPTY reasons that mean "there was nothing to send" — the only ones a `MAY_BE_EMPTY`
+# entity may carry without a warning. The other two EMPTY reasons say the export HAD rows and
+# none survived (every row filtered out, or a mapped column missing): a standing WARNING on any
+# entity, because that is a district losing a file every night without anything having failed.
+_NOTHING_TO_SEND: Final[frozenset[OutcomeReason]] = frozenset(
+    {OutcomeReason.SOURCE_FILES_EMPTY, OutcomeReason.NO_SOURCE_FILES_DECLARED}
+)
+
+
+def OUTCOME_TIER(entity: object, kind: OutcomeKind, reason: OutcomeReason) -> Verdict:
+    """How much ONE outcome says about the run it belongs to — TOTAL over valid triples.
+
+    A function of the entity AND the cause, not the kind alone (owner decision D5, plan 0053
+    S8; ``docs/developer/failure-policy.md`` §7, the ``outcome-tier`` table, pinned):
+
+    * **BUILT** → HEALTHY. A BUILT entity the source observation found a mapped column
+      missing from (``missing_mapped``) still built rows; that is a log + record fact, never
+      an amber (SD74 and Unity measured BUILT with a mapped column absent).
+    * **FAILED** → WARNING, on any entity (S3 — the bulkhead left it out of a completed run).
+    * **EMPTY** → WARNING on any entity for ``no_rows_after_transform`` and
+      ``missing_source_column`` (the export had rows; none could be used). For
+      ``source_files_empty`` / ``no_source_files_declared`` ("nothing to send") → HEALTHY
+      ONLY for an entity in :data:`~src.etl.outcomes.MAY_BE_EMPTY`, WARNING for every other
+      — an entity the district enabled whose export never arrives is a standing warning,
+      and the remedy is a config change, never a quieter tier.
+    * **NOT_RUN** → FAILED. It is only ever recorded inside a run that failed (every entity
+      after a raising CRITICAL one, or all of them on a failure before the loop), whose
+      FAILED status outranks PARTIAL anyway; FAILED says what such an outcome means.
+
+    ``entity`` is compared by membership only (an unknown key is simply not a member, so it
+    warns — never quieter by omission). A reason invalid for its ``kind`` raises
+    ``ValueError`` — an :class:`EntityOutcome` can never hold one, so only a caller bug
+    reaches it. Named in capitals because it is the plan's Naming-table name, cited by the
+    standard and the parity tests; it is a pure function, never a table.
+    """
+    if reason not in VALID_REASONS.get(kind, frozenset()):
+        raise ValueError(f"{reason!r} is not a valid reason for {kind!r}")
+    if kind is OutcomeKind.BUILT:
+        return Verdict.HEALTHY
+    if kind is OutcomeKind.FAILED:
+        return Verdict.WARNING
+    if kind is OutcomeKind.NOT_RUN:
+        return Verdict.FAILED
+    # kind is EMPTY
+    if reason in _NOTHING_TO_SEND and isinstance(entity, str) and entity in MAY_BE_EMPTY:
+        return Verdict.HEALTHY
+    return Verdict.WARNING
+
+
+def warning_outcomes(outcomes: Iterable[EntityOutcome]) -> tuple[EntityOutcome, ...]:
+    """The outcomes whose tier is WARNING — the ONE PARTIAL predicate (P7, D5), configured order.
+
+    Home and Run History (``home_status.left_out_outcomes``) and Convert
+    (``convert_result.summarize``) all select through this, so a run is PARTIAL on one
+    surface exactly when it is on the others. A superset of
+    :func:`~src.etl.outcomes.failed_entities` (every FAILED outcome warns — pinned); since S8
+    it also holds each EMPTY outcome :func:`OUTCOME_TIER` rates WARNING. Only a
+    success-shaped record reaches the question: a failed one is FAILED first.
+    """
+    return tuple(
+        outcome for outcome in outcomes if OUTCOME_TIER(outcome.entity, outcome.kind, outcome.reason) is Verdict.WARNING
+    )
+
+
+# The next step a PARTIAL detail gives when its ONE warning outcome is an EMPTY one (plan 0053
+# S8). The EMPTY sentences above state what happened and no next step (they were written while
+# EMPTY was never surfaced); a WARNING band ends with one. One per EMPTY reason — TOTAL over
+# `VALID_REASONS[EMPTY]` (pinned) — each saying what would change it, since the warning repeats
+# every sync until something does. No slot, no path, no folder name.
+_EMPTY_NEXT_STEP: Final[Mapping[OutcomeReason, str]] = MappingProxyType(
     {
-        OutcomeKind.BUILT: Verdict.HEALTHY,
-        OutcomeKind.EMPTY: Verdict.HEALTHY,
-        OutcomeKind.FAILED: Verdict.WARNING,
-        OutcomeKind.NOT_RUN: Verdict.FAILED,
+        OutcomeReason.NO_SOURCE_FILES_DECLARED: (
+            "If this file should be part of your sync, the Help page has our support contact."
+        ),
+        OutcomeReason.SOURCE_FILES_EMPTY: (
+            "Re-export that file and the next sync picks it up automatically — if it keeps happening, "
+            "the Help page has our support contact."
+        ),
+        OutcomeReason.NO_ROWS_AFTER_TRANSFORM: (
+            "Check that export — if it keeps happening, the Help page has our support contact."
+        ),
+        OutcomeReason.MISSING_SOURCE_COLUMN: (
+            "Re-export that file with the column, or — if your export names it differently — the Help "
+            "page has our support contact."
+        ),
     }
 )
+
+
+# The EMPTY reasons a re-export can cure. The multi-entity PARTIAL detail says "Re-export
+# those files" only when EVERY left-out outcome is FAILED or EMPTY for one of these (plan 0053
+# S8): an undeclared source or a file whose rows were all filtered out is not fixed by
+# re-exporting, so a mix falls back to the neutral step — the same distinction
+# `_EMPTY_NEXT_STEP` draws for one entity.
+_REEXPORT_CURES: Final[frozenset[OutcomeReason]] = frozenset(
+    {OutcomeReason.SOURCE_FILES_EMPTY, OutcomeReason.MISSING_SOURCE_COLUMN}
+)
+_MULTI_REEXPORT_STEP: Final = (
+    "Re-export those files and the next sync picks them up automatically — if it keeps happening, "
+    "the Help page has our support contact."
+)
+_MULTI_NEUTRAL_STEP: Final = "If these files should be part of your sync, the Help page has our support contact."
+
+
+def _reexport_cures(outcome: EntityOutcome) -> bool:
+    return outcome.kind is OutcomeKind.FAILED or (
+        outcome.kind is OutcomeKind.EMPTY and outcome.reason in _REEXPORT_CURES
+    )
 
 
 def _joined(phrases: Sequence[str]) -> str:
@@ -200,19 +304,26 @@ def _joined(phrases: Sequence[str]) -> str:
 def partial_copy(failed: Sequence[EntityOutcome], *, delivered: bool) -> tuple[str, str]:
     """The PARTIAL verdict's ``(headline, detail)``: a completed run left files out.
 
-    ``failed`` is :func:`~src.etl.outcomes.failed_entities` of the run's outcomes and must
-    not be empty (a run with nothing left out is not partial — asking is a caller bug, so it
-    raises). One entity → its own :func:`outcome_sentence`; several → one sentence naming
-    them all (unknown keys counted as "other files" — or, when nothing known precedes the
-    count, as "N of your files" — never echoed). Home, Run History and Convert render
-    exactly this pair.
+    ``failed`` is :func:`warning_outcomes` of the run's outcomes (FAILED, and since plan
+    0053 S8 an EMPTY outcome that warns) and must not be empty (a run with nothing left out
+    is not partial — asking is a caller bug, so it raises). One entity → its own
+    :func:`outcome_sentence` — for an EMPTY one followed by the "everything else" sentence
+    and that reason's next step, since an EMPTY sentence states no next step of its own;
+    several → one sentence naming them all (unknown keys counted as "other files" — or, when
+    nothing known precedes the count, as "N of your files" — never echoed) and ending "Re-export
+    those files" only when a re-export can cure every one of them, else a neutral step. Home, Run
+    History and Convert render exactly this pair.
     """
     if not failed:
         raise ValueError("partial_copy needs at least one entity that was left out")
     phrase = entity_phrase(failed[0].entity) if len(failed) == 1 else f"{len(failed)} of your files"
     headline = f"Your roster synced without {phrase}" if delivered else f"Your sync completed without {phrase}"
     if len(failed) == 1:
-        return headline, outcome_sentence(failed[0], delivered=delivered)
+        only = failed[0]
+        sentence = outcome_sentence(only, delivered=delivered)
+        if only.kind is OutcomeKind.EMPTY:
+            sentence = f"{sentence} {_everything_else(delivered=delivered)} {_EMPTY_NEXT_STEP[only.reason]}"
+        return headline, sentence
 
     known: list[str] = []
     for outcome in failed:
@@ -225,10 +336,9 @@ def partial_copy(failed: Sequence[EntityOutcome], *, delivered: bool) -> tuple[s
         # Nothing named precedes the count, so "other" would refer to nothing: every key was
         # unknown (a hand-dropped YAML's inventions) and none may be echoed (P9).
         known.append(f"{unknown} of your files")
+    step = _MULTI_REEXPORT_STEP if all(_reexport_cures(outcome) for outcome in failed) else _MULTI_NEUTRAL_STEP
     detail = (
-        f"{_capitalized(_joined(known))} were left out of this sync. {_everything_else(delivered=delivered)} "
-        "Re-export those files and the next sync picks them up automatically — if it keeps happening, "
-        "the Help page has our support contact."
+        f"{_capitalized(_joined(known))} were left out of this sync. {_everything_else(delivered=delivered)} {step}"
     )
     return headline, detail
 

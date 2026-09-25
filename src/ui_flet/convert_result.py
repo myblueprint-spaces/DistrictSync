@@ -31,7 +31,8 @@ CATEGORY (no input, no output, an empty student list, an unusable output folder)
 words from ``failure_copy.FAILED_CATEGORY_COPY`` — the table Home and Run History read — and a
 raised failure's ``on_error`` card is ``failure_copy.error_card_copy(exc)``, which replaced the
 retired ``convert_error_copy`` (it sent the admin to the input folder whatever went wrong). A
-success-shaped result whose outcomes show a FAILED entity is the PARTIAL WARNING, worded by
+success-shaped result whose outcomes show an entity that warns (``failure_copy.warning_outcomes``:
+FAILED, or since plan 0053 S8 an EMPTY outcome that warns) is the PARTIAL WARNING, worded by
 ``failure_copy.partial_copy`` exactly as Home words it.
 """
 
@@ -41,8 +42,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from src.etl.errors import RunErrorCategory
-from src.etl.outcomes import EntityOutcome, failed_entities
-from src.ui_flet.failure_copy import data_warnings_clause, failed_copy, partial_copy
+from src.etl.outcomes import EntityOutcome
+from src.ui_flet.failure_copy import data_warnings_clause, failed_copy, partial_copy, warning_outcomes
 from src.ui_flet.humanize import AnomalyVariant, friendly_anomaly_detail, pluralize
 from src.ui_flet.verdict import Verdict
 
@@ -85,8 +86,8 @@ class ConvertResult:
             output-folder pre-flight refused before one was built, or the result is a
             delivery from disk (a delivery is not a build). REQUIRED keyword-only with
             no default, so no construction site can omit it by accident. Read by
-            ``summarize`` since plan 0053 S3: a FAILED entity on a success-shaped status is
-            the PARTIAL WARNING.
+            ``summarize`` since plan 0053 S3: an outcome that warns (a FAILED entity, or since
+            S8 an EMPTY one that warns) on a success-shaped status is the PARTIAL WARNING.
         delivery_requested: whether the admin asked for this run to be delivered to
             SpacesEDU (convert_job's ``sftp_requested``; always ``True`` for a delivery from
             disk). It picks a FAILED status's closing line (plan 0053 S3): every FAILED
@@ -126,7 +127,9 @@ def summarize(result: ConvertResult) -> tuple[Verdict, str, str]:
 
     **PARTIAL (plan 0053 S3).** A success-shaped status (``DELIVERED``,
     ``DELIVERED_WITH_DATA_ERRORS``, ``BUILT_WITH_DATA_ERRORS``) whose ``entity_outcomes``
-    show a FAILED entity is a WARNING worded by ``failure_copy.partial_copy`` — the same
+    show an outcome that warns (``failure_copy.warning_outcomes`` — a FAILED entity, or since
+    S8 an EMPTY one whose tier is WARNING, D5) is a WARNING worded by
+    ``failure_copy.partial_copy`` — the same
     headline and detail Home shows for that run — with the data-warning count as a second
     sentence. Every FAILED status, ``BUILT_NOT_DELIVERED`` and the anomaly gate keep their
     precedence: a partial build that also failed to upload is still a delivery failure. The
@@ -135,7 +138,7 @@ def summarize(result: ConvertResult) -> tuple[Verdict, str, str]:
     """
     status = result.status
 
-    left_out = failed_entities(result.entity_outcomes or ())
+    left_out = warning_outcomes(result.entity_outcomes or ())
     if left_out and status in _SUCCESS_SHAPED:
         headline, detail = partial_copy(left_out, delivered=result.sftp_attempted and result.sftp_ok)
         clause = data_warnings_clause(result.data_errors_total)
@@ -217,7 +220,7 @@ def summarize(result: ConvertResult) -> tuple[Verdict, str, str]:
     raise ValueError(f"Unmapped ConvertStatus: {status!r}")  # pragma: no cover - totality guard
 
 
-# The success-shaped statuses a FAILED entity turns into the PARTIAL warning (plan 0053 S3).
+# The success-shaped statuses an outcome that warns turns into the PARTIAL warning (plan 0053 S3/S8).
 # DELIVERED_FROM_DISK is not one: a delivery is not a build and carries no outcomes.
 _SUCCESS_SHAPED: frozenset[ConvertStatus] = frozenset(
     {

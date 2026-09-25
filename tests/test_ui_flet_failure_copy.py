@@ -4,8 +4,9 @@ What is pinned here, and why each pin has a twin:
 
 * **Totality.** ``FAILED_CATEGORY_COPY`` covers every ``RunErrorCategory`` except ``NONE`` (which
   raises); ``outcome_sentence`` covers every valid ``(OutcomeKind, OutcomeReason)``;
-  ``OUTCOME_TIER`` covers every ``OutcomeKind``. Each is derived from the ENUM, so a new member
-  without copy is RED.
+  ``OUTCOME_TIER`` answers every valid (entity, kind, reason) triple (plan 0053 S8 made it a
+  function of entity and cause; its full table is pinned in ``tests/test_standing_empty_warning.py``).
+  Each is derived from the ENUM, so a new member without copy is RED.
 * **Bounded surfacing (P9).** No copy string carries an interpolation slot, a path, an unknown
   entity key or exception text — swept with a sentinel that would be visible anywhere. The ONE
   name a sentence may carry is an outcome's config-declared label (plan 0053 S7, D4): the sweep
@@ -93,6 +94,12 @@ def _every_copy_string() -> list[str]:
         for entity in ("Family", SENTINEL):
             for delivered in (True, False):
                 out.append(outcome_sentence(_outcome(entity, kind, reason), delivered=delivered))
+    # Plan 0053 S8: a single EMPTY outcome that warns is a PARTIAL detail of its own shape
+    # (sentence + "everything else" + that reason's next step) — every EMPTY reason, both entities.
+    for reason in sorted(VALID_REASONS[OutcomeKind.EMPTY]):
+        for entity in ("Family", SENTINEL):
+            for delivered in (True, False):
+                out.extend(partial_copy([_outcome(entity, OutcomeKind.EMPTY, reason)], delivered=delivered))
     for failed in (
         [_outcome("Family", OutcomeKind.FAILED, OutcomeReason.MISSING_SOURCE_COLUMN)],
         [_outcome(SENTINEL, OutcomeKind.FAILED, OutcomeReason.TRANSFORM_ERROR)],
@@ -116,8 +123,7 @@ def _every_copy_string() -> list[str]:
                 labelled = _labelled_outcome(entity, kind, (_GUARDIAN, _EMAIL), file_label=file_label)
                 for delivered in (True, False):
                     out.append(outcome_sentence(labelled, delivered=delivered))
-                    if kind is OutcomeKind.FAILED:
-                        out.extend(partial_copy([labelled], delivered=delivered))
+                    out.extend(partial_copy([labelled], delivered=delivered))  # both kinds warn (S8)
     out.append(data_warnings_clause(3))
     return out
 
@@ -263,17 +269,24 @@ class TestLabelAwareSentences:
 
 
 class TestOutcomeTier:
-    def test_total_over_every_kind(self) -> None:
-        assert set(OUTCOME_TIER) == set(OutcomeKind)
+    def test_total_over_every_valid_triple(self) -> None:
+        # Plan 0053 S8: a function of (entity, kind, reason). Every registry entity and an unknown
+        # key, over every valid pair, answers a Verdict (the exact table is pinned in
+        # ``tests/test_standing_empty_warning.py``).
+        for entity in (*ENTITY_CRITICALITY, SENTINEL):
+            for kind, reason in _VALID_PAIRS:
+                assert isinstance(OUTCOME_TIER(entity, kind, reason), Verdict), (entity, kind, reason)
 
-    def test_the_warning_tier_is_exactly_what_failed_entities_selects(self) -> None:
-        # S3's PARTIAL predicate (``failed_entities``) and the tier must agree kind for kind, so
-        # S8 widening one without the other is RED.
-        for kind, reason in _VALID_PAIRS:
-            outcome = _outcome("Family", kind, reason)
-            selected = bool(failed_entities([outcome]))
-            assert selected == (OUTCOME_TIER[kind] is Verdict.WARNING), kind
-        assert any(OUTCOME_TIER[kind] is Verdict.WARNING for kind in OutcomeKind)  # non-vacuity
+    def test_every_failed_outcome_warns_so_failed_entities_is_a_subset(self) -> None:
+        # S3's FAILED-only predicate stays a subset of S8's warning predicate, entity by entity:
+        # widening the PARTIAL rule must never drop a FAILED entity from it.
+        for entity in (*ENTITY_CRITICALITY, SENTINEL):
+            outcomes = [_outcome(entity, kind, reason) for kind, reason in _VALID_PAIRS]
+            assert set(failed_entities(outcomes)) <= set(failure_copy.warning_outcomes(outcomes)), entity
+            assert failed_entities(outcomes), "non-vacuity: a FAILED outcome is among them"
+        # ...and strictly a subset: S8 selects EMPTY outcomes the FAILED predicate never did.
+        family = [_outcome("Family", kind, reason) for kind, reason in _VALID_PAIRS]
+        assert set(failure_copy.warning_outcomes(family)) - set(failed_entities(family))
 
 
 class TestPartialCopy:
@@ -314,6 +327,40 @@ class TestPartialCopy:
         )
         assert "other" not in detail
         assert "SENTINEL" not in headline + detail
+
+    def test_several_empty_outcomes_a_reexport_cannot_cure_get_the_neutral_step(self) -> None:
+        # S8: an undeclared source is not fixed by re-exporting, so "Re-export those files" would
+        # be false — the same distinction `_EMPTY_NEXT_STEP` draws for one entity.
+        failed = [
+            _outcome("CourseInfo", OutcomeKind.EMPTY, OutcomeReason.NO_SOURCE_FILES_DECLARED),
+            _outcome("StudentCourses", OutcomeKind.EMPTY, OutcomeReason.NO_SOURCE_FILES_DECLARED),
+        ]
+        _headline, detail = partial_copy(failed, delivered=True)
+        assert detail == (
+            "Courses and student courses were left out of this sync. Everything else was delivered. "
+            "If these files should be part of your sync, the Help page has our support contact."
+        )
+        assert "Re-export" not in detail
+
+    def test_a_mix_with_one_uncurable_outcome_gets_the_neutral_step(self) -> None:
+        failed = [
+            _outcome("Family", OutcomeKind.FAILED, OutcomeReason.TRANSFORM_ERROR),
+            _outcome("CourseInfo", OutcomeKind.EMPTY, OutcomeReason.NO_ROWS_AFTER_TRANSFORM),
+        ]
+        _headline, detail = partial_copy(failed, delivered=True)
+        assert detail.endswith("If these files should be part of your sync, the Help page has our support contact.")
+
+    def test_twin_several_empty_outcomes_a_reexport_cures_keep_the_reexport_step(self) -> None:
+        failed = [
+            _outcome("Family", OutcomeKind.EMPTY, OutcomeReason.MISSING_SOURCE_COLUMN),
+            _outcome("CourseInfo", OutcomeKind.EMPTY, OutcomeReason.SOURCE_FILES_EMPTY),
+            _outcome("StudentCourses", OutcomeKind.FAILED, OutcomeReason.TRANSFORM_ERROR),
+        ]
+        _headline, detail = partial_copy(failed, delivered=True)
+        assert detail.endswith(
+            "Re-export those files and the next sync picks them up automatically — if it keeps happening, "
+            "the Help page has our support contact."
+        )
 
     def test_nothing_left_out_is_a_caller_bug(self) -> None:
         with pytest.raises(ValueError, match="at least one"):

@@ -28,7 +28,8 @@ Three things are pinned here, and each is a *partner-visible* contract:
    derivable from config alone: it is ``active_entities ∩ entities whose sources
    this fixture supplies``. ``sd51myedbc`` actively enables StudentAttendance yet
    its fixture deliberately supplies no absence files (the skip-on-empty pin), so
-   its expected set is the 5 rostering entities. Its VALUES are guarded against
+   its expected set is the 4 rostering entities its config enables (Family is off
+   in the config, 2026-09-25). Its VALUES are guarded against
    erosion in both directions by
    ``test_expected_entities_track_active_entities`` + :data:`DELIBERATELY_UNCOVERED`.
 3. **The on-disk encoding** — the rostering/course CSVs carry the Excel BOM;
@@ -40,7 +41,7 @@ Parametrized over ALL 12 bundled configs:
 
 * the 7 SpacesEDU rostering configs — myedbc (base), sd40myedbc (CSV files +
   headerless schedule + ATT--* exclusions), sd48myedbc, sd51myedbc (plain
-  inheritance + generated emails), sd54myedbc (renamed source files,
+  inheritance + generated emails; Family off), sd54myedbc (renamed source files,
   withdraw-date-only active detection, surname.firstname emails), sd60myedbc
   (Family row_filters, cross-enrollment collapse, sanitized learn60 emails with
   derived admission-year, Home-school rostering), sd74myedbc;
@@ -555,8 +556,13 @@ def _create_sd51_inputs(d: Path) -> None:
 
     StudentDailyAbsences.txt / StudentPeriodAbsencesEnhanced.txt are intentionally
     absent: the enabled StudentAttendance entity skips on all-empty sources
-    (attendance has its own dedicated test module) while the 5 rostering CSVs
-    still emit — this pins that a missing attendance drop never blocks rostering.
+    (attendance has its own dedicated test module) while the 4 rostering CSVs SD51
+    enables still emit — this pins that a missing attendance drop never blocks
+    rostering. The contacts file is still written, as the real drop carries one,
+    and the bundled config simply does not read it: Family is OFF for SD51
+    (2026-09-25 — its real contacts export has no email column). Tests that need
+    an SD51-shaped Family run (tests/test_standing_empty_warning.py) enable it
+    through their own overlay config.
     """
     _write_student_demographic(d, "StudentDemographicEnhanced.txt")
     _write_staff(d, "StaffInformation.txt")

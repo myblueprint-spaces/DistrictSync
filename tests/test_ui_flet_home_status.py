@@ -2323,12 +2323,26 @@ class TestPartialPrecedence:
             "There were also 3 data warnings: some records had field problems and were left blank."
         )
 
-    @pytest.mark.parametrize("kind", ["empty", "not_run"])
-    def test_an_empty_or_not_run_outcome_is_not_partial(self, kind: str) -> None:
-        reason = "source_files_empty" if kind == "empty" else "run_aborted"
+    def test_a_not_run_outcome_is_not_partial(self) -> None:
+        # NOT_RUN only exists inside a FAILED run (whose status outranks PARTIAL); on a
+        # success-shaped record it is not a warning (its tier is FAILED, not WARNING).
         outcomes = _outcomes_record()
-        outcomes["Family"] = {"kind": kind, "reason": reason, "rows": 0}
+        outcomes["Family"] = {"kind": "not_run", "reason": "run_aborted", "rows": 0}
         assert classify_latest_reason(_record(entity_outcomes=outcomes), prior_build=None) is LatestReason.CLEAN
+
+    @pytest.mark.parametrize("reason", ["source_files_empty", "no_source_files_declared"])
+    def test_a_may_be_empty_entity_with_nothing_to_send_is_not_partial(self, reason: str) -> None:
+        # Plan 0053 S8 (D5): StudentAttendance is in outcomes.MAY_BE_EMPTY — a night with no
+        # absence files is a normal night. Changed from S3's "any EMPTY outcome is CLEAN" (which
+        # used Family), because Family now warns for the same reason (twin below).
+        outcomes = {**_outcomes_record(), "StudentAttendance": {"kind": "empty", "reason": reason, "rows": 0}}
+        assert classify_latest_reason(_record(entity_outcomes=outcomes), prior_build=None) is LatestReason.CLEAN
+
+    @pytest.mark.parametrize("reason", ["source_files_empty", "no_source_files_declared"])
+    def test_twin_a_non_member_with_the_same_reason_is_partial(self, reason: str) -> None:
+        outcomes = _outcomes_record()
+        outcomes["Family"] = {"kind": "empty", "reason": reason, "rows": 0}
+        assert classify_latest_reason(_record(entity_outcomes=outcomes), prior_build=None) is LatestReason.PARTIAL
 
     def test_an_unknown_kind_from_a_newer_build_errs_toward_the_warning(self) -> None:
         outcomes = _outcomes_record()

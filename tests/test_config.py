@@ -679,20 +679,47 @@ class TestEnabledEntities:
             ], f"{sis} should still produce only the 5 rostering CSVs"
 
     def test_sd51_enables_student_attendance(self):
-        """SD51 lists the full set (base 5 rostering + opt-in StudentAttendance).
+        """SD51 lists its full set: four base rostering entities + opt-in StudentAttendance.
 
         Deep-merge REPLACES lists, so SD51 must restate the rostering entities
-        alongside StudentAttendance or they would vanish.
+        alongside StudentAttendance or they would vanish. Family is deliberately
+        NOT among them (owner decision 2026-09-25) — see
+        ``test_sd51_does_not_enable_family``.
         """
         cfg = load_config("sd51myedbc")
         assert cfg.global_config.enabled_entities == [
             "Students",
             "Staff",
-            "Family",
             "Classes",
             "Enrollments",
             "StudentAttendance",
         ]
+
+    # SD51's real contacts export (EmergencyContactInformation.txt) has no email
+    # column, so Family could only ever be EMPTY — and since plan 0053 S8 that is
+    # a standing amber on Home every night. The owner turned it off in the config
+    # (2026-09-25); re-enabling is one line once SD51 sends a contact export WITH
+    # an email column.
+    _SD51_OUTPUTS = frozenset({"Students", "Staff", "Classes", "Enrollments", "StudentAttendance"})
+
+    def test_sd51_does_not_enable_family(self):
+        """The RESOLVED config (``_base`` merged) builds exactly its five entities, never Family —
+        while the inherited Family DEFINITION stays, so re-enabling is the one list line."""
+        cfg = load_config("sd51myedbc")
+        assert "Family" not in cfg.active_entities()
+        assert cfg.active_entities() == self._SD51_OUTPUTS
+        assert "Family" in cfg.mappings, "the base Family entity is still inherited — re-enabling needs no mapping"
+
+    def test_sd51_attendance_tier_is_unaffected(self):
+        """``sd51attendance`` (``_base: sd51myedbc``) declares its OWN list, so the change cannot reach it."""
+        assert load_config("sd51attendance").active_entities() == {"StudentAttendance"}
+
+    @pytest.mark.parametrize("sis", ["myedbc", "unitychristianmyedbc"])
+    def test_twin_the_same_read_sees_family_where_a_config_enables_it(self, sis):
+        """Non-vacuity: the same resolved-config read DOES report Family for a config that enables
+        it (the base, and a district that restates its list) — so the SD51 pin above is reading
+        real config, not an accessor that never returns Family."""
+        assert "Family" in load_config(sis).active_entities()
 
 
 class TestActiveEntities:

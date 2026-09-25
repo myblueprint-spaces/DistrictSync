@@ -10,7 +10,11 @@ drift from the code (or the code from the doc) without a red test that names the
 * §6's rule "every closed-enum member maps to copy, a verdict and a row here" (plan 0053
   S3): every documented ``RunErrorCategory`` except ``NONE`` has a
   ``failure_copy.FAILED_CATEGORY_COPY`` entry, every documented ``OutcomeKind`` an
-  ``OUTCOME_TIER`` verdict, and every documented ``OutcomeReason`` an ``outcome_sentence``;
+  ``OUTCOME_TIER`` verdict for each of its valid reasons, and every documented ``OutcomeReason`` an
+  ``outcome_sentence``;
+* §7 (plan 0053 S8, owner decision D5): the ``may-be-empty`` table == ``outcomes.MAY_BE_EMPTY``,
+  and the ``outcome-tier`` table == ``failure_copy.OUTCOME_TIER`` over every valid (kind, reason)
+  for a ``MAY_BE_EMPTY`` member and for any other entity;
 * §3 / P13 ↔ ``docs/partner/faq.md`` (plan 0053 S4): the FAQ's two criticality bullets name
   exactly the CRITICAL and ISOLATABLE sets (by ``failure_copy.entity_phrase``), and the
   ISOLATABLE bullet carries the "pending confirmation" clause exactly while
@@ -33,6 +37,7 @@ from src.etl.errors import RunErrorCategory
 from src.etl.outcomes import (
     DEPENDS_ON,
     ENTITY_CRITICALITY,
+    MAY_BE_EMPTY,
     VALID_REASONS,
     EntityCriticality,
     OutcomeKind,
@@ -241,11 +246,19 @@ def _copy_gaps(text: str, *, category_copy, tier, reasons_with_copy) -> list[str
         enum, member = _unticked(row.get("enum", "")), _unticked(row.get("member", ""))
         if enum == "RunErrorCategory" and member != "NONE" and RunErrorCategory[member] not in category_copy:
             problems.append(f"failure-policy.md §6: RunErrorCategory.{member} has no FAILED_CATEGORY_COPY entry")
-        if enum == "OutcomeKind" and OutcomeKind[member] not in tier:
+        if enum == "OutcomeKind" and not _has_tier(tier, OutcomeKind[member]):
             problems.append(f"failure-policy.md §6: OutcomeKind.{member} has no OUTCOME_TIER verdict")
         if enum == "OutcomeReason" and OutcomeReason[member] not in reasons_with_copy:
             problems.append(f"failure-policy.md §6: OutcomeReason.{member} has no outcome_sentence")
     return problems
+
+
+def _has_tier(tier, kind: OutcomeKind) -> bool:
+    """Whether ``tier`` (``OUTCOME_TIER``'s shape) answers a Verdict for ``kind`` × every valid reason."""
+    try:
+        return all(tier("Family", kind, reason) is not None for reason in VALID_REASONS[kind])
+    except (KeyError, ValueError):
+        return False
 
 
 def _reasons_with_copy() -> set[OutcomeReason]:
@@ -279,12 +292,121 @@ class TestSection6CopyParity:
         ) == ["failure-policy.md §6: RunErrorCategory.SOURCE_SCHEMA has no FAILED_CATEGORY_COPY entry"]
 
     def test_doctored_a_kind_without_a_tier_and_a_reason_without_copy_are_red(self):
-        tier = {k: v for k, v in OUTCOME_TIER.items() if k is not OutcomeKind.NOT_RUN}
+        def tier(entity, kind, reason):
+            if kind is OutcomeKind.NOT_RUN:
+                raise KeyError(kind)  # a tier that forgot a kind
+            return OUTCOME_TIER(entity, kind, reason)
+
         reasons = _reasons_with_copy() - {OutcomeReason.RUN_ABORTED}
         assert _copy_gaps(_doc_text(), category_copy=FAILED_CATEGORY_COPY, tier=tier, reasons_with_copy=reasons) == [
             "failure-policy.md §6: OutcomeKind.NOT_RUN has no OUTCOME_TIER verdict",
             "failure-policy.md §6: OutcomeReason.RUN_ABORTED has no outcome_sentence",
         ]
+
+
+# --------------------------------------------------------------------------- #
+# §7 — which EMPTY outcomes warn (plan 0053 S8, owner decision D5)              #
+# --------------------------------------------------------------------------- #
+#: A registry entity that is NOT in MAY_BE_EMPTY, to evaluate the "any other entity" column.
+_NON_MEMBER = "Family"
+
+
+def _may_be_empty_mismatches(text: str, *, members: frozenset[str]) -> list[str]:
+    documented = {_unticked(r.get("entity", "")) for r in _table(text, "may-be-empty")}
+    problems = [
+        f"failure-policy.md §7: no may-be-empty row for {e} (outcomes.MAY_BE_EMPTY lists it)"
+        for e in sorted(members - documented)
+    ]
+    problems += [
+        f"failure-policy.md §7: may-be-empty row for {e}, which outcomes.MAY_BE_EMPTY does not list"
+        for e in sorted(documented - members)
+    ]
+    return problems
+
+
+def _tier_mismatches(text: str, *, tier) -> list[str]:
+    member = next(iter(sorted(MAY_BE_EMPTY)))
+    documented: dict[tuple[str, str], tuple[str, str]] = {}
+    for row in _table(text, "outcome-tier"):
+        key = (_unticked(row.get("kind", "")), _unticked(row.get("reason", "")))
+        documented[key] = (_unticked(row.get("MAY_BE_EMPTY entity", "")), _unticked(row.get("any other entity", "")))
+    problems: list[str] = []
+    for kind, reasons in VALID_REASONS.items():
+        for reason in sorted(reasons):
+            key = (kind.name, reason.value)
+            code = (tier(member, kind, reason).name, tier(_NON_MEMBER, kind, reason).name)
+            if key not in documented:
+                problems.append(f"failure-policy.md §7: no outcome-tier row for {kind.name}/{reason.value}")
+            elif documented[key] != code:
+                problems.append(
+                    f"failure-policy.md §7: {kind.name}/{reason.value} is {documented[key]} in the doc "
+                    f"but {code} in failure_copy.OUTCOME_TIER"
+                )
+    valid = {(k.name, r.value) for k, rs in VALID_REASONS.items() for r in rs}
+    problems += [
+        f"failure-policy.md §7: outcome-tier row {k}/{r} is not a valid pair"
+        for k, r in documented
+        if (k, r) not in valid
+    ]
+    return problems
+
+
+class TestSection7EmptyTier:
+    def test_the_may_be_empty_table_equals_the_code(self):
+        assert _may_be_empty_mismatches(_doc_text(), members=MAY_BE_EMPTY) == []
+
+    def test_the_outcome_tier_table_equals_the_code(self):
+        assert _tier_mismatches(_doc_text(), tier=OUTCOME_TIER) == []
+
+    def test_non_vacuity_the_parser_found_every_row(self):
+        assert {_unticked(r["entity"]) for r in _table(_doc_text(), "may-be-empty")} == set(MAY_BE_EMPTY)
+        assert MAY_BE_EMPTY, "the set is not empty, so the member column is really exercised"
+        assert _NON_MEMBER not in MAY_BE_EMPTY and _NON_MEMBER in ENTITY_CRITICALITY
+        rows = _table(_doc_text(), "outcome-tier")
+        assert len(rows) == sum(len(r) for r in VALID_REASONS.values())
+        # The two columns really differ somewhere — the whole point of D5's entity split.
+        assert any(r["MAY_BE_EMPTY entity"] != r["any other entity"] for r in rows)
+
+    def test_doctored_an_extra_member_in_the_code_is_red(self):
+        assert _may_be_empty_mismatches(_doc_text(), members=MAY_BE_EMPTY | {"Family"}) == [
+            "failure-policy.md §7: no may-be-empty row for Family (outcomes.MAY_BE_EMPTY lists it)"
+        ]
+
+    def test_doctored_a_removed_row_is_red(self):
+        text = _doc_text()
+        row = next(line for line in text.splitlines() if line.startswith("| StudentAttendance | Absence files"))
+        doctored = text.replace(row + "\n", "", 1)
+        assert doctored != text
+        assert _may_be_empty_mismatches(doctored, members=MAY_BE_EMPTY) == [
+            "failure-policy.md §7: no may-be-empty row for StudentAttendance (outcomes.MAY_BE_EMPTY lists it)"
+        ]
+
+    def test_doctored_a_quieter_doc_row_is_red(self):
+        doctored = _doc_text().replace(
+            "| EMPTY | no_rows_after_transform | WARNING | WARNING |",
+            "| EMPTY | no_rows_after_transform | HEALTHY | WARNING |",
+            1,
+        )
+        assert doctored != _doc_text()
+        assert _tier_mismatches(doctored, tier=OUTCOME_TIER) == [
+            "failure-policy.md §7: EMPTY/no_rows_after_transform is ('HEALTHY', 'WARNING') in the doc "
+            "but ('WARNING', 'WARNING') in failure_copy.OUTCOME_TIER"
+        ]
+
+    def test_doctored_a_quieter_code_tier_is_red(self):
+        from src.ui_flet.verdict import Verdict
+
+        def muted(entity, kind, reason):
+            if kind is OutcomeKind.EMPTY:
+                return Verdict.HEALTHY  # the muting the standard forbids
+            return OUTCOME_TIER(entity, kind, reason)
+
+        problems = _tier_mismatches(_doc_text(), tier=muted)
+        assert (
+            "failure-policy.md §7: EMPTY/missing_source_column is ('WARNING', 'WARNING') in the doc but ('HEALTHY', 'HEALTHY') in failure_copy.OUTCOME_TIER"
+            in problems
+        )
+        assert len(problems) == 4  # every EMPTY row that warns anywhere
 
 
 # --------------------------------------------------------------------------- #

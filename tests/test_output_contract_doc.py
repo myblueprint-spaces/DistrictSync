@@ -559,7 +559,7 @@ def test_expected_outputs_table_enabled_column_matches_the_real_config(sis):
     """The doc's 'Entities enabled' cell equals the config's real ``active_entities()``.
 
     This is the column that makes the sd51myedbc row honest — the config enables
-    StudentAttendance while the contract sweep asserts only the five rostering
+    StudentAttendance while the contract sweep asserts only its four rostering
     CSVs (its fixture withholds the absence GDEs on purpose). Gating the two
     columns against two different sources is what keeps that distinction from
     collapsing into a comfortable half-truth.

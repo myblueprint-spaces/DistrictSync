@@ -11,6 +11,23 @@ Per-release download links and auto-generated commit notes live on the
 
 ### Changed
 
+- **Home now warns when a file your district's mapping produces came out empty.**
+  When an output ends up with nothing in it — every row was filtered out (for
+  example every family contact had a blank email address), or its export file is
+  missing a column the district's mapping reads, or its export was missing or empty
+  — Home, Run History and the Convert screen now show the same warning as a file
+  left out by a problem — naming the file, for example family contacts, and counting
+  it as skipped in Run History — every night until the export produces it again,
+  with what to do next.
+  It used to stay green, with the missing file visible only as a smaller count and,
+  on the first night only, a smaller-than-usual warning. Attendance rows are the
+  exception: absence files arrive only on nights with absences, so a night without
+  them stays green. Nothing about what is built or delivered changes. A district
+  whose contact export has no email column will now see this warning every night
+  until its mapping or its export changes.
+- **The SD51 (Boundary) mapping no longer produces the family-contacts file,**
+  because the district's contact export has no email column, so the file could
+  never be built.
 - **A failed Convert now appears in Run History.** When a conversion started from
   the Convert screen fails — for example because an export file is missing a column
   the district's mapping needs, or the district's mapping cannot be read — Run History

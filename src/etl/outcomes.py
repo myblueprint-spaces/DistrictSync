@@ -56,10 +56,10 @@ invariant (CLAUDE.md → Key Data Flow → Enrollments) is defined as "no emitte
 references a ``User ID`` absent from ``Students.csv``", and ``Family`` /
 ``StudentCourses`` carry the same dependency (see ``quality/report.py``'s orphan
 checks). That makes it the ONE entity whose absence invalidates the whole payload —
-every other entity may legitimately be empty on a given night (per-entity
-skip-on-empty). Named here — beside the criticality it forces — rather than inlined, so
-the special case is explicit and single-sourced; ``pipeline.check_delivery_integrity``
-imports it.
+every other entity may be skipped on a given night without stopping the run (per-entity
+skip-on-empty; whether that skip WARNS is :data:`MAY_BE_EMPTY`'s question). Named here —
+beside the criticality it forces — rather than inlined, so the special case is explicit and
+single-sourced; ``pipeline.check_delivery_integrity`` imports it.
 """
 
 # The §3 table, in code. One row per registry entity; `tests/test_failure_policy_parity.py`
@@ -100,6 +100,25 @@ DEPENDS_ON: Final[Mapping[str, frozenset[str]]] = MappingProxyType(
         "Classes": frozenset({ROSTER_ANCHOR_ENTITY}),  # homeroom classes → filter_to_active
         "Family": frozenset({ROSTER_ANCHOR_ENTITY}),  # filter_to_active over active_student_ids
         "StudentCourses": frozenset({ROSTER_ANCHOR_ENTITY}),  # filter_to_active over active_student_ids
+    }
+)
+
+
+# The entities whose export may legitimately be ABSENT or EMPTY on a given night, so a skip for
+# that reason alone ("nothing to send") is not a warning — owner decision D5 (2026-09-24), plan
+# 0053 S8, `docs/developer/failure-policy.md` §7 (the `may-be-empty` table, pinned). Read by the
+# ONE tier rule, `failure_copy.OUTCOME_TIER`: for every OTHER entity an EMPTY outcome is a
+# standing WARNING, and for a member only `source_files_empty` / `no_source_files_declared` stay
+# neutral — every row filtered out, or a mapped column missing, still warns. RESTRICTIVE BY
+# DEFAULT: an entity not listed warns when it builds nothing, so a new entity can never go quiet
+# by omission. Adding one is a DECISIONS entry naming why its absence is a normal night (the
+# remedy for a district that warns is a config change, never widening this set). Every member
+# must be a registry entity (pinned in `tests/test_standing_empty_warning.py::TestMayBeEmpty`).
+MAY_BE_EMPTY: Final[frozenset[str]] = frozenset(
+    {
+        # Absence files arrive only on nights with absences; a missing attendance drop must never
+        # stop — or darken — rostering (output-contract; the same evidence as its §3 row).
+        "StudentAttendance",
     }
 )
 
@@ -673,10 +692,13 @@ def failed_entities(outcomes: Iterable[EntityOutcome]) -> tuple[EntityOutcome, .
     show as a WARNING every run it persists. Returned in the given (configured) order, as
     whole outcomes so a caller can word each one by its reason.
 
-    FAILED only, deliberately. ``NOT_RUN`` exists only after a raise that failed the whole
-    run (a failed record already outranks PARTIAL), and EMPTY is per-entity skip-on-empty,
-    which is not a fault today — whether a persistently-empty entity warns is plan 0053 S8's
-    question (``failure_copy.OUTCOME_TIER``), not this predicate's.
+    FAILED only, deliberately — this is the "not built because it RAISED" predicate the
+    pipeline's own log and ``--dry-run`` lines use. It is no longer the whole PARTIAL rule:
+    since plan 0053 S8 (owner decision D5) the reader's predicate is
+    ``failure_copy.warning_outcomes``, which also selects an EMPTY outcome whose tier
+    (``failure_copy.OUTCOME_TIER``) is WARNING. Every FAILED outcome is one of those (pinned),
+    so this set is always a subset of it. ``NOT_RUN`` exists only after a raise that failed
+    the whole run (a failed record already outranks PARTIAL).
     """
     return tuple(outcome for outcome in outcomes if outcome.kind is OutcomeKind.FAILED)
 

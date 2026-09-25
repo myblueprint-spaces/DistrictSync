@@ -556,7 +556,7 @@ This table is **hand-written and GATED AGAINST** the enforced contract by `tests
 | `myedbc` | Students, Staff, Family, Classes, Enrollments | Students, Staff, Family, Classes, Enrollments | The base config every district inherits. |
 | `sd40myedbc` | Students, Staff, Family, Classes, Enrollments | Students, Staff, Family, Classes, Enrollments | CSV extracts, headerless schedule, `ATT--*` exclusions. |
 | `sd48myedbc` | Students, Staff, Family, Classes, Enrollments | Students, Staff, Family, Classes, Enrollments | Renamed source files. |
-| `sd51myedbc` | Students, Staff, Family, Classes, Enrollments, StudentAttendance | Students, Staff, Family, Classes, Enrollments | **Enables StudentAttendance**, but the contract fixture supplies no absence GDEs on purpose — that pins skip-on-empty (a missing attendance drop must never block rostering). In production with absence GDEs present it emits six files. |
+| `sd51myedbc` | Students, Staff, Classes, Enrollments, StudentAttendance | Students, Staff, Classes, Enrollments | **Enables StudentAttendance**, but the contract fixture supplies no absence GDEs on purpose — that pins skip-on-empty (a missing attendance drop must never block rostering). In production with absence GDEs present it emits five files. **`Family` is OFF (owner decision 2026-09-25):** the district's real `EmergencyContactInformation.txt` is the plain report with no email column at all, so the entity could only ever build nothing — and, since plan 0053 S8, hold Home at a standing warning every night. Re-enabling is one line in `enabled_entities` once SD51 sends a contact export with an email column; the Family definition is inherited from the base unchanged. |
 | `sd54myedbc` | Students, Staff, Family, Classes, Enrollments | Students, Staff, Family, Classes, Enrollments | No status column: withdraw-date-only active detection. |
 | `sd60myedbc` | Students, Staff, Family, Classes, Enrollments, StudentAttendance | Students, Staff, Family, Classes, Enrollments, StudentAttendance | Family `row_filters`, cross-enrollment collapse, generated emails; the district's own `Spaces_*` filenames. **Enables StudentAttendance and the fixture DOES supply absence GDEs** — the deliberate complement to `sd51myedbc` above, which withholds them: SD51 pins skip-on-empty, SD60 pins the emit path. Both bands are headerful here. |
 | `sd74myedbc` | Students, Staff, Family, Classes, Enrollments | Students, Staff, Family, Classes, Enrollments | The frozen snapshot district. |
@@ -656,7 +656,7 @@ from a DELIVERED file depends on the district's import settings — all of it de
 the same FAQ's import-validation table says a file with an invalid format is skipped as a whole, which
 suggests but does not establish how an absent file is treated; and rostering zips without `Family.csv`
 already ship whenever Family builds no rows (SD51 since its contacts export carries no email column —
-DECISIONS 2026-09-12) — whether anything was unlinked on those nights has not been checked. DistrictSync
+DECISIONS 2026-09-12; since 2026-09-25 its config does not enable Family at all) — whether anything was unlinked on those nights has not been checked. DistrictSync
 does not emit a header-only CSV today (an entity with no rows is skipped, never written), so Q5b matters
 only if that ever changes. The owner sends Q5 (plan 0053 D2); S14 records the answer.
 

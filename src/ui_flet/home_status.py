@@ -55,9 +55,9 @@ from datetime import datetime
 from enum import Enum
 
 from src.config.app_config import AppConfig
-from src.etl.outcomes import EntityOutcome, failed_entities, outcomes_from_record
+from src.etl.outcomes import EntityOutcome, outcomes_from_record
 from src.etl.sync_window import in_sync_window, next_resume_date
-from src.ui_flet.failure_copy import data_warnings_clause, failed_copy_for, partial_copy
+from src.ui_flet.failure_copy import data_warnings_clause, failed_copy_for, partial_copy, warning_outcomes
 from src.ui_flet.humanize import (
     SIZE_NOUNS,
     AnomalyVariant,
@@ -490,9 +490,10 @@ class LatestReason(Enum):
 
     FAILED_ETL = "failed_etl"  # status != "success" — the dominant fault
     FAILED_DELIVERY = "failed_delivery"  # ETL ok, SFTP attempted + failed (exit-3 shape)
-    # Plan 0053 S3: the run completed but at least one configured entity FAILED and was left out
-    # (``outcomes.failed_entities``). Below both failures (a completed run is not a failed one),
-    # above ANOMALY: a vanished file's anomaly fires once, the missing entity every night (P7).
+    # Plan 0053 S3: the run completed but at least one configured entity was left out — FAILED,
+    # or since S8 (owner decision D5) EMPTY for a reason that warns (``failure_copy.warning_outcomes``).
+    # Below both failures (a completed run is not a failed one), above ANOMALY: a vanished file's
+    # anomaly fires once, the missing entity every night (P7).
     PARTIAL = "partial"
     ANOMALY = "anomaly"  # succeeded but a >20% drop looked off
     DATA_WARNINGS = "data_warnings"  # succeeded, some rows had field problems + were skipped
@@ -537,7 +538,12 @@ def classify_latest_reason(record: dict, *, prior_build: dict | None) -> LatestR
 
 
 def left_out_outcomes(record: dict, *, prior_build: dict | None) -> tuple[EntityOutcome, ...]:
-    """The FAILED outcomes the files behind ``record`` were built without — TOTAL, never raises.
+    """The outcomes that WARN in the build behind ``record`` — TOTAL, never raises.
+
+    The selection is :func:`~src.ui_flet.failure_copy.warning_outcomes` (plan 0053 S8, owner
+    decision D5): every FAILED outcome, and each EMPTY one whose tier is WARNING (every row
+    filtered out or a mapped column missing, on any entity; nothing to send, on an entity not
+    in ``outcomes.MAY_BE_EMPTY``). Run History's "N files skipped" counts exactly these.
 
     A build record answers from its OWN ``entity_outcomes``; a delivery-only record answers
     from ``prior_build`` (see :func:`classify_latest_reason`). Read through the total
@@ -548,7 +554,7 @@ def left_out_outcomes(record: dict, *, prior_build: dict | None) -> tuple[Entity
     source = prior_build if is_delivery_only(record) else record
     if source is None:
         return ()
-    return failed_entities(outcomes_from_record(source))
+    return warning_outcomes(outcomes_from_record(source))
 
 
 def _data_errors_total(record: dict) -> int:
@@ -991,7 +997,8 @@ def derive_home_status(
     if missed_run:
         return _missed_run_status()
 
-    # Rule: partial (plan 0053 S3) — the run completed but left one or more files out. Slotted
+    # Rule: partial (plan 0053 S3; widened to EMPTY outcomes that warn by S8, D5) — the run
+    # completed but left one or more files out. Slotted
     # where ANOMALY sits (below the FAILED reasons, the pause, the foreign-principal and the
     # missed-run rules; above anomaly / data-warnings / stale), and it OUTRANKS the anomaly: a
     # left-out file's previous CSV vanishes once, but the entity is missing every night it

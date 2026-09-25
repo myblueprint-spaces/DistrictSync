@@ -457,11 +457,12 @@ class TestStudentAttendanceConfigIntegration:
         cfg = load_config("sd51myedbc")
         enabled = cfg.global_config.enabled_entities
         assert "StudentAttendance" in enabled
-        # Deep-merge replaces lists, so the rostering entities must all still be there.
+        # Deep-merge replaces lists, so the rostering entities SD51 emits must all still be
+        # there. Family is deliberately absent (off for SD51 since 2026-09-25 — its contacts
+        # export has no email column; pinned in test_config.py::test_sd51_does_not_enable_family).
         assert set(enabled) == {
             "Students",
             "Staff",
-            "Family",
             "Classes",
             "Enrollments",
             "StudentAttendance",

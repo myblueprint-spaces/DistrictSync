@@ -183,7 +183,11 @@ States:
 - **Part of the sync was skipped** *(the reader ships in plan 0053 S3; a run can only produce this
   state from S4, when a problem with one isolatable file stops leaving the whole roster undelivered)*
   — a completed run that left one of its files out: "Your roster synced without family contacts"
-  WARNING, routed to Run History, with what to re-export. It is derived from that run's own record,
+  WARNING, routed to Run History, with what to re-export. Since plan 0053 S8 (owner decision D5) a
+  file that was simply produced EMPTY reads the same way — every row filtered out, or a column the
+  mapping reads missing from its export, on any file; its export missing or empty, on any file but
+  attendance rows (absence files arrive only on nights with absences, so that night stays green) —
+  and the detail closes with what would change it. It is derived from that run's own record,
   so it repeats every night the file stays broken, and a later "deliver the saved files" does not
   turn it green. It outranks the smaller-than-usual anomaly and keeps any data-warning count as a
   second sentence.
@@ -211,7 +215,8 @@ States:
   The path is app-owned config (never student PII), so it lives at the view layer and never enters the
   PII-free result model.
 - **Part of the sync was skipped** *(produced from plan 0053 S4)* — a completed conversion that left
-  one of its files out reads as a WARNING with Home's exact wording, never as a clean conversion.
+  one of its files out (or, since S8, produced one empty for a reason that warns) reads as a WARNING
+  with Home's exact wording, never as a clean conversion.
 - **Error** — a category card worded from the failure's TYPE (plan 0053 S3), never its message: the
   same words Home and Run History use for that category, with only a missing or unreadable input
   pointing at the input folder, and a closing line that says nothing new was saved (or nothing was
@@ -228,7 +233,9 @@ warnings count, and a plain duration. A raw error cannot be rendered because the
 States:
 - **Empty** — no runs yet: a calm WARNING.
 - **Part of the sync was skipped** *(produced from plan 0053 S4)* — the banner carries Home's exact
-  wording and the row reads "Delivered · 1 file skipped" (or "Completed · …" when nothing was sent).
+  wording and the row reads "Delivered · 1 file skipped" (or "Completed · …" when nothing was sent) —
+  for a file left out by a problem and, since plan 0053 S8, for one produced empty for a reason
+  that warns.
 - **Degraded** — history unavailable (log unreadable): a calm WARNING, not red.
 - **Error** — the never-crash `ErrorCard` floor.
 
