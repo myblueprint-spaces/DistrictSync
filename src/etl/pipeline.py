@@ -276,7 +276,7 @@ def observe_source_columns(
     """
     try:
         vocabularies = label_vocabulary_by_entity(config)
-    except Exception as exc:  # noqa: BLE001 — labels are advisory; never enforces (failure-policy §8, P11)
+    except Exception as exc:  # noqa: BLE001 — advisory only; labels never enforce (failure-policy §8, P11)
         logger.debug("Label vocabulary skipped (%s)", type(exc).__name__)
         vocabularies = {}
     for entity, vocabulary in vocabularies.items():
@@ -284,12 +284,12 @@ def observe_source_columns(
             continue
         try:
             ledger.note_label_vocabulary(entity, vocabulary)
-        except Exception as exc:  # noqa: BLE001 — one entity's vocabulary never costs another's (P11)
+        except Exception as exc:  # noqa: BLE001 — advisory only; one entity's vocabulary never costs another's (P11)
             logger.debug("Label vocabulary skipped for %s (%s)", entity, type(exc).__name__)
 
     try:
         findings = missing_columns_by_entity(config, observed_input_columns(raw_data))
-    except Exception as exc:  # noqa: BLE001 — source observation never enforces (failure-policy §10, P11)
+    except Exception as exc:  # noqa: BLE001 — advisory only; source observation never enforces (failure-policy §10, P11)
         logger.debug("Source-column observation skipped (%s)", type(exc).__name__)
         return
     for entity, columns in findings.items():
@@ -298,7 +298,7 @@ def observe_source_columns(
         try:
             ledger.note_missing_mapped(entity, columns)
             logger.warning(_MAPPED_COLUMNS_MISSING_LOG_FORMAT, entity, ", ".join(f"'{column}'" for column in columns))
-        except Exception as exc:  # noqa: BLE001 — one entity's observation never costs another's (P11)
+        except Exception as exc:  # noqa: BLE001 — advisory only; one entity's observation never costs another's (P11)
             logger.debug("Source-column observation skipped for %s (%s)", entity, type(exc).__name__)
 
 
@@ -670,7 +670,7 @@ def _previous_row_count(prev_path: Path) -> int | None:
     try:
         with open(prev_path, encoding="utf-8") as f:
             return sum(1 for _ in f) - 1
-    except Exception:  # noqa: BLE001 - any read failure means "unreadable baseline"; the caller warns loudly
+    except Exception:  # noqa: BLE001 — total by contract; any read failure means "unreadable baseline" and the caller warns loudly
         return None
 
 
@@ -911,7 +911,7 @@ def _store_run_record(record: dict[str, Any], *, source: str, dry_run: bool) -> 
         return False
     try:
         return write_run_record(record, source=source)
-    except Exception as exc:  # noqa: BLE001 - the store is a best-effort sink; it must never propagate
+    except Exception as exc:  # noqa: BLE001 — best-effort side effect; the store must never propagate
         logger.warning("Run-history store write raised unexpectedly (%s); the run is in the diagnostic log", exc)
         return False
 
@@ -950,7 +950,7 @@ def _record_early_failure(
         _log_run_record(record, error=error)  # rich free-text error → LOG only
         # store carries error_category only — and nothing at all for a dry run
         _store_run_record(record, source=source, dry_run=dry_run)
-    except Exception as record_exc:  # noqa: BLE001 - recording must never block the early exit
+    except Exception as record_exc:  # noqa: BLE001 — best-effort side effect; recording must never block the early exit
         logger.error(f"Failed to record the failed run ({record_exc}); exiting anyway")
 
 
@@ -1314,7 +1314,7 @@ def run_pipeline(
 
     except SystemExit:
         raise
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — re-raised; the failure is recorded to both sinks first
         elapsed = time.monotonic() - t0
         logger.error(f"Pipeline failed: {e}")
         # Record the failure to BOTH sinks — but recording must NEVER raise and mask the
@@ -1339,7 +1339,7 @@ def run_pipeline(
             _log_run_record(record, error=str(e))  # rich free-text error → LOG only
             # store carries error_category only — and nothing at all for a dry run
             _store_run_record(record, source=resolved_source, dry_run=dry_run)
-        except Exception as record_exc:  # noqa: BLE001 - recording must never mask the ETL failure
+        except Exception as record_exc:  # noqa: BLE001 — best-effort side effect; recording must never mask the ETL failure
             logger.error(f"Failed to record the failed run ({record_exc}); re-raising the original error")
         raise
 
@@ -1421,10 +1421,10 @@ def _sftp_upload(
         # upload_csvs returned an empty list (e.g. no CSVs found) — treat as failure
         logger.error(f"SFTP upload FAILED — output files were NOT delivered to {host} (no files were transferred)")
         return False
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — failure returned as a result; logged at ERROR, the caller exits 3
         try:
             host = AppConfig.load().sftp_host or "<unknown host>"
-        except Exception:
+        except Exception:  # noqa: BLE001 — total by contract; the host name only decorates the error line
             host = "<unknown host>"
         logger.error(f"SFTP upload FAILED — output files were NOT delivered to {host}: {e}")
         return False
@@ -1458,7 +1458,7 @@ def _print_diff(outputs: dict[str, pd.DataFrame], output_path: str) -> None:
 
         try:
             old_df = pd.read_csv(existing_path)
-        except Exception:
+        except Exception:  # noqa: BLE001 — total by contract; --diff reports an unreadable file and moves on
             print(f"  {name}: could not read existing file")
             continue
 

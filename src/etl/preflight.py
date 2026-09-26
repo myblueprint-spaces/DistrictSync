@@ -388,7 +388,7 @@ def _email_format_columns(spec: FieldEmailFormat) -> list[str]:
     names: list[str] = []
     try:
         parsed = list(Formatter().parse(str(spec.format)))
-    except Exception as exc:  # noqa: BLE001 — a malformed template is the transformer's error to raise
+    except Exception as exc:  # noqa: BLE001 — total by contract; a malformed template is the transformer's error to raise
         logger.debug(f"Pre-flight: unparseable email format template ({type(exc).__name__})")
         parsed = []
     for _literal, field_name, _format_spec, _conversion in parsed:

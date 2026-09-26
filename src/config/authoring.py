@@ -1007,6 +1007,6 @@ def current_digest(sis_id: str) -> str | None:
     """
     try:
         return resolved_digest(load_config(sis_id))
-    except Exception:  # noqa: BLE001 - TOTAL by contract; any load failure means "not current"
+    except Exception:  # noqa: BLE001 — total by contract; any load failure means "not current"
         logger.debug("Could not compute the resolved digest for config '%s'.", sis_id)
         return None

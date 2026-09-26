@@ -107,12 +107,33 @@ select = [
     "UP",   # pyupgrade
     "B",    # flake8-bugbear
     "SIM",  # flake8-simplify
+    "BLE",  # flake8-blind-except — scoped to the ETL/config/history/quality layers below
 ]
 ignore = [
     "E501",   # line too long (handled by formatter)
     "B905",   # zip strict (Python 3.10+)
     "SIM108", # ternary operator (readability preference)
 ]
+
+# Plan 0053 S13a (failure-policy §11, P16): a broad `except Exception` is a DECISION in the
+# ETL, config, history and quality layers, so there every one carries
+# `# noqa: BLE001 — <reason>` from the closed vocabulary in tests/test_architecture_fitness.py
+# (which also pins that each such handler is annotated — ruff alone skips a handler that
+# re-raises or logs). Everywhere else (the UI's never-crash floors, scheduler, SFTP, the CLI
+# and the tests) BLE is not enforced. A new top-level package under src/ gets ruff's BLE check
+# by default, but not rule (f)'s reason-vocabulary check until it is added to LAYER_ROOTS in
+# tests/test_architecture_fitness.py.
+[tool.ruff.lint.per-file-ignores]
+# Explicit names, never "src/*.py": ruff's `*` crosses `/`, so that glob would silently
+# exempt every in-scope layer too (measured on ruff 0.15.10).
+"src/main.py" = ["BLE"]
+"src/__init__.py" = ["BLE"]
+"src/scheduler/**" = ["BLE"]
+"src/sftp/**" = ["BLE"]
+"src/ui_flet/**" = ["BLE"]
+"src/utils/**" = ["BLE"]
+"tests/**" = ["BLE"]
+"scripts/**" = ["BLE"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["src"]

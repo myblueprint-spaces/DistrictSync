@@ -56,8 +56,10 @@ jobs:
       # bundled ones (mbp_all, mbp_core, mbponly, sd51attendance), while CLAUDE.md
       # claimed all 11. 7 + 4 = 11. The count is PINNED so a deleted or unregistered
       # config fails loudly instead of silently shrinking the sweep; a bare glob
-      # without the pin would not. Keep EXPECTED_CONFIGS in lockstep with the
-      # Makefile's `validate-config` list.
+      # without the pin would not. EXPECTED_CONFIGS is a LOCKSTEP COPY of
+      # tests/_pins.py BUNDLED_CONFIG_COUNT (this workflow cannot import it) and of
+      # the Makefile's `validate-config` list; tests/test_config_count_pin.py reads
+      # this step from the parsed YAML and fails if they disagree (plan 0053 S13a).
       - name: Validate all mapping configs
         run: |
           python - <<'PY'

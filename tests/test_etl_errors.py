@@ -5,8 +5,9 @@ Pins, each with the twin that proves it can fail:
 * every concrete ``EtlError`` leaf under ``src`` carries a bounded category (a recursive
   walk, so a new leaf without one is RED);
 * classification is by TYPE only — a message that SAYS "No usable required input" is
-  not ``no_input`` unless the exception is a ``NoUsableInputError`` — and the classifier
-  body contains no ``str(`` call and no string-``in`` test (AST, non-vacuous);
+  not ``no_input`` unless the exception is a ``NoUsableInputError``; the AST pin that the
+  classifier body reads no text moved to ``tests/test_architecture_fitness.py`` rule (e)
+  (plan 0053 S13a), widened to every exception classifier;
 * ``RunErrorCategory`` lives in ``src.etl.errors`` alone — no ``from src.etl.pipeline
   import RunErrorCategory`` anywhere (AST, because a grep misses a parenthesised block);
 * the persisted value of every category is its plain ``.value`` in BOTH the store's
@@ -19,13 +20,11 @@ from __future__ import annotations
 
 import ast
 import importlib
-import inspect
 import json
 import logging
 import pkgutil
 import re
 import sqlite3
-import textwrap
 from collections.abc import Callable
 from pathlib import Path
 
@@ -35,7 +34,6 @@ import pytest
 import src.etl
 import src.etl.extractor as extractor_module
 import src.etl.pipeline as pipeline_module
-from src.etl import errors
 from src.etl.errors import (
     ConfigLoadError,
     EtlError,
@@ -262,40 +260,6 @@ class TestClassifyByTypeOnly:
         assert classify_error_category(fault) is RunErrorCategory.INCOMPLETE_ROSTER
         assert classify_error_category(OutputWriteError("x")) is RunErrorCategory.OUTPUT
         assert classify_error_category(ConfigLoadError("x")) is RunErrorCategory.CONFIG
-
-
-def _text_reading_nodes(func_source: str, name: str) -> list[str]:
-    """Every ``str(`` call and every ``<str const> in …`` / ``… in <str const>`` in ``name``."""
-    tree = ast.parse(textwrap.dedent(func_source))
-    funcs = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == name]
-    assert len(funcs) == 1, f"{name} not found — the pin would be vacuous"
-    hits: list[str] = []
-    for node in ast.walk(funcs[0]):
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "str":
-            hits.append(f"str( call at line {node.lineno}")
-        if isinstance(node, ast.Compare) and any(isinstance(op, (ast.In, ast.NotIn)) for op in node.ops):
-            operands = [node.left, *node.comparators]
-            if any(isinstance(o, ast.Constant) and isinstance(o.value, str) for o in operands):
-                hits.append(f"string membership test at line {node.lineno}")
-    return hits
-
-
-class TestTheClassifierReadsNoText:
-    def test_classify_error_category_has_no_str_call_and_no_substring_test(self):
-        source = inspect.getsource(errors.classify_error_category)
-        assert _text_reading_nodes(source, "classify_error_category") == []
-
-    def test_the_twin_the_retired_text_matching_classifier_is_caught(self):
-        """Non-vacuity: the pre-S1 classifier's shape trips BOTH detectors."""
-        retired = """
-        def classify_error_category(exc):
-            if isinstance(exc, RuntimeError) and "No usable required input" in str(exc):
-                return "no_input"
-            return "unknown"
-        """
-        hits = _text_reading_nodes(retired, "classify_error_category")
-        assert any(h.startswith("str(") for h in hits)
-        assert any(h.startswith("string membership") for h in hits)
 
 
 # --------------------------------------------------------------------------- #

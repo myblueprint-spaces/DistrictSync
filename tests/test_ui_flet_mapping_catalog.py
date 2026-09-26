@@ -37,6 +37,7 @@ from src.ui_flet.mapping_catalog import (
 )
 from src.ui_flet.schedule_status import ScheduleState
 from src.utils.paths import bundle_mappings_dir
+from tests._pins import BUNDLED_CONFIG_COUNT
 
 
 @pytest.fixture()
@@ -701,7 +702,7 @@ def test_every_bundled_config_can_name_its_own_roster_size(bundle_dir: Path) -> 
     from src.ui_flet.home_status import SIZE_NOUNS, size_clause
 
     ids = available_configs(bundle_dir)
-    assert len(ids) == 20, f"the bundled config count moved ({len(ids)}) — keep this pin in lockstep"
+    assert len(ids) == BUNDLED_CONFIG_COUNT, f"the bundled config count moved ({len(ids)}) — keep this pin in lockstep"
 
     # A record where EVERY entity key is non-zero and DISTINCT, so the entity the clause chose
     # is identifiable from the number it printed.
@@ -781,7 +782,9 @@ class TestOrigin:
         assert set(rows.values()) <= {"user", "bundled"}
         assert rows[custom_overlay] == "user"
         assert [sis for sis, origin in rows.items() if origin == "user"] == [custom_overlay]
-        assert len(rows) == 21, f"the shipped 20 plus the overlay; got {sorted(rows)}"
+        assert len(rows) == BUNDLED_CONFIG_COUNT + 1, (
+            f"the shipped {BUNDLED_CONFIG_COUNT} plus the overlay; got {sorted(rows)}"
+        )
 
     def test_an_explicit_config_dir_reports_bundled(self, custom_overlay: str) -> None:
         """The loader's own rule, ASSERTED rather than assumed: one dir cannot express a tier.
@@ -981,7 +984,7 @@ class TestTheCatalogInvalidationRule:
 
         before = {s.sis_type for s in catalog()}
         assert "sd93custom" not in before
-        assert len(before) == 20, "the positive twin: the build really did read the shipped catalog"
+        assert len(before) == BUNDLED_CONFIG_COUNT, "the positive twin: the build really did read the shipped catalog"
 
         write_overlay(
             OverlaySpec(
@@ -999,7 +1002,7 @@ class TestTheCatalogInvalidationRule:
 
         after = {s.sis_type for s in catalog()}
         assert "sd93custom" in after
-        assert len(after) == 21
+        assert len(after) == BUNDLED_CONFIG_COUNT + 1
 
     def test_a_deleted_overlay_also_needs_the_invalidation(self, custom_overlay: str) -> None:
         """The same rule on the delete side — ``delete_overlay`` does not clear the memo

@@ -578,28 +578,22 @@ print('OK:', cfg.sis, cfg.version)
 
 ---
 
-## Step 5 — Add to the CI validation list
+## Step 5 — Add to the CI validation list and bump the config count
 
-Open `Makefile` and add the new config to the `validate-config` target:
+CI **discovers** configs (`available_configs()` over `config/mappings/`), so there is no per-config line to add to `.github/workflows/ci.yml`. What is hand-kept is the COUNT, spelled once for the tests and copied to three places the tests cannot import it into. Update all four in the same change:
 
-```makefile
-validate-config:
-	python -c "from src.config.loader import load_config; load_config('myedbc')"
-	python -c "from src.config.loader import load_config; load_config('sd48myedbc')"
-	python -c "from src.config.loader import load_config; load_config('sd51myedbc')"
-	python -c "from src.config.loader import load_config; load_config('sd74myedbc')"
-	python -c "from src.config.loader import load_config; load_config('sd99myedbc')"   # add this
-	@echo "All configs valid."
-```
+1. **The Makefile.** Add the name to the list in the `validate-config` recipe — one `python -c` line holding a single list comprehension:
 
-Also add the config name to the `validate-config` step in `.github/workflows/ci.yml` so it runs in CI on every pull request:
+   ```makefile
+   validate-config:
+   	python -c "from src.config.loader import load_config; [(load_config(n), print(n+': OK')) for n in ['myedbc', ..., 'sd51attendance','sd99myedbc']]"
+   ```
 
-```yaml
-- name: Validate configs
-  run: |
-    python -c "from src.config.loader import load_config; load_config('myedbc')"
-    python -c "from src.config.loader import load_config; load_config('sd99myedbc')"  # add this
-```
+2. **`tests/_pins.py`.** Bump `BUNDLED_CONFIG_COUNT` by one. It is the ONE spelling of the count under `tests/`; no other test may carry a numeric config-count literal.
+3. **`.github/workflows/ci.yml`.** Bump `EXPECTED_CONFIGS` in the "Validate all mapping configs" step.
+4. **`CLAUDE.md`.** Update the count in its "validates all N configs", "Total: N bundled configs", "pinned N-config count" and "pinned at N" sentences.
+
+`tests/test_config_count_pin.py` (the Makefile list's length and set against discovery, the `ci.yml` literal read from the parsed YAML, the four `CLAUDE.md` sentences, and a scan of `tests/` for a stray count literal) and `tests/test_config_version_gate.py` (discovery against the pin) enforce all of them — a missed copy is a red test, not a silent drift.
 
 ---
 

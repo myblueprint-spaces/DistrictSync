@@ -921,7 +921,7 @@ class BaseTransformer(ABC):
                 # transform) is a decision already made about scope — it must
                 # reach the orchestrator, never be demoted to a blank column.
                 raise
-            except Exception as ex:
+            except Exception as ex:  # noqa: BLE001 — field-map isolation; column-level, recorded to data_errors
                 # Column-level error (unknown transform or any structural
                 # failure). Blank the column, record loudly, continue — never
                 # silently swallow, never fail the run.
@@ -956,7 +956,7 @@ class BaseTransformer(ABC):
                 out.append(func(value))
             except EtlError:
                 raise  # typed: never demoted to a blank cell (see ``apply_field_map``)
-            except Exception as ex:  # noqa: BLE001 — per-row isolation; recorded below
+            except Exception as ex:  # noqa: BLE001 — field-map isolation; per-row, recorded below
                 out.append(pd.NA)
                 failures += 1
                 if not first_sample:

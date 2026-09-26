@@ -64,6 +64,7 @@ from src.etl.transformers.registry import TRANSFORMER_REGISTRY, source_column_ro
 from src.etl.transformers.staff import StaffTransformer
 from src.etl.transformers.student_courses import StudentCoursesTransformer
 from src.utils.paths import bundle_mappings_dir, user_mappings_dir
+from tests._pins import BUNDLED_CONFIG_COUNT
 
 LOADER_LOGGER = "src.config.loader"
 SIS = "sd99typo"
@@ -441,7 +442,7 @@ class TestBundledConfigsAreClean:
         ]
 
     def test_the_parametrisation_is_not_empty(self):
-        assert len(available_configs(bundle_mappings_dir())) >= 20
+        assert len(available_configs(bundle_mappings_dir())) >= BUNDLED_CONFIG_COUNT
 
 
 # --------------------------------------------------------------------------- #

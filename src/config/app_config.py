@@ -872,7 +872,7 @@ class AppConfig:
             from src.sftp import secret_store
 
             return secret_store.select_store().has_secret(self.sftp_host, self.sftp_username)
-        except Exception as exc:  # noqa: BLE001 - totality is the contract; the reason is logged
+        except Exception as exc:  # noqa: BLE001 — total by contract; the reason is logged
             # ``has_secret`` is total by its own contract; this guards the SELECTION (a
             # refused profile, an import failure) so the method's promise does not depend
             # on another module keeping its. Logged, never silently swallowed.
@@ -948,7 +948,7 @@ def _pruned_verified_configs(verified: dict[str, str]) -> dict[str, str]:
             resolved = resolve_config_path(sis_id)
             if resolved is not None and resolved.origin == "user":
                 kept[sis_id] = digest
-    except Exception as exc:  # noqa: BLE001 — a tidy-up may never block a settings write
+    except Exception as exc:  # noqa: BLE001 — best-effort side effect; a tidy-up may never block a settings write
         logger.debug("Could not check which tested configs still exist (%s); none were pruned.", exc)
         return dict(verified)
     dropped = len(verified) - len(kept)

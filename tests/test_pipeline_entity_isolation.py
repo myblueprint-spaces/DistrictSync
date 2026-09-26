@@ -14,18 +14,17 @@ and Convert. What it must do, each with the twin that proves the mechanism fires
   archived) has decayed: the G11 claim, measured here rather than code-read;
 * **nothing built ⇒ the first isolated failure fails the run** — its own exception and
   category, never the vaguer ``no_output``; the two-entity twin completes PARTIAL;
-* ``BaseException`` is never contained;
-* **AST pins** — exactly one broad handler in ``run_transform`` (the bulkhead, reasoned
-  ``noqa``), and no broad handler anywhere under ``src/etl/transformers`` outside the
-  field-map engine (``apply_field_map`` / ``_apply_transform_resilient``) — a transformer
-  RAISES, it never catches to continue (P2).
+* ``BaseException`` is never contained.
+
+The AST pins that used to live here — exactly one broad handler in ``run_transform`` and none
+under ``src/etl/transformers`` outside the field-map engine — moved, unchanged in strength, to
+``tests/test_architecture_fitness.py`` rule (d) (plan 0053 S13a).
 
 All data is synthetic (the ``tests/test_contract.py`` builders).
 """
 
 from __future__ import annotations
 
-import ast
 import hashlib
 import logging
 import traceback
@@ -60,14 +59,6 @@ from tests.test_contract import (
     _write_daily_absences,
     _write_period_absences,
 )
-
-_REPO = Path(__file__).resolve().parents[1]
-_PIPELINE = _REPO / "src" / "etl" / "pipeline.py"
-_TRANSFORMERS_DIR = _REPO / "src" / "etl" / "transformers"
-
-#: The two functions of the field-map engine allowed a broad handler: per-cell and per-column
-#: isolation, each RECORDED to the run's data errors (failure-policy §2 scope ladder).
-_FIELD_MAP_ENGINE = frozenset({"apply_field_map", "_apply_transform_resilient"})
 
 
 def _create_sd51_with_attendance_inputs(d: Path) -> None:
@@ -425,88 +416,3 @@ def test_a_dry_run_prints_the_left_out_entity_in_a_distinct_shape(tmp_path: Path
     assert not any(line.startswith("  Family:") for line in out.splitlines())
     for entity in ("Students", "Staff", "Classes", "Enrollments"):
         assert any(line.startswith(f"  {entity}: ") and " rows, columns: " in line for line in out.splitlines())
-
-
-# --------------------------------------------------------------------------- #
-# AST pins                                                                      #
-# --------------------------------------------------------------------------- #
-def _is_broad(handler: ast.ExceptHandler) -> bool:
-    """A handler that catches everything an entity transform could raise (or more)."""
-    names: list[ast.expr] = []
-    if handler.type is None:
-        return True
-    names = list(handler.type.elts) if isinstance(handler.type, ast.Tuple) else [handler.type]
-    return any(isinstance(n, ast.Name) and n.id in {"Exception", "BaseException"} for n in names)
-
-
-def _broad_handlers_in(source: str, function: str) -> list[ast.ExceptHandler]:
-    tree = ast.parse(source)
-    func = next(
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name == function
-    )
-    return [node for node in ast.walk(func) if isinstance(node, ast.ExceptHandler) and _is_broad(node)]
-
-
-def _broad_handlers_outside(source: str, allowed: frozenset[str]) -> list[tuple[str, int]]:
-    """``(enclosing function, line)`` for every broad handler NOT inside an ``allowed`` function."""
-    tree = ast.parse(source)
-    found: list[tuple[str, int]] = []
-
-    def visit(node: ast.AST, enclosing: str) -> None:
-        for child in ast.iter_child_nodes(node):
-            name = child.name if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef) else enclosing
-            if isinstance(child, ast.ExceptHandler) and _is_broad(child) and enclosing not in allowed:
-                found.append((enclosing, child.lineno))
-            visit(child, name)
-
-    visit(tree, "<module>")
-    return found
-
-
-class TestTheOneBoundary:
-    def test_run_transform_has_exactly_one_broad_handler_and_it_is_the_bulkhead(self) -> None:
-        source = _PIPELINE.read_text(encoding="utf-8")
-        handlers = _broad_handlers_in(source, "run_transform")
-        assert len(handlers) == 1, "failure-policy §11: exactly ONE entity-scope broad handler, in run_transform"
-        (bulkhead,) = handlers
-        assert isinstance(bulkhead.type, ast.Name) and bulkhead.type.id == "Exception", "never BaseException"
-        line = source.splitlines()[bulkhead.lineno - 1]
-        assert "noqa: BLE001 — entity bulkhead, failure-policy §2" in line
-        # Its CRITICAL branch re-raises BARE — the same object, never a wrapped one.
-        assert any(isinstance(n, ast.Raise) and n.exc is None for n in ast.walk(bulkhead))
-
-    def test_negative_twin_a_second_broad_handler_is_counted(self) -> None:
-        doctored = _PIPELINE.read_text(encoding="utf-8").replace(
-            "    transformer = DataTransformer()\n",
-            "    try:\n        transformer = DataTransformer()\n    except Exception:\n        raise\n",
-            1,
-        )
-        assert len(_broad_handlers_in(doctored, "run_transform")) == 2
-
-    def test_no_transformer_catches_broadly_outside_the_field_map_engine(self) -> None:
-        offenders = {
-            path.name: _broad_handlers_outside(path.read_text(encoding="utf-8"), _FIELD_MAP_ENGINE)
-            for path in sorted(_TRANSFORMERS_DIR.glob("*.py"))
-        }
-        assert {name: found for name, found in offenders.items() if found} == {}, (
-            "failure-policy §2: a transformer RAISES; only run_transform decides entity scope"
-        )
-
-    def test_positive_twin_the_sweep_finds_the_engines_two_handlers(self) -> None:
-        base = (_TRANSFORMERS_DIR / "base.py").read_text(encoding="utf-8")
-        in_engine = [fn for fn in _FIELD_MAP_ENGINE if _broad_handlers_in(base, fn)]
-        assert sorted(in_engine) == sorted(_FIELD_MAP_ENGINE)
-        assert _broad_handlers_outside(base, frozenset()) != [], "with no allowance the sweep sees them"
-
-    def test_negative_twin_a_broad_handler_in_a_transformer_is_caught(self) -> None:
-        doctored = (
-            "class FamilyTransformer:\n"
-            "    def transform(self, df):\n"
-            "        try:\n"
-            "            return df\n"
-            "        except Exception:\n"
-            "            return None\n"
-        )
-        assert _broad_handlers_outside(doctored, _FIELD_MAP_ENGINE) == [("transform", 5)]
