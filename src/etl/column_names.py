@@ -17,6 +17,11 @@ TEACHER_NAME = "teacher name"
 
 # Schedule / timetable
 MASTER_TIMETABLE_ID = "master timetable id"
+#: The MyEd BC "School Year" column of a ``global_config.school_year_sources`` file — read by
+#: ``dates.determine_school_year_detailed`` and REQUIRED, once such a file has rows, by
+#: ``ClassTransformer._require_school_year_source`` (failure-policy §5 #41, owner ruling
+#: 2026-09-26). Not configurable: no mapping key renames it.
+SCHOOL_YEAR = "school year"
 
 # Staff roster
 STAFF_SOURCEID = "staff sourceid"
@@ -33,6 +38,17 @@ COURSE_TITLE = "title"
 
 # Commonly-joined columns
 LAST_NAME = "last name"
+
+# MyEd BC defaults of CONFIGURABLE source columns. Read ONLY as the ``default=`` of
+# ``src.etl.transformers.columns.resolve_source_column`` — the district mapping names the
+# column, and these apply when it names none (plan 0053 S9). ``STAFF_STATUS`` above is the
+# same kind of constant.
+STUDENT_NUMBER = "student number"  # demographic / contacts / course-history student id
+GRADE = "grade"  # demographic + schedule grade
+HOMEROOM = "homeroom"  # demographic homeroom
+TEACHER_ID = "teacher id"  # schedule / staff teacher id
+SECTION_LETTER = "section letter"  # schedule + ClassInformation section letter
+PRIMARY_TEACHER = "primary teacher"  # ClassInformation primary-teacher flag
 
 
 def normalize_column_name(name: str) -> str:

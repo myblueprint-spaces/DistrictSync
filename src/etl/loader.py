@@ -320,7 +320,7 @@ class DataLoader:
                     os.replace(dest, backup)  # move existing target aside (atomic)
                 applied.append((dest, backup))  # record BEFORE promote
                 os.replace(tmp_file, dest)  # promote staged file (atomic overwrite)
-        except Exception:
+        except Exception:  # noqa: BLE001 — re-raised; the rollback restores every original first, so it stays broad (failure-policy §11)
             for dest, backup in reversed(applied):
                 try:
                     dest.unlink(missing_ok=True)
@@ -535,6 +535,6 @@ class DataLoader:
             ordered.to_csv(output_file, index=False, encoding=encoding)
             label = "Staged" if staging else "Saved"
             logger.info(f"{label} {entity_name}.csv ({len(df)} rows) → {output_file}")
-        except Exception as ex:
+        except Exception as ex:  # noqa: BLE001 — re-raised; logs which CSV failed first
             logger.error(f"Failed to write {entity_name}.csv: {ex}")
             raise

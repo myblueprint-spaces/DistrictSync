@@ -2853,7 +2853,9 @@ def _deliver_ready_cfg(tmp_path, monkeypatch, *, sis_type, csv_names):
 def _built_result():
     from src.ui_flet.convert_result import ConvertResult, ConvertStatus
 
-    return ConvertResult(status=ConvertStatus.DELIVERED, entity_counts={"Students": 12})
+    return ConvertResult(
+        delivery_requested=False, entity_outcomes=None, status=ConvertStatus.DELIVERED, entity_counts={"Students": 12}
+    )
 
 
 def _convert_with_result(tmp_path, monkeypatch, *, sis_type, csv_names, result, on_navigate=None):
@@ -3037,7 +3039,13 @@ def test_a_switched_district_can_never_ship_another_districts_roster(tmp_path, m
 
     def _spy_deliver(sis: str) -> ConvertResult:
         shipped.append(sis)
-        return ConvertResult(status=ConvertStatus.DELIVERED_FROM_DISK, sftp_attempted=True, sftp_ok=True)
+        return ConvertResult(
+            delivery_requested=True,
+            entity_outcomes=None,
+            status=ConvertStatus.DELIVERED_FROM_DISK,
+            sftp_attempted=True,
+            sftp_ok=True,
+        )
 
     monkeypatch.setattr(convert_mod, "deliver_job", _spy_deliver)
 
@@ -3099,7 +3107,7 @@ class TestCheckRowFactory:
 def _unusable_output_result():
     from src.ui_flet.convert_result import ConvertResult, ConvertStatus
 
-    return ConvertResult(status=ConvertStatus.OUTPUT_FOLDER_UNUSABLE)
+    return ConvertResult(delivery_requested=False, entity_outcomes=None, status=ConvertStatus.OUTPUT_FOLDER_UNUSABLE)
 
 
 def test_output_folder_refusal_renders_the_band_and_a_routed_open_setup(tmp_path, monkeypatch):
@@ -3113,7 +3121,8 @@ def test_output_folder_refusal_renders_the_band_and_a_routed_open_setup(tmp_path
     that actually exists — "Open Setup", never "Open Settings".
     """
     from src.ui_flet.convert_result import ConvertResult as _CR
-    from src.ui_flet.convert_result import ConvertStatus, convert_error_copy, summarize
+    from src.ui_flet.convert_result import ConvertStatus, summarize
+    from src.ui_flet.failure_copy import error_card_copy
 
     routed: list[str] = []
     _tree, _page, result_slot = _convert_with_result(
@@ -3125,12 +3134,16 @@ def test_output_folder_refusal_renders_the_band_and_a_routed_open_setup(tmp_path
         on_navigate=routed.append,
     )
 
-    _verdict, headline, detail = summarize(_CR(status=ConvertStatus.OUTPUT_FOLDER_UNUSABLE))
+    _verdict, headline, detail = summarize(
+        _CR(status=ConvertStatus.OUTPUT_FOLDER_UNUSABLE, entity_outcomes=None, delivery_requested=False)
+    )
     assert _has_text_containing(result_slot, headline)
     assert _has_text_containing(result_slot, detail)
-    # NOT the never-crash floor (whose copy is the input-folder misattribution itself).
-    assert not _has_text_containing(result_slot, convert_error_copy()[0])
-    assert not _has_text_containing(result_slot, convert_error_copy()[1])
+    # NOT the generic on_error card (plan 0053 S3 retired the input-folder misattribution; the
+    # generic card is now the UNKNOWN category's copy, and this refusal must not render it).
+    generic_headline, generic_detail = error_card_copy(RuntimeError("x"), delivery_requested=False)
+    assert not _has_text_containing(result_slot, generic_headline)
+    assert not _has_text_containing(result_slot, generic_detail)
 
     button = _button_by_content(result_slot, "Open Setup")
     assert isinstance(button, ft.TextButton), "the fix action is the TEXT tier (contrast + one-primary)"
@@ -3153,7 +3166,9 @@ def test_output_folder_refusal_without_on_navigate_renders_no_button(tmp_path, m
         result=_unusable_output_result(),
     )
 
-    _verdict, headline, _detail = summarize(_CR(status=ConvertStatus.OUTPUT_FOLDER_UNUSABLE))
+    _verdict, headline, _detail = summarize(
+        _CR(status=ConvertStatus.OUTPUT_FOLDER_UNUSABLE, entity_outcomes=None, delivery_requested=False)
+    )
     assert _has_text_containing(result_slot, headline), "the verdict band stands without the button"
     assert not [c for c in _iter_controls(result_slot) if getattr(c, "content", None) == "Open Setup"]
 
@@ -3200,3 +3215,158 @@ def test_the_output_caption_stops_promising_a_write_then_restores_it(tmp_path, m
         "the refusal's wording must not survive onto a later successful run"
     )
     assert not _has_text_containing(tree, "We couldn't write to")
+
+
+# --------------------------------------------------------------------------- #
+# Plan 0053 S3 — the PARTIAL rung and category-aware failure copy, MOUNTED       #
+# --------------------------------------------------------------------------- #
+_S3_SENTINEL = r"SENTINEL_PII C:\secret"
+
+
+def _partial_record(**over):
+    """A completed, delivered run that left Family out (the Unity plain-report shape)."""
+    record = {
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "status": "success",
+        "sis_type": "sd48myedbc",
+        "error_category": "none",
+        "sftp_attempted": True,
+        "sftp_ok": True,
+        "anomalies": [],
+        "data_errors": {},
+        "Students": 667,
+        "Staff": 46,
+        "Family": 0,
+        "Classes": 147,
+        "Enrollments": 2738,
+        "entity_outcomes": {
+            "Students": {"kind": "built", "reason": "none", "rows": 667},
+            "Staff": {"kind": "built", "reason": "none", "rows": 46},
+            "Family": {"kind": "failed", "reason": "missing_source_column", "rows": 0},
+            "Classes": {"kind": "built", "reason": "none", "rows": 147},
+            "Enrollments": {"kind": "built", "reason": "none", "rows": 2738},
+        },
+    }
+    record.update(over)
+    return record
+
+
+def _home_over(monkeypatch, records):
+    from src.ui_flet.screens import home as home_screen
+
+    cfg = AppConfig(input_dir="/in", output_dir="/out", sis_type="sd48myedbc", setup_completed=True, identity_email="")
+    monkeypatch.setattr(home_screen, "read_run_records", lambda: records)
+    monkeypatch.setattr(home_screen, "_store_created_at", lambda: "2026-07-04T03:00:00")
+    monkeypatch.setattr(home_screen, "get_scheduler", lambda: MagicMock(supports_read_schedule=False))
+    return _assert_renders(lambda: build_home(MagicMock(), app_config=cfg, on_navigate=lambda _d: None), monkeypatch)
+
+
+def test_home_renders_the_partial_rung_as_a_toned_warning_with_one_filled_primary(monkeypatch):
+    tree = _home_over(monkeypatch, [_partial_record()])
+    assert getattr(tree.controls[1], "bgcolor", None) == tokens.color_status_warning_tint, (
+        "PARTIAL is the WARNING band, verdict-first"
+    )
+    assert _has_text(tree, "Your roster synced without family contacts")
+    filled = [c.content for c in _iter_controls(tree) if isinstance(c, ft.FilledButton)]
+    assert filled == ["Check Run History"], f"exactly one filled primary, the fix — got {filled}"
+
+
+def test_home_twin_the_same_run_with_every_entity_built_is_healthy(monkeypatch):
+    built = _partial_record()
+    built["entity_outcomes"]["Family"] = {"kind": "built", "reason": "none", "rows": 900}
+    tree = _home_over(monkeypatch, [built])
+    assert getattr(tree.controls[1], "bgcolor", None) == tokens.color_status_healthy_tint
+    assert not _has_text_containing(tree, "without family contacts")
+
+
+def test_home_renders_a_source_schema_failure_with_its_category_copy(monkeypatch):
+    from src.etl.errors import RunErrorCategory
+    from src.ui_flet.failure_copy import FAILED_CATEGORY_COPY
+
+    failed = _partial_record(status="failed", error_category="source_schema", error=_S3_SENTINEL)
+    tree = _home_over(monkeypatch, [failed])
+    assert getattr(tree.controls[1], "bgcolor", None) == tokens.color_status_failed_tint
+    assert _has_text_containing(tree, FAILED_CATEGORY_COPY[RunErrorCategory.SOURCE_SCHEMA][1])
+    assert not _has_text_containing(tree, "SENTINEL_PII")
+    assert not _has_text_containing(tree, "input folder")
+
+
+def test_run_history_renders_the_partial_banner_and_the_skipped_row_label(monkeypatch):
+    cfg = AppConfig(input_dir="/in", output_dir="/out", sis_type="sd48myedbc", setup_completed=True)
+    monkeypatch.setattr("src.ui_flet.screens.run_history.read_run_records", lambda *a, **k: [_partial_record()])
+    monkeypatch.setattr(
+        "src.ui_flet.screens.run_history.get_scheduler", lambda: MagicMock(supports_read_schedule=False)
+    )
+    tree = _assert_renders(lambda: build_run_history(MagicMock(), app_config=cfg), monkeypatch)
+    assert _has_text(tree, "Your roster synced without family contacts")
+    # ``_iter_controls`` does not descend into a DataTable's rows, so read the cells directly.
+    tables = _find(tree, ft.DataTable)
+    assert tables, "the run table must render"
+    cell_texts = [getattr(cell.content, "value", None) for table in tables for row in table.rows for cell in row.cells]
+    assert "Delivered · 1 file skipped" in cell_texts, cell_texts
+
+
+def test_convert_renders_a_partial_result_as_a_warning(tmp_path, monkeypatch):
+    from src.etl.outcomes import EntityOutcome, OutcomeReason
+    from src.ui_flet.convert_result import ConvertResult, ConvertStatus
+
+    outcomes = (
+        EntityOutcome.built("Students", 12),
+        EntityOutcome.failed("Family", OutcomeReason.MISSING_SOURCE_COLUMN),
+    )
+    result = ConvertResult(
+        delivery_requested=False,
+        status=ConvertStatus.DELIVERED,
+        entity_counts={"Students": 12},
+        entity_outcomes=outcomes,
+    )
+    tree, _page, result_slot = _convert_with_result(
+        tmp_path, monkeypatch, sis_type="sd74myedbc", csv_names=_ROSTERING_CSVS, result=result
+    )
+    assert _has_text(result_slot, "Your sync completed without family contacts")
+    assert any(getattr(c, "bgcolor", None) == tokens.color_status_warning_tint for c in _iter_controls(result_slot))
+    # The PARTIAL band adds no filled action: the screen's one primary stays where it was.
+    assert not _find(result_slot, ft.FilledButton), "the partial result must not add a filled primary"
+    assert [c.content for c in _find(tree, ft.FilledButton)].count("Convert now") == 1
+
+
+def _s3_exception(kind: str) -> BaseException:
+    from src.etl.errors import ConfigLoadError, GuardKind, SourceSchemaError
+
+    if kind == "source_schema":
+        return SourceSchemaError(
+            _S3_SENTINEL, entity="Family", columns=("Parent Auth / Guardian",), guard=GuardKind.PII_SCOPE
+        )
+    if kind == "config":
+        return ConfigLoadError(_S3_SENTINEL)
+    return ValueError(_S3_SENTINEL)
+
+
+@pytest.mark.parametrize("kind", ["source_schema", "config", "data"])
+def test_the_convert_crash_card_words_the_exceptions_category(tmp_path, monkeypatch, kind):
+    """``_on_error`` renders ``error_card_copy(exc)`` — by TYPE — and never the input folder."""
+    import src.ui_flet.screens.convert as convert_mod
+    from src.ui_flet.failure_copy import error_card_copy
+
+    exc = _s3_exception(kind)
+    _deliver_ready_cfg(tmp_path, monkeypatch, sis_type="sd74myedbc", csv_names=_ROSTERING_CSVS)
+    monkeypatch.setattr(convert_mod, "_sftp_credential_present", lambda _cfg: True)
+
+    def _raise(*_a, **_kw):
+        raise exc
+
+    monkeypatch.setattr(convert_mod, "convert_job", _raise)
+    captured: list = []
+    page = _driving_page(captured)
+    tree = build_convert(page)
+    _button_by_content(tree, "Convert now").on_click(None)
+    coro, args = captured[0]
+    asyncio.run(coro(*args))
+
+    headline, detail = error_card_copy(exc, delivery_requested=False)
+    card = tree.controls[-1]
+    assert _has_text(card, headline)
+    assert _has_text_containing(card, detail)
+    on_screen = " ".join(c.value for c in _iter_controls(card) if isinstance(getattr(c, "value", None), str))
+    assert "input folder" not in on_screen
+    assert "SENTINEL_PII" not in on_screen and "secret" not in on_screen

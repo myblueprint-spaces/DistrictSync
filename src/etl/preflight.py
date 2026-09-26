@@ -10,13 +10,29 @@ empty in every row. This module is the ONLY signal for that case; it is not the
 setup-time twin of the ``data_errors`` axis, which fires only where something
 RAISED.
 
-**Scope of the claim (deliberately file-agnostic).** A ``field_map`` entry
-names a COLUMN, never a file — ``Classes`` reads five source files and its
-entries name bare columns — so the only sound claim is "this column is not
-present in ANY of the files we loaded". Nothing here says which file a column
-should have been in, and nothing here resolves a transformer's own fallback
-(``base.resolve_column``'s ``default=``): those are transformer knowledge, and
-this layer stays config-only (CLAUDE.md → Configurable Columns).
+**Two claims, two scopes.** A ``field_map`` entry names a COLUMN, never a
+file — ``Classes`` reads five source files and its entries name bare columns.
+
+* :func:`missing_columns` / :func:`preflight_report` (the self-service creator's
+  report) make the FILE-AGNOSTIC claim "this column is not present in ANY of the
+  files we loaded", grouped across every entity that names it.
+* :func:`missing_columns_by_entity` (plan 0053 S6 — the run-time SOURCE
+  OBSERVATION, ``failure-policy.md`` §10, P11) makes the OWN-FILE claim "this
+  entity's mapped column is not in the file(s) THIS ENTITY reads": a header
+  present in another entity's file must not hide a miss in this one's (the
+  masking the file-agnostic union has — Family's contacts file lacking
+  ``Email Address`` while the staff file carries one). Which frames each entity's
+  field_map is actually read from is transformer knowledge, so it is declared
+  once, per entity, in :data:`OBSERVATION_SCOPE` (verified transformer by
+  transformer, and completeness-pinned against the registry).
+* :func:`label_vocabulary_by_entity` (plan 0053 S7, owner decision D4) derives,
+  from the SAME expectations and source-file list, each entity's config-declared
+  label vocabulary — what ``outcomes.safe_label`` checks a name against before
+  the record or the copy may print it.
+
+Nothing here resolves a transformer's own fallback (``columns.resolve_source_column``'s
+``default=``): that stays transformer knowledge, and this layer stays config-only
+(CLAUDE.md → Configurable Columns).
 
 **Purity.** No I/O, no ``pandas``, no ``pathlib``, no ``flet`` — it is handed an
 already-observed ``{filename -> headers}`` mapping (``PipelineResult.input_columns``)
@@ -40,8 +56,10 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from enum import StrEnum
 from string import Formatter
-from typing import Any
+from types import MappingProxyType
+from typing import Any, Final
 
 from src.config.models import (
     ConfiguredField,
@@ -55,6 +73,7 @@ from src.config.models import (
     ensure_field_mapping,
 )
 from src.etl.column_names import normalize_column_name
+from src.etl.outcomes import LabelVocabulary
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +85,73 @@ field to name. A parenthesised non-identifier keeps it distinguishable from a
 real contract field name — and these labels are internal grouping data that no
 admin-facing sentence prints (the wording layer reads ``entities`` only).
 """
+
+
+class ExpectationOrigin(StrEnum):
+    """Which part of an entity's config named an expected column.
+
+    The source observation (:func:`missing_columns_by_entity`) needs to tell the
+    three apart: a ``field_map`` or ``row_filters`` column is read from the
+    entity's OWN files, while a ``source_columns`` value is a documented
+    CROSS-FILE auxiliary read and is excluded from the own-file claim. Carried on
+    the expectation itself rather than as a parallel list, so the two can never
+    disagree.
+    """
+
+    FIELD_MAP = "field_map"
+    ROW_FILTER = "row_filter"
+    SOURCE_COLUMN = "source_column"
+
+
+class ObservationScope(StrEnum):
+    """Which observed headers an entity's mapped columns are compared against."""
+
+    OWN_FILES = "own_files"  # the union of the entity's OWN source files
+    ALL_FILES = "all_files"  # every loaded file: its field_map is also read from another entity's file
+    NO_CLAIM = "no_claim"  # its field_map values are not source reads at all
+
+
+OBSERVATION_SCOPE: Final[Mapping[str, ObservationScope]] = MappingProxyType(
+    {
+        # apply_field_map over its demographic frame (+ the email / enroll-status reads on that frame).
+        "Students": ObservationScope.OWN_FILES,
+        # apply_field_map over staff_info, or the staff_info + roster merge — both its own source_files.
+        # Its teacher-of-record rescue reads the timetable files, but never through a field_map value.
+        "Staff": ObservationScope.OWN_FILES,
+        # apply_field_map over its contacts frame; the student-number filter reads the same frame.
+        "Family": ObservationScope.OWN_FILES,
+        # Every field_map read is on schedule + course_info + staff_info, the demographic homeroom
+        # frame or class_info — all five are its own source_files.
+        "Classes": ObservationScope.OWN_FILES,
+        # Its `staff_id_col` (the field_map's id-role pair) is ALSO read from ClassInformation — a
+        # CLASSES source file — for the co-teacher rows (`_classinfo_coteacher_enrollments`, through
+        # the published class artifacts). A column legitimately present only there is not a miss.
+        "Enrollments": ObservationScope.ALL_FILES,
+        # apply_field_map over its one course_info frame.
+        "CourseInfo": ObservationScope.OWN_FILES,
+        # Output-keyed overrides resolve through the field_map and are read from its own history /
+        # selection / course_info frames; its auxiliary reads are `source_columns` (excluded anyway).
+        "StudentCourses": ObservationScope.OWN_FILES,
+        # Its field_map values are PLACEHOLDERS (the transformer builds rows directly and never calls
+        # apply_field_map); its real reads are `global_config.attendance.*`. Comparing a placeholder
+        # would be a false claim.
+        "StudentAttendance": ObservationScope.NO_CLAIM,
+    }
+)
+"""Per registry entity, where its field_map is actually READ from (plan 0053 S6).
+
+Verified transformer by transformer against ``src/etl/transformers/`` (DECISIONS
+2026-09-24, S6) and pinned complete against ``TRANSFORMER_REGISTRY`` by
+``tests/test_etl_preflight.py``. An entity not listed (a hand-dropped YAML's
+invention, run by ``DefaultTransformer`` over its PRIMARY frame only) is
+:attr:`ObservationScope.OWN_FILES` — the union of its own files is a superset of
+what it reads, so the default can only under-report, never invent.
+"""
+
+
+def observation_scope(entity: str) -> ObservationScope:
+    """:data:`OBSERVATION_SCOPE` for ``entity``; OWN_FILES for anything unlisted."""
+    return OBSERVATION_SCOPE.get(entity, ObservationScope.OWN_FILES)
 
 
 # ---------------------------------------------------------------------------
@@ -81,11 +167,17 @@ class ExpectedColumn:
     what a report quotes, because the admin compares it against their header
     row. Every COMPARISON goes through :func:`normalize_column_name`, never the
     stored spelling.
+
+    ``origin`` says which part of the config named it (see
+    :class:`ExpectationOrigin`). Its default, ``FIELD_MAP``, is the direction
+    that REPORTS: an expectation built without one is observed, never silently
+    excluded.
     """
 
     entity: str
     output_field: str
     source_column: str
+    origin: ExpectationOrigin = ExpectationOrigin.FIELD_MAP
 
 
 @dataclass(frozen=True)
@@ -151,8 +243,9 @@ def expected_columns(config: MappingConfig) -> tuple[ExpectedColumn, ...]:
 
     And which name none: ``FieldFixedValue`` / ``FieldAcademicYear`` (a literal
     names no column), the ``None`` auto-detect sentinel (its aliases are a SET —
-    naming one would be false), ``classify_field``'s warn-passthrough dict, and
-    any other shape.
+    naming one would be false), and any other shape. (A dict with no mapping
+    shape no longer reaches here as a dict: since plan 0053 S12 ``classify_field``
+    refuses it at load, and for a raw caller the ``ValueError`` is caught below.)
 
     Every derived name then passes ONE shape filter, :func:`_looks_like_header`: a
     VALIDATED config has already turned an unreadable field_map value into a string
@@ -187,7 +280,14 @@ def expected_columns(config: MappingConfig) -> tuple[ExpectedColumn, ...]:
         for role, raw_value in _mapping_items(entity, entity_cfg, "source_columns"):
             name = _clean(raw_value)
             if name:
-                expected.append(ExpectedColumn(entity=entity, output_field=role, source_column=name))
+                expected.append(
+                    ExpectedColumn(
+                        entity=entity,
+                        output_field=role,
+                        source_column=name,
+                        origin=ExpectationOrigin.SOURCE_COLUMN,
+                    )
+                )
 
     # ONE shape filter over every derived expectation (field_map, row_filters AND
     # source_columns): a name that cannot be a header is a stringified junk value, not
@@ -220,7 +320,14 @@ def _row_filter_columns(entity: str, entity_cfg: Any) -> list[ExpectedColumn]:
             logger.debug(f"Pre-flight: unreadable row filter on {entity} ({type(exc).__name__})")
             continue
         if name:
-            found.append(ExpectedColumn(entity=entity, output_field=ROW_FILTER_FIELD, source_column=name))
+            found.append(
+                ExpectedColumn(
+                    entity=entity,
+                    output_field=ROW_FILTER_FIELD,
+                    source_column=name,
+                    origin=ExpectationOrigin.ROW_FILTER,
+                )
+            )
     return found
 
 
@@ -245,8 +352,9 @@ def _field_map_columns(raw: Any) -> list[str]:
         return []
 
     # A dict / typed variant from here on, so ``ensure_field_mapping`` can only
-    # return a structured variant or the warn-passthrough dict — the bare-string
-    # and ``None`` cases were both handled above.
+    # return a structured variant (or raise for a dict with no mapping shape —
+    # caught by the caller, total by contract) — the bare-string and ``None``
+    # cases were both handled above.
     spec = ensure_field_mapping(raw)
     if isinstance(spec, FieldEmailFormat):
         return _email_format_columns(spec)
@@ -263,9 +371,7 @@ def _field_map_columns(raw: Any) -> list[str]:
         return _non_blank(spec.status_column, spec.withdraw_date_column)
     if isinstance(spec, (FieldTransform, FieldAppendYear)):
         return _non_blank(spec.column)
-    # FieldFixedValue / FieldAcademicYear (a literal names no column) and
-    # classify_field's warn-passthrough dict (no usable column key by
-    # definition) — nothing, never a raise.
+    # FieldFixedValue / FieldAcademicYear (a literal names no column) — nothing.
     return []
 
 
@@ -282,7 +388,7 @@ def _email_format_columns(spec: FieldEmailFormat) -> list[str]:
     names: list[str] = []
     try:
         parsed = list(Formatter().parse(str(spec.format)))
-    except Exception as exc:  # noqa: BLE001 — a malformed template is the transformer's error to raise
+    except Exception as exc:  # noqa: BLE001 — total by contract; a malformed template is the transformer's error to raise
         logger.debug(f"Pre-flight: unparseable email format template ({type(exc).__name__})")
         parsed = []
     for _literal, field_name, _format_spec, _conversion in parsed:
@@ -454,3 +560,212 @@ def preflight_report(
         f"{checked_files} file(s) read ({checked_columns} distinct expected column(s) considered)"
     )
     return PreflightReport(missing=missing, checked_files=checked_files, checked_columns=checked_columns)
+
+
+# ---------------------------------------------------------------------------
+# The run-time source observation — OWN files, per entity (plan 0053 S6)
+# ---------------------------------------------------------------------------
+
+
+def missing_columns_by_entity(
+    config: MappingConfig,
+    input_columns: Mapping[str, Sequence[str]],
+) -> dict[str, tuple[str, ...]]:
+    """Per ACTIVE entity, its mapped columns absent from the file(s) it reads.
+
+    ``{entity: (source column in CONFIG spelling, ...)}`` in config order, deduped
+    on the normalised name (first spelling wins); an entity with nothing missing —
+    or about which no claim can be made — is absent. ``input_columns`` is the
+    run's raw observation (``pipeline.observed_input_columns``), keyed by the
+    config's spelling of each file.
+
+    **What is compared.** The entity's ``field_map`` and ``row_filters`` columns
+    (``ExpectationOrigin.FIELD_MAP`` / ``ROW_FILTER``); never its
+    ``source_columns``, which are documented cross-file auxiliary reads. They are
+    compared with the union of the normalised headers of the entity's OWN
+    ``source_files`` — with every loaded file for an
+    :attr:`ObservationScope.ALL_FILES` entity, and not at all for a
+    :attr:`ObservationScope.NO_CLAIM` one (see :data:`OBSERVATION_SCOPE`). A
+    headerless file carries its DECLARED headers here (the extractor injects
+    them), so its mapped columns match by construction.
+
+    **The soundness rule, per entity:** no claim unless EVERY one of the entity's
+    own source files was observed with a header row. A file absent from disk (an
+    empty tuple), an entity declaring no source file, or a header row that could
+    not be read in full all mean "we did not see what this entity reads" — and
+    under-reporting is the safe direction.
+
+    TOTAL: never raises; anything unreadable yields a SHORTER answer (``{}`` at
+    worst), logged at DEBUG without the value.
+    """
+    try:
+        observed = _observed_by_file(input_columns)
+        expected = expected_columns(config)
+        sources = _entity_source_files(config)
+    except Exception as exc:  # noqa: BLE001 — total by contract
+        logger.debug(f"Pre-flight: no per-entity observation ({type(exc).__name__})")
+        return {}
+
+    every_file: frozenset[str] = frozenset().union(*observed.values())
+    pools: dict[str, frozenset[str] | None] = {}
+    found: dict[str, list[str]] = {}
+    seen: dict[str, set[str]] = {}
+
+    for item in expected:
+        if item.origin is ExpectationOrigin.SOURCE_COLUMN:
+            continue
+        entity = item.entity
+        if entity not in pools:
+            pools[entity] = _pool_for(entity, sources.get(entity, ()), observed, every_file)
+        pool = pools[entity]
+        if pool is None:
+            continue
+        key = normalize_column_name(_clean(item.source_column))
+        already = seen.setdefault(entity, set())
+        if not key or key in pool or key in already:
+            continue
+        already.add(key)
+        found.setdefault(entity, []).append(_clean(item.source_column))
+
+    return {entity: tuple(columns) for entity, columns in found.items()}
+
+
+def label_vocabulary_by_entity(config: MappingConfig) -> dict[str, LabelVocabulary]:
+    """Per ACTIVE entity, the config-DECLARED names its outcome may carry as labels (plan 0053 S7).
+
+    Built on the same derivation as :func:`missing_columns_by_entity` — never a second
+    reading of the config:
+
+    * ``columns`` — the entity's ``field_map`` + ``row_filters`` expectations
+      (:func:`expected_columns`, so already through :func:`_looks_like_header`), in CONFIG
+      spelling (trimmed, never lowercased). Never its ``source_columns``: those are cross-file
+      auxiliary reads. Empty for an :attr:`ObservationScope.NO_CLAIM` entity, whose field_map
+      values are placeholders rather than columns it reads — naming one would be false
+      (except StudentAttendance, below);
+    * ``files`` — its configured ``source_files`` (config spelling, deduped);
+    * ``reads_own_files`` — :attr:`ObservationScope.OWN_FILES` only (except StudentAttendance,
+      below). An ALL_FILES entity
+      (Enrollments) may read a mapped column from ANOTHER entity's file, so its own file
+      must never be named beside that column.
+
+    **StudentAttendance** (NO_CLAIM — its field_map holds placeholders) reads its real columns
+    from ``global_config.attendance``'s band blocks, every one on its OWN source files; those
+    configured column names are its vocabulary (:func:`_attendance_band_columns`, since plan 0053
+    S13b — owner ruling 2026-09-26: an absent REQUIRED band column is named), and it reads its
+    own files. The single-file rule still decides whether a file can be named beside one.
+
+    Membership itself is decided in ONE place, ``outcomes.safe_label``; this only says what
+    the resolved config declares. TOTAL: never raises (``{}`` at worst — no labels).
+    """
+    try:
+        expected = expected_columns(config)
+        sources = _entity_source_files(config)
+    except Exception as exc:  # noqa: BLE001 — total by contract; no vocabulary names nothing
+        logger.debug(f"Pre-flight: no label vocabulary ({type(exc).__name__})")
+        return {}
+
+    vocabularies: dict[str, LabelVocabulary] = {}
+    for entity, files in sources.items():
+        scope = observation_scope(entity)
+        columns: frozenset[str] = frozenset()
+        reads_own_files = scope is ObservationScope.OWN_FILES
+        if scope is not ObservationScope.NO_CLAIM:
+            columns = frozenset(
+                _clean(item.source_column)
+                for item in expected
+                if item.entity == entity and item.origin is not ExpectationOrigin.SOURCE_COLUMN
+            ) - {""}
+        if entity == ATTENDANCE_ENTITY:
+            columns = _attendance_band_columns(config)
+            reads_own_files = True
+        vocabularies[entity] = LabelVocabulary(columns=columns, files=files, reads_own_files=reads_own_files)
+    return vocabularies
+
+
+#: The entity whose real reads are ``global_config.attendance``'s band columns rather than its
+#: field_map (:data:`OBSERVATION_SCOPE` — NO_CLAIM) — the registry key of
+#: ``StudentAttendanceTransformer``.
+ATTENDANCE_ENTITY: Final = "StudentAttendance"
+#: The band blocks of ``global_config.attendance`` and the key suffix that marks a COLUMN in
+#: them (``daily_authorized_col`` …; the other keys — ``category_map``, ``portion`` — are
+#: derivation knobs). ``tests/test_etl_outcome_labels.py`` pins that every key the transformer
+#: reads (``student_attendance._DAILY_KEYS`` / ``_PERIOD_KEYS``) carries the suffix, so the two
+#: cannot drift.
+ATTENDANCE_BANDS: Final = ("daily", "period")
+ATTENDANCE_COLUMN_KEY_SUFFIX: Final = "_col"
+
+
+def _attendance_band_columns(config: MappingConfig) -> frozenset[str]:
+    """Every column ``global_config.attendance``'s band blocks configure, in CONFIG spelling
+    (trimmed, never lower-cased). TOTAL: an unreadable block contributes nothing."""
+    try:
+        attendance = config.global_config.attendance or {}
+        names = {
+            _clean(value)
+            for band in ATTENDANCE_BANDS
+            if isinstance(attendance.get(band), dict)
+            for key, value in attendance[band].items()
+            if str(key).endswith(ATTENDANCE_COLUMN_KEY_SUFFIX) and isinstance(value, str)
+        }
+    except Exception as exc:  # noqa: BLE001 — total by contract; no vocabulary names nothing
+        logger.debug(f"Pre-flight: no attendance band vocabulary ({type(exc).__name__})")
+        return frozenset()
+    return frozenset(names) - {""}
+
+
+def _pool_for(
+    entity: str,
+    files: Sequence[str],
+    observed: Mapping[str, frozenset[str]],
+    every_file: frozenset[str],
+) -> frozenset[str] | None:
+    """The headers ``entity``'s columns are compared against — ``None`` means make no claim."""
+    scope = observation_scope(entity)
+    if scope is ObservationScope.NO_CLAIM or not files:
+        return None
+    if any(not observed.get(filename) for filename in files):
+        return None  # soundness: one of its own files was not seen with a header row
+    if scope is ObservationScope.ALL_FILES:
+        return every_file
+    return frozenset().union(*(observed[filename] for filename in files))
+
+
+def _entity_source_files(config: MappingConfig) -> dict[str, tuple[str, ...]]:
+    """Each ACTIVE entity's declared source filenames (config spelling)."""
+    active = config.active_entities()
+    files: dict[str, tuple[str, ...]] = {}
+    for entity_name, entity_cfg in list(config.mappings.items()):
+        if entity_name not in active:
+            continue
+        entity = str(entity_name)
+        names = [_clean(value) for _role, value in _mapping_items(entity, entity_cfg, "source_files")]
+        files[entity] = tuple(dict.fromkeys(name for name in names if name))
+    return files
+
+
+def _observed_by_file(input_columns: Mapping[str, Sequence[str]]) -> dict[str, frozenset[str]]:
+    """``{filename: its normalised headers}`` for every file whose header row was READ IN FULL.
+
+    A file that is absent, header-less, not a column sequence, or whose column list
+    raised part-way is left OUT ("not observed") rather than kept partial: a
+    partial header row would make every column it did not yield look missing.
+    """
+    try:
+        items = list(input_columns.items())
+    except Exception as exc:  # noqa: BLE001 — total by contract
+        logger.debug(f"Pre-flight: unreadable observed-column mapping ({type(exc).__name__})")
+        return {}
+
+    observed: dict[str, frozenset[str]] = {}
+    for filename, columns in items:
+        name = _clean(filename)
+        if not name or isinstance(columns, str) or not isinstance(columns, Iterable):
+            continue
+        try:
+            headers = frozenset(normalize_column_name(_clean(column)) for column in columns) - {""}
+        except Exception as exc:  # noqa: BLE001 — total by contract
+            logger.debug(f"Pre-flight: unreadable observed columns for one file ({type(exc).__name__})")
+            continue
+        if headers:
+            observed[name] = headers
+    return observed

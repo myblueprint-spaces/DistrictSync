@@ -21,7 +21,7 @@ which also pins that the side effect is STATED to the admin rather than done qui
 
 These are BOUNDED REGRESSION GUARDS, and this docstring says so rather than letting the
 green tick imply more. Each pins one specific escape route that is cheap to open by
-accident. Together they do not prove containment; they make the four most likely
+accident. Together they do not prove containment; they make the five most likely
 accidents loud:
 
 * **the layer ban** (static) — the identity field NAMES may not appear in the ETL,
@@ -33,6 +33,9 @@ accidents loud:
   is a deliberate act with a test to update, never a drive-by.
 * **the CLI pins** — `--sftp-show` grows no identity line, and `src.utils.identity` never
   enters the CLI's imported-module graph (G1: identity does not touch the nightly sync).
+* **the label pins** (plan 0053 S7) — an outcome's config-declared labels are the one place a
+  run record NAMES a column or file; an email- or path-shaped name never gets there, even when
+  the config itself declares it, and an OBSERVED header never does at all.
 
 Every absence-assertion here carries a POSITIVE twin, because "the canary was not found"
 is equally satisfied by a guard that works and by a mechanism that never ran.
@@ -166,6 +169,9 @@ FROZEN_RUN_RECORD_KEYS = frozenset(
         "CourseInfo",
         "StudentCourses",
         "StudentAttendance",
+        # plan 0053 S2 — the per-entity outcomes: entity NAMES + closed-set codes + row
+        # COUNTS only (never a column, a header, a path or an address).
+        "entity_outcomes",
     }
 )
 
@@ -185,6 +191,7 @@ def test_run_record_key_set_is_frozen() -> None:
         source="cli",
         sis_type="myedbc",
         error_category="none",
+        entity_outcomes=None,
     )
     assert set(record) == FROZEN_RUN_RECORD_KEYS
 
@@ -208,6 +215,7 @@ def test_store_column_set_is_frozen(isolated_user_profile: Path) -> None:
         source="cli",
         sis_type="myedbc",
         error_category="none",
+        entity_outcomes=None,
     )
     assert write_run_record(record, source="cli") is True  # positive twin: the DB exists
 
@@ -691,3 +699,99 @@ def test_the_graph_probe_can_detect_the_module(tmp_path: Path) -> None:
     graph = _module_graph("import src.main; import src.utils.identity", tmp_path)
 
     assert "src.utils.identity" in graph
+
+
+# --------------------------------------------------------------------------- #
+# 6. Config-declared labels (plan 0053 S7, owner decision D4)                  #
+# --------------------------------------------------------------------------- #
+_OBSERVED_SENTINEL_HEADER = "Zzsentinelobservedpupil"
+_POISON_COLUMN = "CANARY.GUARDIAN@leak-probe.invalid"  # email-shaped, yet config-DECLARED below
+_POISON_FILE = "C:\\Users\\canary-admin\\contacts.txt"  # path-shaped, yet config-DECLARED below
+_POISON_RELATIVE_FILE = "exports/canary-admin/contacts.txt"  # a relative path, yet config-DECLARED
+
+
+def _family_only_config(*, filter_column: str, filename: str):
+    """A Family-only config whose row filter names ``filter_column`` in ``filename``."""
+    from src.config.loader import load_config
+    from src.config.models import MappingConfig
+
+    base = load_config("myedbc").to_raw_dict()
+    return MappingConfig(
+        version="1.0",
+        sis="MyEducationBC",
+        district_name="Label probe",
+        global_config={**base["global_config"], "enabled_entities": ["Family"]},
+        mappings={
+            "Family": {
+                "source_files": {"emergency_contacts": filename},
+                "field_map": {"Email": "Email Address", "Student User ID": "Student Number"},
+                "row_filters": [{"column": filter_column, "include": ["Y"]}],
+            }
+        },
+    )
+
+
+def _family_record(config, filename: str) -> str:
+    """Drive the REAL observation + bulkhead + record builder; return the record as JSON."""
+    from src.etl.errors import SourceSchemaError
+    from src.etl.outcomes import OutcomeLedger
+    from src.etl.pipeline import configured_entity_order, observe_source_columns, run_transform
+
+    raw = config.to_raw_dict()
+    # The contacts file lacks the filter column, and carries a header the config never declared.
+    frame = pd.DataFrame({"email address": ["x"], "student number": ["1"], _OBSERVED_SENTINEL_HEADER.lower(): ["x"]})
+    ledger = OutcomeLedger(configured_entity_order(raw["mappings"], raw["global_config"]))
+    observe_source_columns(config, {filename: frame}, ledger)
+    with pytest.raises(SourceSchemaError):  # Family alone, nothing BUILT: the isolated failure is re-raised
+        run_transform({filename: frame}, raw["mappings"], raw["global_config"], ledger=ledger)
+    record = build_run_record(
+        status="failed",
+        elapsed=1.0,
+        entity_counts={},
+        source="cli",
+        sis_type="myedbc",
+        error_category="source_schema",
+        entity_outcomes=ledger.finalize_aborted(),
+    )
+    return json.dumps(record)
+
+
+def test_an_email_or_path_shaped_name_never_reaches_the_labels_even_when_declared(isolated_user_profile: Path) -> None:
+    from src.etl.preflight import label_vocabulary_by_entity
+
+    config = _family_only_config(filter_column=_POISON_COLUMN, filename=_POISON_FILE)
+    # Non-vacuity: both names ARE config-declared, so membership alone would have let them through.
+    vocabulary = label_vocabulary_by_entity(config)["Family"]
+    assert _POISON_COLUMN in vocabulary.columns and vocabulary.files == (_POISON_FILE,)
+    stored = _family_record(config, _POISON_FILE)
+    entry = json.loads(stored)["entity_outcomes"]["Family"]
+    assert (entry["kind"], entry["reason"]) == ("failed", "missing_source_column")
+    assert _POISON_COLUMN in entry["missing_mapped"]  # the raising column really was the poisoned one
+    # Neither label key is written: the address and the folder both fail `safe_label`'s shape rule.
+    assert "labels" not in entry and "file_label" not in entry
+    # The folder appears NOWHERE in the record. (The declared column still rides S6's
+    # `missing_mapped`, which is not a label and never reaches copy — see DECISIONS, plan 0053 S7.)
+    assert "canary-admin" not in stored
+    assert "leak-probe" not in json.dumps({k: v for k, v in entry.items() if k != "missing_mapped"})
+    assert _OBSERVED_SENTINEL_HEADER.lower() not in stored.lower()
+
+
+def test_a_declared_relative_path_never_becomes_a_file_label(isolated_user_profile: Path) -> None:
+    """``source_files`` is unvalidated: a hand-dropped YAML may declare a RELATIVE path. The
+    column beside it is clean and IS labelled (non-vacuity), but the folder never reaches the
+    record — a file label is a bare filename (S7-PQ-1)."""
+    filename = _POISON_RELATIVE_FILE
+    stored = _family_record(_family_only_config(filter_column="Parent Auth / Guardian", filename=filename), filename)
+    entry = json.loads(stored)["entity_outcomes"]["Family"]
+    assert entry["labels"] == ["Parent Auth / Guardian"]
+    assert "file_label" not in entry
+    assert "canary-admin" not in stored
+
+
+def test_the_twin_a_clean_declared_name_does_reach_the_record(isolated_user_profile: Path) -> None:
+    filename = "EmergencyContactInformation.txt"
+    stored = _family_record(_family_only_config(filter_column="Parent Auth / Guardian", filename=filename), filename)
+    entry = json.loads(stored)["entity_outcomes"]["Family"]
+    assert entry["labels"] == ["Parent Auth / Guardian"] and entry["file_label"] == filename
+    # The observed header is still absent — from the labels AND from everything else.
+    assert _OBSERVED_SENTINEL_HEADER.lower() not in stored.lower()

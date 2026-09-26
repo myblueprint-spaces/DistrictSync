@@ -215,6 +215,10 @@ GATE_PASSED_DETAIL = (
     "converts, and after that you can continue."
 )
 GATE_FAILED_HEADLINE = "The test conversion didn't finish"
+#: A test conversion that RAN TO THE END but left an entity unbuilt (plan 0053 S4): "didn't
+#: finish" would be false above a note that names what was left out. Selected by the pure
+#: gate's bounded ``GateOutcome.completed`` flag, never by matching the note.
+GATE_NOT_BUILT_HEADLINE = "The test conversion couldn't build every file"
 #: HOST-NEUTRAL (plan 0044 S6): "the step before this one" was true only in the wizard,
 #: whose Folders step precedes this one. Mapping hosts the same surface with no step order
 #: at all, so the note names the FOLDER and where it is set — never a step. The ROUTE to
@@ -1580,7 +1584,11 @@ def build_creator(  # pragma: no cover - Flet view glue
             )
         elif outcome.state is GateState.FAILED:
             test_rows.append(
-                components.HealthVerdictBanner(Verdict.FAILED, headline=GATE_FAILED_HEADLINE, detail=outcome.note)
+                components.HealthVerdictBanner(
+                    Verdict.FAILED,
+                    headline=GATE_NOT_BUILT_HEADLINE if outcome.completed else GATE_FAILED_HEADLINE,
+                    detail=outcome.note,
+                )
             )
         elif outcome.state is GateState.REFUSED_NO_OUTPUT_DIR:
             test_rows.append(

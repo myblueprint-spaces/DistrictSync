@@ -5,10 +5,16 @@ from typing import Any
 
 import pandas as pd
 
+from src.config.models import FieldAppendYear, FieldTransform, ensure_field_mapping
+from src.etl.column_names import GRADE, SCHOOL_NUMBER, STUDENT_NUMBER
+from src.etl.errors import GuardKind
+from src.etl.outcomes import OutcomeNote
 from src.etl.transformers.base import BaseTransformer
+from src.etl.transformers.columns import Previously, require_columns, resolve_source_column, source_column_label
 from src.etl.transformers.context import TransformContext
 from src.etl.transformers.grades import filter_to_grade_scope, resolve_student_scope
 from src.etl.transformers.ids import clean_invalid_ids, normalize_id_series
+from src.etl.transformers.notes import record_note
 
 logger = logging.getLogger(__name__)
 
@@ -24,18 +30,19 @@ class StudentTransformer(BaseTransformer):
         result = pd.DataFrame()
         field_map = mapping.get("field_map", {})
 
-        self._determine_enrollment_status(working, field_map)
+        self._determine_enrollment_status(working, field_map, context)
         working = self._filter_active(working, field_map)
         working = self._collapse_cross_enrollment(working, field_map, context)
         working = self._filter_to_rostered_grades(working, field_map, context)
         result["EnrollStatus"] = working["EnrollStatus"]
         self._generate_emails(working, result, field_map, context)
 
+        self._require_user_id_source(working, field_map)
         result = self.apply_field_map(working, result, field_map, "Students", context)
         if "Date of Birth" in result.columns:
             result["Date of Birth"] = result["Date of Birth"].apply(self.normalize_iso_date)
         self._coalesce_required_names(result)
-        self._warn_rows_without_email(result)
+        self._warn_rows_without_email(result, context)
 
         # Publish the active roster (zero-orphan invariant). `result` is already
         # filtered to active-only, so this IS the Students.csv `User ID` set by
@@ -47,6 +54,35 @@ class StudentTransformer(BaseTransformer):
             context.active_student_ids = set(normalize_id_series(result["User ID"]))
 
         return result
+
+    @staticmethod
+    def _require_user_id_source(working: pd.DataFrame, field_map: dict[str, Any]) -> None:
+        """The mapped ``User ID`` SOURCE column must exist (§5 #27(ii), plan 0053 S10).
+
+        It is the student's identity AND the roster every other entity filters against.
+        Absent, ``apply_field_map`` wrote a blank ``User ID`` column and the published
+        roster became ``{'<NA>'}`` — which the empty-roster guard does not catch, so
+        every downstream active-roster filter dropped EVERY student row in Family,
+        homeroom classes, Enrollments and StudentCourses while ``Students.csv`` shipped
+        with blank IDs: a silent shrink of deactivating files (H2). Now the entity fails
+        with a typed error naming the column; Students is CRITICAL, so the run fails.
+
+        Only when the mapping names a ``User ID`` at all: a config mapping none publishes
+        no roster, which is §5 #27(i)'s fail-open posture (S11), not this one. And only
+        when that entry READS a column (a bare string or a ``column:`` entry): a fixed
+        ``value:`` or an email ``format:`` reads none, so nothing is required.
+        """
+        if "User ID" not in field_map:
+            return
+        if not isinstance(ensure_field_mapping(field_map["User ID"]), (str, FieldTransform, FieldAppendYear)):
+            return
+        # failure-policy: join_key
+        require_columns(
+            working.columns,
+            [source_column_label(field_map, "User ID", default=STUDENT_NUMBER)],
+            entity="Students",
+            guard=GuardKind.JOIN_KEY,
+        )
 
     @staticmethod
     def _coalesce_required_names(result: pd.DataFrame) -> None:
@@ -68,7 +104,7 @@ class StudentTransformer(BaseTransformer):
             result.loc[is_blank, primary] = result.loc[is_blank, fallback]
 
     @staticmethod
-    def _warn_rows_without_email(result: pd.DataFrame) -> None:
+    def _warn_rows_without_email(result: pd.DataFrame, context: TransformContext) -> None:
         """Count students with no ``Email Address`` and warn once — never drop.
 
         WHY (importer behaviour): SpacesEDU DOES import a student without an
@@ -87,14 +123,25 @@ class StudentTransformer(BaseTransformer):
         its CONTRACT OUTPUT name (:data:`EMAIL_OUTPUT_COLUMN`), never a
         hardcoded source column. A config that maps no ``Email Address`` cannot
         be counted; the contract requires the column, so that is surfaced as its
-        own WARNING rather than hidden.
+        own WARNING rather than hidden — and, since plan 0053 S11, recorded
+        (``OutcomeNote.EMAIL_OUTPUT_NOT_MAPPED``, §5 #40, counting the rows).
 
         PII rule: counts only — never a student name, id or address.
         """
         if EMAIL_OUTPUT_COLUMN not in result.columns:
-            logger.warning(
-                f"[Students] No '{EMAIL_OUTPUT_COLUMN}' output column — the no-email count could not be "
-                f"taken. The Advanced CSV contract requires it for Students.csv; check the config field_map."
+            if result.empty:
+                return
+            # failure-policy: contract_field
+            record_note(
+                context,
+                "Students",
+                OutcomeNote.EMAIL_OUTPUT_NOT_MAPPED,
+                len(result),
+                log=logger,
+                message=(
+                    f"[Students] No '{EMAIL_OUTPUT_COLUMN}' output column — the no-email count could not be "
+                    f"taken. The Advanced CSV contract requires it for Students.csv; check the config field_map."
+                ),
             )
             return
         total = len(result)
@@ -120,24 +167,40 @@ class StudentTransformer(BaseTransformer):
         unchanged.
 
         Source column names resolve from the Students ``field_map`` (Configurable
-        Columns): ``User ID`` and ``SchoolCode``. Fail-loud (validate at
-        boundary): a configured ``home_school_column`` absent from the frame
-        raises ``ValueError``. Never drops a student entirely (always ≥ 1 row per
-        User ID). Logs only the collapsed COUNT (no PII).
+        Columns) through the one resolver: ``User ID`` and ``SchoolCode`` — a
+        bare string or a ``{column: ...}`` entry alike. Fail-loud (validate at
+        boundary, ``columns.require_columns``): the ``User ID``, ``SchoolCode``
+        and ``home_school_column`` columns are all checked before any row is
+        touched, and every absent one is named in ONE
+        :class:`~src.etl.errors.SourceSchemaError` (guard ``JOIN_KEY``, config
+        spelling, the source's column COUNT only — never its header names; §5
+        #2/#2a — the first two used to be raw pandas ``KeyError``s). Never drops a
+        student entirely (always ≥ 1 row per User ID). Logs only the collapsed
+        COUNT (no PII).
         """
         cc = (context.global_config or {}).get("cross_enrollment") or {}
         if not cc.get("collapse"):
             return working
 
-        user_id_col = str(field_map.get("User ID", "")).strip().lower()
-        school_col = str(field_map.get("SchoolCode", "")).strip().lower()
-        home_col = str(cc.get("home_school_column", "")).strip().lower()
+        user_id_col = resolve_source_column(
+            field_map, "User ID", default=STUDENT_NUMBER, previously=Previously.AS_CONFIGURED
+        )
+        school_col = resolve_source_column(
+            field_map, "SchoolCode", default=SCHOOL_NUMBER, previously=Previously.AS_CONFIGURED
+        )
+        home_col = resolve_source_column(cc, "home_school_column", default="", previously=Previously.UNCHANGED)
 
-        if home_col not in working.columns:
-            raise ValueError(
-                f"[Students] cross_enrollment home_school_column '{home_col}' not found in "
-                f"source columns. Available: {sorted(working.columns)}"
-            )
+        # failure-policy: join_key
+        require_columns(
+            working.columns,
+            [
+                source_column_label(field_map, "User ID", default=STUDENT_NUMBER),
+                source_column_label(field_map, "SchoolCode", default=SCHOOL_NUMBER),
+                str(cc.get("home_school_column", "")),
+            ],
+            entity="Students",
+            guard=GuardKind.JOIN_KEY,
+        )
 
         before = len(working)
         working = working.copy()
@@ -176,12 +239,14 @@ class StudentTransformer(BaseTransformer):
         ``split_by_homeroom_grades(keep="homeroom")`` — is the one used here.
 
         Fail-loud (Configurable Columns + validate-at-boundary): the grade column
-        resolves through the shared ``resolve_column`` seam, and an unresolvable
-        one RAISES. Keeping everyone would deliver the PII of students the
-        district is not licensed to send, and "column absent" is reachable in
-        ordinary config (a field mapped to a fixed ``{value: ""}``, or a
-        bare-string entry, both of which ``resolve_column`` resolves to its
-        default).
+        resolves through the one resolver
+        (:func:`~src.etl.transformers.columns.resolve_source_column` — a bare
+        string or a ``{column: ...}`` entry alike), and an unresolvable one
+        RAISES, naming the column in the config's spelling. Keeping everyone
+        would deliver the PII of students the district is not licensed to send,
+        and "column absent" is reachable in ordinary config (a field mapped to a
+        fixed ``{value: ""}`` resolves to the default, which the export may not
+        carry).
 
         Logs the kept/total COUNT only — a per-student or per-grade breakdown
         would put student data in ``etl_tool.log`` (grade is itself student
@@ -190,15 +255,23 @@ class StudentTransformer(BaseTransformer):
         scope = resolve_student_scope(context.global_config or {})
         if scope is None:
             return working
-        grade_col = self.resolve_column(field_map, "Grade", "grade")
+        grade_col = resolve_source_column(field_map, "Grade", default=GRADE, previously=Previously.COLUMN_KEY_ONLY)
         total = len(working)
-        filtered = filter_to_grade_scope(working, grade_col, scope, caller="Students")
+        filtered = filter_to_grade_scope(
+            working,
+            grade_col,
+            scope,
+            caller="Students",
+            column_label=source_column_label(field_map, "Grade", default=GRADE),
+        )
         logger.info(
             f"[Students] student_rostering_grades kept {len(filtered)}/{total} students (scope: {sorted(scope)})"
         )
         return filtered
 
-    def _determine_enrollment_status(self, working: pd.DataFrame, field_map: dict[str, Any]) -> None:
+    def _determine_enrollment_status(
+        self, working: pd.DataFrame, field_map: dict[str, Any], context: TransformContext
+    ) -> None:
         """Set the 'EnrollStatus' column in-place via the shared base predicate.
 
         Source column names (status / withdraw date) and the active-value set
@@ -207,9 +280,14 @@ class StudentTransformer(BaseTransformer):
         ``PreReg`` are both retained by default (the Advanced CSV spec's expected
         ``EnrollStatus`` values; overridable via ``active_values``). The live
         status value wins; the withdraw date is only a fallback for rows with no
-        status value. See ``BaseTransformer.compute_enroll_status``.
+        status value. See ``BaseTransformer.decide_enroll_status``, whose notes — which
+        signal decided, and how many rows went Active with none (plan 0053 S11, §5
+        #17/#18) — are recorded here on the Students outcome.
         """
-        working["EnrollStatus"] = self.compute_enroll_status(working, field_map)
+        decision = self.decide_enroll_status(working, field_map)
+        working["EnrollStatus"] = decision.labels
+        for note, count in decision.notes:
+            context.record_outcome_note("Students", note, count)
 
     @classmethod
     def _filter_active(cls, working: pd.DataFrame, field_map: dict[str, Any]) -> pd.DataFrame:
@@ -277,13 +355,17 @@ class StudentTransformer(BaseTransformer):
 
         if derived:
             src = working.copy()
+            # Every derived-date column is checked before any is derived, so one run
+            # names them all (§5 #3).
+            # failure-policy: join_key
+            require_columns(
+                src.columns,
+                [str(spec["column"]) for spec in derived.values()],
+                entity="Students",
+                guard=GuardKind.JOIN_KEY,
+            )
             for pseudo, spec in derived.items():
                 col = str(spec["column"]).strip().lower()
-                if col not in src.columns:
-                    raise ValueError(
-                        f"[Students] Email 'derived_dates' column {spec['column']!r} not found in "
-                        f"source columns. Available: {sorted(src.columns)}"
-                    )
                 strf = self.friendly_date_format_to_strftime(str(spec["date_format"]))
                 src[str(pseudo).strip().lower()] = src[col].apply(lambda v, f=strf: self.derive_date_part(v, f))
         else:

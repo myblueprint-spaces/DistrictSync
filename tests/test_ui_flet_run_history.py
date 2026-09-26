@@ -94,47 +94,51 @@ def _banner(record: dict) -> HistoryBanner:
 # --------------------------------------------------------------------------- #
 class TestClassifyLatestReason:
     def test_failed_etl(self) -> None:
-        assert classify_latest_reason(_record(status="failed")) is LatestReason.FAILED_ETL
+        assert classify_latest_reason(_record(status="failed"), prior_build=None) is LatestReason.FAILED_ETL
 
     def test_missing_status_is_failed_etl(self) -> None:
         # No status → non-success → FAILED_ETL (the honest fail-safe default).
-        assert classify_latest_reason({}) is LatestReason.FAILED_ETL
+        assert classify_latest_reason({}, prior_build=None) is LatestReason.FAILED_ETL
 
     def test_failed_delivery(self) -> None:
-        assert classify_latest_reason(_record(sftp_attempted=True, sftp_ok=False)) is LatestReason.FAILED_DELIVERY
+        assert (
+            classify_latest_reason(_record(sftp_attempted=True, sftp_ok=False), prior_build=None)
+            is LatestReason.FAILED_DELIVERY
+        )
 
     def test_anomaly(self) -> None:
-        assert classify_latest_reason(_record(anomalies=["ANOMALY: x"])) is LatestReason.ANOMALY
+        assert classify_latest_reason(_record(anomalies=["ANOMALY: x"]), prior_build=None) is LatestReason.ANOMALY
 
     def test_data_warnings(self) -> None:
-        assert classify_latest_reason(_record(data_errors={"total": 3})) is LatestReason.DATA_WARNINGS
+        assert classify_latest_reason(_record(data_errors={"total": 3}), prior_build=None) is LatestReason.DATA_WARNINGS
 
     def test_clean(self) -> None:
-        assert classify_latest_reason(_record()) is LatestReason.CLEAN
+        assert classify_latest_reason(_record(), prior_build=None) is LatestReason.CLEAN
 
     def test_failed_etl_precedes_all(self) -> None:
         # A failed ETL dominates even with SFTP failure + anomalies + data errors all set.
         rec = _record(
             status="failed", sftp_attempted=True, sftp_ok=False, anomalies=["ANOMALY: y"], data_errors={"total": 9}
         )
-        assert classify_latest_reason(rec) is LatestReason.FAILED_ETL
+        assert classify_latest_reason(rec, prior_build=None) is LatestReason.FAILED_ETL
 
     def test_delivery_precedes_anomaly_and_data_errors(self) -> None:
         rec = _record(sftp_attempted=True, sftp_ok=False, anomalies=["ANOMALY: y"], data_errors={"total": 4})
-        assert classify_latest_reason(rec) is LatestReason.FAILED_DELIVERY
+        assert classify_latest_reason(rec, prior_build=None) is LatestReason.FAILED_DELIVERY
 
     def test_anomaly_precedes_data_errors(self) -> None:
         assert (
-            classify_latest_reason(_record(anomalies=["ANOMALY: y"], data_errors={"total": 4})) is LatestReason.ANOMALY
+            classify_latest_reason(_record(anomalies=["ANOMALY: y"], data_errors={"total": 4}), prior_build=None)
+            is LatestReason.ANOMALY
         )
 
     def test_non_list_anomalies_tolerated(self) -> None:
         # A garbage anomalies value must not be treated as an anomaly nor crash.
-        assert classify_latest_reason(_record(anomalies="not-a-list")) is LatestReason.CLEAN
+        assert classify_latest_reason(_record(anomalies="not-a-list"), prior_build=None) is LatestReason.CLEAN
 
     def test_staleness_is_not_a_reason(self) -> None:
         # A stale-but-clean record is still CLEAN — staleness is layered on top, not a reason.
-        assert classify_latest_reason(_record(timestamp=_OLD)) is LatestReason.CLEAN
+        assert classify_latest_reason(_record(timestamp=_OLD), prior_build=None) is LatestReason.CLEAN
 
 
 class TestVerdictForReason:
@@ -143,6 +147,7 @@ class TestVerdictForReason:
         [
             (LatestReason.FAILED_ETL, Verdict.FAILED),
             (LatestReason.FAILED_DELIVERY, Verdict.FAILED),
+            (LatestReason.PARTIAL, Verdict.WARNING),
             (LatestReason.ANOMALY, Verdict.WARNING),
             (LatestReason.DATA_WARNINGS, Verdict.WARNING),
             (LatestReason.CLEAN, Verdict.HEALTHY),
@@ -443,7 +448,7 @@ class TestSeasonalPauseBanner:
 # --------------------------------------------------------------------------- #
 class TestToRunRowFields:
     def test_clean_delivered_row(self) -> None:
-        row = to_run_row(_record(), now=_NOW)
+        row = to_run_row(_record(), prior_build=None, now=_NOW)
         assert _RECENT not in row.when  # a plain phrase, not the raw ISO
         assert row.status_label == "Delivered"
         assert row.status_verdict is Verdict.HEALTHY
@@ -456,54 +461,56 @@ class TestToRunRowFields:
         assert row.duration == "3.2s"
 
     def test_clean_no_sftp_reads_completed(self) -> None:
-        row = to_run_row(_record(sftp_attempted=False, sftp_ok=False), now=_NOW)
+        row = to_run_row(_record(sftp_attempted=False, sftp_ok=False), prior_build=None, now=_NOW)
         assert row.status_label == "Completed"
         assert row.status_verdict is Verdict.HEALTHY
         assert row.sftp is SftpDelivery.NOT_ATTEMPTED
 
     def test_failed_row(self) -> None:
-        row = to_run_row(_record(status="failed"), now=_NOW)
+        row = to_run_row(_record(status="failed"), prior_build=None, now=_NOW)
         assert row.status_label == "Failed"
         assert row.status_verdict is Verdict.FAILED
 
     def test_built_not_delivered_row(self) -> None:
-        row = to_run_row(_record(sftp_attempted=True, sftp_ok=False), now=_NOW)
+        row = to_run_row(_record(sftp_attempted=True, sftp_ok=False), prior_build=None, now=_NOW)
         assert row.status_label == "Built, not delivered"
         assert row.status_verdict is Verdict.FAILED
         assert row.sftp is SftpDelivery.FAILED
 
     def test_delivered_with_data_warnings_row(self) -> None:
-        row = to_run_row(_record(data_errors={"total": 2}), now=_NOW)
+        row = to_run_row(_record(data_errors={"total": 2}), prior_build=None, now=_NOW)
         assert row.status_label == "Delivered · 2 data warnings"
         assert row.status_verdict is Verdict.WARNING
         assert row.warnings == 2
 
     def test_single_data_warning_singular_label(self) -> None:
-        row = to_run_row(_record(data_errors={"total": 1}), now=_NOW)
+        row = to_run_row(_record(data_errors={"total": 1}), prior_build=None, now=_NOW)
         assert row.status_label == "Delivered · 1 data warning"
 
     def test_data_warnings_no_sftp_reads_completed(self) -> None:
         # The row-label twin of the banner's no-SFTP honesty rule (2026-08-31 mislabel): a run
         # that never attempted delivery must not open its label with "Delivered".
-        row = to_run_row(_record(data_errors={"total": 2}, sftp_attempted=False, sftp_ok=False), now=_NOW)
+        row = to_run_row(
+            _record(data_errors={"total": 2}, sftp_attempted=False, sftp_ok=False), prior_build=None, now=_NOW
+        )
         assert row.status_label == "Completed · 2 data warnings"
         assert row.status_verdict is Verdict.WARNING
         assert row.sftp is SftpDelivery.NOT_ATTEMPTED
 
     def test_myblueprint_counts_present_when_nonzero(self) -> None:
-        row = to_run_row(_record(CourseInfo=15, StudentCourses=200), now=_NOW)
+        row = to_run_row(_record(CourseInfo=15, StudentCourses=200), prior_build=None, now=_NOW)
         assert row.entity_counts["CourseInfo"] == 15
         assert row.entity_counts["StudentCourses"] == 200
 
     def test_missing_duration_renders_dash(self) -> None:
         rec = _record()
         del rec["duration_s"]
-        row = to_run_row(rec, now=_NOW)
+        row = to_run_row(rec, prior_build=None, now=_NOW)
         assert row.duration == "—"
 
     def test_garbage_duration_renders_dash(self) -> None:
         # A non-None, non-float-coercible duration_s → "—" (total; never crashes).
-        row = to_run_row(_record(duration_s="not-a-number"), now=_NOW)
+        row = to_run_row(_record(duration_s="not-a-number"), prior_build=None, now=_NOW)
         assert row.duration == "—"
 
 
@@ -526,7 +533,7 @@ class TestDeliveryOnlyRows:
     """Deliver-from-disk rows must read as deliveries of saved files, never 0-row builds."""
 
     def test_clean_delivery_row_labels_saved_files_with_no_counts(self) -> None:
-        row = to_run_row(_delivery_record(), now=_NOW)
+        row = to_run_row(_delivery_record(), prior_build=None, now=_NOW)
         assert row.status_label == "Delivered saved files"
         assert row.status_verdict is Verdict.HEALTHY
         assert row.entity_counts == {}  # the table renders "—" cells, never "0 Students"
@@ -535,7 +542,7 @@ class TestDeliveryOnlyRows:
 
     def test_failed_delivery_row_labels_delivery_failed(self) -> None:
         # NOT "Built, not delivered" — this attempt built nothing; only the upload failed.
-        row = to_run_row(_delivery_record(sftp_ok=False), now=_NOW)
+        row = to_run_row(_delivery_record(sftp_ok=False), prior_build=None, now=_NOW)
         assert row.status_label == "Delivery failed"
         assert row.status_verdict is Verdict.FAILED
         assert row.sftp is SftpDelivery.FAILED
@@ -571,21 +578,21 @@ class TestSourceLabel:
         ],
     )
     def test_bounded_source_maps_to_friendly_label(self, source: str, label: str) -> None:
-        assert to_run_row(_record(source=source), now=_NOW).source == label
+        assert to_run_row(_record(source=source), prior_build=None, now=_NOW).source == label
 
     def test_missing_source_renders_dash(self) -> None:
         # A pre-enrichment record has no source key — TOTAL, the neutral fallback.
-        assert to_run_row(_record(), now=_NOW).source == "—"
+        assert to_run_row(_record(), prior_build=None, now=_NOW).source == "—"
 
     def test_out_of_set_source_is_never_echoed(self) -> None:
         # Anything outside the bounded vocabulary renders the fallback, never the raw value.
-        row = to_run_row(_record(source=r"C:\evil\path"), now=_NOW)
+        row = to_run_row(_record(source=r"C:\evil\path"), prior_build=None, now=_NOW)
         assert row.source == "—"
 
 
 class TestDistrictNote:
     def test_no_note_when_district_matches_active(self) -> None:
-        row = to_run_row(_record(sis_type="myedbc"), now=_NOW, active_sis="myedbc")
+        row = to_run_row(_record(sis_type="myedbc"), prior_build=None, now=_NOW, active_sis="myedbc")
         assert row.district_note is None
 
     def test_rows_resolve_each_distinct_district_once(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -604,22 +611,22 @@ class TestDistrictNote:
         assert calls == ["sd40myedbc"]
 
     def test_note_when_district_differs(self) -> None:
-        row = to_run_row(_record(sis_type="zz_not_a_config"), now=_NOW, active_sis="myedbc")
+        row = to_run_row(_record(sis_type="zz_not_a_config"), prior_build=None, now=_NOW, active_sis="myedbc")
         # An unknown id falls back to the raw district id (a bounded config id, never a path).
         assert row.district_note == "Different district: zz_not_a_config"
 
     def test_real_district_resolves_to_friendly_display(self) -> None:
-        row = to_run_row(_record(sis_type="sd74myedbc"), now=_NOW, active_sis="myedbc")
+        row = to_run_row(_record(sis_type="sd74myedbc"), prior_build=None, now=_NOW, active_sis="myedbc")
         assert row.district_note is not None
         assert row.district_note.startswith("Different district: ")
 
     def test_no_note_without_active_district(self) -> None:
         # The active district must be KNOWN to establish a difference (never a guess).
-        row = to_run_row(_record(sis_type="sd74myedbc"), now=_NOW)
+        row = to_run_row(_record(sis_type="sd74myedbc"), prior_build=None, now=_NOW)
         assert row.district_note is None
 
     def test_no_note_when_record_lacks_district(self) -> None:
-        row = to_run_row(_record(), now=_NOW, active_sis="myedbc")
+        row = to_run_row(_record(), prior_build=None, now=_NOW, active_sis="myedbc")
         assert row.district_note is None
 
 
@@ -644,7 +651,7 @@ _PARTIAL_RECORDS = [
 
 @pytest.mark.parametrize("record", _PARTIAL_RECORDS)
 def test_to_run_row_is_total(record: dict) -> None:
-    row = to_run_row(record, now=_NOW)
+    row = to_run_row(record, prior_build=None, now=_NOW)
     assert isinstance(row, RunRow)
     assert row.status_label
     assert row.status_verdict in Verdict
@@ -652,7 +659,7 @@ def test_to_run_row_is_total(record: dict) -> None:
 
 
 def test_missing_status_row_is_failed() -> None:
-    row = to_run_row({}, now=_NOW)
+    row = to_run_row({}, prior_build=None, now=_NOW)
     assert row.status_label == "Failed"
     assert row.status_verdict is Verdict.FAILED
     assert row.when == "recently"  # missing timestamp → friendly_timestamp("") → "recently"
@@ -678,7 +685,7 @@ class TestPrivacyNoLeak:
 
     def test_runrow_has_no_error_attribute(self) -> None:
         # A future view edit must not be able to render a raw error — the field simply isn't there.
-        row = to_run_row(_record(), now=_NOW)
+        row = to_run_row(_record(), prior_build=None, now=_NOW)
         assert not hasattr(row, "error")
         assert not hasattr(row, "log_path")
 
@@ -691,7 +698,7 @@ class TestPrivacyNoLeak:
         ):
             rec = _record(error=f"FileNotFoundError: {self._SECRET}\\input.csv", sis_type="sd48myedbc", **extra)
 
-            row = to_run_row(rec, now=_NOW)
+            row = to_run_row(rec, prior_build=None, now=_NOW)
             row_strings = [
                 row.when,
                 row.status_label,
@@ -730,7 +737,7 @@ class TestBannerRowAgreement:
     )
     def test_latest_row_verdict_agrees_with_banner(self, record: dict) -> None:
         banner = derive_history_banner([record], _CONFIGURED, now=_NOW)
-        row = to_run_row(record, now=_NOW)
+        row = to_run_row(record, prior_build=None, now=_NOW)
         # The banner classifies the LATEST record; the row classifies the same record. They must
         # never contradict on the fault verdict. (Stale is a WARNING on a CLEAN/HEALTHY row — the
         # banner's time-relative axis — so a HEALTHY row under a WARNING stale banner is allowed.)
@@ -1116,19 +1123,21 @@ class TestRunAsReachesTheRowThroughTheView:
     """``to_run_row`` is pure and never reads the environment, so the view injects the account."""
 
     def test_the_injected_account_decides_the_row(self) -> None:
-        mine = to_run_row(_record(run_as=_ME), now=_NOW, current_account=_ME)
-        theirs = to_run_row(_record(run_as="CONTOSO\\svc_districtsync"), now=_NOW, current_account=_ME)
+        mine = to_run_row(_record(run_as=_ME), prior_build=None, now=_NOW, current_account=_ME)
+        theirs = to_run_row(
+            _record(run_as="CONTOSO\\svc_districtsync"), prior_build=None, now=_NOW, current_account=_ME
+        )
         assert mine.run_as == RUN_AS_THIS_ACCOUNT
         assert theirs.run_as == RUN_AS_ANOTHER_ACCOUNT
 
     def test_a_caller_that_cannot_name_the_account_gets_no_claim(self) -> None:
         """The default is display degradation, not a safety-relevant permissive default: nothing
         about a run's verdict, delivery or counts depends on it."""
-        assert to_run_row(_record(run_as=_ME), now=_NOW).run_as == ""
+        assert to_run_row(_record(run_as=_ME), prior_build=None, now=_NOW).run_as == ""
 
     def test_a_record_without_the_key_is_total(self) -> None:
         """Every record written before v3.22 — the ledger straddles the upgrade."""
-        assert to_run_row(_record(), now=_NOW, current_account=_ME).run_as == ""
+        assert to_run_row(_record(), prior_build=None, now=_NOW, current_account=_ME).run_as == ""
 
     def test_to_run_rows_threads_it_to_every_row(self) -> None:
         records = [_record(run_as=_ME), _record(run_as="CONTOSO\\svc_districtsync"), _record()]
@@ -1137,7 +1146,7 @@ class TestRunAsReachesTheRowThroughTheView:
 
     def test_the_raw_account_never_reaches_any_row_field(self) -> None:
         """The ``TestPrivacyNoLeak`` rule, extended to the new field and its source record."""
-        row = to_run_row(_record(run_as="CONTOSO\\svc_districtsync"), now=_NOW, current_account=_ME)
+        row = to_run_row(_record(run_as="CONTOSO\\svc_districtsync"), prior_build=None, now=_NOW, current_account=_ME)
         for value in (row.when, row.status_label, row.duration, row.source, str(row.district_note), row.run_as):
             assert "svc_districtsync" not in value
             assert "CONTOSO" not in value
@@ -1250,3 +1259,181 @@ class TestRunAsColumnRendersOnlyWhenItHasSomethingToSay:
         headers = _headers([_row(""), _row("")])
         assert headers[:3] == ["When", "Status", "Source"]
         assert headers[3] == "Students"
+
+
+# --------------------------------------------------------------------------- #
+# Plan 0053 S3 — PARTIAL rows and banner; the category-aware failed banner      #
+# --------------------------------------------------------------------------- #
+def _partial_outcomes(*failed: str) -> dict:
+    return {
+        name: (
+            {"kind": "failed", "reason": "missing_source_column", "rows": 0}
+            if name in failed
+            else {"kind": "built", "reason": "none", "rows": 10}
+        )
+        for name in ("Students", "Staff", "Family", "Classes", "Enrollments")
+    }
+
+
+class TestPartialRows:
+    def test_a_delivered_partial_run_reads_one_file_skipped(self) -> None:
+        row = to_run_row(_record(entity_outcomes=_partial_outcomes("Family")), prior_build=None, now=_NOW)
+        assert row.status_label == "Delivered · 1 file skipped"
+        assert row.status_verdict is Verdict.WARNING
+
+    def test_a_local_partial_run_reads_completed(self) -> None:
+        rec = _record(sftp_attempted=False, sftp_ok=False, entity_outcomes=_partial_outcomes("Family"))
+        assert to_run_row(rec, prior_build=None, now=_NOW).status_label == "Completed · 1 file skipped"
+
+    def test_two_files_pluralise(self) -> None:
+        rec = _record(entity_outcomes=_partial_outcomes("Family", "Staff"))
+        assert to_run_row(rec, prior_build=None, now=_NOW).status_label == "Delivered · 2 files skipped"
+
+    def test_twin_an_all_built_run_is_a_plain_delivered_row(self) -> None:
+        row = to_run_row(_record(entity_outcomes=_partial_outcomes()), prior_build=None, now=_NOW)
+        assert row.status_label == "Delivered"
+        assert row.status_verdict is Verdict.HEALTHY
+
+    def test_the_rows_walk_back_a_delivery_to_its_build(self) -> None:
+        delivery = _delivery_record()
+        build = _record(
+            timestamp=(_NOW - timedelta(hours=7)).isoformat(timespec="seconds"),
+            entity_outcomes=_partial_outcomes("Family"),
+        )
+        rows = to_run_rows([delivery, build], now=_NOW)
+        assert rows[0].status_label == "Delivered saved files · 1 file skipped"
+        assert rows[0].status_verdict is Verdict.WARNING
+        assert rows[1].status_label == "Delivered · 1 file skipped"
+
+    def test_twin_a_delivery_after_a_clean_build_is_a_plain_delivery(self) -> None:
+        build = _record(
+            timestamp=(_NOW - timedelta(hours=7)).isoformat(timespec="seconds"),
+            entity_outcomes=_partial_outcomes(),
+        )
+        rows = to_run_rows([_delivery_record(), build], now=_NOW)
+        assert rows[0].status_label == "Delivered saved files"
+
+    def test_prior_build_is_required_keyword_only_with_no_default(self) -> None:
+        import inspect
+
+        param = inspect.signature(to_run_row).parameters["prior_build"]
+        assert param.kind is inspect.Parameter.KEYWORD_ONLY
+        assert param.default is inspect.Parameter.empty
+
+
+class TestPartialBanner:
+    def test_the_banner_is_a_warning_with_homes_exact_copy(self) -> None:
+        from src.ui_flet.home_status import derive_home_status
+
+        records = [_record(entity_outcomes=_partial_outcomes("Family"))]
+        banner = derive_history_banner(records, _CONFIGURED, now=_NOW)
+        home = derive_home_status(records, _CONFIGURED, now=_NOW)
+        assert banner.verdict is Verdict.WARNING
+        assert (banner.headline, banner.detail) == (home.headline, home.detail)
+        assert banner.headline == "Your roster synced without family contacts"
+
+    def test_a_delivery_after_a_partial_build_keeps_the_banner_amber(self) -> None:
+        build = _record(
+            timestamp=(_NOW - timedelta(hours=7)).isoformat(timespec="seconds"),
+            entity_outcomes=_partial_outcomes("Family"),
+        )
+        banner = derive_history_banner([_delivery_record(), build], _CONFIGURED, now=_NOW)
+        assert banner.verdict is Verdict.WARNING
+
+
+class TestFailedBannerCategory:
+    def test_a_source_schema_failure_words_its_category(self) -> None:
+        from src.etl.errors import RunErrorCategory
+        from src.ui_flet.failure_copy import failed_copy
+
+        banner = derive_history_banner(
+            [_record(status="failed", error_category="source_schema", sftp_attempted=False)], _CONFIGURED, now=_NOW
+        )
+        _headline, detail = failed_copy(RunErrorCategory.SOURCE_SCHEMA, delivery_requested=False)
+        assert banner.headline == "Your last sync failed"
+        assert banner.detail == f"The most recent run didn't finish. {detail}"
+
+    def test_a_record_without_a_category_gets_the_generic_copy(self) -> None:
+        from src.ui_flet.failure_copy import FALLBACK_CATEGORY, failed_copy
+
+        rec = _record(status="failed", sftp_attempted=False)
+        rec.pop("error_category", None)
+        banner = derive_history_banner([rec], _CONFIGURED, now=_NOW)
+        assert banner.detail.endswith(failed_copy(FALLBACK_CATEGORY, delivery_requested=False)[1])
+
+
+# --------------------------------------------------------------------------- #
+# Owner decision D14 (plan 0053 S5): the BANNER skips a failed manual attempt;  #
+# the ROWS list every record                                                     #
+# --------------------------------------------------------------------------- #
+_D14_EARLIER = (_NOW - timedelta(hours=9)).isoformat(timespec="seconds")
+
+
+def _d14_failed_manual(**overrides: object) -> dict:
+    base = {"source": "manual", "status": "failed", "error_category": "source_schema", "timestamp": _RECENT}
+    base.update(overrides)
+    return _record(**base)
+
+
+class TestD14TheBannerAndTheRows:
+    def test_the_banner_follows_the_older_success(self) -> None:
+        ledger = [_d14_failed_manual(), _record(timestamp=_D14_EARLIER, source="scheduled")]
+        banner = derive_history_banner(ledger, _CONFIGURED, now=_NOW)
+        assert banner.verdict is Verdict.HEALTHY
+        assert banner.headline == "Your last sync worked"
+
+    def test_the_rows_still_list_the_failed_attempt(self) -> None:
+        ledger = [_d14_failed_manual(), _record(timestamp=_D14_EARLIER, source="scheduled")]
+        rows = to_run_rows(ledger, now=_NOW)
+        assert len(rows) == 2
+        assert (rows[0].source, rows[0].status_label, rows[0].status_verdict) == ("Manual", "Failed", Verdict.FAILED)
+        assert rows[1].status_verdict is Verdict.HEALTHY
+
+    def test_twin_a_failed_NIGHTLY_still_sets_the_banner(self) -> None:
+        ledger = [_d14_failed_manual(source="scheduled"), _record(timestamp=_D14_EARLIER)]
+        banner = derive_history_banner(ledger, _CONFIGURED, now=_NOW)
+        assert banner.verdict is Verdict.FAILED
+        assert banner.headline == "Your last sync failed"
+
+    def test_only_failed_attempts_reads_the_shared_headline_and_points_at_the_rows(self) -> None:
+        banner = derive_history_banner([_d14_failed_manual()], _CONFIGURED, now=_NOW, store_created_at=_RECENT)
+        assert banner.verdict is Verdict.WARNING
+        assert banner.headline == home_status_mod.EMPTY_NO_COMPLETED_RUNS_HEADLINE
+        assert (
+            banner.detail
+            == "The conversions run from the Convert tab so far didn't finish — each attempt is listed below."
+        )
+        assert "earlier version" not in banner.detail
+
+    def test_only_failed_attempts_under_a_live_schedule_names_it(self) -> None:
+        live = ScheduleStatus(state=ScheduleState.LIVE, headline="h", detail="d", next_run_display="3:00 AM")
+        banner = derive_history_banner(
+            [_d14_failed_manual()], _CONFIGURED, now=_NOW, store_created_at=_RECENT, schedule_status=live
+        )
+        assert banner.detail.endswith(" Scheduled for 3:00 AM each night.")
+
+
+class TestTheStatusCellCarriesTheNoteDetail:
+    """Plan 0053 S11: a row's HEALTHY-tier notes render as a muted line under its status."""
+
+    @staticmethod
+    def _status_cell(row: RunRow) -> ft.Control:
+        table = components.run_table([row])
+        return table.rows[0].cells[1].content
+
+    def test_a_row_with_notes_stacks_the_label_and_the_detail(self) -> None:
+        row = RunRow(
+            when="recently",
+            status_label="Completed",
+            status_verdict=Verdict.HEALTHY,
+            notes=("no status column, withdraw dates used", "contacts without email left out"),
+        )
+        cell = self._status_cell(row)
+        assert isinstance(cell, ft.Column)
+        label, detail = cell.controls
+        assert label.value == "Completed"
+        assert detail.value == "no status column, withdraw dates used · contacts without email left out"
+
+    def test_twin_a_row_without_notes_is_the_plain_label(self) -> None:
+        cell = self._status_cell(RunRow(when="recently", status_label="Completed", status_verdict=Verdict.HEALTHY))
+        assert isinstance(cell, ft.Text) and cell.value == "Completed"

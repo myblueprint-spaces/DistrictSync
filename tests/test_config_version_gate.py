@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from src.config import loader
 from src.config.loader import (
     SUPPORTED_CONFIG_MAJOR,
     SUPPORTED_CONFIG_MINOR,
@@ -27,32 +28,32 @@ from src.config.loader import (
     load_config,
 )
 from src.utils.paths import user_mappings_dir
+from tests._pins import BUNDLED_CONFIG_COUNT
 
 #: The shipped configs, read straight off disk (not via ``bundle_mappings_dir()``,
 #: whose frozen-exe branch other tests monkeypatch).
 BUNDLED_MAPPINGS_DIR = Path(__file__).resolve().parents[1] / "config" / "mappings"
 
-ALL_BUNDLED_CONFIGS = [
-    "myedbc",
-    "sd10myedbc",
-    "sd27myedbc",
-    "sd38myedbc",
-    "sd40myedbc",
-    "sd48myedbc",
-    "sd51myedbc",
-    "sd54myedbc",
-    "sd60myedbc",
-    "sd67myedbc",
-    "sd69myedbc",
-    "sd71myedbc",
-    "sd74myedbc",
-    "sd75myedbc",
-    "sd83myedbc",
-    "mbp_all",
-    "mbp_core",
-    "mbponly",
-    "sd51attendance",
-]
+
+def _discover_bundled() -> list[str]:
+    """The bundled set, DERIVED (plan 0053 S13a) — never a hand-kept list.
+
+    The hand-kept list this replaced had 19 names and silently omitted
+    ``unitychristianmyedbc`` (the 20th, 2026-09-01), so neither the version-range
+    sweep nor the load-clean sweep below ever saw it. Resolved through the module
+    attribute so the pin's twin can monkeypatch discovery.
+    """
+    return loader.available_configs(BUNDLED_MAPPINGS_DIR)
+
+
+ALL_BUNDLED_CONFIGS = _discover_bundled()
+
+
+def _assert_the_bundled_count(names: list[str]) -> None:
+    assert len(names) == BUNDLED_CONFIG_COUNT, (
+        f"expected {BUNDLED_CONFIG_COUNT} bundled mapping configs (tests/_pins.py), discovered {len(names)}: {names}"
+    )
+
 
 LOADER_LOGGER = "src.config.loader"
 
@@ -258,8 +259,9 @@ class TestDeclaredRangeVersusSupported:
     sd27/sd38 — the first `student_rostering_grades` districts — declared
     '1.11' and moved the prose with them, and stayed converged at 1.12 (sd83's
     Staff row_filters + `normalize_staff_role`, which shipped alongside their
-    only consumer) and 1.13 (sd51's `blended_classes` opt-out, which shipped
-    alongside its only consumer). What must always hold: no bundled
+    only consumer), 1.13 (sd51's `blended_classes` opt-out, which shipped
+    alongside its only consumer) and 1.14 (sd40's Classes `session_components`
+    declaration, plan 0053 S10, likewise). What must always hold: no bundled
     config declares ABOVE the supported minor, and the prose matches the real
     declared range rather than the constant.
     """
@@ -284,7 +286,7 @@ class TestDeclaredRangeVersusSupported:
         makes the second assertion a strict <= again; a config declaring past the
         constant fails here before it can ship a warning to every install."""
         highest = max(self._declared_versions())
-        assert highest == (SUPPORTED_CONFIG_MAJOR, 13)
+        assert highest == (SUPPORTED_CONFIG_MAJOR, 14)
         assert highest <= (SUPPORTED_CONFIG_MAJOR, SUPPORTED_CONFIG_MINOR)
 
     def test_the_loader_prose_matches_the_range_the_bundled_configs_DECLARE(self):
@@ -333,6 +335,23 @@ class TestShadowLogging:
         with caplog.at_level(logging.INFO, logger=LOADER_LOGGER):
             load_config("vgate_noshadow")
         assert all("shadows" not in r.getMessage() for r in caplog.records if r.name == LOADER_LOGGER)
+
+
+class TestTheBundledSetIsPinned:
+    """The derived list is only as good as its count pin: a deleted or unregistered
+    config must turn this red, not silently shrink every sweep in this file."""
+
+    def test_the_derived_bundled_set_has_the_pinned_count(self):
+        _assert_the_bundled_count(ALL_BUNDLED_CONFIGS)
+
+    def test_the_derived_set_includes_the_config_the_hand_kept_list_missed(self):
+        assert "unitychristianmyedbc" in ALL_BUNDLED_CONFIGS
+
+    def test_twin_a_discovery_that_lost_one_config_fails_the_pin(self, monkeypatch):
+        nineteen = ALL_BUNDLED_CONFIGS[: BUNDLED_CONFIG_COUNT - 1]
+        monkeypatch.setattr(loader, "available_configs", lambda *_a, **_kw: list(nineteen))
+        with pytest.raises(AssertionError, match="discovered"):
+            _assert_the_bundled_count(_discover_bundled())
 
 
 class TestBundledConfigsStayClean:

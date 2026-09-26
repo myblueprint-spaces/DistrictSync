@@ -1,0 +1,293 @@
+{
+  "anomaly": {
+    "banner": {
+      "detail": "One roster file was smaller than usual in the most recent run.",
+      "headline": "Something looked off recently",
+      "verdict": "warning"
+    },
+    "home": {
+      "detail": "One roster file was smaller than usual.",
+      "fix": {
+        "dest_id": "run_history",
+        "label": "Check Run History"
+      },
+      "headline": "Something looked off in the last sync",
+      "metrics": null,
+      "verdict": "warning"
+    },
+    "rows": [
+      {
+        "district_note": null,
+        "duration": "3.1s",
+        "entity_counts": {
+          "Classes": 40,
+          "Enrollments": 300,
+          "Family": 80,
+          "Staff": 12,
+          "Students": 100
+        },
+        "entity_total": 532,
+        "run_as": "",
+        "sftp": "delivered",
+        "source": "—",
+        "status_label": "Delivered",
+        "status_verdict": "warning",
+        "warnings": 0,
+        "when": "5 hours ago"
+      }
+    ]
+  },
+  "clean_delivered": {
+    "banner": {
+      "detail": "Your last sync delivered to SpacesEDU 5 hours ago.",
+      "headline": "Your last sync worked",
+      "verdict": "healthy"
+    },
+    "home": {
+      "detail": "Last sync delivered to SpacesEDU 5 hours ago. It included 100 students.",
+      "fix": null,
+      "headline": "Your roster is up to date",
+      "metrics": {
+        "entity_counts": {
+          "Classes": 40,
+          "Enrollments": 300,
+          "Family": 80,
+          "Staff": 12,
+          "Students": 100
+        },
+        "last_run_display": "5 hours ago",
+        "sftp_delivered": true
+      },
+      "verdict": "healthy"
+    },
+    "rows": [
+      {
+        "district_note": null,
+        "duration": "3.1s",
+        "entity_counts": {
+          "Classes": 40,
+          "Enrollments": 300,
+          "Family": 80,
+          "Staff": 12,
+          "Students": 100
+        },
+        "entity_total": 532,
+        "run_as": "",
+        "sftp": "delivered",
+        "source": "—",
+        "status_label": "Delivered",
+        "status_verdict": "healthy",
+        "warnings": 0,
+        "when": "5 hours ago"
+      }
+    ]
+  },
+  "clean_local": {
+    "banner": {
+      "detail": "Your last sync completed 5 hours ago — files were written to your output folder.",
+      "headline": "Your last sync worked",
+      "verdict": "healthy"
+    },
+    "home": {
+      "detail": "Last sync completed 5 hours ago — files were written to your output folder. It included 100 students.",
+      "fix": null,
+      "headline": "Your roster is up to date",
+      "metrics": {
+        "entity_counts": {
+          "Classes": 40,
+          "Enrollments": 300,
+          "Family": 80,
+          "Staff": 12,
+          "Students": 100
+        },
+        "last_run_display": "5 hours ago",
+        "sftp_delivered": false
+      },
+      "verdict": "healthy"
+    },
+    "rows": [
+      {
+        "district_note": null,
+        "duration": "3.1s",
+        "entity_counts": {
+          "Classes": 40,
+          "Enrollments": 300,
+          "Family": 80,
+          "Staff": 12,
+          "Students": 100
+        },
+        "entity_total": 532,
+        "run_as": "",
+        "sftp": "not_attempted",
+        "source": "—",
+        "status_label": "Completed",
+        "status_verdict": "healthy",
+        "warnings": 0,
+        "when": "5 hours ago"
+      }
+    ]
+  },
+  "data_warnings": {
+    "banner": {
+      "detail": "Some records had field problems and were skipped — the runs still delivered.",
+      "headline": "Recent runs completed with data warnings",
+      "verdict": "warning"
+    },
+    "home": {
+      "detail": "Some records had field problems and were skipped — the sync still delivered.",
+      "fix": {
+        "dest_id": "run_history",
+        "label": "Check Run History"
+      },
+      "headline": "Completed with 3 data warnings",
+      "metrics": null,
+      "verdict": "warning"
+    },
+    "rows": [
+      {
+        "district_note": null,
+        "duration": "3.1s",
+        "entity_counts": {
+          "Classes": 40,
+          "Enrollments": 300,
+          "Family": 80,
+          "Staff": 12,
+          "Students": 100
+        },
+        "entity_total": 532,
+        "run_as": "",
+        "sftp": "delivered",
+        "source": "—",
+        "status_label": "Delivered · 3 data warnings",
+        "status_verdict": "warning",
+        "warnings": 3,
+        "when": "5 hours ago"
+      }
+    ]
+  },
+  "delivery_failed": {
+    "banner": {
+      "detail": "The most recent run built the data but the upload failed.",
+      "headline": "Your last roster didn't reach SpacesEDU",
+      "verdict": "failed"
+    },
+    "home": {
+      "detail": "The data was built but the upload failed.",
+      "fix": {
+        "dest_id": "setup",
+        "label": "Open Settings"
+      },
+      "headline": "Your roster didn't reach SpacesEDU",
+      "metrics": null,
+      "verdict": "failed"
+    },
+    "rows": [
+      {
+        "district_note": null,
+        "duration": "3.1s",
+        "entity_counts": {
+          "Classes": 40,
+          "Enrollments": 300,
+          "Family": 80,
+          "Staff": 12,
+          "Students": 100
+        },
+        "entity_total": 532,
+        "run_as": "",
+        "sftp": "failed",
+        "source": "—",
+        "status_label": "Built, not delivered",
+        "status_verdict": "failed",
+        "warnings": 0,
+        "when": "5 hours ago"
+      }
+    ]
+  },
+  "delivery_only_after_build": {
+    "banner": {
+      "detail": "Your last sync delivered to SpacesEDU 5 hours ago.",
+      "headline": "Your last sync worked",
+      "verdict": "healthy"
+    },
+    "home": {
+      "detail": "Last sync delivered to SpacesEDU 5 hours ago. It included 100 students.",
+      "fix": null,
+      "headline": "Your roster is up to date",
+      "metrics": {
+        "entity_counts": {
+          "Classes": 40,
+          "Enrollments": 300,
+          "Family": 80,
+          "Staff": 12,
+          "Students": 100
+        },
+        "last_run_display": "5 hours ago",
+        "sftp_delivered": true
+      },
+      "verdict": "healthy"
+    },
+    "rows": [
+      {
+        "district_note": null,
+        "duration": "3.1s",
+        "entity_counts": {},
+        "entity_total": 0,
+        "run_as": "",
+        "sftp": "delivered",
+        "source": "—",
+        "status_label": "Delivered saved files",
+        "status_verdict": "healthy",
+        "warnings": 0,
+        "when": "5 hours ago"
+      },
+      {
+        "district_note": null,
+        "duration": "3.1s",
+        "entity_counts": {
+          "Classes": 40,
+          "Enrollments": 300,
+          "Family": 80,
+          "Staff": 12,
+          "Students": 100
+        },
+        "entity_total": 532,
+        "run_as": "",
+        "sftp": "delivered",
+        "source": "—",
+        "status_label": "Delivered",
+        "status_verdict": "healthy",
+        "warnings": 0,
+        "when": "7 hours ago"
+      }
+    ]
+  },
+  "delivery_only_alone": {
+    "banner": {
+      "detail": "Your last sync delivered to SpacesEDU 5 hours ago.",
+      "headline": "Your last sync worked",
+      "verdict": "healthy"
+    },
+    "home": {
+      "detail": "Last sync delivered to SpacesEDU 5 hours ago.",
+      "fix": null,
+      "headline": "Your roster is up to date",
+      "metrics": null,
+      "verdict": "healthy"
+    },
+    "rows": [
+      {
+        "district_note": null,
+        "duration": "3.1s",
+        "entity_counts": {},
+        "entity_total": 0,
+        "run_as": "",
+        "sftp": "delivered",
+        "source": "—",
+        "status_label": "Delivered saved files",
+        "status_verdict": "healthy",
+        "warnings": 0,
+        "when": "5 hours ago"
+      }
+    ]
+  }
+}

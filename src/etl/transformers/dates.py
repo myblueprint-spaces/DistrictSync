@@ -21,6 +21,7 @@ from typing import Any, Literal, Optional
 
 import pandas as pd
 
+from src.etl.column_names import SCHOOL_YEAR
 from src.etl.transformers.ids import normalize_id_series
 
 logger = logging.getLogger(__name__)
@@ -221,6 +222,28 @@ class SchoolYearDetermination:
         return self.mechanism == "source" and self.resolved_year != self.fallback_year
 
 
+def school_year_source_frames(
+    all_data: dict[str, pd.DataFrame],
+    normalized_sources: dict[str, str],
+) -> list[tuple[str, str, pd.DataFrame]]:
+    """``(role, filename, frame)`` for every configured school-year source that was loaded AND
+    has rows, in config order — the ONE answer to "which files decide the school year?".
+
+    Shared by :func:`determine_school_year_detailed` (which reads their ``school year``
+    column) and by the fail-closed guard ``ClassTransformer._require_school_year_source``
+    (failure-policy §5 #41, owner ruling 2026-09-26), so the scan and the guard cannot
+    disagree on which files count. A source that is absent (not loaded — e.g. no enabled
+    entity reads it) or empty is not here: it carries no year, and the calendar fallback
+    is its legitimate path.
+    """
+    frames: list[tuple[str, str, pd.DataFrame]] = []
+    for role, filename in normalized_sources.items():
+        df = all_data.get(filename)
+        if df is not None and not df.empty:
+            frames.append((role, filename, df))
+    return frames
+
+
 def determine_school_year_detailed(
     all_data: dict[str, pd.DataFrame],
     normalized_sources: dict[str, str],
@@ -237,7 +260,13 @@ def determine_school_year_detailed(
     input set that would silently produce wrong academic dates and Class
     IDs — one loud WARNING names every end year found and which was chosen.
     Falls back to the rollover-aware calendar heuristic when no source has a
-    recognised value.
+    recognised value. That fallback is legitimate only when no source is loaded
+    with rows, or a source's ``school year`` column carries no parseable value:
+    a source that HAS rows but LACKS the column is refused by
+    ``ClassTransformer._require_school_year_source``, which stops the run before
+    Classes — the entity that consumes the year — uses it (failure-policy §5 #41,
+    owner ruling 2026-09-26). This function stays total and pure; it decides
+    nothing about failing.
 
     A SECOND, independent check: the calendar fallback is computed regardless
     of which mechanism wins, and when a source value disagrees with it, a
@@ -254,10 +283,9 @@ def determine_school_year_detailed(
     winning_filename: Optional[str] = None
     winning_raw: Optional[str] = None
 
-    for role, filename in normalized_sources.items():
-        df = all_data.get(filename)
-        if df is not None and "school year" in df.columns:
-            for raw in normalize_id_series(df["school year"].dropna()).unique():
+    for role, filename, df in school_year_source_frames(all_data, normalized_sources):
+        if SCHOOL_YEAR in df.columns:
+            for raw in normalize_id_series(df[SCHOOL_YEAR].dropna()).unique():
                 parsed = parse_school_year_to_end(str(raw), school_year_naming)
                 if parsed is not None and parsed not in found_years:
                     if not found_years:

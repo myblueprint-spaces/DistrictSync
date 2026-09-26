@@ -27,13 +27,15 @@ patches ``src.etl.transformers.base.datetime``); the helper modules take
 import logging
 from abc import ABC, abstractmethod
 from datetime import date, datetime
-from typing import Any, Optional
+from typing import Any, NamedTuple, Optional
 
 import pandas as pd
 
 from src.config.models import ALLOWED_TRANSFORMS as _ALLOWED_TRANSFORMS
 from src.config.models import ConfiguredField, ensure_field_mapping
-from src.etl.column_names import MASTER_TIMETABLE_ID
+from src.etl.column_names import MASTER_TIMETABLE_ID, normalize_column_name
+from src.etl.errors import EtlError, GuardKind
+from src.etl.outcomes import Note, OutcomeNote
 from src.etl.transformers import course_codes as _course_codes
 from src.etl.transformers import dates as _dates
 from src.etl.transformers import emails as _emails
@@ -41,12 +43,23 @@ from src.etl.transformers import grades as _grades
 from src.etl.transformers import ids as _ids
 from src.etl.transformers import naming as _naming
 from src.etl.transformers import sources as _sources
+from src.etl.transformers.columns import Previously, require_columns, resolve_source_column, source_column_label
 from src.etl.transformers.context import TransformContext
+from src.etl.transformers.notes import note_identity_blanks, record_note
 from src.utils.helpers import describe_exception_for_log as _describe_exception
 from src.utils.helpers import describe_value_for_log as _describe_value
 from src.utils.helpers import normalize_columns as _normalize_columns
 
 logger = logging.getLogger(__name__)
+
+
+class EnrollStatusDecision(NamedTuple):
+    """:meth:`BaseTransformer.decide_enroll_status`'s answer: the labels, and which signal decided them."""
+
+    labels: pd.Series
+    #: ``(OutcomeNote, rows)`` for each fail-open branch taken — ``()`` when a status column decided
+    #: every row that has a value and no row went Active without a signal.
+    notes: tuple[Note, ...]
 
 
 class BaseTransformer(ABC):
@@ -59,6 +72,18 @@ class BaseTransformer(ABC):
     # transform methods for the defensive runtime check.
     # -----------------------------------------------------------------------
     ALLOWED_TRANSFORMS: frozenset[str] = _ALLOWED_TRANSFORMS
+
+    # -----------------------------------------------------------------------
+    # The ``source_columns`` ROLE names this entity's transformer reads (plan
+    # 0053 S12). THE vocabulary: a subclass derives it from the SAME constant
+    # its read sites resolve through (never a restated list), and the config
+    # loader's unknown-key walker (``loader.unknown_config_keys``, via
+    # ``registry.source_column_roles``) judges an entity's ``source_columns``
+    # block against it — a role no transformer reads is a typo that would
+    # otherwise silently read the default column. Empty here: an entity that
+    # declares none reads no ``source_columns`` block at all.
+    # -----------------------------------------------------------------------
+    SOURCE_COLUMN_ROLES: frozenset[str] = frozenset()
 
     # CEDS grade mapping — canonical table lives in grades.py (same object).
     CEDS_MAPPING: dict[str, str] = _grades.CEDS_MAPPING
@@ -199,38 +224,82 @@ class BaseTransformer(ABC):
         - ``withdraw_date_column``: :attr:`DEFAULT_WITHDRAW_DATE_COLUMN`.
         - ``active_values``: list(:attr:`DEFAULT_ACTIVE_VALUES`).
 
-        A *configured* ``status_column`` string is honored verbatim (lower-cased
-        to match normalized frames) and still presence-checked against the
-        frame; it resolves to ``None`` when absent so detection falls through
-        to the withdraw-date branch rather than raising.
+        A *configured* ``status_column`` is honored as configured and still
+        presence-checked against the frame; it resolves to ``None`` when absent
+        so detection falls through to the withdraw-date branch rather than
+        raising — a fail-open posture :meth:`decide_enroll_status` records
+        (``OutcomeNote.CONFIGURED_STATUS_COLUMN_ABSENT``, §5 #17).
+
+        Both column keys resolve through the one resolver,
+        :func:`~src.etl.transformers.columns.resolve_source_column` (plan 0053 S11
+        — they were §9's one named exception): the EnrollStatus block is a
+        key → column-spelling mapping like any ``source_columns`` block, and its
+        keys are validated as strings at load (``FieldEnrollStatus``). A
+        WHITESPACE-ONLY value keeps its pre-S11 meaning rather than the
+        resolver's "blank reads the default" (no direction change): a blank
+        ``status_column`` is configured-and-absent (date branch, never the
+        aliases) and a blank ``withdraw_date_column`` reads no column — so every
+        valid config, blank values included, reads exactly the column it read before.
         """
-        present = {str(c).strip().lower() for c in df_columns}
-        config = students_field_map.get("EnrollStatus")
+        present = {normalize_column_name(str(c)) for c in df_columns}
+        enroll_cfg = cls._enroll_status_block(students_field_map)
 
-        status_column: Optional[str] = None
-        withdraw_date_column = cls.DEFAULT_WITHDRAW_DATE_COLUMN
-        active_values = list(cls.DEFAULT_ACTIVE_VALUES)
-        configured_status_col = False
+        withdraw_date_column: str
+        if cls._configured_but_blank(enroll_cfg, "withdraw_date_column"):
+            withdraw_date_column = ""  # pre-S11: a blank configured spelling reads no column
+        else:
+            withdraw_date_column = resolve_source_column(
+                enroll_cfg,
+                "withdraw_date_column",
+                default=cls.DEFAULT_WITHDRAW_DATE_COLUMN,
+                previously=Previously.UNCHANGED,
+            )
+        raw_active = enroll_cfg.get("active_values")
+        active_values = [str(v) for v in raw_active] if raw_active else list(cls.DEFAULT_ACTIVE_VALUES)
 
-        if isinstance(config, dict):
-            raw_status = config.get("status_column")
-            if raw_status:
-                status_column = str(raw_status).strip().lower()
-                configured_status_col = True
-            raw_withdraw = config.get("withdraw_date_column")
-            if raw_withdraw:
-                withdraw_date_column = str(raw_withdraw).strip().lower()
-            raw_active = config.get("active_values")
-            if raw_active:
-                active_values = [str(v) for v in raw_active]
-
-        if not configured_status_col:
+        status_column: Optional[str]
+        if cls._configured_but_blank(enroll_cfg, "status_column"):
+            status_column = None  # pre-S11: configured (truthy) but names no column — the date branch
+        elif cls._configured_status_label(students_field_map):
+            configured = resolve_source_column(
+                enroll_cfg,
+                "status_column",
+                default=cls.DEFAULT_STATUS_COLUMN_ALIASES[0],
+                previously=Previously.UNCHANGED,
+            )
+            # Configured but absent from this frame — fall through to the date branch.
+            status_column = configured if configured in present else None
+        else:
             status_column = next((alias for alias in cls.DEFAULT_STATUS_COLUMN_ALIASES if alias in present), None)
-        elif status_column not in present:
-            # Configured but absent from this frame — fall through to date branch.
-            status_column = None
 
         return status_column, withdraw_date_column, active_values
+
+    @staticmethod
+    def _configured_but_blank(enroll_cfg: dict[str, Any], key: str) -> bool:
+        """True when ``key`` is set to a truthy value that names no column (whitespace only).
+
+        The pre-S11 reader tested the RAW value for truthiness (``if raw:``), so ``"  "``
+        counted as configured; the resolver would read it as "use the default". Kept apart
+        so neither EnrollStatus key changes which column it reads.
+        """
+        raw = enroll_cfg.get(key)
+        return bool(raw) and isinstance(raw, str) and not raw.strip()
+
+    @classmethod
+    def _status_column_configured(cls, students_field_map: dict[str, Any]) -> bool:
+        """True when the EnrollStatus block configures a ``status_column`` (a truthy value, blank or not)."""
+        return bool(cls._enroll_status_block(students_field_map).get("status_column"))
+
+    @staticmethod
+    def _enroll_status_block(students_field_map: dict[str, Any]) -> dict[str, Any]:
+        """The Students ``EnrollStatus`` block as a mapping (``{}`` for the bare-null sentinel)."""
+        config = students_field_map.get("EnrollStatus")
+        return config if isinstance(config, dict) else {}
+
+    @classmethod
+    def _configured_status_label(cls, students_field_map: dict[str, Any]) -> str:
+        """The CONFIGURED status column in config spelling, or ``""`` when none is configured."""
+        return source_column_label(cls._enroll_status_block(students_field_map), "status_column", default="")
 
     @classmethod
     def _classify_withdraw(cls, value: Any, today: date) -> tuple[bool, bool]:
@@ -246,8 +315,17 @@ class BaseTransformer(ABC):
     def compute_enroll_status(cls, df: pd.DataFrame, students_field_map: dict[str, Any]) -> pd.Series:
         """Per-row enrollment label (``"Active"`` / ``"Inactive"`` / any ``active_values``).
 
-        Single source of truth for "is this student active". The live status
-        value **wins**; the withdraw date is only a fallback:
+        :meth:`decide_enroll_status`'s labels — the single source of truth for
+        "is this student active" (see there for the rule). Kept as the
+        label-only view for callers that record no notes.
+        """
+        return cls.decide_enroll_status(df, students_field_map).labels
+
+    @classmethod
+    def decide_enroll_status(cls, df: pd.DataFrame, students_field_map: dict[str, Any]) -> "EnrollStatusDecision":
+        """Per-row enrollment labels AND the notes saying which signal decided them.
+
+        The live status value **wins**; the withdraw date is only a fallback:
 
         1. If the row has a **non-blank status value** (resolved status column) →
            status decides: the trimmed value when it is in ``active_values``,
@@ -258,47 +336,93 @@ class BaseTransformer(ABC):
            back to the withdraw-date column: ``"Inactive"`` for a
            past/unparseable date, ``"Active"`` otherwise.
         3. Else (neither column present) → ``"Active"`` (with one warning).
+
+        Every fail-open branch is RECORDED (plan 0053 S11, ``failure-policy.md``
+        §5 #17/#18), each note counting demographic rows, with ONE log line per
+        call: at most one of ``ALL_ACTIVE_DEFAULT`` (neither column — H1, a
+        WARNING-tier note) > ``CONFIGURED_STATUS_COLUMN_ABSENT`` (the configured
+        status column is not in the export) > ``STATUS_COLUMN_ABSENT_DATE_ONLY``
+        (no status column at all), plus ``ACTIVE_WITHOUT_POSITIVE_SIGNAL`` for the
+        rows kept Active with neither a status value nor a withdraw date. The
+        precedence puts ``ALL_ACTIVE_DEFAULT`` FIRST even when a configured status
+        column is what is missing: a run that shipped every student Active is the
+        H1 exposure, and a quieter note must never stand in for it (the log line
+        still names the configured column). The DIRECTION of every branch is
+        unchanged (D10 is open) — the notes only make it visible.
         """
         if df.empty:
-            return pd.Series([], dtype="object")
+            return EnrollStatusDecision(pd.Series([], dtype="object"), ())
 
         status_column, withdraw_date_column, active_values = cls.resolve_active_config(students_field_map, df.columns)
+        # A truthy-but-blank configured status column is configured-and-absent (see resolve_active_config).
+        status_configured = cls._status_column_configured(students_field_map)
+        configured_status = cls._configured_status_label(students_field_map) or "(blank)"
         allowed = set(active_values)
         today = datetime.now().date()
         has_withdraw = withdraw_date_column in df.columns
+        rows = len(df)
 
         # Withdraw-date label — used for any row without a usable status value.
         if has_withdraw:
-            classified = df[withdraw_date_column].apply(lambda v: cls._classify_withdraw(v, today))
+            withdraw = df[withdraw_date_column]
+            classified = withdraw.apply(lambda v: cls._classify_withdraw(v, today))
             date_label = classified.apply(lambda t: "Inactive" if t[0] else "Active")
+            # Blank exactly as `dates.classify_withdraw` reads blank (NaN / whitespace-only).
+            withdraw_blank = withdraw.isna() | withdraw.astype(str).str.strip().eq("")
         else:
             classified = None
             date_label = pd.Series("Active", index=df.index, dtype="object")
+            withdraw_blank = pd.Series(True, index=df.index, dtype=bool)
 
+        notes: list[Note] = []
         if status_column is not None:
-            logger.info(
-                f"[Students] Active-status resolved via status column '{status_column}' "
-                f"(active values {active_values}); withdraw date used only as a per-row fallback."
-            )
             status_vals = _ids.normalize_id_series(df[status_column])
             has_status = status_vals.ne("") & status_vals.str.lower().ne("nan")
             status_label = status_vals.apply(lambda v: v if v in allowed else "Inactive")
             labels = status_label.where(has_status, date_label)
             date_used = ~has_status
-        elif has_withdraw:
-            logger.info(
-                f"[Students] No status column present; active-status resolved via "
-                f"withdraw-date column '{withdraw_date_column}'."
+            no_signal = int((~has_status & withdraw_blank).sum())
+            unsignalled = (
+                f" {no_signal} row(s) have neither a status value nor a withdraw date and are kept Active."
+                if no_signal
+                else ""
             )
+            logger.info(
+                f"[Students] Active-status resolved via status column '{status_column}' "
+                f"(active values {active_values}); withdraw date used only as a per-row fallback.{unsignalled}"
+            )
+        elif has_withdraw:
             labels = date_label
             date_used = pd.Series(True, index=df.index, dtype=bool)
+            no_signal = int(withdraw_blank.sum())
+            if status_configured:
+                # failure-policy: safety_heuristic
+                notes.append((OutcomeNote.CONFIGURED_STATUS_COLUMN_ABSENT, rows))
+                logger.warning(
+                    f"[Students] The configured status column '{configured_status}' is not in the export; "
+                    f"active-status for all {rows} row(s) resolved via withdraw-date column "
+                    f"'{withdraw_date_column}' instead ({no_signal} with no withdraw date, kept Active)."
+                )
+            else:
+                # failure-policy: safety_heuristic
+                notes.append((OutcomeNote.STATUS_COLUMN_ABSENT_DATE_ONLY, rows))
+                logger.info(
+                    f"[Students] No status column present; active-status for all {rows} row(s) resolved via "
+                    f"withdraw-date column '{withdraw_date_column}' ({no_signal} with no withdraw date, kept Active)."
+                )
         else:
+            configured = f" (configured status column '{configured_status}')" if status_configured else ""
+            # failure-policy: safety_heuristic
             logger.warning(
                 "[Students] Could not find an enrollment-status or withdraw-date column "
-                f"(status aliases {list(cls.DEFAULT_STATUS_COLUMN_ALIASES)}, "
-                f"withdraw column '{withdraw_date_column}'). Defaulting all rows to 'Active'."
+                f"(status aliases {list(cls.DEFAULT_STATUS_COLUMN_ALIASES)}{configured}, "
+                f"withdraw column '{withdraw_date_column}'). Defaulting all rows to 'Active' ({rows} row(s))."
             )
-            return date_label
+            return EnrollStatusDecision(date_label, ((OutcomeNote.ALL_ACTIVE_DEFAULT, rows),))
+
+        if no_signal:
+            # failure-policy: safety_heuristic
+            notes.append((OutcomeNote.ACTIVE_WITHOUT_POSITIVE_SIGNAL, no_signal))
 
         # Warn about unparseable withdraw dates only where the date was actually used.
         if has_withdraw and classified is not None:
@@ -317,7 +441,7 @@ class BaseTransformer(ABC):
                     f"treated as Inactive. Sample value shapes: {shapes}"
                 )
 
-        return labels
+        return EnrollStatusDecision(labels, tuple(notes))
 
     @classmethod
     def is_active_mask(cls, df: pd.DataFrame, students_field_map: dict[str, Any]) -> pd.Series:
@@ -333,7 +457,8 @@ class BaseTransformer(ABC):
         df: pd.DataFrame,
         student_col: str,
         context: TransformContext,
-        caller: str = "Enrollments",
+        *,
+        caller: str,
     ) -> pd.DataFrame:
         """Keep only rows whose ``student_col`` is in the active roster.
 
@@ -349,9 +474,16 @@ class BaseTransformer(ABC):
         whitespace.
 
         Fail-safe (never filter-to-empty): when the roster is empty (Students
-        disabled or ran later) or ``student_col`` is absent, log a WARNING and
-        return ``df`` unchanged rather than dropping every row. ``caller`` names
-        the consumer in that warning.
+        disabled or ran later) or ``student_col`` is absent, return ``df``
+        unchanged rather than dropping every row — and RECORD which (plan 0053
+        S11): ``OutcomeNote.ACTIVE_ROSTER_UNAVAILABLE`` or
+        ``ACTIVE_ROSTER_COLUMN_UNRESOLVABLE`` on the ``caller`` entity, counting
+        the rows kept by the FIRST such call for that entity this run (a second
+        call — Enrollments' subject filter after its homeroom one — adds nothing:
+        the first count stands), with one WARNING per entity per run. ``caller``
+        is the consuming ENTITY's name — the note lands on its outcome, so it is
+        REQUIRED keyword-only (a default would attribute a note to an entity that
+        never asked for the filter).
 
         When rows ARE dropped, one aggregate WARNING per call reports the row
         count and the count of DISTINCT students involved — a mixed-vintage
@@ -363,8 +495,37 @@ class BaseTransformer(ABC):
         without a ``SettingWithCopyWarning``, matching the other ``filter_*``
         helpers here.
         """
-        if not context.active_student_ids or student_col not in df.columns:
-            logger.warning(f"[{caller}] active_student_ids empty — skipping active filter")
+        # Two fail-open postures, told apart (plan 0053 S11, §5 #14/#27(i)): each keeps the frame
+        # (never filter-to-empty) and records ONE note + ONE line per entity per run.
+        if not context.active_student_ids:
+            if len(df):
+                # failure-policy: safety_heuristic
+                record_note(
+                    context,
+                    caller,
+                    OutcomeNote.ACTIVE_ROSTER_UNAVAILABLE,
+                    len(df),
+                    log=logger,
+                    message=(
+                        f"[{caller}] active_student_ids empty — no active Students roster was published this run, "
+                        f"so {len(df)} row(s) were kept without the active filter."
+                    ),
+                )
+            return df
+        if student_col not in df.columns:
+            if len(df):
+                # failure-policy: safety_heuristic
+                record_note(
+                    context,
+                    caller,
+                    OutcomeNote.ACTIVE_ROSTER_COLUMN_UNRESOLVABLE,
+                    len(df),
+                    log=logger,
+                    message=(
+                        f"[{caller}] ACTIVE FILTER SKIPPED — this source has no '{student_col}' column to match "
+                        f"against the active Students roster, so {len(df)} row(s) were kept unfiltered."
+                    ),
+                )
             return df
         normalized = _ids.normalize_id_series(df[student_col])
         keep = normalized.isin(context.active_student_ids)
@@ -470,22 +631,30 @@ class BaseTransformer(ABC):
         (lowercase) frame, so the filter column is resolved with the same
         strip+lower treatment.
 
-        Fail-loud (validate at boundary): a filter naming a column absent from
-        the frame raises ``ValueError`` — a renamed source column must never
-        silently keep everyone or no one. Empty/absent ``filters`` return ``df``
+        Fail-loud (validate at boundary): EVERY filter column is checked before
+        any filtering, through :func:`~src.etl.transformers.columns.require_columns`
+        — one or more absent columns raise ONE
+        :class:`~src.etl.errors.SourceSchemaError` (guard ``PII_SCOPE``) naming
+        them all in the CONFIG's spelling — a renamed source column must never
+        silently keep everyone or no one, and an admin fixing the export should
+        learn every missing column from one run, not one per night. The message
+        carries the COUNT of source columns, never their names (§8: an observed
+        header can be a pupil). Empty/absent ``filters`` return ``df``
         unchanged. Only the kept/total COUNT is logged (never row values / PII).
         """
         if not filters:
             return df
+        # failure-policy: pii_scope
+        require_columns(
+            df.columns,
+            [str(row_filter["column"]) for row_filter in filters],
+            entity=entity_name,
+            guard=GuardKind.PII_SCOPE,
+        )
         total = len(df)
         mask = pd.Series(True, index=df.index)
         for row_filter in filters:
             col = str(row_filter["column"]).strip().lower()
-            if col not in df.columns:
-                raise ValueError(
-                    f"[{entity_name}] row_filter column '{col}' not found in source columns. "
-                    f"Available: {sorted(df.columns)}"
-                )
             include = {str(v).strip().lower() for v in row_filter.get("include", [])}
             values = _ids.normalize_id_series(df[col]).str.lower()
             mask &= values.isin(include)
@@ -506,26 +675,9 @@ class BaseTransformer(ABC):
         return _sources.get_source_file(context, source_config, role)
 
     # -----------------------------------------------------------------------
-    # Field-map resolution + date resolution (per-entity contract)
+    # Date resolution (per-entity contract). Source-COLUMN resolution is
+    # ``columns.resolve_source_column`` — the one resolver (plan 0053 S9).
     # -----------------------------------------------------------------------
-    @staticmethod
-    def resolve_column(field_map: dict[str, Any], key: str, default: str) -> str:
-        """Resolve a source-column name from a field_map entry, with a default.
-
-        The shared spelling of the repeated resolve-with-default idiom
-        (Configurable Columns rule): a dict entry contributes its ``column``
-        value (lower-cased, ``default`` when the key is absent); ANY other
-        shape — missing entry, bare string, null sentinel — yields ``default``.
-        NOTE: a bare string is deliberately NOT honored here, matching the
-        legacy inline sites this replaces (Class ID / Grade / School ID); use
-        the entity's own resolver where a bare string must win (e.g.
-        ``FamilyTransformer._student_number_col``).
-        """
-        config = field_map.get(key, {})
-        if isinstance(config, dict):
-            return str(config.get("column", default)).lower()
-        return default
-
     def resolve_date(self, field_map: dict[str, Any], field_name: str, context: TransformContext) -> str:
         """Resolve a date field from config — either a fixed value or academic year date.
 
@@ -545,27 +697,37 @@ class BaseTransformer(ABC):
             return f"{mt_id}_{context.school_year}"
         return mt_id
 
-    def assign_class_ids(self, df: pd.DataFrame, field_map: dict, context: TransformContext) -> pd.DataFrame:
+    def assign_class_ids(
+        self, df: pd.DataFrame, field_map: dict, context: TransformContext, *, entity: str
+    ) -> pd.DataFrame:
         """Assign Class ID column using blended_class_map with generate_class_id fallback.
 
         Shared by ClassTransformer and EnrollmentTransformer to ensure IDs
         are computed identically across Classes and Enrollments output.
-        """
-        mt_id_col = self.resolve_column(field_map, "Class ID", MASTER_TIMETABLE_ID)
 
-        if mt_id_col in df.columns:
-            df[mt_id_col] = _ids.normalize_id_series(df[mt_id_col])
-            df["Class ID"] = df[mt_id_col].map(context.blended_class_map)
-            fallback = df.apply(
-                lambda row: self.generate_class_id(row, mt_id_col=mt_id_col, append_year=True, context=context),
-                axis=1,
-            )
-            df["Class ID"] = df["Class ID"].fillna(fallback)
-        else:
-            df["Class ID"] = df.apply(
-                lambda row: self.generate_class_id(row, mt_id_col=mt_id_col, append_year=True, context=context),
-                axis=1,
-            )
+        Fail-closed (plan 0053 S10, ``failure-policy.md`` §5 #29): the Class ID
+        source column (the ``Class ID`` mapping's column, default Master Timetable
+        ID) is REQUIRED — without it every subject ``Class ID`` used to ship
+        blank. ``entity`` is the caller's (required keyword-only: the error names
+        whose source lacks the column; ``run_transform`` decides the scope).
+        """
+        mt_id_col = resolve_source_column(
+            field_map, "Class ID", default=MASTER_TIMETABLE_ID, previously=Previously.COLUMN_KEY_ONLY
+        )
+        # failure-policy: join_key
+        require_columns(
+            df.columns,
+            [source_column_label(field_map, "Class ID", default=MASTER_TIMETABLE_ID)],
+            entity=entity,
+            guard=GuardKind.JOIN_KEY,
+        )
+        df[mt_id_col] = _ids.normalize_id_series(df[mt_id_col])
+        df["Class ID"] = df[mt_id_col].map(context.blended_class_map)
+        fallback = df.apply(
+            lambda row: self.generate_class_id(row, mt_id_col=mt_id_col, append_year=True, context=context),
+            axis=1,
+        )
+        df["Class ID"] = df["Class ID"].fillna(fallback)
         return df
 
     def generate_class_name(
@@ -731,7 +893,14 @@ class BaseTransformer(ABC):
           (``data_errors``) and Run History — never swallowed.
         - **Intended blank** (the config column is simply absent from the frame)
           is NOT an error: it stays ``pd.NA`` and is NOT recorded.
+        - **Typed failures propagate.** An :class:`~src.etl.errors.EtlError`
+          raised inside a strategy or a per-row transform (e.g. a
+          ``SourceSchemaError`` from a guard) is re-raised at BOTH levels, never
+          demoted to a blank cell or column — its scope is the orchestrator's
+          decision (plan 0053 S1, ``failure-policy.md`` §6).
         """
+        # The fields a caller filled before the loop: the loop skips them, and so does the note.
+        prefilled = frozenset(result.columns)
         for tgt_field, raw_spec in field_map.items():
             try:
                 if tgt_field in result.columns:
@@ -740,11 +909,6 @@ class BaseTransformer(ABC):
                 spec = ensure_field_mapping(raw_spec)
                 if isinstance(spec, ConfiguredField):
                     result[tgt_field] = spec.apply(working, self, tgt_field, entity, context)
-                elif isinstance(spec, dict):
-                    # classify_field's warn-passthrough (unrecognized dict
-                    # structure): no usable 'column' key by definition — the
-                    # legacy loop yielded an intended blank. NOT recorded.
-                    result[tgt_field] = pd.NA
                 else:
                     # Bare column name (str) or the auto-detect None sentinel —
                     # the direct read. An absent column is an intended blank
@@ -752,7 +916,12 @@ class BaseTransformer(ABC):
                     col = str(spec).lower()
                     result[tgt_field] = working[col] if col in working.columns else pd.NA
 
-            except Exception as ex:
+            except EtlError:
+                # A TYPED failure (e.g. a SourceSchemaError from a guard inside a
+                # transform) is a decision already made about scope — it must
+                # reach the orchestrator, never be demoted to a blank column.
+                raise
+            except Exception as ex:  # noqa: BLE001 — field-map isolation; column-level, recorded to data_errors
                 # Column-level error (unknown transform or any structural
                 # failure). Blank the column, record loudly, continue — never
                 # silently swallow, never fail the run.
@@ -760,6 +929,8 @@ class BaseTransformer(ABC):
                 self._record_data_error(context, entity, tgt_field, failed_rows=len(working), sample=str(ex))
                 result[tgt_field] = pd.NA
 
+        # §5 #19 (plan 0053 S11): an identity field the loop could only blank is recorded (notes.py).
+        note_identity_blanks(working.columns, len(working), field_map, entity, context, prefilled=prefilled)
         return result
 
     def _apply_transform_resilient(
@@ -783,7 +954,9 @@ class BaseTransformer(ABC):
         for value in series:
             try:
                 out.append(func(value))
-            except Exception as ex:  # noqa: BLE001 — per-row isolation; recorded below
+            except EtlError:
+                raise  # typed: never demoted to a blank cell (see ``apply_field_map``)
+            except Exception as ex:  # noqa: BLE001 — field-map isolation; per-row, recorded below
                 out.append(pd.NA)
                 failures += 1
                 if not first_sample:

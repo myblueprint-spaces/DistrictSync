@@ -22,12 +22,19 @@ skips the staleness rule rather than crashing; every path returns a valid
 **Privacy (LIVE/top):** the record's free-text ``error`` (``str(e)`` in the emitter,
 which can carry a filesystem path / ``sis_type`` / column name) is **NEVER interpolated
 into the admin-facing ``headline``/``detail``** — faults are named by CATEGORY from the
-record's structured fields only (status / sftp / anomalies / data_errors). The raw
-``error`` belongs solely to IA-6's raw-log expander.
+record's structured fields only (status / ``error_category`` / sftp / ``entity_outcomes`` /
+anomalies / data_errors), humanised through the total tables in ``failure_copy`` (plan 0053
+S3). The ONE kind of name a headline/detail may carry is a config-declared file or column
+label, validated (plan 0053 S7, owner decision D4): an ``entity_outcomes`` entry's ``labels`` /
+``file_label``, which passed ``outcomes.safe_label`` against the resolved config's own
+vocabulary when the run recorded them and whose shape the total reader re-checks — never
+observed header text, ``str(e)``, paths or cell values. The raw ``error`` belongs solely to
+IA-6's raw-log expander.
 
 Rule order (first-match-wins; failures above warnings above healthy — a failed sync is
 never masked by a later "healthy") mirrors ``03_Run_History._status_cell``'s proven
-precedence (status → sftp → data_errors), extended with anomaly + staleness + empty, and
+precedence (status → sftp → data_errors), extended with PARTIAL (plan 0053 S3) + anomaly +
+staleness + empty, and
 tied to the CLI exit-code contract (1 = ETL fail, 3 = SFTP fail with output present).
 **That ordering binds the schedule-attention rule too (W3-B):** a broken nightly schedule is
 a WARNING-tier fault, so it outranks every other warning, the empty state and healthy — but
@@ -48,8 +55,11 @@ from datetime import datetime
 from enum import Enum
 
 from src.config.app_config import AppConfig
+from src.etl.outcomes import EntityOutcome, OutcomeKind, outcomes_from_record
 from src.etl.sync_window import in_sync_window, next_resume_date
+from src.ui_flet.failure_copy import data_warnings_clause, failed_copy_for, partial_copy, warning_outcomes
 from src.ui_flet.humanize import (
+    SIZE_NOUNS,
     AnomalyVariant,
     friendly_absolute_date,
     friendly_anomaly_detail,
@@ -69,61 +79,18 @@ from src.ui_flet.verdict import Verdict
 _ROSTERING_ENTITIES: tuple[str, ...] = ("Students", "Staff", "Family", "Classes", "Enrollments")
 _MYBLUEPRINT_ENTITIES: tuple[str, ...] = ("CourseInfo", "StudentCourses")
 
-# The SINGLE source of the entity-key → plain-language output-CSV label. The 5 rostering
-# entities label to themselves; the myBlueprint+ / attendance keys map to their friendly CSV
-# names (``CourseInfo`` → "Courses", ``StudentCourses`` → "Student courses",
-# ``StudentAttendance`` → "Attendance"). This is a pure presentation fact (no flet), so both
-# the pure ``mapping_catalog`` and the flet views (``components.run_table``, Home, Convert)
-# consume ONE definition — a rename here changes every surface at once (DRY). An unknown key
-# has no entry; callers fall back to the raw key (``ENTITY_LABELS.get(name, name)``).
-ENTITY_LABELS: dict[str, str] = {
-    "Students": "Students",
-    "Staff": "Staff",
-    "Family": "Family",
-    "Classes": "Classes",
-    "Enrollments": "Enrollments",
-    "CourseInfo": "Courses",
-    "StudentCourses": "Student courses",
-    "StudentAttendance": "Attendance",
-}
-
-# --------------------------------------------------------------------------- #
-# The healthy line's roster-size clause (0038 S7)                              #
-#                                                                             #
-# Slim Home drops the metric-tile row, and with it the one thing the tiles     #
-# carried that the verdict does not: a SIZE sanity check. A sync that quietly  #
-# shrank to 12 students is "delivered to SpacesEDU" by every structured field  #
-# on the record, so the healthy line names one number and lets the admin — the #
-# only person who knows the district is not that small — see it.               #
-# --------------------------------------------------------------------------- #
+# The healthy line's roster-size clause (0038 S7) keys on ``humanize.SIZE_NOUNS`` — the
+# countable-thing vocabulary, whose dict ORDER is the "which entity leads" rule (see
+# ``size_clause``). Both entity maps (``SIZE_NOUNS`` and ``ENTITY_LABELS``) live in
+# ``humanize`` since plan 0053 S3: this module imports ``failure_copy``, which needs the
+# same words, so defining them here would make the two modules import each other. This
+# module defines NO label map of its own (pinned by ``tests/test_ui_flet_failure_copy.py``).
 #
-# WHY A SECOND VOCABULARY, beside ``ENTITY_LABELS``. That map names the output CSV
-# ("Attendance", "Courses") — a heading. This one names a COUNTABLE THING ("8,140
-# attendance rows", "1,204 courses"), which is a different presentation fact and reads
-# wrong if borrowed: "8,140 attendance" and "4,812 family" are not sentences. Both forms
-# are written out rather than derived, because ``humanize.pluralize`` is a naive ``+ "s"``
-# and would render "1 classs".
-#
-# ORDER IS SEMANTIC. The dict order IS the "which entity leads" rule: the first key this
-# config actually produces wins. That is what keeps an attendance-only or myBlueprint+-only
-# config off the rostering keys entirely (see ``size_clause``).
-#
-# THE TABLE IS THE ALLOWLIST. A config may enable a partner-defined entity whose key came
-# out of a hand-dropped YAML; an unknown key produces NO clause rather than being echoed
-# into admin-facing copy. Same posture as the rest of this module: never render a string
-# we did not author.
-SIZE_NOUNS: dict[str, tuple[str, str]] = {
-    "Students": ("student", "students"),
-    "Staff": ("staff record", "staff records"),
-    # NOT "families": a ``Family.csv`` row is one parent/guardian contact and a student may
-    # have several, so counting rows as families would overstate a number by design.
-    "Family": ("family contact", "family contacts"),
-    "Classes": ("class", "classes"),
-    "Enrollments": ("enrollment", "enrollments"),
-    "CourseInfo": ("course", "courses"),
-    "StudentCourses": ("student course", "student courses"),
-    "StudentAttendance": ("attendance row", "attendance rows"),
-}
+# Slim Home drops the metric-tile row, and with it the one thing the tiles carried that
+# the verdict does not: a SIZE sanity check. A sync that quietly shrank to 12 students is
+# "delivered to SpacesEDU" by every structured field on the record, so the healthy line
+# names one number and lets the admin — the only person who knows the district is not
+# that small — see it.
 
 SIZE_CLAUSE_LEAD = "It included "
 """The size clause's fixed opening — the one literal docs quote (pinned by the copy-parity test)."""
@@ -241,6 +208,22 @@ _FIRST_SYNC_LEAD = "Your nightly sync will appear here."
 # install ever gets a schedule. (``EMPTY_NO_AUTO_SYNC_DETAIL`` is the stronger, CONFIRMED-
 # missing form — this one covers "we cannot see one", which is not the same claim.)
 _NO_RUNS_YET_LEAD = "Whenever a sync runs — nightly, or from the Convert tab — its result appears here."
+
+# The third empty-state headline (plan 0053 S5, owner decision D14). The verdict skips a FAILED
+# MANUAL attempt (see ``verdict_records``), so an install whose ledger holds ONLY such attempts
+# reaches the empty branch with rows in its run history. Neither older headline is true there:
+# "No runs recorded yet" denies the rows Run History lists one click away, and "starts fresh
+# here" — which the store stamp every such attempt creates would otherwise select — tells a
+# brand-new install about "an earlier version" it never had (the falsehood 0038 S7 (i) removed).
+# This one claims only what the LEDGER shows, like its two siblings: nothing COMPLETED is
+# recorded. It is true for the newcomer and for the <= v3.4.0 upgrader alike, and it never
+# claims a sync happened. Single-sourced: Run History's banner imports it.
+EMPTY_NO_COMPLETED_RUNS_HEADLINE = "No completed sync recorded yet"
+# HOME's lead for that state (Run History writes its own, pointing at the rows beneath it).
+# Names only the Convert tab — every record the verdict skips is, by definition, a manual one.
+_FAILED_ATTEMPTS_ONLY_LEAD = (
+    "The conversions run from the Convert tab so far didn't finish — Run History lists each attempt."
+)
 
 # --------------------------------------------------------------------------- #
 # The first-run welcome band (0038 S6) — the one line above the hosted wizard. #
@@ -387,6 +370,18 @@ def has_earlier_run_history(*, store_created_at: str | None) -> bool:
     return bool((store_created_at or "").strip())
 
 
+def empty_state_headline(*, upgrade: bool, failed_attempts_only: bool) -> str:
+    """The empty-state headline — ONE rule for Home and the Run History banner (pure).
+
+    ``failed_attempts_only`` (plan 0053 S5, D14) outranks ``upgrade``: the store stamp that makes
+    an install an "upgrader" is exactly what its first failed manual attempt created, so without
+    this order a brand-new install would be told about an earlier version it never had.
+    """
+    if failed_attempts_only:
+        return EMPTY_NO_COMPLETED_RUNS_HEADLINE
+    return EMPTY_FRESH_START_HEADLINE if upgrade else EMPTY_NO_RUNS_HEADLINE
+
+
 def _expects_a_nightly(app_config: AppConfig, schedule_status: ScheduleStatus | None) -> bool:
     """Whether ANY positive signal says this install has a nightly schedule (pure + TOTAL).
 
@@ -485,15 +480,23 @@ class LatestReason(Enum):
     """The single-source classification of a latest run's fault axis (staleness EXCLUDED).
 
     The status→reason precedence a *record* carries, independent of when it ran — the one
-    place the ``status → sftp → anomalies → data_errors`` order is decided. ``derive_home_status``
-    (Home) and ``run_history.derive_history_banner`` + ``run_history.to_run_row`` (IA-6, the 2nd
-    consumer) both classify through this, so a Home verdict and a Run-History row/banner can never
-    drift. Staleness is a SEPARATE, time-relative axis the caller layers on top of ``CLEAN`` — it
-    is deliberately NOT a reason here (a stale run is a clean run that's merely old).
+    place the ``status → sftp → partial → anomalies → data_errors`` order is decided.
+    ``derive_home_status`` (Home) and ``run_history.derive_history_banner`` +
+    ``run_history.to_run_row`` (IA-6, the 2nd consumer) both classify through this, so a Home
+    verdict and a Run-History row/banner can never drift. Staleness is a SEPARATE,
+    time-relative axis the caller layers on top of ``CLEAN`` — it is deliberately NOT a reason
+    here (a stale run is a clean run that's merely old).
     """
 
     FAILED_ETL = "failed_etl"  # status != "success" — the dominant fault
     FAILED_DELIVERY = "failed_delivery"  # ETL ok, SFTP attempted + failed (exit-3 shape)
+    # Plan 0053 S3: the run completed but at least one configured entity was left out — FAILED,
+    # or since S8 (owner decision D5) EMPTY for a reason that warns, or since S10 BUILT with a
+    # WARNING-tier note such as co-teachers left out (``failure_copy.warning_outcomes``).
+    # Below both failures (a completed run is not a failed one), above ANOMALY: a vanished file's
+    # anomaly fires once, the missing entity every night (P7) — EXCEPT a note-only PARTIAL (every
+    # warning outcome BUILT), which ranks below ANOMALY because its file was delivered (S10).
+    PARTIAL = "partial"
     ANOMALY = "anomaly"  # succeeded but a >20% drop looked off
     DATA_WARNINGS = "data_warnings"  # succeeded, some rows had field problems + were skipped
     CLEAN = "clean"  # succeeded cleanly (a stale run is still CLEAN — staleness is layered on top)
@@ -501,24 +504,72 @@ class LatestReason(Enum):
     # classifies identically. Copy that says "delivered" must consult ``sftp_delivered(record)``.
 
 
-def classify_latest_reason(record: dict) -> LatestReason:
+def classify_latest_reason(record: dict, *, prior_build: dict | None) -> LatestReason:
     """Classify a run record's fault axis (first-match precedence, staleness EXCLUDED) — pure + TOTAL.
 
-    The SINGLE source of the ``status → sftp → anomalies → data_errors`` precedence (mirrors
-    ``03_Run_History._status_cell``). Every field is read via ``.get`` so a partial/old record never
-    ``KeyError``s (a missing ``status`` → non-``success`` → ``FAILED_ETL``, the honest fail-safe
-    default). NEVER inspects/returns the free-text ``error`` (privacy) — category only.
+    The SINGLE source of the ``status → sftp → partial → anomalies → data_errors`` precedence
+    (mirrors ``03_Run_History._status_cell``). Every field is read via ``.get`` so a partial/old
+    record never ``KeyError``s (a missing ``status`` → non-``success`` → ``FAILED_ETL``, the
+    honest fail-safe default). NEVER inspects/returns the free-text ``error`` (privacy) —
+    category only.
+
+    ``prior_build`` is REQUIRED keyword-only and is consulted ONLY when ``record`` is a
+    delivery-only record (a deliver-from-disk): such a record carries no outcomes of its own
+    (a delivery is not a build), yet the files it shipped are exactly what the newest
+    successful BUILD left in the folder — so a resend after a PARTIAL build is still PARTIAL,
+    never green (plan 0053 R9). Pass :func:`build_record_for` of the record's position in the
+    newest-first list; for a build record the value is ignored, and ``None`` is the honest
+    answer when no successful build precedes it. Required rather than defaulted because the
+    forgotten call is the one that paints a partial sync green.
+
+    A record written before ``entity_outcomes`` existed has no outcomes, so it classifies
+    exactly as it did before PARTIAL existed (pinned by a legacy-record snapshot).
+
+    One exception to the PARTIAL → anomalies order (plan 0053 S10): a PARTIAL made only of
+    NOTES — every warning outcome BUILT, i.e. its file was delivered — ranks BELOW an anomaly,
+    so a note that stands every night can never hide a one-night drop.
     """
     if record.get("status") != "success":
         return LatestReason.FAILED_ETL
     if bool(record.get("sftp_attempted")) and not bool(record.get("sftp_ok")):
         return LatestReason.FAILED_DELIVERY
+    left_out = left_out_outcomes(record, prior_build=prior_build)
     anomalies = record.get("anomalies") or []
-    if isinstance(anomalies, list) and anomalies:
+    has_anomalies = isinstance(anomalies, list) and bool(anomalies)
+    # A PARTIAL made only of NOTES (every warning outcome BUILT — "co-teachers left out") sits
+    # BELOW an anomaly: the file WAS delivered, so the "a vanished file's anomaly fires once"
+    # reasoning that ranks PARTIAL above ANOMALY does not cover it, and on a district whose note
+    # stands every night it would otherwise hide every one-night drop for good (plan 0053 S10,
+    # DECISIONS 2026-09-25). The noted amber returns the next night the anomaly does not.
+    if left_out and not (has_anomalies and all(o.kind is OutcomeKind.BUILT for o in left_out)):
+        return LatestReason.PARTIAL
+    if has_anomalies:
         return LatestReason.ANOMALY
     if _data_errors_total(record) > 0:
         return LatestReason.DATA_WARNINGS
     return LatestReason.CLEAN
+
+
+def left_out_outcomes(record: dict, *, prior_build: dict | None) -> tuple[EntityOutcome, ...]:
+    """The outcomes that WARN in the build behind ``record`` — TOTAL, never raises.
+
+    The selection is :func:`~src.ui_flet.failure_copy.warning_outcomes` (plan 0053 S8, owner
+    decision D5): every FAILED outcome, each EMPTY one whose tier is WARNING (every row
+    filtered out or a mapped column missing, on any entity; nothing to send, on an entity not
+    in ``outcomes.MAY_BE_EMPTY``), and since plan 0053 S10 each BUILT one carrying a
+    WARNING-tier note (``failure_copy.NOTE_TIER`` — "built, but co-teachers left out"). Run
+    History's row suffix (``failure_copy.partial_label``) words exactly these.
+
+    A build record answers from its OWN ``entity_outcomes``; a delivery-only record answers
+    from ``prior_build`` (see :func:`classify_latest_reason`). Read through the total
+    ``outcomes.outcomes_from_record``, so an absent key, a ``None`` value or a corrupt entry
+    yields ``()`` — never a raise, never a guess. The status is NOT consulted here; the
+    classifier's precedence decides whether a failed-status record is FAILED_ETL first.
+    """
+    source = prior_build if is_delivery_only(record) else record
+    if source is None:
+        return ()
+    return warning_outcomes(outcomes_from_record(source))
 
 
 def _data_errors_total(record: dict) -> int:
@@ -554,7 +605,7 @@ def verdict_for_reason(reason: LatestReason) -> Verdict:
     """Map a ``LatestReason`` to its ``Verdict`` — total over the enum.
 
     The single source of "which reason is red vs amber vs green": the two failures are FAILED,
-    anomaly/data-warnings are WARNING, CLEAN is HEALTHY. A ``KeyError`` here is a programming error
+    partial/anomaly/data-warnings are WARNING, CLEAN is HEALTHY. A ``KeyError`` here is a programming error
     (a new reason without a verdict) — surfaced loudly by the totality test, never swallowed.
     """
     return _REASON_VERDICTS[reason]
@@ -563,6 +614,7 @@ def verdict_for_reason(reason: LatestReason) -> Verdict:
 _REASON_VERDICTS: dict[LatestReason, Verdict] = {
     LatestReason.FAILED_ETL: Verdict.FAILED,
     LatestReason.FAILED_DELIVERY: Verdict.FAILED,
+    LatestReason.PARTIAL: Verdict.WARNING,
     LatestReason.ANOMALY: Verdict.WARNING,
     LatestReason.DATA_WARNINGS: Verdict.WARNING,
     LatestReason.CLEAN: Verdict.HEALTHY,
@@ -617,14 +669,80 @@ def _counts_source(records: list[dict], latest: dict) -> dict | None:
 
     Its return is what the roster-size clause is keyed on, which is why the clause's
     different-district guard is applied HERE rather than to ``records[0]``: this walk-back can
-    land on a build from a district the admin has since switched away from.
+    land on a build from a district the admin has since switched away from. The SAME walk
+    decides a delivery-only latest's PARTIAL (``build_record_for``), so the counts and the
+    left-out files always describe one build.
     """
     if not is_delivery_only(latest):
         return latest
+    return _newest_successful_build(records)
+
+
+def _newest_successful_build(records: Sequence[dict]) -> dict | None:
+    """The first non-delivery ``success`` record in a newest-first sequence, else ``None``."""
     for record in records:
         if not is_delivery_only(record) and record.get("status") == "success":
             return record
     return None
+
+
+def build_record_for(records: Sequence[dict], index: int) -> dict | None:
+    """The build whose files ``records[index]`` describes — TOTAL over any index.
+
+    A build record is its own answer; a delivery-only record's answer is the newest
+    successful build OLDER than it (``records`` is newest-first), or ``None`` when there is
+    none. This is the ``prior_build`` every :func:`classify_latest_reason` caller passes.
+    """
+    if not 0 <= index < len(records):
+        return None
+    record = records[index]
+    if not is_delivery_only(record):
+        return record
+    return _newest_successful_build(records[index + 1 :])
+
+
+def is_failed_manual_attempt(record: dict) -> bool:
+    """Whether ``record`` is a FAILED MANUAL Convert attempt — the one kind the verdict skips (D14).
+
+    Owner decision D14 (plan 0053, 2026-09-24): ``source == "manual"`` AND ``status == "failed"``,
+    both EXACT. A manual SUCCESS still counts (a hand-run fix of a failed nightly genuinely
+    repairs it), a failed nightly or command-line run still counts, and a manual record whose
+    status is anything other than the literal ``"failed"`` — absent, garbage — is NOT skipped: the
+    classifier reads it as FAILED_ETL, and erring toward the warning is the safe direction.
+    Pure + TOTAL (``.get`` only).
+    """
+    return record.get("source") == "manual" and record.get("status") == "failed"
+
+
+def verdict_records(records: Sequence[dict]) -> list[dict]:
+    """The records the VERDICT reads — every record except a failed manual attempt (D14), newest-first.
+
+    THE one place the D14 source filter is applied. ``derive_home_status`` (Home and, through
+    ``_latest_is_failure``, its schedule-attention guard), ``run_history.derive_history_banner``
+    and :func:`verdict_latest_timestamp` (the ``latest_record_ts`` Home, Run History and the Setup
+    nav badge hand the schedule probe) all read through it, so the three surfaces key on the SAME
+    newest record and cannot disagree. Run History's ROWS deliberately do NOT: they list every
+    record, the failed manual attempt included (``run_history.to_run_rows``).
+
+    **Why:** Home answers "is the sync healthy?". One failed hand-run attempt after a good nightly
+    does not make the nightly unhealthy, and the admin saw that attempt fail on the Convert screen
+    as it happened; the row in Run History keeps the record of it.
+    """
+    return [record for record in records if not is_failed_manual_attempt(record)]
+
+
+def verdict_latest_timestamp(records: Sequence[dict] | None) -> str | None:
+    """The timestamp of the newest record the verdict reads (D14), or ``None`` — pure + TOTAL.
+
+    What every view passes the schedule probe as ``latest_record_ts`` (the fired-but-no-record
+    contradiction). Keyed on :func:`verdict_records` so a failed manual attempt can no more mask
+    a nightly that fired and recorded nothing than it can set Home's verdict.
+    """
+    verdict = verdict_records(records or [])
+    if not verdict:
+        return None
+    value = verdict[0].get("timestamp")
+    return value if isinstance(value, str) else None
 
 
 def derive_home_status(
@@ -676,6 +794,14 @@ def derive_home_status(
             metrics=None,
         )
 
+    # D14 (plan 0053 S5): from here on the derivation reads only the records the VERDICT reads — a
+    # failed manual attempt never sets it (``verdict_records``). Every rule below, the empty state,
+    # the missed-run and foreign-principal facts and the schedule-attention guard included, sees the
+    # filtered list. ``failed_attempts_only`` remembers that the ledger itself was NOT empty, so the
+    # empty branch never denies the rows Run History lists.
+    failed_attempts_only = bool(records) and not verdict_records(records)
+    records = verdict_records(records)
+
     # Rule: schedule needs attention (D4) — the read-back contradicts the config (task gone
     # while expected, or fired-but-no-record). The dominant WARNING-tier trust fault: even a clean
     # last run can't reassure if the nightly won't run again. Routed to Setup, NEVER to onboarding.
@@ -719,8 +845,9 @@ def derive_home_status(
     # for the missed-run, stale and empty-state arms that would otherwise each assert a fault that
     # did not happen — every night, forever — for a sync that is working perfectly. It is computed
     # here and consulted at TWO slots below (the empty-store block and the main sequence), exactly
-    # like ``missed_run``, and it NEVER outranks a FAILED latest record: a manual Convert that
-    # genuinely failed still owns the band.
+    # like ``missed_run``, and it NEVER outranks a FAILED latest record: a nightly or command-line
+    # run that genuinely failed still owns the band (a failed MANUAL attempt never sets the verdict
+    # at all — D14, ``verdict_records``).
     foreign_records = _foreign_records_elsewhere(records, now=now, schedule_status=schedule_status)
 
     schedule_attention = _schedule_attention(schedule_status)
@@ -782,6 +909,12 @@ def derive_home_status(
             # read-back (MISSING), never on an unconfirmed None/UNKNOWN (which would falsely deny a
             # schedule we simply can't see).
             detail = EMPTY_NO_AUTO_SYNC_DETAIL
+        elif failed_attempts_only:
+            # D14: only failed manual attempts are recorded. Name them (they are in Run History)
+            # without letting them set the verdict, and claim no sync ever completed HERE.
+            detail = _FAILED_ATTEMPTS_ONLY_LEAD
+            if _schedule_is_live(schedule_status):
+                detail += f" Your nightly sync is scheduled for {schedule_status.next_run_display}."  # type: ignore[union-attr]
         elif upgrade:
             detail = _FRESH_START_LEAD
             if _schedule_is_live(schedule_status):
@@ -802,7 +935,7 @@ def derive_home_status(
             detail = _NO_RUNS_YET_LEAD
         return HomeStatus(
             verdict=Verdict.WARNING,
-            headline=EMPTY_FRESH_START_HEADLINE if upgrade else EMPTY_NO_RUNS_HEADLINE,
+            headline=empty_state_headline(upgrade=upgrade, failed_attempts_only=failed_attempts_only),
             detail=detail,
             fix=None,  # nothing to fix — just wait for the first run
             metrics=None,
@@ -816,18 +949,22 @@ def derive_home_status(
     # OWN Home copy — the reason drives ONLY the verdict selection, never the wording. NEVER
     # interpolate the record's free-text `error` (privacy) — every headline/detail is a FIXED
     # category sentence (only the record's own timestamp is rendered, via `friendly_timestamp`).
-    reason = classify_latest_reason(latest)
+    prior_build = build_record_for(records, 0)
+    reason = classify_latest_reason(latest, prior_build=prior_build)
 
     # Rule: last run failed — the dominant fault (precedence over SFTP/anomaly/data-errors).
     # 0032 T1 #1b: never the hard-coded "Last night's…" — a failed latest can be any age, so
     # the copy derives from the record's own timestamp ("recently" when unknown/unparseable).
+    # Plan 0053 S3: the cause is the record's bounded ``error_category``, worded by the ONE
+    # table Run History and Convert's card also read (``failure_copy``) — absent/unknown falls
+    # back to the generic copy, and the free-text ``error`` is still never read.
     if reason is LatestReason.FAILED_ETL:
         return HomeStatus(
             verdict=verdict_for_reason(reason),
             headline="Last sync failed",
             detail=_with_schedule_note(
                 f"The sync that ran {friendly_timestamp(str(latest.get('timestamp', '')), now=now)} "
-                "hit a problem and didn't finish.",
+                f"didn't finish. {failed_detail(latest)}",
                 schedule_status,
             ),
             fix=FixAction(_CHECK_RUN_HISTORY_LABEL, _RUN_HISTORY_FIX),
@@ -863,7 +1000,8 @@ def derive_home_status(
     # (a real local failure is not explained away by where the NIGHTLY's records go) and the pause,
     # and ABOVE missed-run / stale / anomaly / data-warnings — whose copy would each describe a
     # nightly cadence this ledger cannot see. It only fires when that ledger has nothing current to
-    # say (see ``_foreign_records_elsewhere``), so a fresh manual Convert still speaks for itself.
+    # say (see ``_foreign_records_elsewhere``), so a fresh successful manual Convert still speaks
+    # for itself.
     if foreign_records:
         return _foreign_records_status(schedule_status)  # type: ignore[arg-type]
 
@@ -873,6 +1011,25 @@ def derive_home_status(
     # a run over a day old — "nothing arrived last night" is the fresher, more actionable fact.
     if missed_run:
         return _missed_run_status()
+
+    # Rule: partial (plan 0053 S3; widened to EMPTY outcomes that warn by S8, D5) — the run
+    # completed but left one or more files out. Slotted
+    # where ANOMALY sits (below the FAILED reasons, the pause, the foreign-principal and the
+    # missed-run rules; above anomaly / data-warnings / stale), and it OUTRANKS the anomaly: a
+    # left-out file's previous CSV vanishes once, but the entity is missing every night it
+    # persists (P7). Its data-warning count, if any, rides along as a second sentence.
+    if reason is LatestReason.PARTIAL:
+        headline, detail = partial_copy(
+            left_out_outcomes(latest, prior_build=prior_build), delivered=sftp_delivered(latest)
+        )
+        clause = data_warnings_clause(_data_errors_total(latest))
+        return HomeStatus(
+            verdict=verdict_for_reason(reason),
+            headline=headline,
+            detail=f"{detail} {clause}" if clause else detail,
+            fix=FixAction(_CHECK_RUN_HISTORY_LABEL, _RUN_HISTORY_FIX),
+            metrics=None,
+        )
 
     # Rule: anomaly / >20% drop — delivered but suspicious → attention, not failure.
     if reason is LatestReason.ANOMALY:
@@ -962,7 +1119,28 @@ def _latest_is_failure(records: list[dict]) -> bool:
     schedule warning without editing this guard (one place decides what "a failure" means).
     Pure + TOTAL: an empty list has no latest to fail, and ``classify_latest_reason`` never raises.
     """
-    return bool(records) and verdict_for_reason(classify_latest_reason(records[0])) is Verdict.FAILED
+    if not records:
+        return False
+    reason = classify_latest_reason(records[0], prior_build=build_record_for(records, 0))
+    return verdict_for_reason(reason) is Verdict.FAILED
+
+
+def failed_detail(record: dict) -> str:
+    """The cause + next step for a FAILED_ETL ``record`` — shared by Home and Run History.
+
+    ``failure_copy.failed_copy_for`` over the record's own ``error_category`` (TOTAL: absent,
+    unknown or ``none`` → the generic copy). Never reads the free-text ``error``.
+
+    The tail says "nothing was sent" ONLY when the record PROVES it: an upload was attempted
+    and did not succeed. A record does not store whether delivery was requested, and
+    ``sftp_attempted`` is set only after the committed write, so a nightly with delivery
+    configured that fails in the ETL reads the "nothing new was saved" tail (true); a record
+    whose upload SUCCEEDED before a later step raised must never claim "nothing was sent"
+    (``failure_copy.failed_copy`` states the one meaning every surface passes).
+    """
+    not_sent = bool(record.get("sftp_attempted")) and not bool(record.get("sftp_ok"))
+    _headline, detail = failed_copy_for(record.get("error_category"), delivery_requested=not_sent)
+    return detail
 
 
 def _with_schedule_note(detail: str, schedule_status: ScheduleStatus | None) -> str:
@@ -1028,7 +1206,8 @@ def _foreign_records_elsewhere(
       have claims made about it. A confirmed-MISSING foreign task keeps today's honest
       "won't sync automatically" copy;
     * the local ledger CANNOT SPEAK — no records at all, or the newest is stale. With a fresh
-      local record (a manual Convert) this surface has something true and current to say, and
+      local record (a successful manual Convert — the caller passes the D14-filtered list, so a
+      failed attempt is never one) this surface has something true and current to say, and
       saying it is better than explaining an absence that isn't there.
 
     Plan 0049 S-2a.1 adds the third: the records must actually BE elsewhere. On a machine-scoped

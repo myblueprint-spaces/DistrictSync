@@ -10,7 +10,9 @@ returns a valid ``HomeStatus`` with no exception.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -26,11 +28,13 @@ from src.ui_flet.home_status import (
     WELCOME_RESUME_WITH_HISTORY,
     HomeStatus,
     LatestReason,
+    build_record_for,
     classify_latest_reason,
     derive_home_status,
     has_prior_runs,
     is_delivery_only,
     is_stale,
+    quick_actions,
     verdict_for_reason,
     welcome_band,
     welcome_band_line,
@@ -415,7 +419,15 @@ class TestFailureBeatsScheduleAttention:
     failure's detail (never a second CTA, never a new verdict tier).
     """
 
-    _FAILED_ETL_DETAIL = "The sync that ran 5 hours ago hit a problem and didn't finish."
+    # Plan 0053 S3: the lead is followed by the record's CATEGORY copy (failure_copy). These
+    # records carry no ``error_category`` (a pre-taxonomy record), so it is the generic fallback;
+    # ``_record``'s upload SUCCEEDED (attempted and ok), which proves nothing was NOT sent, so the
+    # tail is the saved one — never "Nothing was sent" over an upload that happened.
+    _FAILED_ETL_DETAIL = (
+        "The sync that ran 5 hours ago didn't finish. Something unexpected stopped the roster from "
+        "being built. Try again — if it keeps failing, the Help page has our support contact. "
+        "Nothing new was saved to your output folder."
+    )
     _FAILED_DELIVERY_DETAIL = "The data was built but the upload failed."
     _SCHEDULE_GONE_CLAUSE = (
         "Your nightly schedule is also no longer registered with Windows — "
@@ -986,14 +998,14 @@ class TestFailedRules:
         # 0032 T1 #1b: never the hard-coded "Last night's…" — a failed latest can be any age,
         # so the copy dates the failed run from its own timestamp via friendly_timestamp.
         status = _derive(_record(status="failed"))
-        assert status.detail == "The sync that ran 5 hours ago hit a problem and didn't finish."
+        assert status.detail.startswith("The sync that ran 5 hours ago didn't finish. ")
 
     def test_failed_etl_detail_missing_timestamp_reads_recently(self) -> None:
         # Totality: no timestamp → friendly_timestamp's safe fallback, never a raw/blank slot.
         rec = _record(status="failed")
         del rec["timestamp"]
         status = _derive(rec)
-        assert status.detail == "The sync that ran recently hit a problem and didn't finish."
+        assert status.detail.startswith("The sync that ran recently didn't finish. ")
 
     def test_failed_etl_precedes_sftp_and_data_errors(self) -> None:
         # A failed ETL is the dominant fault even with an SFTP failure + data errors also set.
@@ -1433,7 +1445,7 @@ class TestPrivacyNoErrorLeak:
         assert self._SECRET not in status.headline
         assert "secret" not in status.detail
         # The FIXED category sentence — only the record's own timestamp is rendered (plain phrase).
-        assert status.detail == "The sync that ran 5 hours ago hit a problem and didn't finish."
+        assert status.detail == TestFailureBeatsScheduleAttention._FAILED_ETL_DETAIL
 
     def test_secret_never_leaks_across_any_rule(self) -> None:
         # Even on delivered/anomaly/data-error rules where `error` may be populated, it never leaks.
@@ -1474,32 +1486,35 @@ class TestClassifyLatestReason:
     """The shared single-source status→reason precedence IA-6 also consumes (staleness EXCLUDED)."""
 
     def test_failed_etl(self) -> None:
-        assert classify_latest_reason(_record(status="failed")) is LatestReason.FAILED_ETL
+        assert classify_latest_reason(_record(status="failed"), prior_build=None) is LatestReason.FAILED_ETL
 
     def test_missing_status_is_failed_etl(self) -> None:
-        assert classify_latest_reason({}) is LatestReason.FAILED_ETL
+        assert classify_latest_reason({}, prior_build=None) is LatestReason.FAILED_ETL
 
     def test_failed_delivery(self) -> None:
-        assert classify_latest_reason(_record(sftp_attempted=True, sftp_ok=False)) is LatestReason.FAILED_DELIVERY
+        assert (
+            classify_latest_reason(_record(sftp_attempted=True, sftp_ok=False), prior_build=None)
+            is LatestReason.FAILED_DELIVERY
+        )
 
     def test_anomaly(self) -> None:
-        assert classify_latest_reason(_record(anomalies=["ANOMALY: x"])) is LatestReason.ANOMALY
+        assert classify_latest_reason(_record(anomalies=["ANOMALY: x"]), prior_build=None) is LatestReason.ANOMALY
 
     def test_data_warnings(self) -> None:
-        assert classify_latest_reason(_record(data_errors={"total": 3})) is LatestReason.DATA_WARNINGS
+        assert classify_latest_reason(_record(data_errors={"total": 3}), prior_build=None) is LatestReason.DATA_WARNINGS
 
     def test_clean(self) -> None:
-        assert classify_latest_reason(_record()) is LatestReason.CLEAN
+        assert classify_latest_reason(_record(), prior_build=None) is LatestReason.CLEAN
 
     def test_precedence_failed_over_all(self) -> None:
         rec = _record(
             status="failed", sftp_attempted=True, sftp_ok=False, anomalies=["ANOMALY: y"], data_errors={"total": 9}
         )
-        assert classify_latest_reason(rec) is LatestReason.FAILED_ETL
+        assert classify_latest_reason(rec, prior_build=None) is LatestReason.FAILED_ETL
 
     def test_staleness_is_not_a_reason(self) -> None:
         # A stale-but-clean record is still CLEAN — staleness is a separate axis, not a reason.
-        assert classify_latest_reason(_record(timestamp=_OLD)) is LatestReason.CLEAN
+        assert classify_latest_reason(_record(timestamp=_OLD), prior_build=None) is LatestReason.CLEAN
 
 
 class TestVerdictForReason:
@@ -1510,6 +1525,7 @@ class TestVerdictForReason:
     def test_reason_verdict_mapping(self) -> None:
         assert verdict_for_reason(LatestReason.FAILED_ETL) is Verdict.FAILED
         assert verdict_for_reason(LatestReason.FAILED_DELIVERY) is Verdict.FAILED
+        assert verdict_for_reason(LatestReason.PARTIAL) is Verdict.WARNING
         assert verdict_for_reason(LatestReason.ANOMALY) is Verdict.WARNING
         assert verdict_for_reason(LatestReason.DATA_WARNINGS) is Verdict.WARNING
         assert verdict_for_reason(LatestReason.CLEAN) is Verdict.HEALTHY
@@ -2019,7 +2035,10 @@ class TestTheForeignPrincipalBranch:
         assert status.verdict is Verdict.HEALTHY
 
     def test_it_never_outranks_a_failed_latest_record(self) -> None:
-        """Failures above warnings — a manual Convert that genuinely failed still owns the band."""
+        """Failures above warnings — a run that genuinely failed still owns the band.
+
+        (Not a failed MANUAL attempt since plan 0053 S5: D14 skips those before any rule runs.
+        This record carries no ``source``, so it is exactly the pre-D14 shape.)"""
         status = derive_home_status(
             [_record(timestamp=_ANCIENT, status="failed", error="boom")],
             _CONFIGURED,
@@ -2253,3 +2272,574 @@ class TestHomeSpeaksPlainlyAgainOnASharedProfile:
         )
         assert status.verdict is Verdict.WARNING
         assert status.fix is not None and status.fix.dest_id == "setup"
+
+
+# --------------------------------------------------------------------------- #
+# Plan 0053 S3 — the PARTIAL rung, its precedence, and the delivery walk-back   #
+# --------------------------------------------------------------------------- #
+def _outcomes_record(*failed: str, reason: str = "missing_source_column") -> dict:
+    """The ``entity_outcomes`` value for a rostering run: ``failed`` FAILED, the rest BUILT."""
+    return {
+        name: (
+            {"kind": "failed", "reason": reason, "rows": 0}
+            if name in failed
+            else {"kind": "built", "reason": "none", "rows": 10}
+        )
+        for name in ("Students", "Staff", "Family", "Classes", "Enrollments")
+    }
+
+
+def _partial(**overrides: object) -> dict:
+    return _record(entity_outcomes=_outcomes_record("Family"), **overrides)
+
+
+class TestPartialPrecedence:
+    """``status → sftp → PARTIAL → anomalies → data_errors → CLEAN`` — the matrix the spec pins."""
+
+    def test_a_failed_entity_in_a_completed_run_is_partial(self) -> None:
+        assert classify_latest_reason(_partial(), prior_build=None) is LatestReason.PARTIAL
+
+    def test_twin_the_same_run_with_every_entity_built_is_clean(self) -> None:
+        clean = _record(entity_outcomes=_outcomes_record())
+        assert classify_latest_reason(clean, prior_build=None) is LatestReason.CLEAN
+
+    def test_a_failed_status_outranks_its_failed_outcomes(self) -> None:
+        assert classify_latest_reason(_partial(status="failed"), prior_build=None) is LatestReason.FAILED_ETL
+
+    def test_a_failed_delivery_outranks_partial(self) -> None:
+        rec = _partial(sftp_attempted=True, sftp_ok=False)
+        assert classify_latest_reason(rec, prior_build=None) is LatestReason.FAILED_DELIVERY
+
+    def test_partial_outranks_an_anomaly(self) -> None:
+        # The vanished Family.csv's anomaly fires once; the missing entity persists every night.
+        rec = _partial(anomalies=["ANOMALY: Family vanished"])
+        assert classify_latest_reason(rec, prior_build=None) is LatestReason.PARTIAL
+
+    def test_partial_outranks_data_warnings_and_keeps_the_clause(self) -> None:
+        rec = _partial(data_errors={"total": 3})
+        assert classify_latest_reason(rec, prior_build=None) is LatestReason.PARTIAL
+        status = _derive(rec)
+        assert status.detail.endswith(
+            "There were also 3 data warnings: some records had field problems and were left blank."
+        )
+
+    def test_a_not_run_outcome_is_not_partial(self) -> None:
+        # NOT_RUN only exists inside a FAILED run (whose status outranks PARTIAL); on a
+        # success-shaped record it is not a warning (its tier is FAILED, not WARNING).
+        outcomes = _outcomes_record()
+        outcomes["Family"] = {"kind": "not_run", "reason": "run_aborted", "rows": 0}
+        assert classify_latest_reason(_record(entity_outcomes=outcomes), prior_build=None) is LatestReason.CLEAN
+
+    @pytest.mark.parametrize("reason", ["source_files_empty", "no_source_files_declared"])
+    def test_a_may_be_empty_entity_with_nothing_to_send_is_not_partial(self, reason: str) -> None:
+        # Plan 0053 S8 (D5): StudentAttendance is in outcomes.MAY_BE_EMPTY — a night with no
+        # absence files is a normal night. Changed from S3's "any EMPTY outcome is CLEAN" (which
+        # used Family), because Family now warns for the same reason (twin below).
+        outcomes = {**_outcomes_record(), "StudentAttendance": {"kind": "empty", "reason": reason, "rows": 0}}
+        assert classify_latest_reason(_record(entity_outcomes=outcomes), prior_build=None) is LatestReason.CLEAN
+
+    @pytest.mark.parametrize("reason", ["source_files_empty", "no_source_files_declared"])
+    def test_twin_a_non_member_with_the_same_reason_is_partial(self, reason: str) -> None:
+        outcomes = _outcomes_record()
+        outcomes["Family"] = {"kind": "empty", "reason": reason, "rows": 0}
+        assert classify_latest_reason(_record(entity_outcomes=outcomes), prior_build=None) is LatestReason.PARTIAL
+
+    def test_an_unknown_kind_from_a_newer_build_errs_toward_the_warning(self) -> None:
+        outcomes = _outcomes_record()
+        outcomes["Family"] = {"kind": "quarantined", "reason": "future", "rows": 0}
+        assert classify_latest_reason(_record(entity_outcomes=outcomes), prior_build=None) is LatestReason.PARTIAL
+
+
+class TestPartialOnHome:
+    def test_the_partial_status_is_a_warning_routed_to_run_history(self) -> None:
+        status = _derive(_partial())
+        assert status.verdict is Verdict.WARNING
+        assert status.headline == "Your roster synced without family contacts"
+        assert status.detail.startswith("Family contacts were left out of this sync")
+        assert status.fix is not None and status.fix.dest_id == "run_history"
+        assert status.metrics is None
+
+    def test_not_delivered_reads_completed(self) -> None:
+        status = _derive(_partial(sftp_attempted=False, sftp_ok=False))
+        assert status.headline == "Your sync completed without family contacts"
+        assert "Everything else completed." in status.detail
+
+    def test_two_files_left_out(self) -> None:
+        status = _derive(_record(entity_outcomes=_outcomes_record("Family", "Staff")))
+        assert status.headline == "Your roster synced without 2 of your files"
+
+    def test_quick_actions_still_carry_exactly_one_filled_action(self) -> None:
+        actions = quick_actions(_derive(_partial()).fix)
+        assert [a.filled for a in actions].count(True) == 0  # the fix is the one filled primary
+        assert all(a.dest_id != "run_history" for a in actions)
+
+    def test_a_failed_latest_is_never_masked_but_partial_does_not_block_schedule_attention(self) -> None:
+        # PARTIAL is WARNING-tier: like every warning, the schedule-attention rule outranks it
+        # (``_latest_is_failure`` is False), while a FAILED latest keeps outranking attention.
+        missing = derive_schedule_status(
+            ScheduleReadback(found=False),
+            hint_registered=True,
+            latest_record_ts=None,
+            foreign_account="",
+            shared_records=False,
+        )
+        status = derive_home_status([_partial()], _CONFIGURED, now=_NOW, schedule_status=missing)
+        assert status.fix is not None and status.fix.dest_id == "setup"
+
+
+class TestPartialWalkBack:
+    """A deliver-from-disk after a PARTIAL build must not paint Home green (plan 0053 R9)."""
+
+    @staticmethod
+    def _delivery(**overrides: object) -> dict:
+        return _record(
+            delivery_only=True,
+            entity_outcomes=None,
+            Students=0,
+            Staff=0,
+            Family=0,
+            Classes=0,
+            Enrollments=0,
+            **overrides,
+        )
+
+    def _older(self, record: dict) -> dict:
+        return {**record, "timestamp": (_NOW - timedelta(hours=7)).isoformat(timespec="seconds")}
+
+    def test_a_delivery_after_a_partial_build_is_still_partial(self) -> None:
+        records = [self._delivery(), self._older(_partial())]
+        assert build_record_for(records, 0) is records[1]
+        status = derive_home_status(records, _CONFIGURED, now=_NOW)
+        assert status.verdict is Verdict.WARNING
+        assert status.headline == "Your roster synced without family contacts"
+
+    def test_twin_a_delivery_after_an_all_built_build_is_clean(self) -> None:
+        records = [self._delivery(), self._older(_record(entity_outcomes=_outcomes_record()))]
+        status = derive_home_status(records, _CONFIGURED, now=_NOW)
+        assert status.verdict is Verdict.HEALTHY
+
+    def test_a_delivery_with_no_successful_build_behind_it_reads_no_outcomes(self) -> None:
+        records = [self._delivery(), self._older(_partial(status="failed"))]
+        assert build_record_for(records, 0) is None
+        assert classify_latest_reason(records[0], prior_build=None) is LatestReason.CLEAN
+
+    def test_a_build_record_ignores_prior_build(self) -> None:
+        # ``prior_build`` is consulted ONLY for a delivery-only record.
+        assert classify_latest_reason(_record(), prior_build=_partial()) is LatestReason.CLEAN
+        assert classify_latest_reason(_partial(), prior_build=None) is LatestReason.PARTIAL
+
+    @pytest.mark.parametrize("index", [-1, 5])
+    def test_build_record_for_is_total_over_any_index(self, index: int) -> None:
+        assert build_record_for([_record()], index) is None
+
+    def test_prior_build_is_required_keyword_only_with_no_default(self) -> None:
+        import inspect
+
+        param = inspect.signature(classify_latest_reason).parameters["prior_build"]
+        assert param.kind is inspect.Parameter.KEYWORD_ONLY
+        assert param.default is inspect.Parameter.empty
+
+
+class TestFailedCategoryOnHome:
+    def test_a_source_schema_failure_shows_that_categorys_copy(self) -> None:
+        from src.etl.errors import RunErrorCategory
+        from src.ui_flet.failure_copy import failed_copy
+
+        status = _derive(_record(status="failed", error_category="source_schema", sftp_attempted=False))
+        _headline, detail = failed_copy(RunErrorCategory.SOURCE_SCHEMA, delivery_requested=False)
+        assert status.detail == f"The sync that ran 5 hours ago didn't finish. {detail}"
+        assert "input folder" not in status.detail
+
+    def test_a_nightly_with_delivery_that_failed_in_the_etl_says_nothing_new_was_saved(self) -> None:
+        # The shape the pipeline REALLY writes (``build_run_record`` from its failure sink):
+        # ``sftp_attempted`` is set only after the committed write, so a nightly with delivery
+        # configured that fails in the ETL carries False — and the record cannot prove more.
+        from src.etl.errors import RunErrorCategory
+        from src.etl.pipeline import build_run_record
+        from src.ui_flet.failure_copy import NOTHING_SAVED_TAIL, NOTHING_SENT_TAIL
+
+        record = build_run_record(
+            status="failed",
+            elapsed=1.0,
+            entity_counts={},
+            source="scheduled",
+            sis_type="sd48myedbc",
+            error_category=RunErrorCategory.SOURCE_SCHEMA,
+            entity_outcomes=None,
+            timestamp=_RECENT,
+        )
+        assert record["sftp_attempted"] is False  # the realistic shape, not a doctored one
+        status = _derive(record)
+        assert status.detail.endswith(NOTHING_SAVED_TAIL)
+        assert NOTHING_SENT_TAIL not in status.detail
+
+    def test_an_upload_that_succeeded_before_a_later_raise_never_reads_nothing_was_sent(self) -> None:
+        # The post-upload window (``--quality``/``--diff`` raising after ``_sftp_upload``): the
+        # files WERE sent, so "Nothing was sent to SpacesEDU" would be false.
+        from src.ui_flet.failure_copy import NOTHING_SENT_TAIL
+
+        status = _derive(_record(status="failed", error_category="unknown", sftp_attempted=True, sftp_ok=True))
+        assert NOTHING_SENT_TAIL not in status.detail
+
+    def test_an_attempted_upload_that_failed_before_a_raise_reads_nothing_was_sent(self) -> None:
+        # The positive twin: the one record shape that PROVES nothing was sent does say so.
+        from src.ui_flet.failure_copy import NOTHING_SENT_TAIL
+
+        status = _derive(_record(status="failed", error_category="unknown", sftp_attempted=True, sftp_ok=False))
+        assert status.detail.endswith(NOTHING_SENT_TAIL)
+
+    def test_an_output_failure_names_the_output_folder(self) -> None:
+        # Closes the ROADMAP item "Surface the new `output` error category on Home / Run History".
+        status = _derive(_record(status="failed", error_category="output", sftp_attempted=False))
+        assert "output folder" in status.detail
+        assert status.detail.endswith("Nothing new was saved to your output folder.")
+
+
+class TestLegacyRecordSnapshot:
+    """Records WITHOUT ``entity_outcomes`` render byte-identically to the tree before S3.
+
+    ``tests/snapshots/legacy_record_verdicts.json`` was generated by the SAME ledgers run
+    against commit ``547299a`` (the base this slice started from) and compared byte for
+    byte with this tree. Failed ledgers are deliberately excluded: their detail gains the
+    category copy by design.
+    """
+
+    _SNAPSHOT = Path(__file__).resolve().parent / "snapshots" / "legacy_record_verdicts.json"
+
+    @staticmethod
+    def _ledgers() -> dict[str, list[dict]]:
+        recent = _RECENT
+        older = (_NOW - timedelta(hours=7)).isoformat(timespec="seconds")
+
+        def rec(**over: object) -> dict:
+            base = {
+                "timestamp": recent,
+                "status": "success",
+                "sis_type": "sd48myedbc",
+                "error_category": "none",
+                "duration_s": 3.1,
+                "Students": 100,
+                "Staff": 12,
+                "Family": 80,
+                "Classes": 40,
+                "Enrollments": 300,
+                "sftp_attempted": True,
+                "sftp_ok": True,
+                "anomalies": [],
+                "data_errors": {},
+            }
+            base.update(over)
+            return base
+
+        zeros = {"Students": 0, "Staff": 0, "Family": 0, "Classes": 0, "Enrollments": 0}
+        return {
+            "clean_delivered": [rec()],
+            "clean_local": [rec(sftp_attempted=False, sftp_ok=False)],
+            "anomaly": [rec(anomalies=["ANOMALY: Students dropped 42%"])],
+            "data_warnings": [rec(data_errors={"total": 3, "by_field": {"Grade": 3}})],
+            "delivery_failed": [rec(sftp_ok=False)],
+            "delivery_only_after_build": [rec(delivery_only=True, **zeros), rec(timestamp=older)],
+            "delivery_only_alone": [rec(delivery_only=True, **zeros)],
+        }
+
+    @staticmethod
+    def _render(ledger: list[dict]) -> dict:
+        from dataclasses import asdict
+
+        from src.ui_flet.run_history import derive_history_banner, to_run_rows
+
+        cfg = AppConfig(input_dir="/in", output_dir="/out", sis_type="sd48myedbc", schedule_registered=True)
+        home = derive_home_status(ledger, cfg, now=_NOW, output_entities=("Students", "Staff"))
+        banner = derive_history_banner(ledger, cfg, now=_NOW)
+        rows = to_run_rows(ledger, now=_NOW, active_sis="sd48myedbc")
+        return json.loads(
+            json.dumps(
+                {
+                    "home": asdict(home),
+                    "banner": asdict(banner),
+                    # `notes` (plan 0053 S11, the row's note detail) postdates the snapshot; it is
+                    # asserted EMPTY for every legacy ledger in `_legacy_rows_carry_no_notes` and
+                    # dropped here only then, so the frozen rendering stays byte-for-byte.
+                    "rows": [
+                        {k: getattr(v, "value", v) for k, v in asdict(r).items() if not (k == "notes" and not v)}
+                        for r in rows
+                    ],
+                },
+                sort_keys=True,
+                default=str,
+            )
+        )
+
+    def test_every_legacy_ledger_matches_the_pre_s3_snapshot(self) -> None:
+        snapshot = json.loads(self._SNAPSHOT.read_text(encoding="utf-8"))
+        ledgers = self._ledgers()
+        assert set(snapshot) == set(ledgers)  # non-vacuity: every ledger has a stored answer
+        for name, ledger in ledgers.items():
+            assert self._render(ledger) == snapshot[name], name
+
+    def test_doctored_a_failed_outcome_on_the_same_record_changes_the_answer(self) -> None:
+        # The snapshot is sensitive to exactly the key this slice reads.
+        ledger = self._ledgers()["clean_delivered"]
+        ledger[0]["entity_outcomes"] = _outcomes_record("Family")
+        snapshot = json.loads(self._SNAPSHOT.read_text(encoding="utf-8"))
+        assert self._render(ledger) != snapshot["clean_delivered"]
+
+    def test_all_built_or_null_outcomes_leave_the_answer_unchanged(self) -> None:
+        snapshot = json.loads(self._SNAPSHOT.read_text(encoding="utf-8"))
+        for value in (_outcomes_record(), None):
+            ledger = self._ledgers()["clean_delivered"]
+            ledger[0]["entity_outcomes"] = value
+            assert self._render(ledger) == snapshot["clean_delivered"]
+
+    def test_legacy_rows_carry_no_notes(self) -> None:
+        """What `_render` drops is EMPTY on every legacy ledger (plan 0053 S11) — so the frozen
+        snapshot still pins every row field that has a value."""
+        from src.ui_flet.run_history import to_run_rows
+
+        for name, ledger in self._ledgers().items():
+            assert all(row.notes == () for row in to_run_rows(ledger, now=_NOW)), name
+
+    def test_twin_a_healthy_note_reaches_the_row_and_changes_the_rendering(self) -> None:
+        """The positive twin: a recorded HEALTHY-tier note is on the row (so `_render` keeps it)
+        while the verdict the snapshot pins is unchanged."""
+        from src.ui_flet.run_history import to_run_rows
+
+        ledger = self._ledgers()["clean_delivered"]
+        outcomes = _outcomes_record()
+        first = next(iter(outcomes))
+        outcomes[first]["notes"] = {"status_column_absent_date_only": 5}
+        ledger[0]["entity_outcomes"] = outcomes
+        (row,) = to_run_rows(ledger, now=_NOW)
+        assert row.notes == ("no status column, withdraw dates used",)
+        snapshot = json.loads(self._SNAPSHOT.read_text(encoding="utf-8"))
+        rendered = self._render(ledger)
+        assert rendered != snapshot["clean_delivered"]
+        assert rendered["home"] == snapshot["clean_delivered"]["home"]
+        assert rendered["banner"] == snapshot["clean_delivered"]["banner"]
+
+
+# --------------------------------------------------------------------------- #
+# Owner decision D14 (plan 0053 S5): a FAILED MANUAL attempt never sets Home  #
+# --------------------------------------------------------------------------- #
+_EARLIER = (_NOW - timedelta(hours=9)).isoformat(timespec="seconds")  # older, still inside the stale window
+
+
+def _failed_manual(**overrides: object) -> dict:
+    """What S5's Convert failure sink records: manual, failed, a bounded category."""
+    base = {"source": "manual", "status": "failed", "error_category": "source_schema"}
+    base.update(overrides)
+    return _record(**base)
+
+
+class TestD14FailedManualAttemptsNeverSetTheVerdict:
+    """The source filter ``home_status.verdict_records`` — and its three ordering twins."""
+
+    def test_an_older_success_under_a_newer_failed_manual_attempt_stays_healthy(self) -> None:
+        ledger = [_failed_manual(timestamp=_RECENT), _record(timestamp=_EARLIER, source="scheduled")]
+        status = derive_home_status(ledger, _CONFIGURED, now=_NOW)
+        assert status.verdict is Verdict.HEALTHY
+        assert status.headline == "Your roster is up to date"
+
+    def test_twin_a_newer_manual_SUCCESS_after_a_failed_nightly_is_still_healthy(self) -> None:
+        """Unchanged by D14: a hand-run fix of a failed nightly genuinely repairs it."""
+        ledger = [
+            _record(timestamp=_RECENT, source="manual"),
+            _record(timestamp=_EARLIER, status="failed", source="scheduled"),
+        ]
+        assert derive_home_status(ledger, _CONFIGURED, now=_NOW).verdict is Verdict.HEALTHY
+
+    @pytest.mark.parametrize("source", ["scheduled", "cli"])
+    def test_twin_a_newer_failed_NIGHTLY_or_cli_run_still_fails(self, source: str) -> None:
+        ledger = [
+            _record(timestamp=_RECENT, status="failed", source=source),
+            _record(timestamp=_EARLIER, source="scheduled"),
+        ]
+        status = derive_home_status(ledger, _CONFIGURED, now=_NOW)
+        assert classify_latest_reason(ledger[0], prior_build=build_record_for(ledger, 0)) is LatestReason.FAILED_ETL
+        assert status.verdict is Verdict.FAILED
+        assert status.headline == "Last sync failed"
+
+    @pytest.mark.parametrize("status_value", [None, "", "crashed"], ids=["absent", "blank", "garbage"])
+    def test_only_the_literal_failed_status_is_skipped(self, status_value: object) -> None:
+        """A manual record whose status is not the literal ``failed`` is NOT skipped — the
+        classifier reads it as FAILED_ETL, and erring toward the warning is the safe side."""
+        record = _record(timestamp=_RECENT, source="manual")
+        if status_value is None:
+            record.pop("status")
+        else:
+            record["status"] = status_value
+        assert home_status_mod.is_failed_manual_attempt(record) is False
+        ledger = [record, _record(timestamp=_EARLIER)]
+        assert derive_home_status(ledger, _CONFIGURED, now=_NOW).verdict is Verdict.FAILED
+
+    def test_the_predicate_needs_BOTH_facts(self) -> None:
+        assert home_status_mod.is_failed_manual_attempt(_failed_manual()) is True
+        assert home_status_mod.is_failed_manual_attempt(_record(source="manual")) is False
+        assert home_status_mod.is_failed_manual_attempt(_record(status="failed", source="scheduled")) is False
+        assert home_status_mod.is_failed_manual_attempt(_record(status="failed")) is False  # a pre-source record
+
+    def test_a_delivery_after_a_partial_build_stays_partial_across_a_failed_attempt(self) -> None:
+        """The walk-back (S3) still finds the partial BUILD behind a resend, whatever failed in between."""
+        delivery = _record(
+            timestamp=_RECENT,
+            delivery_only=True,
+            source="manual",
+            Students=0,
+            Staff=0,
+            Family=0,
+            Classes=0,
+            Enrollments=0,
+        )
+        ledger = [delivery, _failed_manual(timestamp=_RECENT), _partial(timestamp=_EARLIER, source="scheduled")]
+        status = derive_home_status(ledger, _CONFIGURED, now=_NOW)
+        assert status.verdict is Verdict.WARNING
+        filtered = home_status_mod.verdict_records(ledger)
+        assert classify_latest_reason(filtered[0], prior_build=build_record_for(filtered, 0)) is LatestReason.PARTIAL
+        # Twin: the same ledger WITHOUT the partial build behind it is a clean delivery.
+        clean = [delivery, _failed_manual(timestamp=_RECENT), _record(timestamp=_EARLIER, source="scheduled")]
+        assert derive_home_status(clean, _CONFIGURED, now=_NOW).verdict is Verdict.HEALTHY
+
+    def test_a_failed_attempt_does_not_hide_schedule_attention(self) -> None:
+        """The W3-B guard reads the filtered list too: a failed manual attempt is not a
+        "failed latest" that may own the band over a schedule fault."""
+        attention = derive_schedule_status(
+            ScheduleReadback(found=False),
+            hint_registered=True,
+            latest_record_ts=None,
+            foreign_account="",
+            shared_records=False,
+        )
+        assert attention.attention is True
+        ledger = [_failed_manual(timestamp=_RECENT), _record(timestamp=_EARLIER)]
+        status = derive_home_status(ledger, _CONFIGURED, now=_NOW, schedule_status=attention)
+        assert status.verdict is Verdict.WARNING
+        assert status.headline == attention.headline
+        # Twin: a failed NIGHTLY does own the band over the same schedule fault.
+        failed_nightly = [_record(timestamp=_RECENT, status="failed", source="scheduled")]
+        assert (
+            derive_home_status(failed_nightly, _CONFIGURED, now=_NOW, schedule_status=attention).verdict
+            is Verdict.FAILED
+        )
+
+    def test_a_failed_attempt_is_not_the_nightly_arriving(self) -> None:
+        """Missed-run reads the filtered list: a LIVE schedule with only an old nightly and a
+        fresh FAILED manual attempt still reports the missed nightly."""
+        established = (_NOW - timedelta(hours=MISSED_RUN_AFTER_HOURS + 48)).isoformat(timespec="seconds")
+        old_nightly = (_NOW - timedelta(hours=MISSED_RUN_AFTER_HOURS + 5)).isoformat(timespec="seconds")
+        ledger = [_failed_manual(timestamp=_RECENT), _record(timestamp=old_nightly, source="scheduled")]
+        status = derive_home_status(
+            ledger, _CONFIGURED, now=_NOW, store_created_at=established, schedule_status=_live_schedule()
+        )
+        assert status.headline == "We expected a nightly sync that didn't arrive"
+        # Twin: a fresh manual SUCCESS is a recorded sync, so nothing was missed.
+        ledger[0] = _record(timestamp=_RECENT, source="manual")
+        status = derive_home_status(
+            ledger, _CONFIGURED, now=_NOW, store_created_at=established, schedule_status=_live_schedule()
+        )
+        assert status.verdict is Verdict.HEALTHY
+
+
+class TestD14OnlyFailedAttemptsRecorded:
+    """A ledger holding ONLY failed manual attempts: the empty branch, with its own honest headline."""
+
+    _STAMP = _RECENT  # every such attempt created the store, so the stamp is always there
+
+    def test_it_is_a_calm_warning_that_claims_no_completed_sync(self) -> None:
+        status = derive_home_status([_failed_manual()], _CONFIGURED, now=_NOW, store_created_at=self._STAMP)
+        assert status.verdict is Verdict.WARNING
+        assert status.headline == home_status_mod.EMPTY_NO_COMPLETED_RUNS_HEADLINE
+        assert status.detail == home_status_mod._FAILED_ATTEMPTS_ONLY_LEAD
+        # Exact-string pin: a row only reads "Failed", so the lead promises a LIST, not an
+        # account of what happened (the Convert card named the cause at the time).
+        assert (
+            status.detail
+            == "The conversions run from the Convert tab so far didn't finish — Run History lists each attempt."
+        )
+        assert status.fix is None
+        # Never the upgrader's line — the stamp is this install's own failed attempt.
+        assert "earlier version" not in status.detail
+        assert status.headline != home_status_mod.EMPTY_FRESH_START_HEADLINE
+
+    def test_twin_the_same_stamp_over_an_EMPTY_ledger_is_the_fresh_start_state(self) -> None:
+        """Proves the rule, not the stamp, selected the headline above."""
+        status = derive_home_status([], _CONFIGURED, now=_NOW, store_created_at=self._STAMP)
+        assert status.headline == home_status_mod.EMPTY_FRESH_START_HEADLINE
+
+    def test_a_live_schedule_is_named(self) -> None:
+        status = derive_home_status(
+            [_failed_manual()],
+            _CONFIGURED,
+            now=_NOW,
+            store_created_at=self._STAMP,
+            schedule_status=_live_schedule("2:00 AM"),
+        )
+        assert (
+            status.detail == home_status_mod._FAILED_ATTEMPTS_ONLY_LEAD + " Your nightly sync is scheduled for 2:00 AM."
+        )
+
+    def test_a_confirmed_absent_schedule_keeps_the_no_automation_sentence(self) -> None:
+        done = AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc", setup_completed=True)
+        missing = derive_schedule_status(
+            ScheduleReadback(found=False),
+            hint_registered=False,
+            latest_record_ts=None,
+            foreign_account="",
+            shared_records=False,
+        )
+        status = derive_home_status(
+            [_failed_manual()], done, now=_NOW, store_created_at=self._STAMP, schedule_status=missing
+        )
+        assert status.headline == home_status_mod.EMPTY_NO_COMPLETED_RUNS_HEADLINE
+        assert status.detail == home_status_mod.EMPTY_NO_AUTO_SYNC_DETAIL
+
+    def test_the_headline_rule_orders_failed_attempts_above_the_stamp(self) -> None:
+        rule = home_status_mod.empty_state_headline
+        assert rule(upgrade=True, failed_attempts_only=True) == home_status_mod.EMPTY_NO_COMPLETED_RUNS_HEADLINE
+        assert rule(upgrade=False, failed_attempts_only=True) == home_status_mod.EMPTY_NO_COMPLETED_RUNS_HEADLINE
+        assert rule(upgrade=True, failed_attempts_only=False) == home_status_mod.EMPTY_FRESH_START_HEADLINE
+        assert rule(upgrade=False, failed_attempts_only=False) == home_status_mod.EMPTY_NO_RUNS_HEADLINE
+
+
+class TestVerdictLatestTimestamp:
+    """What Home, Run History and the Setup badge hand the schedule probe as ``latest_record_ts``."""
+
+    def test_it_skips_a_failed_manual_attempt(self) -> None:
+        ledger = [_failed_manual(timestamp=_RECENT), _record(timestamp=_EARLIER)]
+        assert home_status_mod.verdict_latest_timestamp(ledger) == _EARLIER
+
+    def test_twin_a_manual_success_is_the_newest(self) -> None:
+        ledger = [_record(timestamp=_RECENT, source="manual"), _record(timestamp=_EARLIER)]
+        assert home_status_mod.verdict_latest_timestamp(ledger) == _RECENT
+
+    @pytest.mark.parametrize(
+        "ledger",
+        [None, [], [_failed_manual()], [_record(timestamp=None)]],
+        ids=["none", "empty", "only-failed-manual", "no-ts"],
+    )
+    def test_it_is_total(self, ledger: list[dict] | None) -> None:
+        assert home_status_mod.verdict_latest_timestamp(ledger) is None
+
+    def test_the_contradiction_is_no_longer_masked_by_a_failed_attempt(self) -> None:
+        """End to end over the real derivation: the task fired 4 h ago, the only newer record
+        is a failed manual attempt → the fired-but-no-record contradiction still stands."""
+        ledger = [
+            _failed_manual(timestamp=_RECENT),
+            _record(timestamp=(_NOW - timedelta(hours=30)).isoformat(timespec="seconds")),
+        ]
+        readback = ScheduleReadback(found=True, last_run=(_NOW - timedelta(hours=10)).isoformat(timespec="seconds"))
+        filtered = derive_schedule_status(
+            readback,
+            hint_registered=True,
+            latest_record_ts=home_status_mod.verdict_latest_timestamp(ledger),
+            foreign_account="",
+            shared_records=False,
+        )
+        unfiltered = derive_schedule_status(
+            readback,
+            hint_registered=True,
+            latest_record_ts=ledger[0]["timestamp"],
+            foreign_account="",
+            shared_records=False,
+        )
+        assert filtered.attention is True
+        assert unfiltered.attention is False  # the mask this closes

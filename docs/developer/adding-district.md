@@ -356,7 +356,33 @@ Pointing `class_info` at the non-Enhanced `ClassInformation.txt` is **not** a
 workaround: without a Master Timetable ID, blended detection falls back to a
 deduplicated schedule using the SAME session key (same false merges), and
 without a Primary Teacher column the co-teacher enrollments this switch
-preserves would drop to zero.
+preserves are left out — with one `CO-TEACHERS LEFT OUT` warning in the log and
+a standing warning on Home and Run History every night (plan 0053 S10, owner
+ruling 2026-09-25; `failure-policy.md` §5 #15).
+
+**When the export lacks a time-slot column (`session_components`).** Blended
+detection keys sections on school + teacher + the time-slot columns
+`term` / `semester` / `day` / `period` (the Classes `source_columns` roles
+`session_term` / `session_semester` / `session_day` / `session_period` rename
+them), and since plan 0053 S10 every component in force is REQUIRED
+(`failure-policy.md` §5 #39) — an absent one used to be dropped from the key,
+which can merge sections from different terms into one blended class. If the
+district's export genuinely has no such column, DECLARE the ones it has on the
+Classes entity, by role:
+
+```yaml
+  Classes:
+    session_components: [session_semester, session_day, session_period]
+```
+
+Absent = all four (every other district, byte-identical). The list decides
+membership only — the key and the class name keep the fixed term → semester →
+day → period order — and it is validated at load: known roles only, each once,
+never empty, on Classes only, and never leaving out a role the same entity's
+`source_columns` configures. It is config format 1.14 (the config declares
+`version: '1.14'`); `sd40myedbc` is the first to use it (its schedule has no
+Term column), and declaring the components an export really has keeps its
+blends byte-identical to the key it used before S10.
 
 If a district's K-7 (or equivalent) grades are already `homeroom_grades`, the
 existing blend-suppression gate (a blend none of whose grades receives
@@ -391,8 +417,16 @@ this setting — the second year is always taken as the end. Default is
 
 ### School year fallback rollover
 
-When no source file has a ``school year`` column, the pipeline falls back to
-the system date. The rollover month-day controls when "today" should be
+When no configured source yields a ``school year`` value, the pipeline falls
+back to the system date — that is, when no ``school_year_sources`` file is
+configured, loaded (an enabled entity must read it) and non-empty, or its
+``school year`` cells are blank or unparseable. **A configured source that IS
+loaded with rows but has NO ``school year`` column stops the run** (plan 0053
+S13b, owner ruling 2026-09-26, `failure-policy.md` §5 #41): Classes raises a
+typed `source_schema` error rather than let the calendar pick the year every
+Class ID and academic date is built from. So a district whose schedule export
+genuinely lacks the column must not name that file in `school_year_sources`.
+The rollover month-day controls when "today" should be
 treated as belonging to the **next** academic year (rather than the current
 one). Default ``07-25`` means anything from July 25 onwards rolls forward.
 Districts that upload upcoming-year exports earlier can lower it:
@@ -538,6 +572,8 @@ make validate-config
 
 This runs `src/config/loader.py` against all YAML files in `config/mappings/`. If validation fails, the error message will include the specific field and the problem.
 
+**A misspelled key fails here, not silently at 2am** (plan 0053 S12). Every key under `global_config`, every key of an entity block and every `source_columns` ROLE must be one the code reads — a bundled config carrying anything else fails validation with `UnknownConfigKeyError`, naming the location, the key and the nearest known key (`global_config: unknown key 'enabled_entites' — did you mean 'enabled_entities'?`). A misspelled key inside a field mapping (`transfrom:`, `colum:`) fails too, for every config. Overriding an inherited field with a different SHAPE is not a typo: `{value: "09"}` over the base's `{column, transform}` loads as a fixed value (the inherited keys the new shape does not accept are dropped), while `{column: "Gr"}` still inherits the `transform`. Only an unknown TOP-level key is ignored (forward compatibility). The `source_columns` roles an entity accepts are exactly its transformer's `SOURCE_COLUMN_ROLES` (derived from the constants its read sites use, read through `registry.source_column_roles`; the base `myedbc_mapping.yaml` comments name them per entity, pinned by a test) — an entity whose transformer declares none accepts none. A dead key you find in a config is removed only after confirming nothing reads it; if the check flags a key the code DOES read, the walker's vocabulary is wrong — fix the code, never the config.
+
 You can also validate directly:
 
 ```bash
@@ -550,28 +586,22 @@ print('OK:', cfg.sis, cfg.version)
 
 ---
 
-## Step 5 — Add to the CI validation list
+## Step 5 — Add to the CI validation list and bump the config count
 
-Open `Makefile` and add the new config to the `validate-config` target:
+CI **discovers** configs (`available_configs()` over `config/mappings/`), so there is no per-config line to add to `.github/workflows/ci.yml`. What is hand-kept is the COUNT, spelled once for the tests and copied to three places the tests cannot import it into. Update all four in the same change:
 
-```makefile
-validate-config:
-	python -c "from src.config.loader import load_config; load_config('myedbc')"
-	python -c "from src.config.loader import load_config; load_config('sd48myedbc')"
-	python -c "from src.config.loader import load_config; load_config('sd51myedbc')"
-	python -c "from src.config.loader import load_config; load_config('sd74myedbc')"
-	python -c "from src.config.loader import load_config; load_config('sd99myedbc')"   # add this
-	@echo "All configs valid."
-```
+1. **The Makefile.** Add the name to the list in the `validate-config` recipe — one `python -c` line holding a single list comprehension:
 
-Also add the config name to the `validate-config` step in `.github/workflows/ci.yml` so it runs in CI on every pull request:
+   ```makefile
+   validate-config:
+   	python -c "from src.config.loader import load_config; [(load_config(n), print(n+': OK')) for n in ['myedbc', ..., 'sd51attendance','sd99myedbc']]"
+   ```
 
-```yaml
-- name: Validate configs
-  run: |
-    python -c "from src.config.loader import load_config; load_config('myedbc')"
-    python -c "from src.config.loader import load_config; load_config('sd99myedbc')"  # add this
-```
+2. **`tests/_pins.py`.** Bump `BUNDLED_CONFIG_COUNT` by one. It is the ONE spelling of the count under `tests/`; no other test may carry a numeric config-count literal.
+3. **`.github/workflows/ci.yml`.** Bump `EXPECTED_CONFIGS` in the "Validate all mapping configs" step.
+4. **`CLAUDE.md`.** Update the count in its "validates all N configs", "Total: N bundled configs", "pinned N-config count" and "pinned at N" sentences.
+
+`tests/test_config_count_pin.py` (the Makefile list's length and set against discovery, the `ci.yml` literal read from the parsed YAML, the four `CLAUDE.md` sentences, and a scan of `tests/` for a stray count literal) and `tests/test_config_version_gate.py` (discovery against the pin) enforce all of them — a missed copy is a red test, not a silent drift.
 
 ---
 
@@ -699,13 +729,14 @@ authored_with:
 
 ### Before you change a base config
 
-**No CI gate ever validates a user-dir config.** `make validate-config` and the pinned config count run on a CI machine that has no user profile, so the only configs they ever see are the bundled ones in `config/mappings/`. A base change that breaks an overlay surfaces on the district's own machine, unattended — as a FAILED run with the bounded `config` error category in Run History and exit 1 that night (pinned in `tests/test_pipeline_run_store.py::TestCorruptUserOverlayRecordsAFailedRun`), plus a Mapping screen that renders the district's setup as degraded rather than crashing. That floor plus this frozen shape IS the mitigation, so five checks are on you:
+**No CI gate ever validates a user-dir config.** `make validate-config` and the pinned config count run on a CI machine that has no user profile, so the only configs they ever see are the bundled ones in `config/mappings/`. A base change that breaks an overlay surfaces on the district's own machine, unattended — as a FAILED run with the bounded `config` error category in Run History and exit 1 that night (pinned in `tests/test_pipeline_run_store.py::TestCorruptUserOverlayRecordsAFailedRun`), plus a Mapping screen that renders the district's setup as degraded rather than crashing. That floor plus this frozen shape IS the mitigation, so six checks are on you:
 
 1. **Never rename or repurpose a `global_config` key an overlay can name literally** — the five above. A repurposed key changes what a district's own file means without anyone editing it.
 2. **A changed list default REPLACES, never merges — and reaches every overlay that did not pin that list.** If you move a base's `homeroom_grades`, `class_rostering_grades` or `student_rostering_grades`, re-check that the chain still resolves for an overlay that pinned only ONE of them. The chain-companion rule pins `homeroom_grades` beside a scope key, but not the reverse: an overlay carrying `homeroom_grades: []` alone still INHERITS both scopes, and your new base value is what it will resolve against.
 3. **Do not rename a bundled `source_files` filename** an overlay may key a rename to, and do not remove a `source_files` ROLE. Two different costs, both worth knowing: the WRITTEN overlay overrides roles by name, so a removed role leaves a silently dead override (nothing fails — the district's own filename simply stops being used, and that entity reads the base's name), while RE-EDITING that district's setup fails loud, because `_build_renames` refuses a rename whose ORIGINAL filename is no longer in the base. The loud half is the good half; the quiet half is why this is on the list.
 4. **Do not remove an entity** the base defines: an overlay's `enabled_entities` can name any of `authoring.CREATOR_ENTITIES` (the 7 authorable entities — `StudentAttendance` stays vendor-only), and a removed entity breaks its selection.
-5. **Re-check the `ALLOWED_BASES` four specifically.** Only `myedbc`, `mbp_all`, `mbp_core` and `mbponly` can be a `_base:`, so those four are the blast radius. A district config change cannot break an overlay; a base change can.
+5. **Never teach `authoring.build_overlay` to emit a key before the loader reads it.** Authoring REFUSES an unknown `global_config`/entity key or `source_columns` role, and a misspelled key inside a field mapping stops the load for every origin (plan 0053 S12). The one leniency is for a file already on a district's disk: there an unknown `global_config`/entity key or role only WARNS (one line per key; the key is ignored and the nightly continues), which is also what lets an overlay written by a newer build load on an older one.
+6. **Re-check the `ALLOWED_BASES` four specifically.** Only `myedbc`, `mbp_all`, `mbp_core` and `mbponly` can be a `_base:`, so those four are the blast radius. A district config change cannot break an overlay; a base change can.
 
 Any change to a base also **invalidates every overlay's tested fact** by construction: the app stores the digest of the whole RESOLVED config (`authoring.resolved_digest`) at the moment the admin's test conversion passed, so a base change makes the digest stop matching and the district is asked to re-run its test before anything is re-activated. That is the intended cost — it can only ever ask for another test run, never lock a district out of a sync that already works.
 
@@ -732,6 +763,16 @@ Then run it like any other config (point `DISTRICTSYNC_DATA_DIR` at a scratch pr
 python -m src.main --sis sd93custom --input tests/snapshots/input --output data/output --dry-run
 ```
 
+Over the frozen snapshot that dry run STOPS, since plan 0053 S10, with a typed
+`source_schema` error on Enrollments naming `Student ID`: the snapshot's schedule
+calls its student column `Student Number`, a `_base: myedbc` overlay inherits the
+base's `student_id_col: Student ID`, and the timetable enrollments now require it
+(`failure-policy.md` §5 #28) where they used to ship with every timetable student
+left out. The owner kept that stop (2026-09-25); the creator cannot set
+`student_id_col` yet (ROADMAP). To see a run pass, point it at a COPY of the
+extract whose schedule also carries a `Student ID` column —
+`tests/test_config_authoring.snapshot_input_with_base_student_id` builds one.
+
 `write_overlay` builds → load-backs through the real `validate_overlay` → only then writes, atomically, so the user dir never holds a file the app cannot read. The packed-exe path has its own gate: the `user-overlay` phase of `scripts/ci_flet_pack_smoke.py` plants an overlay in a throwaway profile and converts through it, with a pre-plant negative control.
 
 ---
@@ -741,7 +782,7 @@ python -m src.main --sis sd93custom --input tests/snapshots/input --output data/
 | Config name | `_base` | Purpose |
 |-------------|---------|---------|
 | `myedbc` | (none — base) | Standard MyEdBC filenames; defines all 7 entity templates; enables the 5 rostering entities by default |
-| `sd40myedbc` | `myedbc` | CSV files with SD-40_/SD40- prefix; Student Schedule is headerless (`file_headers:` used) |
+| `sd40myedbc` | `myedbc` | CSV files with SD-40_/SD40- prefix; Student Schedule is headerless (`file_headers:` used); declares Classes `session_components` (its schedule has no Term column — config format 1.14) |
 | `sd48myedbc` | `myedbc` | Student Demographic Enhanced, Staff Information (non-enhanced) |
 | `sd51myedbc` | `myedbc` | Boundary — Student Demographic Enhanced, Class Info Enhanced (10-row early-year extract expected); `blended_classes: false` (2026-09-16) — the export's `Day` column never rotates, so the session key can't disambiguate secondary sections |
 | `sd54myedbc` | `myedbc` | Bulkley Valley — lowercase filenames; Staff non-Enhanced; Emergency Contact + Class Info Enhanced; ATT--AM/PM/Daily excluded |

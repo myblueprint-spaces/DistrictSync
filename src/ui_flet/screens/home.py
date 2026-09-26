@@ -80,6 +80,7 @@ from src.ui_flet.home_status import (
     machine_scope_line,
     quick_actions,
     sync_window_paused,
+    verdict_latest_timestamp,
     welcome_band,
 )
 from src.ui_flet.humanize import friendly_district_name
@@ -980,7 +981,9 @@ def _dashboard(
     # guard (which must also hold when a populated table's newest run is old) — fetched
     # unconditionally; a second tiny SQLite read on mount is the honest price.
     store_created_at = _store_created_at()
-    latest_ts = records[0].get("timestamp") if records else None
+    # D14 (plan 0053 S5): the newest record the VERDICT reads (a failed manual attempt is
+    # skipped), the same timestamp the Setup badge and Run History hand the schedule probe.
+    latest_ts = verdict_latest_timestamp(records)
 
     # 0038 S4b: built ONCE, here, OUTSIDE ``_render`` — the schedule read-back re-derives
     # the whole control list below, and rebuilding the card there would wipe an address the

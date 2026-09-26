@@ -145,6 +145,9 @@ mappings:
       "Email Address": "Student email address"
         #format: "{student number}@sdxx.bc.ca"
 
+  # The employment-status column the departed-staff exclusion reads is overridable
+  # via an entity-level `source_columns:` block — role staff_status (default:
+  # staff status).
   Staff:
     source_files:
       staff_info: "StaffInformationEnhanced.txt"
@@ -167,6 +170,11 @@ mappings:
       "Email": "Email Address"
       "Student User ID": "Student Number"
 
+  # Classes reads the SCHEDULE's grade column through its own `Grade` key below
+  # (Enrollments' subject split and blended detection read the same key). The
+  # blended time-slot columns are overridable via an entity-level
+  # `source_columns:` block — roles session_term / session_semester /
+  # session_day / session_period (defaults: term / semester / day / period).
   Classes:
     source_files:
       student_schedule: "StudentSchedule.txt"
@@ -192,6 +200,9 @@ mappings:
       "End Date":
         use_academic_year: true
 
+  # The ClassInformation columns the co-teacher rows read are overridable via an
+  # entity-level `source_columns:` block — roles class_info_primary_teacher /
+  # class_info_section_letter (defaults: primary teacher / section letter).
   Enrollments:
     source_files:
       student_schedule: "StudentSchedule.txt"

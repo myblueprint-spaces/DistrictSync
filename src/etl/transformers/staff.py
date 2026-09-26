@@ -34,9 +34,13 @@ from typing import Any
 import pandas as pd
 
 from src.etl.column_names import STAFF_SOURCEID, STAFF_STATUS
+from src.etl.errors import GuardKind
+from src.etl.outcomes import OutcomeNote
 from src.etl.transformers.base import BaseTransformer
+from src.etl.transformers.columns import Previously, require_columns, resolve_source_column
 from src.etl.transformers.context import TransformContext
 from src.etl.transformers.ids import is_blank_series, normalize_id_series
+from src.etl.transformers.notes import is_code_shaped, record_note
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +77,14 @@ TEACHING_ASSIGNMENT_SOURCE_ROLES: tuple[str, ...] = (
 KNOWN_STATUS_VALUES = frozenset({ACTIVE_STATUS_VALUE, "inactive"})
 
 
+#: The Staff ``source_columns`` ROLE for the employment-status column (read by
+#: :meth:`StaffTransformer.resolve_status_column`; named once — plan 0053 S12).
+STAFF_STATUS_ROLE = "staff_status"
+
+
 class StaffTransformer(BaseTransformer):
+    SOURCE_COLUMN_ROLES = frozenset({STAFF_STATUS_ROLE})
+
     def transform(self, df: pd.DataFrame, mapping: dict[str, Any], context: TransformContext) -> pd.DataFrame:
         working = self.normalize_columns(df)
         result = pd.DataFrame()
@@ -84,7 +95,7 @@ class StaffTransformer(BaseTransformer):
         # frame rebuilt from context.raw_data when a roster file is configured;
         # filtering first would be silently discarded on that path. BEFORE the
         # field map, so an excluded staff member never reaches output.
-        working = self.filter_departed_staff(working, mapping)
+        working = self.filter_departed_staff(working, mapping, context=context)
 
         # Then the district's OWN opt-in narrowing (SD83: a Prefix that states a
         # real role). Same post-merge placement, and for the same reason — Family
@@ -222,10 +233,22 @@ class StaffTransformer(BaseTransformer):
 
         Safe before Classes runs: ``raw_data`` is filled by the extractor ahead
         of every transformer. An empty set is a legitimate answer (a config
-        declaring none of these roles rescues nobody) and never an error.
+        declaring none of these roles rescues nobody, and an ABSENT or EMPTY file
+        is simply not evidence) and never an error.
+
+        **Fail-closed on a present file** (§5 #22a, plan 0053 S10 — owner Gate A,
+        2026-09-24): a file that IS present and non-empty but lacks the teacher-id
+        column raises a typed ``SourceSchemaError`` (``JOIN_KEY``). It used to be
+        skipped in silence, so the rescue found nobody and every un-roled teacher
+        was DROPPED from ``Staff.csv`` — a shrink caused by a detected fault (H2).
+        Staff is CRITICAL, so the run fails. Reached only when some staff row is
+        un-roled (the caller returns before asking otherwise). One exception: a file
+        serving ONLY the ``student_demographic`` role on a config with no
+        ``homeroom_grades`` — its teacher id is the homeroom teacher, which links
+        nothing there, so its absence is no evidence, as before S10.
         """
         teacher_id_col = context.get_teacher_id_col()
-        filenames: set[str] = set()
+        roles_by_file: dict[str, set[str]] = {}
         # UNION over Classes AND Enrollments. They name the same schedule file in
         # all 20 bundled configs, but `source_files` is a dict and deep merge
         # takes a PARTIAL override happily — a district overriding one entity's
@@ -235,19 +258,36 @@ class StaffTransformer(BaseTransformer):
         for entity in ("Classes", "Enrollments"):
             entity_config = context.entity_mappings.get(entity, {}) or {}
             sources = self.normalize_source_config(entity_config.get("source_files", {}))
-            filenames.update(sources.get(role, "") for role in TEACHING_ASSIGNMENT_SOURCE_ROLES)
+            for role in TEACHING_ASSIGNMENT_SOURCE_ROLES:
+                filename = sources.get(role, "")
+                if filename:
+                    roles_by_file.setdefault(filename, set()).add(role)
 
+        # The demographic's teacher id is the HOMEROOM teacher: with no homeroom grade it
+        # links nothing (Classes and Enrollments never read it), so its absence there is
+        # no evidence rather than a detected fault.
+        homeroom_rostering = bool(context.global_config.get("homeroom_grades") or [])
         found: set[str] = set()
-        for filename in sorted(filenames - {""}):
+        for filename in sorted(roles_by_file):
             frame = context.raw_data.get(filename)
-            if frame is None or frame.empty or teacher_id_col not in frame.columns:
+            if frame is None or frame.empty:
                 continue
+            if (
+                teacher_id_col not in frame.columns
+                and not homeroom_rostering
+                and roles_by_file[filename] == {"student_demographic"}
+            ):
+                continue
+            # failure-policy: join_key
+            require_columns(frame.columns, [context.get_teacher_id_label()], entity="Staff", guard=GuardKind.JOIN_KEY)
             values = normalize_id_series(frame[teacher_id_col])
             found.update(values[~is_blank_series(frame[teacher_id_col])].unique())
         return found
 
     @classmethod
-    def filter_departed_staff(cls, working: pd.DataFrame, mapping: dict[str, Any]) -> pd.DataFrame:
+    def filter_departed_staff(
+        cls, working: pd.DataFrame, mapping: dict[str, Any], *, context: TransformContext
+    ) -> pd.DataFrame:
         """Keep only currently-employed staff, when the export says who they are.
 
         Engages only when BOTH hold, and passes every row through otherwise:
@@ -268,34 +308,74 @@ class StaffTransformer(BaseTransformer):
         surplus users, and in practice means the column was misread rather than
         that a district employs nobody.
 
+        Every pass-through is RECORDED (plan 0053 S11, §5 #12/#21): an absent status
+        column, an unrecognised vocabulary and a would-empty filter each log ONE line and
+        record their ``OutcomeNote`` on the Staff outcome, counting the rows kept. ``context``
+        is required keyword-only — a forgotten context would be the silent answer this rule
+        exists to remove. The direction of each branch is unchanged.
+
         PII rule: counts and status VOCABULARY only — never a name or an email.
         """
         status_col = cls.resolve_status_column(mapping)
         if status_col not in working.columns:
+            if len(working):
+                # failure-policy: safety_heuristic
+                record_note(
+                    context,
+                    "Staff",
+                    OutcomeNote.STAFF_STATUS_COLUMN_ABSENT,
+                    len(working),
+                    log=logger,
+                    message=(
+                        f"[Staff] No '{status_col}' column in the staff export — departed staff cannot be told "
+                        f"apart, so all {len(working)} staff row(s) were kept."
+                    ),
+                )
             return working
 
-        values = normalize_id_series(working[status_col]).str.lower()
+        trimmed = normalize_id_series(working[status_col])
+        values = trimmed.str.lower()
         blank = is_blank_series(working[status_col])
         observed = set(values[~blank].unique())
 
         unrecognised = observed - KNOWN_STATUS_VALUES
         if unrecognised:
-            logger.warning(
-                f"[Staff] '{status_col}' holds unrecognised value(s) {sorted(unrecognised)} — "
-                f"expected {sorted(KNOWN_STATUS_VALUES)}. Keeping ALL {len(working)} staff row(s) rather than "
-                f"risk emptying Staff.csv; departed staff may ship as active users until this mapping is taught "
-                f"the district's vocabulary."
+            described = cls._describe_unrecognised(trimmed[~blank & values.isin(unrecognised)])
+            # failure-policy: safety_heuristic
+            record_note(
+                context,
+                "Staff",
+                OutcomeNote.STAFF_STATUS_VOCABULARY_UNRECOGNISED,
+                len(working),
+                log=logger,
+                message=(
+                    f"[Staff] '{status_col}' holds {described} — "
+                    f"expected {sorted(KNOWN_STATUS_VALUES)}. Keeping ALL {len(working)} staff row(s) rather than "
+                    f"risk emptying Staff.csv; departed staff may ship as active users until this mapping is taught "
+                    f"the district's vocabulary."
+                ),
             )
             return working
 
         keep = values == ACTIVE_STATUS_VALUE
         kept = int(keep.sum())
         if kept == 0:
-            logger.warning(
-                f"[Staff] '{status_col}' marks none of {len(working)} staff row(s) as "
-                f"'{ACTIVE_STATUS_VALUE}' — keeping all of them rather than delivering an empty Staff.csv. "
-                f"Check the source export."
-            )
+            # An EMPTY frame (header-only export) keeps nobody too, but there is nothing to pass
+            # through and nothing to count: return it, record nothing (as the absent-column branch).
+            if len(working):
+                # failure-policy: safety_heuristic
+                record_note(
+                    context,
+                    "Staff",
+                    OutcomeNote.STAFF_FILTER_WOULD_EMPTY,
+                    len(working),
+                    log=logger,
+                    message=(
+                        f"[Staff] '{status_col}' marks none of {len(working)} staff row(s) as "
+                        f"'{ACTIVE_STATUS_VALUE}' — keeping all of them rather than delivering an empty Staff.csv. "
+                        f"Check the source export."
+                    ),
+                )
             return working
 
         excluded = len(working) - kept
@@ -307,23 +387,46 @@ class StaffTransformer(BaseTransformer):
         return working[keep].copy()
 
     @staticmethod
+    def _describe_unrecognised(unrecognised: pd.Series) -> str:
+        """The unrecognised status values as a log line may name them — a count, codes only shown.
+
+        A status column holds VOCABULARY by contract, but a misaligned or headerless export puts
+        any cell there — a teacher's name included. So the distinct values are echoed only when
+        EVERY one is code-shaped (:func:`notes.is_code_shaped`: ``A``/``I``/``T``); otherwise
+        only their count is given (§8: no observed value in a log line).
+        """
+        distinct = sorted(set(unrecognised))
+        if all(is_code_shaped(value) for value in distinct):
+            return f"unrecognised value(s) {distinct}"
+        return f"{len(distinct)} unrecognised value(s) (not shown — at least one is not a short code)"
+
+    @staticmethod
     def resolve_status_column(mapping: dict[str, Any]) -> str:
         """Resolve the employment-status source column (Configurable Columns rule).
 
         The status column has no output counterpart, so it resolves through the
         entity-level ``source_columns`` block rather than the field_map — the
         ``student_courses.py`` auxiliary-input pattern. Defaults to the canonical
-        MyEd BC spelling (:data:`~src.etl.column_names.STAFF_STATUS`); a blank or
-        non-string override falls back to it rather than resolving to nothing.
+        MyEd BC spelling (:data:`~src.etl.column_names.STAFF_STATUS`); a blank
+        override falls back to it rather than resolving to nothing — the one
+        resolver's policy (:func:`~src.etl.transformers.columns.resolve_source_column`).
         """
         aux = mapping.get("source_columns") or {}
-        override = aux.get("staff_status")
-        if override is None:
-            return STAFF_STATUS
-        return str(override).strip().lower() or STAFF_STATUS
+        return resolve_source_column(aux, STAFF_STATUS_ROLE, default=STAFF_STATUS, previously=Previously.UNCHANGED)
 
     def _merge_roster(self, working: pd.DataFrame, mapping: dict[str, Any], context: TransformContext) -> pd.DataFrame:
-        """Merge staff with roster to add 'staff sourceid' when available."""
+        """Merge staff with roster to add 'staff sourceid' when available.
+
+        The merge's own guard (either file empty, the teacher id absent from the STAFF
+        file, ``staff sourceid`` absent from the roster) still skips it — §5 #13, an
+        (e) posture. Since plan 0053 S11 a skip over two PRESENT, non-empty files (a
+        column the merge needs is missing) is recorded: ONE WARNING naming the missing
+        column(s) in config spelling and ``OutcomeNote.ROSTER_MERGE_SKIPPED`` counting the
+        staff rows shipped without a roster source id. An absent or empty roster file is
+        not a missing column (the extractor already reports a missing file). Once the guard
+        lets it run, the roster's teacher-id JOIN column is required (§5 #13a, plan 0053
+        S10): its absence used to be a raw pandas ``KeyError`` (category ``unknown``).
+        """
         source_config = mapping.get("source_files", {})
         normalized = self.normalize_source_config(source_config)
         teacher_id_col = context.get_teacher_id_col()
@@ -337,17 +440,33 @@ class StaffTransformer(BaseTransformer):
         staff_df = context.raw_data.get(staff_filename, pd.DataFrame())
         roster_df = context.raw_data.get(roster_filename, pd.DataFrame())
 
-        if (
-            not staff_df.empty
-            and not roster_df.empty
-            and teacher_id_col in staff_df.columns
-            and STAFF_SOURCEID in roster_df.columns
-        ):
-            working = staff_df.merge(
-                roster_df[[teacher_id_col, STAFF_SOURCEID]].drop_duplicates(subset=[teacher_id_col]),  # type: ignore[call-overload]
-                on=teacher_id_col,
-                how="left",
+        if staff_df.empty or roster_df.empty:
+            return working
+        missing = [
+            *([context.get_teacher_id_label()] if teacher_id_col not in staff_df.columns else []),
+            *([STAFF_SOURCEID] if STAFF_SOURCEID not in roster_df.columns else []),
+        ]
+        if missing:
+            if working.empty:
+                return working
+            # failure-policy: safety_heuristic
+            record_note(
+                context,
+                "Staff",
+                OutcomeNote.ROSTER_MERGE_SKIPPED,
+                len(working),
+                log=logger,
+                message=(
+                    f"[Staff] ROSTER MERGE SKIPPED — column(s) {missing} are missing from the staff or roster "
+                    f"export, so {len(working)} staff row(s) ship without a roster source id."
+                ),
             )
-            working = self.normalize_columns(working)
-
-        return working
+            return working
+        # failure-policy: join_key
+        require_columns(roster_df.columns, [context.get_teacher_id_label()], entity="Staff", guard=GuardKind.JOIN_KEY)
+        working = staff_df.merge(
+            roster_df[[teacher_id_col, STAFF_SOURCEID]].drop_duplicates(subset=[teacher_id_col]),  # type: ignore[call-overload]
+            on=teacher_id_col,
+            how="left",
+        )
+        return self.normalize_columns(working)

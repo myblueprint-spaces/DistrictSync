@@ -84,16 +84,27 @@ _WELCOME_ALL = frozenset(
     {"WELCOME_FRESH", "WELCOME_RESUME_WITH_HISTORY", "WELCOME_RESUME_SETTINGS_ONLY", "WELCOME_RESUME_PLAIN"}
 )
 _S7_HEADLINES = frozenset({"EMPTY_FRESH_START_HEADLINE", "EMPTY_NO_RUNS_HEADLINE"})
+# Plan 0053 S5 (owner decision D14): the failed-attempts-only empty state.
+_D14_HEADLINE = frozenset({"EMPTY_NO_COMPLETED_RUNS_HEADLINE"})
 _QUICK_ALL = frozenset({"QUICK_CONVERT_LABEL", "QUICK_RUN_HISTORY_LABEL", "QUICK_SETTINGS_LABEL"})
 
 # doc -> the constants that doc is DECLARED to quote. Anything not listed must be absent.
 _DOC_QUOTES: dict[str, frozenset[str]] = {
-    "docs/claugentic-PRODUCT.md": _WELCOME_ALL | _S7_HEADLINES | _QUICK_ALL | frozenset({"SIZE_CLAUSE_LEAD"}),
-    "docs/claugentic-PRODUCT_SPEC.md": _WELCOME_ALL | _S7_HEADLINES | _QUICK_ALL | frozenset({"SIZE_CLAUSE_LEAD"}),
+    "docs/claugentic-PRODUCT.md": _WELCOME_ALL
+    | _S7_HEADLINES
+    | _D14_HEADLINE
+    | _QUICK_ALL
+    | frozenset({"SIZE_CLAUSE_LEAD"}),
+    "docs/claugentic-PRODUCT_SPEC.md": _WELCOME_ALL
+    | _S7_HEADLINES
+    | _D14_HEADLINE
+    | _QUICK_ALL
+    | frozenset({"SIZE_CLAUSE_LEAD"}),
     "docs/developer/qa-checklist.md": frozenset(
         {"WELCOME_FRESH", "WELCOME_RESUME_WITH_HISTORY", "WELCOME_RESUME_SETTINGS_ONLY"}
     )
     | _S7_HEADLINES
+    | _D14_HEADLINE
     | _QUICK_ALL
     | frozenset({"SIZE_CLAUSE_LEAD"}),
 }
@@ -129,6 +140,7 @@ def test_the_constant_set_is_the_one_this_pin_was_written_for() -> None:
         "WELCOME_RESUME_PLAIN",
         "EMPTY_FRESH_START_HEADLINE",
         "EMPTY_NO_RUNS_HEADLINE",
+        "EMPTY_NO_COMPLETED_RUNS_HEADLINE",
         "EMPTY_NO_AUTO_SYNC_DETAIL",
         "SIZE_CLAUSE_LEAD",
         "QUICK_CONVERT_LABEL",

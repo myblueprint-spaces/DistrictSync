@@ -19,7 +19,12 @@ This module closes that gap at two altitudes:
    since districts inherit the base entity definition rather than redefining it;
 2. the derived VALUES survive the whole pipeline into ``Classes.csv``, for both
    school-year determination paths — a source ``School Year`` column, and the
-   calendar fallback around the configured rollover.
+   calendar fallback around the configured rollover;
+3. (plan 0053 S13b, owner ruling 2026-09-26 — failure-policy §5 #41) a school-year
+   source that is loaded with rows but has NO ``School Year`` column stops the run
+   (typed, ``source_schema``, the last good output untouched) instead of handing the
+   year to the calendar; the fallback stays the path where it is legitimate — no
+   source configured, a source not loaded or empty, or a column with no parseable value.
 
 The clock is frozen at the established seam (``src.etl.transformers.base.datetime``
 — see ``tests/test_school_year.py``) so the run date can never leak into an
@@ -28,6 +33,8 @@ spelled inline: a test that hardcoded ``08-25`` would just mirror a config typo
 back as "correct".
 """
 
+import hashlib
+import logging
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -38,6 +45,11 @@ import pytest
 
 from src.config.loader import load_config
 from src.config.models import FieldAcademicYear, GlobalConfig
+from src.etl.errors import GuardKind, SourceSchemaError
+from src.etl.extractor import DataExtractor
+from src.etl.outcomes import OutcomeKind, OutcomeLedger
+from src.etl.pipeline import configured_entity_order, extract_required_files, run_pipeline, run_transform
+from src.history.store import read_run_records
 from src.main import main
 from src.utils.paths import bundle_mappings_dir
 from tests.test_pipeline_run_store import _write_myedbc_input
@@ -148,22 +160,41 @@ def _assert_fixture_school_year(input_dir: Path, global_config: GlobalConfig) ->
         assert values == [FIXTURE_SCHOOL_YEAR], f"{filename} school years changed: {values}"
 
 
-def _drop_school_year_column(input_dir: Path, global_config: GlobalConfig) -> None:
-    """Strip 'School Year' from every configured school-year SOURCE file.
+def _school_year_columns(frame: pd.DataFrame) -> list[str]:
+    return [c for c in frame.columns if c.strip().lower() == "school year"]
+
+
+def _blank_school_year_values(input_dir: Path, global_config: GlobalConfig) -> None:
+    """Blank every 'School Year' CELL of every configured school-year SOURCE file, keeping the column.
 
     With no parseable school year in any configured source, the pipeline takes
     the rollover-aware calendar fallback — the ONLY path where the (frozen)
-    clock decides the academic dates.
+    clock decides the academic dates. A blank VALUE is that path's legitimate
+    trigger; a missing COLUMN no longer is (it stops the run — failure-policy
+    §5 #41, owner ruling 2026-09-26; :class:`TestSchoolYearSourceColumnIsRequired`).
     """
+    blanked = False
+    for filename in global_config.school_year_sources.values():
+        path = input_dir / filename
+        frame = pd.read_csv(path, dtype=str)
+        for column in _school_year_columns(frame):
+            frame[column] = ""
+            blanked = True
+        frame.to_csv(path, index=False)
+    assert blanked, "fixture no longer carries a 'School Year' source column — fallback would not be exercised"
+
+
+def _drop_school_year_column(input_dir: Path, global_config: GlobalConfig) -> None:
+    """Strip the 'School Year' COLUMN from every configured school-year SOURCE file (§5 #41's stop)."""
     dropped = False
     for filename in global_config.school_year_sources.values():
         path = input_dir / filename
         frame = pd.read_csv(path, dtype=str)
-        columns = [c for c in frame.columns if c.strip().lower() == "school year"]
+        columns = _school_year_columns(frame)
         if columns:
             frame.drop(columns=columns).to_csv(path, index=False)
             dropped = True
-    assert dropped, "fixture no longer carries a 'School Year' source column — fallback would not be exercised"
+    assert dropped, "fixture no longer carries a 'School Year' source column — the stop would not be exercised"
 
 
 @pytest.fixture
@@ -237,18 +268,108 @@ class TestDerivedAcademicDatesEndToEnd:
     def test_dates_follow_the_clock_across_the_configured_rollover(
         self, myedbc_dirs: tuple[Path, Path], offset_days: int, end_year_offset: int
     ) -> None:
-        """With no school-year source, the configured rollover picks the year.
+        """With no usable school-year VALUE, the configured rollover picks the year.
 
         Catches: an off-by-one at the rollover boundary (``<`` vs ``<=``), and
         the end-year convention inverting so Start Date lands in the wrong
-        calendar year.
+        calendar year. (It used to drop the column to get here; since plan 0053
+        S13b that stops the run, so it blanks the values instead — the fallback's
+        legitimate trigger.)
         """
         input_dir, output_dir = myedbc_dirs
         global_config = _global_config()
-        _drop_school_year_column(input_dir, global_config)
+        _blank_school_year_values(input_dir, global_config)
 
         today = _rollover_date(FROZEN_CLOCK_YEAR, global_config) + timedelta(days=offset_days)
         with _frozen_clock(today):
             main(E2E_SIS_TYPE, str(input_dir), str(output_dir))
 
         _assert_academic_bounds(_read_classes(output_dir), today.year + end_year_offset, global_config)
+
+
+# ---------------------------------------------------------------------------
+# 3. The school-year source column is REQUIRED (plan 0053 S13b — §5 #41)
+# ---------------------------------------------------------------------------
+
+
+def _tree(directory: Path) -> dict[str, str]:
+    return {
+        str(p.relative_to(directory)): hashlib.sha256(p.read_bytes()).hexdigest()
+        for p in sorted(directory.rglob("*"))
+        if p.is_file()
+    }
+
+
+def _transform_over(input_dir: Path, *, school_year_sources: dict[str, str]):
+    """``run_transform`` over the written myedbc input with ``school_year_sources`` REPLACED —
+    the only way to reach "no source configured" (a ``_base`` deep merge can never remove the
+    base's key). Returns ``(TransformOutputs, the Classes outcome)``."""
+    config = load_config(E2E_SIS_TYPE)
+    raw = config.to_raw_dict()
+    mappings, gc = raw["mappings"], {**raw["global_config"], "school_year_sources": school_year_sources}
+    headers = {fn: hl for ecfg in mappings.values() for fn, hl in (ecfg.get("headers") or {}).items()}
+    data = DataExtractor(str(input_dir)).load_data(extract_required_files(config), file_headers=headers)
+    ledger = OutcomeLedger(configured_entity_order(mappings, gc))
+    result = run_transform(data, mappings, gc, ledger=ledger)
+    (classes,) = [o for o in result.outcomes if o.entity == "Classes"]
+    return result, classes
+
+
+class TestSchoolYearSourceColumnIsRequired:
+    """Owner ruling 2026-09-26 (F1): a configured school-year source loaded with rows but without
+    its ``School Year`` column STOPS THE NIGHT — never the silent calendar fallback."""
+
+    def test_a_source_without_its_school_year_column_stops_the_run_and_touches_nothing(
+        self, myedbc_dirs: tuple[Path, Path]
+    ) -> None:
+        input_dir, output_dir = myedbc_dirs
+        global_config = _global_config()
+        with _frozen_clock(date(FROZEN_CLOCK_YEAR, 3, 3)):
+            run_pipeline(E2E_SIS_TYPE, str(input_dir), str(output_dir))  # the last good night
+        before = _tree(output_dir)
+        assert "Classes.csv" in before, "non-vacuity: the seeded output exists"
+        _drop_school_year_column(input_dir, global_config)
+
+        with _frozen_clock(date(FROZEN_CLOCK_YEAR, 3, 3)), pytest.raises(SourceSchemaError) as raised:
+            run_pipeline(E2E_SIS_TYPE, str(input_dir), str(output_dir))
+
+        err = raised.value
+        assert (err.entity, err.columns, err.guard) == ("Classes", ("school year",), GuardKind.JOIN_KEY)
+        assert "the source has" in str(err)  # the require_columns shape: a column COUNT, never a header
+        record = read_run_records()[0]
+        assert (record["status"], record["error_category"]) == ("failed", "source_schema")
+        classes = record["entity_outcomes"]["Classes"]
+        assert (classes["kind"], classes["reason"]) == ("failed", "missing_source_column")
+        assert _tree(output_dir) == before, "the last good output is untouched"
+
+    def test_the_twin_the_column_present_decides_the_year_from_the_export(self, myedbc_dirs: tuple[Path, Path]) -> None:
+        input_dir, _ = myedbc_dirs
+        with _frozen_clock(date(FROZEN_CLOCK_YEAR, 3, 3)):
+            result, classes = _transform_over(input_dir, school_year_sources=dict(_global_config().school_year_sources))
+        assert classes.kind is OutcomeKind.BUILT
+        assert (result.school_year.mechanism, result.school_year.resolved_year) == ("source", FIXTURE_SCHOOL_YEAR_END)
+
+    def test_the_twin_no_source_configured_keeps_the_calendar_fallback_and_its_one_info_line(
+        self, myedbc_dirs: tuple[Path, Path], caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """No ``school_year_sources`` at all: the schedule (still read by Classes) lacks the column,
+        yet nothing is required of it — the fallback decides, logged at INFO, exactly as before."""
+        input_dir, _ = myedbc_dirs
+        _drop_school_year_column(input_dir, _global_config())
+        with _frozen_clock(date(FROZEN_CLOCK_YEAR, 3, 3)), caplog.at_level(logging.INFO, logger="src.etl.pipeline"):
+            result, classes = _transform_over(input_dir, school_year_sources={})
+        assert classes.kind is OutcomeKind.BUILT
+        assert result.school_year.mechanism == "fallback"
+        assert result.school_year.resolved_year == result.school_year.fallback_year
+        fallback_lines = [r for r in caplog.records if "determined by calendar fallback" in r.getMessage()]
+        assert [r.levelno for r in fallback_lines] == [logging.INFO]
+
+    def test_the_twin_a_configured_source_that_is_not_loaded_keeps_the_fallback(
+        self, myedbc_dirs: tuple[Path, Path]
+    ) -> None:
+        """An absent source is not a missing column (a guard runs once its source has rows)."""
+        input_dir, _ = myedbc_dirs
+        with _frozen_clock(date(FROZEN_CLOCK_YEAR, 3, 3)):
+            result, classes = _transform_over(input_dir, school_year_sources={"elsewhere": "NotAnInputFile.txt"})
+        assert classes.kind is OutcomeKind.BUILT
+        assert result.school_year.mechanism == "fallback"

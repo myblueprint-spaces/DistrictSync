@@ -9,7 +9,7 @@ active mapping and SWITCH to a different pre-built one, seeing what each produce
 **Single-sourced with the pipeline.** ``output_labels`` is derived by the SAME empty-means-all
 rule the core uses to decide which entities (→ CSVs) a config emits
 (``MappingConfig.active_entities()`` — enabled ∩ defined; empty/absent = all), ordered by ``home_status``'s rostering-then-myBlueprint entity tuples and labelled through the
-single-source ``home_status.ENTITY_LABELS`` map — so the Mapping summary can never disagree
+single-source ``humanize.ENTITY_LABELS`` map — so the Mapping summary can never disagree
 with Home / Run History / the actual output CSV set.
 
 **TOTAL over a failing config (reliability-resilience).** ``load_config`` is strict at the
@@ -62,9 +62,8 @@ from src.config.loader import ConfigOrigin, available_configs, load_config, reso
 from src.ui_flet.home_status import (
     _MYBLUEPRINT_ENTITIES,
     _ROSTERING_ENTITIES,
-    ENTITY_LABELS,
 )
-from src.ui_flet.humanize import friendly_district_name
+from src.ui_flet.humanize import ENTITY_LABELS, friendly_district_name
 from src.ui_flet.identity_gate import resolve_domain
 from src.ui_flet.schedule_status import ScheduleState
 

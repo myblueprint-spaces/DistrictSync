@@ -13,6 +13,7 @@ Runs under the autouse isolation fixture, so the store lands in a per-test tmp p
 
 from __future__ import annotations
 
+import ast
 import json
 import logging
 from collections.abc import Collection
@@ -271,12 +272,15 @@ class TestConvertManual:
         The old ``AppConfig.load().output_dir or input_dir`` fallback would have quietly written the
         roster into the *input* folder; now it raises, and (fail-fast) records nothing.
         """
+        from src.etl.errors import OutputFolderUnsetError
         from src.ui_flet.screens.convert import convert_job
 
         AppConfig(input_dir=str(gde_input), output_dir="", sis_type="myedbc").save()
         before = sorted(p.name for p in gde_input.iterdir())
-        with pytest.raises(ValueError, match="output folder"):
+        with pytest.raises(ValueError, match="output folder") as excinfo:
             convert_job("myedbc", str(gde_input))
+        # Typed (plan 0053 S3) so the on_error card words it as the OUTPUT category, not DATA.
+        assert excinfo.type is OutputFolderUnsetError
         assert read_run_records() == []
         # The anti-regression is airtight: nothing was written into the INPUT folder
         # (the old fallback's exact failure mode), not merely "the call raised".
@@ -1062,7 +1066,11 @@ class TestRunAsRidesTheRecord:
         assert records is not None and records[0]["run_as"]
 
     def test_an_older_record_without_the_key_still_reads(self) -> None:
-        """A DB written by <= v3.21.0 has no ``run_as`` — the reader must not care."""
+        """A DB written by <= v3.21.0 has no ``run_as`` — the reader must not care.
+
+        Such a record also predates ``entity_outcomes`` (plan 0053 S2), so both are removed
+        to reproduce the real older shape.
+        """
         from src.history.store import write_run_record
 
         legacy = pipeline.build_run_record(
@@ -1072,11 +1080,815 @@ class TestRunAsRidesTheRecord:
             source="cli",
             sis_type="myedbc",
             error_category="none",
+            entity_outcomes=None,
         )
         legacy.pop("run_as")
+        legacy.pop("entity_outcomes")
         assert write_run_record(legacy, source="cli") is True
 
         records = read_run_records()
         assert records is not None and len(records) == 1
         assert "run_as" not in records[0]
         assert to_run_rows(records)  # the Run History reader still renders it
+
+
+# --------------------------------------------------------------------------- #
+# typed categories reach the record (plan 0053 S1)                             #
+# --------------------------------------------------------------------------- #
+class TestTypedCategoriesReachTheRecord:
+    """Each typed fault records its OWN category, by type — and each has the twin that
+    proves the path is not answering the same thing for everything."""
+
+    #: Unity's own config: Family on, filtered to guardians (``row_filters``).
+    _UNITY = "unitychristianmyedbc"
+
+    @staticmethod
+    def _plain_emergency_report(d: Path, *, first_header: str = "Student Number", guardian: bool = False) -> None:
+        """The 2026-09-22 shape: the PLAIN report under the Enhanced report's filename."""
+        columns: dict[str, list[str]] = {
+            first_header: ["S001"],
+            "First Name": ["John"],
+            "Last Name": ["Smith"],
+            "Email Address": ["john@mail.com"],
+        }
+        if first_header != "Student Number":
+            columns["Student Number"] = ["S001"]
+        if guardian:
+            columns["Parent Auth / Guardian"] = ["Y"]
+        pd.DataFrame(columns).to_csv(d / "EmergencyContactInformation.txt", index=False)
+
+    #: SD83's config: Staff filtered on the ``Prefix`` column that STATES the role. Staff is
+    #: CRITICAL, so a missing ``Prefix`` still fails the whole run (plan 0053 S4) — the shape
+    #: that keeps ``source_schema`` a RUN category after Family's failure became entity-scoped.
+    _SD83 = "sd83myedbc"
+
+    def test_a_missing_row_filter_column_on_a_critical_entity_records_source_schema(
+        self, gde_input: Path, gde_output: Path
+    ) -> None:
+        """Was ``data`` (an untyped ``ValueError``) before S1. Since S4 the CRITICAL shape
+        (``gde_input``'s staff file has no ``Prefix``) is what fails the run: Family's
+        missing guardian column is entity-scoped (the next test)."""
+        from src.etl.errors import GuardKind, SourceSchemaError
+
+        with pytest.raises(SourceSchemaError) as exc_info:
+            run_pipeline(self._SD83, str(gde_input), str(gde_output))
+        assert exc_info.value.guard is GuardKind.PII_SCOPE
+        assert exc_info.value.entity == "Staff"
+        records = read_run_records()
+        assert records is not None and len(records) == 1
+        assert records[0]["status"] == "failed"
+        assert records[0]["error_category"] == "source_schema"
+
+    def test_the_same_fault_on_family_is_left_out_not_fatal(self, gde_input: Path, gde_output: Path) -> None:
+        """Plan 0053 S4: Family is ISOLATABLE — the run completes without it (was exit 1)."""
+        self._plain_emergency_report(gde_input)
+        result = run_pipeline(self._UNITY, str(gde_input), str(gde_output))
+        records = read_run_records()
+        assert records is not None and len(records) == 1
+        assert records[0]["status"] == "success"
+        assert records[0]["error_category"] == "none"
+        # Plan 0053 S6: the FAILED entry also carries what the source observation saw (the
+        # guardian column, in CONFIG spelling); its kind and reason are the bulkhead's, unchanged.
+        # Plan 0053 S7: and the labels the copy may name — the raising error's column and, Family
+        # having ONE configured source file, that file — both in config spelling.
+        assert records[0]["entity_outcomes"]["Family"] == {
+            "kind": "failed",
+            "reason": "missing_source_column",
+            "rows": 0,
+            "missing_mapped": ["Parent Auth / Guardian"],
+            "labels": ["Parent Auth / Guardian"],
+            "file_label": "EmergencyContactInformation.txt",
+        }
+        assert "Family" not in result.entity_counts
+
+    def test_the_twin_the_enhanced_report_succeeds_with_the_same_config(
+        self, gde_input: Path, gde_output: Path
+    ) -> None:
+        self._plain_emergency_report(gde_input, guardian=True)
+        run_pipeline(self._UNITY, str(gde_input), str(gde_output))
+        records = read_run_records()
+        assert records is not None and records[0]["status"] == "success"
+        assert records[0]["error_category"] == "none"
+        assert records[0]["Family"] == 1
+
+    def test_no_observed_header_reaches_the_entity_not_built_traceback(
+        self, gde_input: Path, gde_output: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """§8 end to end, ISOLATABLE path (plan 0053 S4): a first header standing in for a
+        pupil (row 1 of a headerless file) never reaches the ``ENTITY NOT BUILT`` line — which
+        carries the whole traceback (``exc_info=True``) — nor the ``__DISTRICTSYNC_RUN__`` line."""
+        from tests.test_etl_errors import SENTINEL_PII
+
+        self._plain_emergency_report(gde_input, first_header=SENTINEL_PII)
+        with caplog.at_level(logging.DEBUG):
+            run_pipeline(self._UNITY, str(gde_input), str(gde_output))
+        assert SENTINEL_PII.lower() not in caplog.text.lower()
+        # Non-vacuity: the line WAS logged, with its traceback and the typed message.
+        not_built = [r for r in caplog.records if r.getMessage().startswith("ENTITY NOT BUILT [Family]")]
+        assert len(not_built) == 1 and not_built[0].exc_info is not None
+        assert "Traceback" in caplog.text and "Parent Auth / Guardian" in caplog.text
+
+    def test_no_observed_header_reaches_the_exception_or_the_log_on_a_critical_failure(
+        self, gde_input: Path, gde_output: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """§8 end to end, CRITICAL path: the raised message, the ``Pipeline failed`` line and
+        the ``__DISTRICTSYNC_RUN__`` line (SD83's staff file, its first header a sentinel)."""
+        from src.etl.errors import SourceSchemaError
+        from tests.test_etl_errors import SENTINEL_PII
+
+        staff = pd.read_csv(gde_input / "StaffInformationEnhanced.txt", dtype=str)
+        staff.rename(columns={"Teacher ID": SENTINEL_PII}).assign(**{"Teacher ID": staff["Teacher ID"]}).to_csv(
+            gde_input / "StaffInformationEnhanced.txt", index=False
+        )
+        with caplog.at_level(logging.DEBUG), pytest.raises(SourceSchemaError) as exc_info:
+            run_pipeline(self._SD83, str(gde_input), str(gde_output))
+        assert SENTINEL_PII.lower() not in str(exc_info.value).lower()
+        assert SENTINEL_PII.lower() not in caplog.text.lower()
+        # Non-vacuity: the failure line WAS logged, carrying the typed message.
+        assert "Pipeline failed" in caplog.text and "Prefix" in caplog.text
+
+    def test_an_unparseable_required_file_records_input_unreadable(
+        self, gde_input: Path, gde_output: Path, monkeypatch
+    ) -> None:
+        """Was ``unknown`` before S1 (``ExtractionError`` had no category)."""
+        from src.etl.extractor import DataExtractor, ExtractionError
+
+        monkeypatch.setattr(DataExtractor, "_read_with_fallback", staticmethod(lambda *a, **k: None))
+        with pytest.raises(ExtractionError):
+            run_pipeline("myedbc", str(gde_input), str(gde_output))
+        records = read_run_records()
+        assert records is not None and len(records) == 1
+        assert records[0]["error_category"] == "input_unreadable"
+
+    def test_the_twin_an_untyped_transform_raise_still_records_unknown(
+        self, gde_input: Path, gde_output: Path, monkeypatch
+    ) -> None:
+        def _boom(*_a: object, **_k: object) -> None:
+            raise RuntimeError("an untyped transformer fault")
+
+        monkeypatch.setattr(pipeline, "run_transform", _boom)
+        with pytest.raises(RuntimeError, match="untyped transformer fault"):
+            run_pipeline("myedbc", str(gde_input), str(gde_output))
+        records = read_run_records()
+        assert records is not None and records[0]["error_category"] == "unknown"
+
+    def test_no_usable_input_is_typed_and_its_message_is_unchanged(self, tmp_path: Path, gde_output: Path) -> None:
+        from src.etl.errors import NoUsableInputError
+
+        empty_input = tmp_path / "empty"
+        empty_input.mkdir()
+        with pytest.raises(NoUsableInputError) as exc_info:
+            run_pipeline("myedbc", str(empty_input), str(gde_output))
+        assert isinstance(exc_info.value, RuntimeError)
+        assert str(exc_info.value).startswith(
+            "No usable required input was loaded — every required file is missing or empty: "
+        )
+        assert str(exc_info.value).endswith(
+            ". Check the input folder, the export job, and that the files are not locked."
+        )
+        records = read_run_records()
+        assert records is not None and records[0]["error_category"] == "no_input"
+
+
+# --------------------------------------------------------------------------- #
+# per-entity outcomes reach the record (plan 0053 S2)                          #
+# --------------------------------------------------------------------------- #
+_MYEDBC_ORDER = ["Students", "Staff", "Family", "Classes", "Enrollments"]
+
+
+def _log_payload(caplog: pytest.LogCaptureFixture) -> dict:
+    lines = [r.message for r in caplog.records if "__DISTRICTSYNC_RUN__" in r.message]
+    assert lines, "expected a structured run-log line"
+    return json.loads(lines[-1].split("__DISTRICTSYNC_RUN__ ")[1])
+
+
+def _kinds(stored: dict) -> dict[str, tuple[str, str]]:
+    return {entity: (entry["kind"], entry["reason"]) for entity, entry in stored["entity_outcomes"].items()}
+
+
+class TestEntityOutcomesReachTheRecord:
+    """``entity_outcomes`` rides EVERY record both entry points write: one outcome per
+    configured entity, in configured order, the log line and the store sharing one dict —
+    and ``None`` exactly where no ledger existed. Since S4 an ISOLATABLE entity's failure
+    completes the run without it; a CRITICAL one still fails the run exactly as before S2."""
+
+    _UNITY = TestTypedCategoriesReachTheRecord._UNITY
+
+    def test_a_success_record_carries_one_built_outcome_per_configured_entity(
+        self, gde_input: Path, gde_output: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.INFO, logger="src.etl.pipeline"):
+            result = run_pipeline("myedbc", str(gde_input), str(gde_output))
+        records = read_run_records()
+        assert records is not None and len(records) == 1
+        stored = records[0]
+        assert list(stored["entity_outcomes"]) == _MYEDBC_ORDER, "keys == configured_entity_order, in order"
+        assert _log_payload(caplog)["entity_outcomes"] == stored["entity_outcomes"], "one dict, two sinks"
+        for entity, entry in stored["entity_outcomes"].items():
+            assert entry["kind"] == "built" and entry["reason"] == "none"
+            # For a BUILT entity on a successful run the two row numbers agree.
+            assert entry["rows"] == stored[entity] > 0
+        # The run's own return value carries the same outcomes.
+        assert [o.entity for o in result.entity_outcomes] == _MYEDBC_ORDER
+        assert {o.entity: o.rows for o in result.entity_outcomes} == result.entity_counts
+
+    def test_the_unity_plain_report_records_family_failed_and_the_rest_built(
+        self, gde_input: Path, gde_output: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Plan 0053 S4 changed this row: Family is ISOLATABLE, so the run completes without it
+        (S2 recorded Classes/Enrollments NOT_RUN and failed the run)."""
+        TestTypedCategoriesReachTheRecord._plain_emergency_report(gde_input)
+        with caplog.at_level(logging.INFO, logger="src.etl.pipeline"):
+            run_pipeline(self._UNITY, str(gde_input), str(gde_output))
+        records = read_run_records()
+        assert records is not None and len(records) == 1
+        stored = records[0]
+        assert stored["status"] == "success" and stored["error_category"] == "none"
+        assert _kinds(stored) == {
+            "Students": ("built", "none"),
+            "Staff": ("built", "none"),
+            "Family": ("failed", "missing_source_column"),
+            "Classes": ("built", "none"),
+            "Enrollments": ("built", "none"),
+        }
+        assert _log_payload(caplog)["entity_outcomes"] == stored["entity_outcomes"]
+        # The flat count keys and the outcome rows agree for BUILT entities; Family reached nothing.
+        assert stored["Students"] == stored["entity_outcomes"]["Students"]["rows"] == 2
+        assert stored["Family"] == 0
+        assert sorted(p.name for p in gde_output.glob("*.csv")) == [
+            "Classes.csv",
+            "Enrollments.csv",
+            "Staff.csv",
+            "Students.csv",
+        ]
+
+    def test_a_critical_raise_records_that_entity_failed_and_the_rest_not_run(
+        self, gde_input: Path, gde_output: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The CRITICAL twin (SD83's Staff, missing its ``Prefix`` role column): the run
+        fails exactly as before the bulkhead, and nothing is written."""
+        from src.etl.errors import SourceSchemaError
+
+        with caplog.at_level(logging.INFO, logger="src.etl.pipeline"), pytest.raises(SourceSchemaError):
+            run_pipeline(TestTypedCategoriesReachTheRecord._SD83, str(gde_input), str(gde_output))
+        records = read_run_records()
+        assert records is not None and len(records) == 1
+        stored = records[0]
+        assert stored["status"] == "failed" and stored["error_category"] == "source_schema"
+        kinds = _kinds(stored)
+        assert kinds["Students"] == ("built", "none")
+        assert kinds["Staff"] == ("failed", "missing_source_column")
+        assert list(kinds)[2:] and set(list(kinds.values())[2:]) == {("not_run", "run_aborted")}
+        assert _log_payload(caplog)["entity_outcomes"] == stored["entity_outcomes"]
+        # The flat count keys keep their meaning: nothing reached `outputs` on this run.
+        assert stored["Students"] == 0 and stored["entity_outcomes"]["Students"]["rows"] == 2
+        assert not list(gde_output.glob("*.csv"))
+
+    def test_a_family_with_no_usable_contact_is_empty_no_rows_after_transform(
+        self, gde_input: Path, gde_output: Path
+    ) -> None:
+        """The SD51 shape: contacts arrive, none carries an email, Family builds nothing."""
+        pd.DataFrame(
+            {"Student Number": ["S001"], "First Name": ["John"], "Last Name": ["Smith"], "Email Address": [""]}
+        ).to_csv(gde_input / "EmergencyContactInformation.txt", index=False)
+        run_pipeline("myedbc", str(gde_input), str(gde_output))
+        records = read_run_records()
+        assert records is not None and records[0]["status"] == "success"
+        assert _kinds(records[0])["Family"] == ("empty", "no_rows_after_transform")
+        assert records[0]["Family"] == 0
+
+    def test_the_twin_a_family_with_no_file_is_empty_source_files_empty(
+        self, gde_input: Path, gde_output: Path
+    ) -> None:
+        (gde_input / "EmergencyContactInformation.txt").unlink()
+        run_pipeline("myedbc", str(gde_input), str(gde_output))
+        records = read_run_records()
+        assert records is not None
+        assert _kinds(records[0])["Family"] == ("empty", "source_files_empty")
+        assert _kinds(records[0])["Students"] == ("built", "none")
+
+    def test_a_raise_before_the_entity_loop_records_every_entity_not_run(
+        self, gde_input: Path, gde_output: Path, monkeypatch
+    ) -> None:
+        from src.etl.extractor import DataExtractor, ExtractionError
+
+        monkeypatch.setattr(DataExtractor, "_read_with_fallback", staticmethod(lambda *a, **k: None))
+        with pytest.raises(ExtractionError):
+            run_pipeline("myedbc", str(gde_input), str(gde_output))
+        records = read_run_records()
+        assert records is not None and len(records) == 1
+        assert _kinds(records[0]) == dict.fromkeys(_MYEDBC_ORDER, ("not_run", "run_aborted"))
+
+    def test_no_usable_input_records_every_entity_not_run(self, tmp_path: Path, gde_output: Path) -> None:
+        empty_input = tmp_path / "empty"
+        empty_input.mkdir()
+        with pytest.raises(RuntimeError, match="No usable required input"):
+            run_pipeline("myedbc", str(empty_input), str(gde_output))
+        records = read_run_records()
+        assert records is not None
+        assert _kinds(records[0]) == dict.fromkeys(_MYEDBC_ORDER, ("not_run", "run_aborted"))
+
+    def test_a_raise_after_the_transform_keeps_the_complete_ledger(
+        self, gde_input: Path, gde_output: Path, monkeypatch
+    ) -> None:
+        from src.etl.loader import DataLoader
+
+        def _locked(*_a: object, **_kw: object) -> None:
+            raise PermissionError(13, "Permission denied")
+
+        monkeypatch.setattr(DataLoader, "save_all", _locked)
+        with pytest.raises(pipeline.OutputWriteError):
+            run_pipeline("myedbc", str(gde_input), str(gde_output))
+        records = read_run_records()
+        assert records is not None
+        assert records[0]["error_category"] == "output"
+        assert _kinds(records[0]) == dict.fromkeys(_MYEDBC_ORDER, ("built", "none"))
+
+    @pytest.mark.parametrize("fault", ["missing_input_dir", "unknown_config", "unusable_output"])
+    def test_an_attempt_that_ended_before_the_ledger_records_none(
+        self, fault: str, gde_input: Path, gde_output: Path, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        sis, input_dir, output_dir = "myedbc", str(gde_input), str(gde_output)
+        if fault == "missing_input_dir":
+            input_dir = str(tmp_path / "nope")
+        elif fault == "unknown_config":
+            sis = "not-a-district"
+        else:
+            output_dir = TestOutputFolderPreflight._unusable(tmp_path)
+        with caplog.at_level(logging.INFO, logger="src.etl.pipeline"), pytest.raises(SystemExit):
+            run_pipeline(sis, input_dir, output_dir)
+        records = read_run_records()
+        assert records is not None and len(records) == 1
+        assert "entity_outcomes" in records[0] and records[0]["entity_outcomes"] is None
+        assert _log_payload(caplog)["entity_outcomes"] is None
+
+    def test_a_generic_raise_before_the_ledger_still_records_none(
+        self, gde_input: Path, gde_output: Path, monkeypatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The generic failure sink's ``None`` arm: a non-``SystemExit`` raise before the ledger
+        exists must still write exactly one record (a dropped guard would swallow it silently)."""
+
+        def _probe(*_a: object, **_kw: object) -> None:
+            raise RuntimeError("probe")
+
+        monkeypatch.setattr(pipeline, "output_target_problem", _probe)
+        with caplog.at_level(logging.INFO, logger="src.etl.pipeline"), pytest.raises(RuntimeError, match="probe"):
+            run_pipeline("myedbc", str(gde_input), str(gde_output))
+        records = read_run_records()
+        assert records is not None and len(records) == 1
+        assert records[0]["status"] == "failed"
+        assert records[0]["error_category"] == "unknown"
+        assert "entity_outcomes" in records[0] and records[0]["entity_outcomes"] is None
+        assert _log_payload(caplog)["entity_outcomes"] is None
+
+    def test_a_dry_run_log_line_carries_the_outcomes_but_nothing_is_stored(
+        self, gde_input: Path, gde_output: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.INFO, logger="src.etl.pipeline"):
+            run_pipeline("myedbc", str(gde_input), str(gde_output), dry_run=True)
+        assert list(_log_payload(caplog)["entity_outcomes"]) == _MYEDBC_ORDER
+        assert read_run_records() == []
+
+
+class TestConvertRecordsTheSameOutcomes:
+    """Convert builds its ledger at the CLI's point, so a Convert result and record say per
+    entity exactly what the CLI would; a delivery-only record and the pre-flight refusal say
+    ``None`` (no ledger existed)."""
+
+    def test_a_manual_record_carries_the_outcomes_the_cli_records(
+        self, gde_input: Path, gde_output: Path, tmp_path: Path
+    ) -> None:
+        from src.ui_flet.screens.convert import convert_job
+
+        cli_output = tmp_path / "cli_output"
+        cli_output.mkdir()
+        run_pipeline("myedbc", str(gde_input), str(cli_output))
+        AppConfig(input_dir=str(gde_input), output_dir=str(gde_output), sis_type="myedbc").save()
+        result = convert_job("myedbc", str(gde_input))
+
+        records = read_run_records()
+        assert records is not None and len(records) == 2
+        manual, cli = records[0], records[1]
+        assert manual["source"] == "manual" and cli["source"] == "cli"
+        assert manual["entity_outcomes"] == cli["entity_outcomes"]
+        assert list(manual["entity_outcomes"]) == _MYEDBC_ORDER
+        assert result.entity_outcomes is not None
+        assert [o.entity for o in result.entity_outcomes] == _MYEDBC_ORDER
+
+    def test_convert_no_input_carries_every_entity_not_run(self, gde_output: Path, tmp_path: Path) -> None:
+        from src.etl.outcomes import OutcomeKind
+        from src.ui_flet.convert_result import ConvertStatus
+        from src.ui_flet.screens.convert import convert_job
+
+        empty_input = tmp_path / "empty"
+        empty_input.mkdir()
+        AppConfig(input_dir=str(empty_input), output_dir=str(gde_output), sis_type="myedbc").save()
+        result = convert_job("myedbc", str(empty_input))
+        assert result.status is ConvertStatus.NO_INPUT
+        assert result.entity_outcomes is not None
+        assert [o.entity for o in result.entity_outcomes] == _MYEDBC_ORDER
+        assert {o.kind for o in result.entity_outcomes} == {OutcomeKind.NOT_RUN}
+        assert read_run_records() == [], "NO_INPUT still writes no record (unchanged)"
+
+    def test_the_convert_preflight_refusal_carries_none(self, gde_input: Path, tmp_path: Path) -> None:
+        from src.ui_flet.convert_result import ConvertStatus
+        from src.ui_flet.screens.convert import convert_job
+
+        unusable = TestOutputFolderPreflight._unusable(tmp_path)
+        AppConfig(input_dir=str(gde_input), output_dir=unusable, sis_type="myedbc").save()
+        result = convert_job("myedbc", str(gde_input))
+        assert result.status is ConvertStatus.OUTPUT_FOLDER_UNUSABLE
+        assert result.entity_outcomes is None
+
+    def test_a_delivery_only_record_carries_none_beside_a_build_record_that_carries_them(
+        self, gde_input: Path, gde_output: Path, monkeypatch
+    ) -> None:
+        from src.ui_flet.screens import convert as convert_screen
+
+        AppConfig(input_dir=str(gde_input), output_dir=str(gde_output), sis_type="myedbc").save()
+        convert_screen.convert_job("myedbc", str(gde_input))
+        calls: list[tuple[Path, str | None, set[str]]] = []
+        monkeypatch.setattr(convert_screen, "SFTPUploader", _fake_uploader(calls))
+        result = convert_screen.deliver_job("myedbc")
+
+        assert result.entity_outcomes is None
+        records = read_run_records()
+        assert records is not None and len(records) == 2
+        delivery, build = records[0], records[1]
+        assert delivery["delivery_only"] is True and delivery["entity_outcomes"] is None
+        assert list(build["entity_outcomes"]) == _MYEDBC_ORDER
+
+
+# --------------------------------------------------------------------------- #
+# The source observation (plan 0053 S6): own-file, advisory, never enforces      #
+# --------------------------------------------------------------------------- #
+_MAPPED_MISSING_ANCHOR = "MAPPED COLUMNS MISSING"
+_SENTINEL_HEADER = "Zzsentinelpupilname"
+
+
+def _mapped_missing_lines(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    return [r for r in caplog.records if r.getMessage().startswith(_MAPPED_MISSING_ANCHOR)]
+
+
+def _sd67_without_contact_email(d: Path) -> None:
+    """The SD67 2026-09-22 shape: Family maps ``Email Address``; its contacts file lacks it.
+
+    The staff export beside it DOES carry an ``Email Address`` column — the file-agnostic
+    union would have hidden the miss. A planted extra header proves no OBSERVED header text
+    reaches the warning (a headerless file read without its header makes row 1 a pupil)."""
+    from tests.test_contract import _create_sd67_inputs
+
+    _create_sd67_inputs(d)
+    contacts = d / "EmergencyContactInformation.txt"
+    frame = pd.read_csv(contacts, dtype=str)
+    frame = frame.drop(columns=["Email Address"])
+    frame[_SENTINEL_HEADER] = "x"
+    frame.to_csv(contacts, index=False)
+    assert "Email Address" in pd.read_csv(d / "StaffInformationEnhanced.txt", dtype=str).columns
+
+
+class TestSourceObservation:
+    _SD67 = "sd67myedbc"
+
+    @pytest.fixture()
+    def sd67_input(self, tmp_path: Path) -> Path:
+        d = tmp_path / "sd67"
+        d.mkdir()
+        _sd67_without_contact_email(d)
+        return d
+
+    def test_family_is_empty_missing_source_column_with_the_config_spelling(
+        self, sd67_input: Path, gde_output: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.INFO, logger="src.etl.pipeline"):
+            result = run_pipeline(self._SD67, str(sd67_input), str(gde_output))
+        records = read_run_records()
+        assert records is not None and len(records) == 1
+        stored = records[0]
+        assert stored["status"] == "success" and stored["error_category"] == "none"
+        # Plan 0053 S7: the labels the copy may name come from `missing_mapped` on the EMPTY path,
+        # and Family's one configured source file is named beside the column.
+        assert stored["entity_outcomes"]["Family"] == {
+            "kind": "empty",
+            "reason": "missing_source_column",
+            "rows": 0,
+            "missing_mapped": ["Email Address"],
+            "labels": ["Email Address"],
+            "file_label": "EmergencyContactInformation.txt",
+            # Plan 0053 S11: the contacts the blank Email excluded are COUNTED on the outcome.
+            "notes": {"contacts_excluded_no_email": 2},
+        }
+        family = next(o for o in result.entity_outcomes if o.entity == "Family")
+        assert family.missing_mapped == ("Email Address",)
+        # ONE warning for Family, naming the column in CONFIG spelling — never an observed header.
+        family_lines = [r for r in _mapped_missing_lines(caplog) if "[Family]" in r.getMessage()]
+        assert len(family_lines) == 1 and family_lines[0].levelno == logging.WARNING
+        assert "'Email Address'" in family_lines[0].getMessage()
+        assert not [r for r in caplog.records if _SENTINEL_HEADER.lower() in r.getMessage().lower()]
+        assert _SENTINEL_HEADER.lower() not in json.dumps(stored).lower()
+
+    def test_the_twin_the_canonical_contacts_file_builds_family_with_no_family_warning(
+        self, tmp_path: Path, gde_output: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from tests.test_contract import _create_sd67_inputs
+
+        d = tmp_path / "canonical"
+        d.mkdir()
+        _create_sd67_inputs(d)
+        with caplog.at_level(logging.INFO, logger="src.etl.pipeline"):
+            run_pipeline(self._SD67, str(d), str(gde_output))
+        records = read_run_records()
+        assert records is not None
+        assert records[0]["entity_outcomes"]["Family"]["kind"] == "built"
+        assert "missing_mapped" not in records[0]["entity_outcomes"]["Family"]
+        assert not [r for r in _mapped_missing_lines(caplog) if "[Family]" in r.getMessage()]
+
+    def test_convert_records_the_same_observation(self, sd67_input: Path, gde_output: Path, tmp_path: Path) -> None:
+        from src.ui_flet.screens.convert import convert_job
+
+        cli_output = tmp_path / "cli_output"
+        cli_output.mkdir()
+        run_pipeline(self._SD67, str(sd67_input), str(cli_output))
+        AppConfig(input_dir=str(sd67_input), output_dir=str(gde_output), sis_type=self._SD67).save()
+        result = convert_job(self._SD67, str(sd67_input))
+
+        records = read_run_records()
+        assert records is not None and len(records) == 2
+        assert records[0]["entity_outcomes"] == records[1]["entity_outcomes"]
+        assert records[0]["entity_outcomes"]["Family"]["reason"] == "missing_source_column"
+        assert result.entity_outcomes is not None
+        assert next(o for o in result.entity_outcomes if o.entity == "Family").missing_mapped == ("Email Address",)
+
+    @pytest.mark.parametrize("seam", ["missing_columns_by_entity", "note_missing_mapped"])
+    def test_a_raising_observation_leaves_the_run_byte_identical(
+        self, seam: str, sd67_input: Path, tmp_path: Path, monkeypatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """P11's raise-isolation twin: the observation raising (in the derivation, or in the
+        ledger) changes NOTHING the run delivers — same files byte for byte, same status,
+        category, counts and kinds — and only the record loses what it would have said. The
+        first run (observation working) is the positive twin: it DID refine Family."""
+        from src.etl.outcomes import OutcomeLedger
+
+        observed_out = tmp_path / "observed"
+        broken_out = tmp_path / "broken"
+        observed_out.mkdir()
+        broken_out.mkdir()
+        observed = run_pipeline(self._SD67, str(sd67_input), str(observed_out))
+
+        def _boom(*_a: object, **_kw: object) -> None:
+            raise RuntimeError("observation bug")
+
+        if seam == "missing_columns_by_entity":
+            monkeypatch.setattr(pipeline, "missing_columns_by_entity", _boom)
+        else:
+            monkeypatch.setattr(OutcomeLedger, "note_missing_mapped", _boom)
+        caplog.clear()  # only the broken run's lines are asserted below
+        with caplog.at_level(logging.DEBUG, logger="src.etl.pipeline"):
+            broken = run_pipeline(self._SD67, str(sd67_input), str(broken_out))
+
+        observed_csvs = sorted(p.name for p in observed_out.glob("*.csv"))
+        assert observed_csvs == sorted(p.name for p in broken_out.glob("*.csv")) and observed_csvs
+        for name in observed_csvs:
+            assert (observed_out / name).read_bytes() == (broken_out / name).read_bytes()
+        assert observed.entity_counts == broken.entity_counts
+        assert [(o.entity, o.kind) for o in observed.entity_outcomes] == [
+            (o.entity, o.kind) for o in broken.entity_outcomes
+        ]
+        records = read_run_records()
+        assert records is not None and len(records) == 2
+        broken_record, observed_record = records
+        for key in ("status", "error_category", *pipeline._RECORD_ENTITY_KEYS):
+            assert broken_record[key] == observed_record[key]
+        # Positive twin: the working observation refined Family; the broken one could not.
+        assert observed_record["entity_outcomes"]["Family"]["reason"] == "missing_source_column"
+        assert broken_record["entity_outcomes"]["Family"] == {
+            "kind": "empty",
+            "reason": "no_rows_after_transform",
+            "rows": 0,
+            # Plan 0053 S11: the transform's own note — independent of the observation seam.
+            "notes": {"contacts_excluded_no_email": 2},
+        }
+        debug = [r for r in caplog.records if r.getMessage().startswith("Source-column observation skipped")]
+        if seam == "missing_columns_by_entity":
+            assert len(debug) == 1  # the derivation failed: one line, nothing observed
+        else:
+            # Each entity's note is isolated: one line per entity the derivation reported.
+            assert len(debug) >= 1 and any("Family" in r.getMessage() for r in debug)
+        assert all(r.levelno == logging.DEBUG for r in debug)
+        assert not [r for r in debug if "observation bug" in r.getMessage()], "the type only, never the text"
+        assert not _mapped_missing_lines(caplog), "a refused note never reaches the warning"
+
+    def test_a_raising_observation_leaves_convert_unchanged_too(
+        self, sd67_input: Path, tmp_path: Path, monkeypatch
+    ) -> None:
+        from src.ui_flet.screens.convert import convert_job
+
+        observed_out = tmp_path / "observed"
+        broken_out = tmp_path / "broken"
+        observed_out.mkdir()
+        broken_out.mkdir()
+        AppConfig(input_dir=str(sd67_input), output_dir=str(observed_out), sis_type=self._SD67).save()
+        observed = convert_job(self._SD67, str(sd67_input))
+
+        def _boom(*_a: object, **_kw: object) -> None:
+            raise RuntimeError("observation bug")
+
+        monkeypatch.setattr(pipeline, "missing_columns_by_entity", _boom)
+        AppConfig(input_dir=str(sd67_input), output_dir=str(broken_out), sis_type=self._SD67).save()
+        broken = convert_job(self._SD67, str(sd67_input))
+
+        assert broken.status is observed.status
+        names = sorted(p.name for p in observed_out.glob("*.csv"))
+        assert names and names == sorted(p.name for p in broken_out.glob("*.csv"))
+        for name in names:
+            assert (observed_out / name).read_bytes() == (broken_out / name).read_bytes()
+        records = read_run_records()
+        assert records is not None and [r["status"] for r in records] == ["success", "success"]
+        assert records[0]["entity_outcomes"]["Family"]["reason"] == "no_rows_after_transform"
+        assert records[1]["entity_outcomes"]["Family"]["reason"] == "missing_source_column"
+
+    def test_convert_records_the_same_labels(self, sd67_input: Path, gde_output: Path) -> None:
+        """Plan 0053 S7: the label vocabulary is handed over by the SAME shared observation, so a
+        Convert names the same file and column the CLI does."""
+        from src.ui_flet.screens.convert import convert_job
+
+        AppConfig(input_dir=str(sd67_input), output_dir=str(gde_output), sis_type=self._SD67).save()
+        result = convert_job(self._SD67, str(sd67_input))
+        assert result.entity_outcomes is not None
+        family = next(o for o in result.entity_outcomes if o.entity == "Family")
+        assert (family.file_label, family.labels) == ("EmergencyContactInformation.txt", ("Email Address",))
+        records = read_run_records()
+        assert records is not None and records[0]["entity_outcomes"]["Family"]["labels"] == ["Email Address"]
+
+    @pytest.mark.parametrize("seam", ["label_vocabulary_by_entity", "note_label_vocabulary"])
+    def test_a_raising_label_vocabulary_costs_the_labels_only(
+        self, seam: str, sd67_input: Path, tmp_path: Path, monkeypatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Plan 0053 S7's raise-isolation twin: the vocabulary raising (in the derivation, or in the
+        ledger) changes nothing delivered and does NOT cost the S6 observation — only the labels.
+        The first run is the positive twin: it DID label Family."""
+        from src.etl.outcomes import OutcomeLedger
+
+        labelled_out = tmp_path / "labelled"
+        broken_out = tmp_path / "broken"
+        labelled_out.mkdir()
+        broken_out.mkdir()
+        labelled = run_pipeline(self._SD67, str(sd67_input), str(labelled_out))
+
+        def _boom(*_a: object, **_kw: object) -> None:
+            raise RuntimeError("vocabulary bug")
+
+        if seam == "label_vocabulary_by_entity":
+            monkeypatch.setattr(pipeline, "label_vocabulary_by_entity", _boom)
+        else:
+            monkeypatch.setattr(OutcomeLedger, "note_label_vocabulary", _boom)
+        caplog.clear()
+        with caplog.at_level(logging.DEBUG, logger="src.etl.pipeline"):
+            broken = run_pipeline(self._SD67, str(sd67_input), str(broken_out))
+
+        names = sorted(p.name for p in labelled_out.glob("*.csv"))
+        assert names and names == sorted(p.name for p in broken_out.glob("*.csv"))
+        for name in names:
+            assert (labelled_out / name).read_bytes() == (broken_out / name).read_bytes()
+        assert labelled.entity_counts == broken.entity_counts
+        records = read_run_records()
+        assert records is not None and len(records) == 2
+        broken_record, labelled_record = records
+        for key in ("status", "error_category", *pipeline._RECORD_ENTITY_KEYS):
+            assert broken_record[key] == labelled_record[key]
+        assert labelled_record["entity_outcomes"]["Family"]["labels"] == ["Email Address"]
+        # The observation survives; only the labels are gone.
+        assert broken_record["entity_outcomes"]["Family"] == {
+            "kind": "empty",
+            "reason": "missing_source_column",
+            "rows": 0,
+            "missing_mapped": ["Email Address"],
+            "notes": {"contacts_excluded_no_email": 2},  # plan 0053 S11
+        }
+        debug = [r for r in caplog.records if r.getMessage().startswith("Label vocabulary skipped")]
+        assert debug and all(r.levelno == logging.DEBUG for r in debug)
+        assert not [r for r in debug if "vocabulary bug" in r.getMessage()], "the type only, never the text"
+        assert [r for r in _mapped_missing_lines(caplog) if "[Family]" in r.getMessage()], "the warning still fires"
+
+
+class TestObservationIsolatesEachEntity:
+    """``observe_source_columns``' per-entity handling, driven through a stubbed derivation so
+    each branch is reached exactly: one entity's refused note, or an entity the ledger was not
+    configured with, costs ONLY that entity — never a later one's note or warning."""
+
+    @staticmethod
+    def _observe(monkeypatch, findings: dict[str, tuple[str, ...]], configured: list[str]):
+        from src.config.loader import load_config
+        from src.etl.outcomes import OutcomeLedger
+
+        monkeypatch.setattr(pipeline, "missing_columns_by_entity", lambda *_a, **_kw: findings)
+        ledger = OutcomeLedger(configured)
+        pipeline.observe_source_columns(load_config("myedbc"), {}, ledger)
+        return ledger
+
+    @staticmethod
+    def _recorded(ledger, entity: str):
+        from src.etl.outcomes import EntityOutcome, OutcomeReason
+
+        ledger.record(EntityOutcome.empty(entity, OutcomeReason.NO_ROWS_AFTER_TRANSFORM))
+        return next(o for o in ledger.outcomes if o.entity == entity)
+
+    def test_an_unusable_name_costs_only_its_own_entity(self, monkeypatch, caplog: pytest.LogCaptureFixture) -> None:
+        # An internal non-breaking space survives the derivation's strip() but is not printable,
+        # so the ledger refuses it. Students comes FIRST, so a loop-wide handler would lose Family.
+        findings = {"Students": ("Next school code",), "Family": ("Email Address",)}
+        with caplog.at_level(logging.DEBUG, logger="src.etl.pipeline"):
+            ledger = self._observe(monkeypatch, findings, ["Students", "Family"])
+        lines = _mapped_missing_lines(caplog)
+        assert [r.getMessage().split("]")[0] for r in lines] == ["MAPPED COLUMNS MISSING [Family"]
+        assert lines[0].levelno == logging.WARNING
+        skipped = [r for r in caplog.records if r.getMessage().startswith("Source-column observation skipped")]
+        assert [r.getMessage() for r in skipped] == ["Source-column observation skipped for Students (ValueError)"]
+        assert all(r.levelno == logging.DEBUG for r in skipped)
+        assert self._recorded(ledger, "Students").missing_mapped == ()
+        family = self._recorded(ledger, "Family")
+        assert family.missing_mapped == ("Email Address",)
+        assert family.reason.value == "missing_source_column"
+
+    def test_an_unconfigured_entity_is_skipped_without_abandoning_the_loop(
+        self, monkeypatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # A hand-written entity_order that omits an enabled entity: the derivation reports it,
+        # the ledger was never configured with it. It comes FIRST, so the skip must `continue`.
+        findings = {"Students": ("Next school code",), "Family": ("Email Address",)}
+        with caplog.at_level(logging.DEBUG, logger="src.etl.pipeline"):
+            ledger = self._observe(monkeypatch, findings, ["Family"])
+        lines = _mapped_missing_lines(caplog)
+        assert len(lines) == 1 and "[Family]" in lines[0].getMessage()
+        assert not [r for r in caplog.records if "Students" in r.getMessage()]
+        assert ledger.configured == ("Family",)
+        assert self._recorded(ledger, "Family").missing_mapped == ("Email Address",)
+
+    def test_the_warning_states_only_what_the_observation_knows(
+        self, monkeypatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # It runs BEFORE the transform: a fallback may fill the value, a missing row-filter column
+        # fails the entity closed — so the line never claims the values are blank.
+        with caplog.at_level(logging.INFO, logger="src.etl.pipeline"):
+            self._observe(monkeypatch, {"Family": ("Email Address",)}, ["Family"])
+        (line,) = _mapped_missing_lines(caplog)
+        assert "blank" not in line.getMessage()
+
+
+# The AST pin: BOTH entry points call the ONE shared observation, after the input is read and
+# before the transform — so neither can drift into its own spelling, or skip it.
+_PIPELINE_SRC = Path(pipeline.__file__)
+_CONVERT_SRC = Path(pipeline.__file__).resolve().parents[1] / "ui_flet" / "screens" / "convert.py"
+
+
+def _call_lines(source: str, function: str) -> dict[str, list[int]]:
+    tree = ast.parse(source)
+    func = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == function)
+    lines: dict[str, list[int]] = {}
+    for node in ast.walk(func):
+        if isinstance(node, ast.Call):
+            target = node.func
+            name = target.attr if isinstance(target, ast.Attribute) else getattr(target, "id", "")
+            lines.setdefault(name, []).append(node.lineno)
+    return lines
+
+
+def _observation_order_problems(source: str, function: str) -> list[str]:
+    calls = _call_lines(source, function)
+    observe = calls.get("observe_source_columns", [])
+    if len(observe) != 1:
+        return [f"{function}: calls observe_source_columns {len(observe)} time(s), expected exactly once"]
+    problems = []
+    if not calls.get("load_data") or observe[0] < max(calls["load_data"]):
+        problems.append(f"{function}: observes before the input is read")
+    if not calls.get("run_transform") or observe[0] > min(calls["run_transform"]):
+        problems.append(f"{function}: observes after the transform")
+    return problems
+
+
+class TestBothEntryPointsObserve:
+    @pytest.mark.parametrize(("path", "function"), [(_PIPELINE_SRC, "run_pipeline"), (_CONVERT_SRC, "convert_job")])
+    def test_each_entry_point_observes_once_between_the_read_and_the_transform(self, path: Path, function: str):
+        assert _observation_order_problems(path.read_text(encoding="utf-8"), function) == []
+
+    def test_non_vacuity_the_pin_finds_the_real_calls(self):
+        calls = _call_lines(_PIPELINE_SRC.read_text(encoding="utf-8"), "run_pipeline")
+        assert calls["observe_source_columns"] and calls["load_data"] and calls["run_transform"]
+
+    def test_doctored_a_removed_call_is_red(self):
+        source = _CONVERT_SRC.read_text(encoding="utf-8").replace(
+            "observe_source_columns(config, raw_data, ledger)", "pass"
+        )
+        assert _observation_order_problems(source, "convert_job") == [
+            "convert_job: calls observe_source_columns 0 time(s), expected exactly once"
+        ]
+
+    def test_doctored_a_call_after_the_transform_is_red(self):
+        source = _PIPELINE_SRC.read_text(encoding="utf-8")
+        moved = source.replace("        observe_source_columns(config, raw_data, ledger)\n", "", 1).replace(
+            "        outputs = transform_outputs.outputs\n",
+            "        outputs = transform_outputs.outputs\n        observe_source_columns(config, raw_data, ledger)\n",
+            1,
+        )
+        assert moved != source
+        assert _observation_order_problems(moved, "run_pipeline") == ["run_pipeline: observes after the transform"]

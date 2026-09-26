@@ -145,6 +145,19 @@ _BRANCH_OVERRIDES: tuple[dict, ...] = (
     {"status": "success", "anomalies": [], "data_errors": {"total": 2}},  # DATA_WARNINGS
     {"status": "success", "anomalies": [], "data_errors": {"total": 0}},  # CLEAN (recent → healthy)
     {"status": "success", "anomalies": [], "data_errors": {"total": 0}, "timestamp": _STALE_ISO},  # CLEAN + stale
+    # PARTIAL (plan 0053 S3): a failed entity whose KEY is itself a sentinel, beside a known one — the
+    # copy must word the known entity and reduce the unknown key to "one of your files"/"other file".
+    {
+        "status": "success",
+        "sftp_attempted": True,
+        "sftp_ok": True,
+        "entity_outcomes": {
+            "Family": {"kind": "failed", "reason": "missing_source_column", "rows": 0},
+            _SECRET_PATH: {"kind": "failed", "reason": "transform_error", "rows": 0},
+        },
+    },
+    # FAILED_ETL with a stored category (plan 0053 S3 — the category copy path).
+    {"status": "failed", "error_category": "source_schema"},
 )
 
 
@@ -265,7 +278,7 @@ class TestHistoryBannerSweep:
 class TestRunRowSweep:
     @pytest.mark.parametrize("override", _BRANCH_OVERRIDES)
     def test_to_run_row_every_branch_is_clean(self, override: dict) -> None:
-        row = to_run_row(_poisoned_record(**override))
+        row = to_run_row(_poisoned_record(**override), prior_build=None)
         _sweep_dataclass(row, where=f"to_run_row({override})")
 
     def test_to_run_rows_over_all_branches_is_clean(self) -> None:
@@ -276,7 +289,7 @@ class TestRunRowSweep:
     def test_run_row_has_no_error_field(self) -> None:
         # The strongest privacy shape — a raw error CAN'T be rendered because the field
         # simply does not exist on the row.
-        row = to_run_row(_poisoned_record())
+        row = to_run_row(_poisoned_record(), prior_build=None)
         assert not hasattr(row, "error")
 
 
@@ -286,6 +299,8 @@ class TestConvertSummarizeSweep:
         # The anomalies tuple carries the sentinel-bearing raw strings + the quality_text
         # carries a path — summarize must surface NEITHER.
         result = ConvertResult(
+            delivery_requested=False,
+            entity_outcomes=None,
             status=status,
             data_errors_total=3,
             anomalies=(_RAW_ANOMALY, f"Staff in {_SECRET_PATH} dropped"),

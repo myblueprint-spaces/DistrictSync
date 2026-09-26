@@ -11,9 +11,10 @@ synthetic GDE bytes through both REAL paths — neither side is re-implemented h
 
 This is the regression that would have caught the original StudentAttendance-BOM
 bug: the encoding decision now lives in exactly one place (`DataLoader.csv_encoding`)
-and both write paths route through it. The config used (`sd51myedbc`) enables all
-five rostering entities **plus** `StudentAttendance`, so the run exercises a
-no-BOM entity and several with-BOM entities in a single pass — mirroring the
+and both write paths route through it. The config used (`sd51myedbc`) enables
+four rostering entities (Family has been off for SD51 since 2026-09-25) **plus**
+`StudentAttendance`, so the run exercises a no-BOM entity and several with-BOM
+entities in a single pass — mirroring the
 two-entity assertion in the 2026-06-19 BOM regression test (`test_loader.py`).
 
 All data is synthetic — no real student PII.
@@ -31,7 +32,7 @@ from src.etl.pipeline import run_pipeline
 from src.ui_flet.convert_result import ConvertStatus
 from src.ui_flet.screens.convert import convert_job
 
-CONFIG = "sd51myedbc"  # 5 rostering entities + StudentAttendance (no-BOM)
+CONFIG = "sd51myedbc"  # 4 rostering entities + StudentAttendance (no-BOM)
 
 
 # ---------------------------------------------------------------------------
@@ -51,10 +52,11 @@ def _headerless_bytes(rows: list[list[str]], sep: str = ",") -> bytes:
 
 @pytest.fixture
 def gde_sources() -> dict[str, bytes]:
-    """All eight GDE files sd51myedbc requires, as in-memory bytes.
+    """The seven GDE files sd51myedbc requires, plus the contacts export, as in-memory bytes.
 
-    Produces non-empty output for every enabled entity (5 rostering + the two
-    StudentAttendance bands). The two absence files are HEADERLESS — the config
+    Produces non-empty output for every enabled entity (4 rostering + the two
+    StudentAttendance bands). The contacts file is still supplied — a real SD51
+    drop carries one — but the config no longer reads it (Family is off). The two absence files are HEADERLESS — the config
     injects the 18-/17-column header lists at extract time.
     """
     demographic = pd.DataFrame(
@@ -362,6 +364,34 @@ class TestCLIvsUIParity:
             assert not data.startswith(b"\xef\xbb\xbf"), f"{out_dir.name}/StudentAttendance.csv must have no BOM"
             assert data.startswith(b"School Number"), "first header must be clean (no BOM glued on)"
 
+    def test_both_paths_report_the_same_entity_outcomes(self, gde_sources, tmp_path):
+        """Plan 0053 S2: the two entry points build their outcome ledger at the same point,
+        so the per-entity outcomes — in the returned result AND in the stored record — are
+        identical, one per configured entity (five here, attendance included)."""
+        from src.history.store import read_run_records
+
+        cli_input, cli_output = tmp_path / "cli_in", tmp_path / "cli_out"
+        cli_input.mkdir()
+        cli_output.mkdir()
+        for name, data in gde_sources.items():
+            (cli_input / name).write_bytes(data)
+        cli_result = run_pipeline(CONFIG, str(cli_input), str(cli_output))
+        _run_ui_path(gde_sources, tmp_path)
+        ui_result = convert_job(CONFIG, str(tmp_path / "ui_input"))
+
+        assert ui_result.entity_outcomes == cli_result.entity_outcomes
+        assert [o.entity for o in cli_result.entity_outcomes] == [
+            "Students",
+            "Staff",
+            "Classes",
+            "Enrollments",
+            "StudentAttendance",
+        ]
+        records = read_run_records()
+        assert records is not None and len(records) >= 2
+        by_source = {r["source"]: r["entity_outcomes"] for r in reversed(records)}
+        assert by_source["manual"] == by_source["cli"]
+
     def test_rostering_keeps_bom_on_both_paths(self, gde_sources, tmp_path):
         """The with-BOM entity: Students.csv keeps the utf-8-sig BOM for Excel on
         BOTH paths."""
@@ -371,6 +401,43 @@ class TestCLIvsUIParity:
         for out_dir in (cli_dir, ui_dir):
             data = (out_dir / "Students.csv").read_bytes()
             assert data.startswith(b"\xef\xbb\xbf"), f"{out_dir.name}/Students.csv must keep the BOM"
+
+
+class TestCLIvsUIParityOverAPartialRun:
+    """Plan 0053 S4: the entity bulkhead lives in the SHARED ``run_transform``, so a run that
+    leaves an ISOLATABLE entity out (Unity's plain contact report) is the same run on both
+    paths — the same files, byte for byte, the same outcomes, and no ``Family.csv`` on
+    either."""
+
+    _SIS = "unitychristianmyedbc"
+
+    def test_both_paths_leave_family_out_and_agree_on_everything_else(self, tmp_path):
+        from src.history.store import read_run_records
+        from tests.test_contract import _create_unitychristian_plain_report_inputs
+
+        input_dir, cli_out, ui_out = tmp_path / "in", tmp_path / "cli_out", tmp_path / "ui_out"
+        for d in (input_dir, cli_out, ui_out):
+            d.mkdir()
+        _create_unitychristian_plain_report_inputs(input_dir)
+
+        cli_result = run_pipeline(self._SIS, str(input_dir), str(cli_out))
+        AppConfig(input_dir=str(input_dir), output_dir=str(ui_out), sis_type=self._SIS).save()
+        ui_result = convert_job(self._SIS, str(input_dir))
+        assert ui_result.status is ConvertStatus.DELIVERED
+
+        cli_files = sorted(p.name for p in cli_out.glob("*.csv"))
+        assert cli_files == sorted(p.name for p in ui_out.glob("*.csv"))
+        assert "Family.csv" not in cli_files and "Students.csv" in cli_files
+        for name in cli_files:
+            assert (cli_out / name).read_bytes() == (ui_out / name).read_bytes(), f"{name} differs"
+        assert ui_result.entity_outcomes == cli_result.entity_outcomes
+        assert [(o.entity, o.kind.value) for o in cli_result.entity_outcomes if o.kind.value != "built"] == [
+            ("Family", "failed")
+        ]
+        records = read_run_records()
+        assert records is not None
+        by_source = {r["source"]: r["entity_outcomes"] for r in reversed(records)}
+        assert by_source["manual"] == by_source["cli"]
 
 
 class TestUIWriteFailsLoud:

@@ -42,6 +42,7 @@ from src.config.app_config import (
     SettingsOverwriteRefused,
 )
 from src.config.authoring import OverlaySpec, write_overlay
+from src.etl.outcomes import EntityOutcome
 
 CREATOR_FIELDS = ("creator_pending_sis", "creator_verified")
 
@@ -49,6 +50,11 @@ CREATOR_FIELDS = ("creator_pending_sis", "creator_verified")
 #: ``validators.is_config_digest`` accepts, so the only shape activation stores.
 DIGEST = hashlib.sha256(b"a resolved sd93custom config").hexdigest()
 OTHER_DIGEST = hashlib.sha256(b"a different resolved config").hexdigest()
+
+
+#: A test conversion that PASSES the creator gate carries a real outcome per entity (plan 0053
+#: S4): the gate reads them, and an empty tuple is "no outcome", never a pass.
+_PASSING_OUTCOMES = (EntityOutcome.built("Students", 3),)
 
 
 @pytest.fixture
@@ -528,7 +534,7 @@ class TestActivateCreatorConfig:
         monkeypatch.setattr(
             creator_screen,
             "creator_gate_job",
-            lambda *_a, **_kw: PipelineResult(entity_counts={"Students": 5}),
+            lambda *_a, **_kw: PipelineResult(entity_outcomes=_PASSING_OUTCOMES, entity_counts={"Students": 5}),
         )
         page = MagicMock()
         page.run_thread = lambda fn: fn()
@@ -579,7 +585,7 @@ class TestActivateCreatorConfig:
         monkeypatch.setattr(
             creator_screen,
             "creator_gate_job",
-            lambda *_a, **_kw: PipelineResult(entity_counts={"Students": 5}),
+            lambda *_a, **_kw: PipelineResult(entity_outcomes=_PASSING_OUTCOMES, entity_counts={"Students": 5}),
         )
         page = MagicMock()
         page.run_thread = lambda fn: fn()

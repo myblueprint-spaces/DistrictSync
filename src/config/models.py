@@ -5,15 +5,85 @@ missing fields, and schema violations surface as clear error messages
 rather than cryptic KeyErrors deep in the pipeline.
 """
 
+import difflib
 import logging
 import re
-from collections.abc import Iterable
-from typing import Any, Literal, Optional, Protocol, Union, cast
+from collections.abc import Iterable, Mapping
+from typing import Any, Literal, NamedTuple, Optional, Protocol, TypeVar, Union, cast, get_args
 
 import pandas as pd
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 logger = logging.getLogger(__name__)
+
+
+# -----------------------------------------------------------------------
+# Unknown-key vocabulary (plan 0053 S12, failure-policy.md P15). A config key
+# nobody reads is a TYPO until proven otherwise: `enabled_entites` silently
+# enables every entity, `transfrom:` silently ships an untransformed column.
+# The known keys are always READ OFF THE MODEL (`model_keys`) — never restated —
+# so a new field is known the moment it exists.
+# -----------------------------------------------------------------------
+
+
+class UnknownKey(NamedTuple):
+    """One config key no model (or reader) knows: WHERE it sits, the key, the nearest known key.
+
+    Config vocabulary only — never a value. ``suggestion`` is ``None`` when no known key is
+    close enough to guess (``difflib`` ratio below 0.6).
+    """
+
+    location: str
+    key: str
+    suggestion: Optional[str]
+
+    def describe(self) -> str:
+        """``<location>: unknown key '<key>' — did you mean '<suggestion>'?`` (one line)."""
+        hint = (
+            f"did you mean '{self.suggestion}'?"
+            if self.suggestion
+            else "no known key is close to it — check the spelling against the documented keys"
+        )
+        return f"{self.location}: unknown key '{self.key}' — {hint}"
+
+
+def model_keys(model: type[BaseModel]) -> frozenset[str]:
+    """Every key ``model`` accepts in a YAML mapping: its field names plus their aliases.
+
+    THE known-key vocabulary for a model, read off ``model_fields`` so it can never drift
+    from what Pydantic actually accepts (``FieldNameConfig`` accepts both
+    ``primary teacher flag`` and ``primary_teacher_flag`` — ``populate_by_name``).
+    """
+    keys: set[str] = set()
+    for name, info in model.model_fields.items():
+        keys.add(name)
+        if info.alias:
+            keys.add(info.alias)
+    return frozenset(keys)
+
+
+def nearest_key(key: str, known: Iterable[str]) -> Optional[str]:
+    """The known key closest to ``key`` (``difflib``, ratio ≥ 0.6), or ``None``."""
+    matches = difflib.get_close_matches(key, sorted(known), n=1, cutoff=0.6)
+    return matches[0] if matches else None
+
+
+def unknown_keys_in(mapping: Any, known: Iterable[str], *, location: str) -> list[UnknownKey]:
+    """The keys of ``mapping`` not in ``known``, each with its nearest known key. PURE.
+
+    A non-mapping ``mapping`` has no keys to judge (its SHAPE is the model's to refuse),
+    so it answers ``[]``. Keys are reported in the mapping's own order, stringified (a YAML
+    key may be an int).
+    """
+    if not isinstance(mapping, dict):
+        return []
+    vocabulary = frozenset(known)
+    return [
+        UnknownKey(location, str(key), nearest_key(str(key), vocabulary))
+        for key in mapping
+        if str(key) not in vocabulary
+    ]
+
 
 # -----------------------------------------------------------------------
 # Allowlist of YAML-callable transform functions (security: prevents
@@ -56,6 +126,18 @@ def _ceds_grade_codes() -> frozenset[str]:
     from src.etl.transformers.grades import CEDS_GRADE_CODES
 
     return CEDS_GRADE_CODES
+
+
+def _session_time_roles() -> tuple[str, ...]:
+    """The blended time-slot ROLES (``session_term`` …), in key order, for validation.
+
+    DEFERRED import for the same reason as :func:`_ceds_grade_codes`:
+    ``src.etl.transformers.blended`` owns ``SESSION_TIME_COMPONENTS`` (single source —
+    never restated here) and importing it at module level would be circular.
+    """
+    from src.etl.transformers.blended import SESSION_TIME_COMPONENTS
+
+    return tuple(SESSION_TIME_COMPONENTS)
 
 
 def _require_ceds_grade_list(
@@ -136,7 +218,16 @@ class ConfiguredField(BaseModel):
     Subclasses MUST implement :meth:`apply` — the Strategy the generic
     field-map loop dispatches to. Fail-loud: a future variant that forgets
     to implement it raises instead of silently blanking a column.
+
+    ``extra="forbid"`` for EVERY variant and EVERY origin (plan 0053 S12, D11): a
+    misspelled key inside a field mapping (``transfrom:``) is not a harmless stray key —
+    it silently ships wrong output (the column untransformed). So unlike an unknown
+    ``global_config``/entity key (origin-keyed — ``loader.unknown_config_keys``), it is
+    refused everywhere, a user-authored config included; :func:`classify_field` turns
+    the refusal into a message naming the nearest known key.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     def apply(
         self,
@@ -266,11 +357,25 @@ class FieldAppendYear(ConfiguredField):
         entity: str,
         context: TransformContextLike,
     ) -> Any:
+        """The column with the school year appended — an ID, so its column is REQUIRED.
+
+        With ``append_year_to_id`` on, the value is an identity (a Class ID), and an
+        absent source column used to give every row a blank one (§5 #29). It now
+        fails CLOSED with a typed ``SourceSchemaError`` (``JOIN_KEY``) naming the
+        column as configured (plan 0053 S10); the field-map engine re-raises typed
+        errors, so the orchestrator decides the scope. DEFERRED import, as in
+        :func:`_ceds_grade_codes`: ``columns`` imports this module.
+        """
+        from src.etl.errors import GuardKind
+        from src.etl.transformers.columns import require_columns
+
         col_name = self.column.lower()
         if not self.append_year_to_id:
             # Legacy fallthrough: append disabled reads the column directly
             # (absent column → intended blank, not recorded).
             return working[col_name] if col_name in working.columns else pd.NA
+        # failure-policy: join_key
+        require_columns(working.columns, [self.column], entity=entity, guard=GuardKind.JOIN_KEY)
         return working.apply(
             lambda row: host.generate_class_id(row, mt_id_col=col_name, append_year=True, context=context),
             axis=1,
@@ -322,7 +427,9 @@ class FieldNameConfig(ConfigCarrierField):
     course_title: str = Field(alias="course title", default="")
     section_letter: str = Field(alias="section letter", default="")
 
-    model_config = {"populate_by_name": True}
+    # `extra="forbid"` is inherited from ConfiguredField (Pydantic merges a subclass's
+    # config with its parent's); restated so this class's own declaration says so.
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
 
 class FieldIdRolePair(ConfigCarrierField):
@@ -364,11 +471,123 @@ FieldMapping = Union[
 ]
 
 
+#: Every structured field-mapping variant, read off :data:`FieldMapping` (never restated).
+FIELD_VARIANTS: tuple[type[ConfiguredField], ...] = tuple(
+    member for member in get_args(FieldMapping) if isinstance(member, type) and issubclass(member, ConfiguredField)
+)
+
+_Variant = TypeVar("_Variant", bound=ConfiguredField)
+
+
+def _unknown_keys_sentence(findings: Iterable[UnknownKey]) -> str:
+    """``unknown key 'transfrom' (did you mean 'transform'?)`` for each finding, ``; ``-joined."""
+    parts = []
+    for finding in findings:
+        hint = f" (did you mean '{finding.suggestion}'?)" if finding.suggestion else " (no known key is close to it)"
+        parts.append(f"unknown key '{finding.key}'{hint}")
+    return "; ".join(parts)
+
+
+def _build_variant(variant: type[_Variant], raw: dict[str, Any]) -> _Variant:
+    """Construct ``variant`` from ``raw``; an unknown key is refused naming its nearest known key.
+
+    Every variant forbids extras (:class:`ConfiguredField`). Pydantic's own refusal says only
+    "Extra inputs are not permitted", so a TOP-level extra is re-raised as a ``ValueError``
+    naming the key and the variant's nearest known key (a nested extra — an email
+    ``derived_dates`` entry — and every other validation error propagate unchanged).
+    """
+    try:
+        return variant(**raw)
+    except ValidationError as exc:
+        extras = [
+            str(error["loc"][0])
+            for error in exc.errors()
+            if error["type"] == "extra_forbidden" and len(error["loc"]) == 1
+        ]
+        if not extras:
+            raise
+        known = model_keys(variant)
+        findings = [UnknownKey("field mapping", key, nearest_key(key, known)) for key in extras]
+        raise ValueError(_unknown_keys_sentence(findings)) from exc
+
+
+#: The DISTINGUISHING keys of each structured variant, in DETECTION ORDER (first match wins).
+#: The ONE statement of "which shape does this dict name" — :func:`classify_field` dispatches
+#: on it and the loader's ``_base`` merge (``loader._deep_merge`` via :func:`switch_field_shape`)
+#: uses it to tell a shape SWITCH from a partial override. ``column`` is deliberately absent: it is shared by
+#: ``FieldTransform`` and ``FieldAppendYear``, so on its own it names no switch (a bare
+#: ``{column: ...}`` still classifies as ``FieldTransform``, via :func:`field_shape`'s fallback).
+_SHAPE_KEYS: tuple[tuple[frozenset[str], type[ConfiguredField]], ...] = (
+    (frozenset({"format"}), FieldEmailFormat),
+    (frozenset({"append_year_to_id"}), FieldAppendYear),
+    (frozenset({"use_academic_year"}), FieldAcademicYear),
+    (frozenset({"value"}), FieldFixedValue),
+    (frozenset({"transform"}), FieldTransform),
+    (frozenset({"student_id_col", "staff_id_col"}), FieldIdRolePair),
+    (frozenset({"primary teacher flag", "teacher last name"}), FieldNameConfig),
+    # EnrollStatus active-detection overrides, keyed on its distinct fields.
+    (frozenset({"active_values", "status_column", "withdraw_date_column"}), FieldEnrollStatus),
+)
+
+
+def distinguishing_shape(raw: Mapping[Any, Any]) -> Optional[type[ConfiguredField]]:
+    """The variant ``raw``'s DISTINGUISHING keys name (first match, detection order), else ``None``.
+
+    ``None`` means ``raw`` carries only keys several shapes share (``column``, ``sanitize``,
+    ``course title`` ...) — as an ``_base`` override it is a PARTIAL edit of whatever the
+    base entry already is, never a switch.
+    """
+    for keys, variant in _SHAPE_KEYS:
+        if not keys.isdisjoint(raw):
+            return variant
+    return None
+
+
+def field_shape(raw: Mapping[Any, Any]) -> Optional[type[ConfiguredField]]:
+    """The variant :func:`classify_field` builds ``raw`` as — ``None`` when it names no shape.
+
+    :func:`distinguishing_shape`, falling back to ``FieldTransform`` for a dict that carries
+    a ``column`` and nothing distinguishing (a plain column mapping).
+    """
+    variant = distinguishing_shape(raw)
+    if variant is None and "column" in raw:
+        return FieldTransform
+    return variant
+
+
+def switch_field_shape(base: Mapping[Any, Any], override: Mapping[Any, Any]) -> Optional[dict[str, Any]]:
+    """The merged entry when an ``_base`` override SWITCHES one ``field_map`` entry's shape, else ``None``.
+
+    A switch — the override's distinguishing keys name a different variant than the base
+    entry is (``{value: "09"}`` over an inherited ``{column, transform}``) — keeps ONLY the
+    inherited keys the new variant accepts, then applies the override: ``{value: "09"}``;
+    ``{append_year_to_id: true}`` over ``{column, transform}`` keeps the inherited ``column``.
+    Merged key by key instead, the base's other keys would ride into a variant that forbids
+    them (every variant does, plan 0053 S12) and the refusal would blame the author for keys
+    they never typed. ``None`` — no switch — means an ordinary recursive merge: a partial
+    override (``{column: "Gr"}`` over ``{column, transform}``, ``{active_values: [...]}``
+    over ``{status_column: ...}``) names no different shape and keeps inheriting the rest.
+    Only the accepted keys of the new variant are read (:func:`model_keys`), so a kept key
+    can never re-route detection: no variant accepts an EARLIER shape's distinguishing key.
+    """
+    switched_to = distinguishing_shape(override)
+    if switched_to is None or switched_to is field_shape(base):
+        return None
+    accepted = model_keys(switched_to)
+    entry: dict[str, Any] = {str(key): value for key, value in base.items() if str(key) in accepted}
+    entry.update(override)
+    return entry
+
+
 def classify_field(raw: Any) -> FieldMapping:
     """Classify a raw YAML field_map value into its typed variant.
 
-    This is intentionally lenient — it validates structure without being
-    so strict that existing configs break.
+    Detection is by DISTINGUISHING key (:func:`field_shape` over ``_SHAPE_KEYS`` — first
+    match wins; a bare ``column`` is a ``FieldTransform``), and every variant forbids extras, so a misspelled key is refused naming its nearest known key
+    rather than dropped (plan 0053 S12). A dict carrying NO distinguishing key RAISES
+    ``ValueError`` too — before S12 it was logged and returned raw, and the field-map
+    engine then shipped the field blank with nothing recorded (``{transfrom: ...}`` with
+    no ``column`` was exactly that). A non-dict, non-string scalar is still its text.
     """
     if raw is None:
         return None
@@ -377,33 +596,22 @@ def classify_field(raw: Any) -> FieldMapping:
     if not isinstance(raw, dict):
         return str(raw)
 
-    # Detect by distinguishing keys
-    if "format" in raw:
-        return FieldEmailFormat(**raw)
-    if "append_year_to_id" in raw:
-        return FieldAppendYear(**raw)
-    if "use_academic_year" in raw:
-        return FieldAcademicYear(**raw)
-    if "value" in raw:
-        return FieldFixedValue(**raw)
-    if "transform" in raw:
-        return FieldTransform(**raw)
-    if "student_id_col" in raw and "staff_id_col" in raw:
-        return FieldIdRolePair(**raw)
-    if "primary teacher flag" in raw or "teacher last name" in raw:
-        return FieldNameConfig(**raw)
-    # EnrollStatus active-detection overrides. Keyed on its distinct fields
-    # (collision-free vs the branches above) and BEFORE the warn-passthrough
-    # fallback so an unknown/typo'd key raises (extra="forbid") instead of
-    # silently passing through.
-    if "active_values" in raw or "status_column" in raw or "withdraw_date_column" in raw:
-        return FieldEnrollStatus(**raw)
-    if "column" in raw:
-        return FieldTransform(**raw)
+    variant = field_shape(raw)
+    if variant is not None:
+        # Every _SHAPE_KEYS variant is a FieldMapping member (the table is typed on the base class).
+        return cast(FieldMapping, _build_variant(variant, raw))
 
-    # Fallback: unrecognized dict structure — likely a typo in the YAML config
-    logger.warning(f"Unrecognized field config structure: {raw}")
-    return raw  # type: ignore[return-value]
+    # No distinguishing key: a typo'd key (`colum:`, `transfrom:` alone) or an empty dict.
+    known = frozenset().union(*(model_keys(member) for member in FIELD_VARIANTS))
+    unknown = unknown_keys_in(raw, known, location="field mapping")
+    if unknown:
+        raise ValueError(_unknown_keys_sentence(unknown))
+    raise ValueError(
+        f"the field mapping {sorted(str(key) for key in raw)} names no mapping shape — it needs a "
+        "'column', 'value', 'format', 'use_academic_year', 'append_year_to_id', 'student_id_col' + "
+        "'staff_id_col', a class-name block ('primary teacher flag' / 'teacher last name') or an "
+        "enrolment-status block ('status_column' / 'withdraw_date_column' / 'active_values')"
+    )
 
 
 def ensure_field_mapping(raw: Any) -> FieldMapping:
@@ -461,6 +669,35 @@ class EntityConfig(BaseModel):
     # (default, back-compatible). Output-keyed source columns are configured
     # through field_map entries instead (string or {column: ...}).
     source_columns: dict[str, str] = Field(default_factory=dict)
+    # Opt-in, Classes only (plan 0053 S10 — owner ruling 2026-09-25; config format 1.14): the
+    # blended-class TIME-SLOT components this district's export actually CARRIES, named by their
+    # Classes ``source_columns`` ROLES (``session_term`` / ``session_semester`` / ``session_day`` /
+    # ``session_period``). ``None`` (absent) = all four, byte-identical. Blended detection keys
+    # sections on — and REQUIRES (failure-policy §5 #39) — exactly the declared ones, in the fixed
+    # term → semester → day → period order whatever order they are listed in. It exists because a
+    # blank or null role reads its DEFAULT column (the resolver's one shape policy), so "this export
+    # has no term column" had no other explicit spelling; a component is never dropped silently.
+    session_components: Optional[list[str]] = None
+
+    @field_validator("session_components")
+    @classmethod
+    def check_session_components(cls, value: Optional[list[str]]) -> Optional[list[str]]:
+        """A declared component list is non-empty, names only known roles, each once."""
+        if value is None:
+            return value
+        roles = _session_time_roles()
+        if not value:
+            raise ValueError(
+                "session_components is empty: blended classes would then be keyed on school and "
+                f"teacher alone, merging every section a teacher teaches. Declare the roles your "
+                f"export carries (from {list(roles)}), or remove the key to use all four."
+            )
+        unknown = [role for role in value if role not in roles]
+        if unknown:
+            raise ValueError(f"session_components names unknown role(s) {unknown}; the roles are {list(roles)}.")
+        if len(set(value)) != len(value):
+            raise ValueError("session_components lists a role more than once.")
+        return value
 
     @model_validator(mode="before")
     @classmethod
@@ -489,7 +726,15 @@ class EntityConfig(BaseModel):
         """
         validated = {}
         for key, raw in self.field_map.items():
-            spec = ensure_field_mapping(raw)
+            try:
+                spec = ensure_field_mapping(raw)
+            except ValidationError:
+                # Pydantic's own error for a variant (a missing required key, a wrong type)
+                # already carries its location — unchanged.
+                raise
+            except ValueError as exc:
+                # classify_field's unknown-key / no-shape refusal (plan 0053 S12): name the FIELD.
+                raise ValueError(f"field_map entry '{key}': {exc}. Fix this entity's field_map.") from exc
             if isinstance(spec, FieldTransform) and spec.transform and spec.transform not in ALLOWED_TRANSFORMS:
                 raise ValueError(
                     f"Unknown transform '{spec.transform}' for field '{key}'. "
@@ -902,16 +1147,17 @@ class MappingConfig(BaseModel):
     # authored against a newer build — carrying a root key this build has never heard of
     # — still loads and runs instead of failing the whole district's nightly sync over a
     # key it does not need. That is a deliberate contract, not an accident, and it was
-    # holding only by Pydantic's default while FIVE leaf models declare
-    # ``extra="forbid"`` — exactly these: `EmailDerivedDate`, `FieldEmailFormat`,
-    # `FieldEnrollStatus`, `RowFilter`, `CrossEnrollmentConfig`. Everything else INHERITS
-    # ``ignore``, and the explicit negatives matter as much as the positives:
-    # `FieldTransform`, `FieldNameConfig`, `GlobalConfig` and `EntityConfig` do NOT forbid
-    # — which is why a typo'd `enabled_entities` is silently dropped rather than rejected
-    # (S2b's panel finding; see `docs/developer/output-contract.md` -> Config schema,
-    # which documents this asymmetry and the additivity rule that rests on it). Pinned by
+    # holding only by Pydantic's default. The leaf models that declare
+    # ``extra="forbid"`` are exactly: `EmailDerivedDate`, `RowFilter`,
+    # `CrossEnrollmentConfig` and — since plan 0053 S12, for EVERY origin — every
+    # field-mapping variant (`ConfiguredField` and all its subclasses, `FieldTransform`
+    # and `FieldNameConfig` included). `GlobalConfig` and `EntityConfig` still do NOT
+    # forbid at the Pydantic level: an unknown key there is judged by ORIGIN in
+    # `loader.unknown_config_keys` — a BUNDLED config raises at load, a USER-dir overlay
+    # warns and runs, authoring refuses — so a typo'd `enabled_entities` is no longer
+    # silently dropped (see `docs/developer/output-contract.md` -> Config schema). Pinned by
     # `tests/test_config_district_domains.py::test_the_forbid_and_ignore_models_are_exactly_as_documented`,
-    # because this is the SECOND time this list has been written down wrong from memory.
+    # because this list has been written down wrong from memory twice.
     model_config = ConfigDict(extra="ignore")
 
     version: Union[str, float]
@@ -1053,6 +1299,37 @@ class MappingConfig(BaseModel):
             "in enabled_entities, or remove student_rostering_grades."
         )
 
+    @model_validator(mode="after")
+    def check_session_components_placement(self):
+        """``session_components`` is read by Classes' blended detection ONLY — and must agree with it.
+
+        Rejects the two ways the key could be silently inert or contradicted: declared on any
+        other entity (nothing reads it there), and a time-slot role CONFIGURED in the Classes
+        ``source_columns`` while left out of ``session_components`` (the column would be named
+        and then never used). Plan 0053 S10 (owner ruling 2026-09-25).
+        """
+        for name, entity in self.mappings.items():
+            if name != "Classes" and entity.session_components is not None:
+                raise ValueError(
+                    f"mappings.{name}.session_components: only the Classes entity reads session_components "
+                    f"(blended class detection); here it would do nothing. Move it to Classes or remove it."
+                )
+        classes = self.mappings.get("Classes")
+        if classes is None or classes.session_components is None:
+            return self
+        undeclared = [
+            role
+            for role in _session_time_roles()
+            if role in classes.source_columns and role not in classes.session_components
+        ]
+        if undeclared:
+            raise ValueError(
+                f"mappings.Classes.source_columns configures {undeclared}, but session_components leaves "
+                f"{'it' if len(undeclared) == 1 else 'them'} out, so the column would never be read. Add "
+                f"{'it' if len(undeclared) == 1 else 'them'} to session_components or remove the source_columns entry."
+            )
+        return self
+
     def get_entity(self, name: str) -> Optional[EntityConfig]:
         return self.mappings.get(name)
 
@@ -1087,6 +1364,8 @@ class MappingConfig(BaseModel):
                 entry["row_filters"] = [rf.model_dump() for rf in entity_cfg.row_filters]
             if entity_cfg.source_columns:
                 entry["source_columns"] = dict(entity_cfg.source_columns)
+            if entity_cfg.session_components is not None:
+                entry["session_components"] = list(entity_cfg.session_components)
             mappings_raw[entity_name] = entry
 
         global_raw: dict[str, Any] = {
@@ -1180,6 +1459,11 @@ class MappingConfig(BaseModel):
                     es["withdraw_date_column"] = val.withdraw_date_column
                 if val.active_values is not None:
                     es["active_values"] = list(val.active_values)
+                if not es:
+                    # An all-default block must still NAME its shape: a bare `{}` is refused by
+                    # classify_field ("names no mapping shape"), so the raw dict would not
+                    # re-classify. `status_column: None` is read as unconfigured everywhere.
+                    es = {"status_column": None}
                 raw[key] = es
             else:
                 raw[key] = val

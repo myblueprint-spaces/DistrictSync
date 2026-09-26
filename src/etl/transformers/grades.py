@@ -60,6 +60,9 @@ import pandas as pd
 # `models` is still initialising). If a later slice wants layering purity, the
 # clean move is a neutral grade-vocabulary module both layers import.
 from src.config.models import CLASS_ROSTERING_HOMEROOM_SENTINEL
+from src.etl.column_names import GRADE
+from src.etl.errors import GuardKind
+from src.etl.transformers.columns import Previously, require_columns, resolve_source_column, source_column_label
 
 # CEDS grade-level code table (single source of truth; keys are the upper-cased,
 # trimmed source values). Unknown values map to "UG" (ungraded).
@@ -110,6 +113,31 @@ CEDS_MAPPING: dict[str, str] = {
 # `src/config/models.py`). NOTE "Other" is the one mixed-case member, so a
 # consumer must compare EXACTLY, never case-normalise.
 CEDS_GRADE_CODES: frozenset[str] = frozenset(CEDS_MAPPING.values())
+
+
+def schedule_grade_column(classes_field_map: Mapping[str, Any]) -> str:
+    """The SCHEDULE's grade column — the Classes mapping's ``Grade`` key (plan 0053 S9).
+
+    ONE key for every reader that classifies timetable rows by grade: Classes'
+    subject split, blended detection's two section→grade maps, and Enrollments'
+    subject split (through ``TransformContext.get_schedule_grade_col``, which reads
+    the same Classes mapping). They must classify the SAME rows — a class the split
+    keeps with no enrollment the other split keeps is an orphan — so none of them
+    may spell the column on its own. Before S9 each read the literal ``"grade"``,
+    while that same key already named the column the subject class ``Grade`` was
+    read from.
+    """
+    return resolve_source_column(classes_field_map, "Grade", default=GRADE, previously=Previously.DEFAULT)
+
+
+def schedule_grade_label(classes_field_map: Mapping[str, Any]) -> str:
+    """:func:`schedule_grade_column` in CONFIG spelling — what a typed error names (plan 0053 S10).
+
+    The schedule grade guards WHO gets subject rostering, so every reader that splits
+    on it first checks it is present (``columns.require_columns``, §5 #5) and names it
+    as the admin wrote it.
+    """
+    return source_column_label(classes_field_map, "Grade", default=GRADE)
 
 
 def grade_to_ceds(grade_value: Any) -> str:
@@ -327,7 +355,12 @@ def split_by_homeroom_grades(
     exactly the permissive-default the engineering rules ban.
 
     Fail-loud: a missing ``grade_col`` raises ``KeyError`` (a renamed source
-    column must never silently keep or drop everyone).
+    column must never silently keep or drop everyone). That ``KeyError`` is the
+    last line of defence, never the pipeline's answer: every production caller
+    (Classes' and Enrollments' homeroom and subject splits) first checks the grade
+    column through ``columns.require_columns`` (guard ``PII_SCOPE``, §5 #5, plan 0053
+    S10), so a missing grade reaches the orchestrator as a typed
+    ``SourceSchemaError`` naming the entity and the column in config spelling.
     """
     if keep == "homeroom":
         if timetable_scope is not None:
@@ -360,6 +393,7 @@ def filter_to_grade_scope(
     scope: set[str],
     *,
     caller: str,
+    column_label: str | None = None,
 ) -> pd.DataFrame:
     """Keep the rows whose CEDS grade is IN ``scope`` — an inclusion filter.
 
@@ -384,17 +418,19 @@ def filter_to_grade_scope(
     because a column moved would deliver students the district is not licensed
     to send):
 
-    - ``grade_col`` absent ⇒ ``KeyError`` naming the column and the available
-      ones (the ``apply_row_filters`` message shape), matching
-      :func:`split_by_homeroom_grades`'s documented ``KeyError`` contract;
+    - ``grade_col`` absent ⇒ :class:`~src.etl.errors.SourceSchemaError` (guard
+      ``PII_SCOPE``, entity = ``caller``) naming the column and the COUNT of
+      source columns — never their names (plan 0053 S1; an observed header can
+      be a pupil). The column is named as ``column_label`` — the CONFIG's
+      spelling (``columns.source_column_label``, plan 0053 S9), so the S7 label
+      check can recognise it — or as ``grade_col`` when no label is passed.
+      Before S1 this was a ``KeyError`` listing every header. Since S10 the check
+      is ``columns.require_columns`` — the same one every §5 (a)/(b) guard makes;
     - the temporary column name already present ⇒ ``ValueError`` rather than a
       silent overwrite-and-drop of a real source column.
     """
-    if grade_col not in df.columns:
-        raise KeyError(
-            f"[{caller}] grade column '{grade_col}' not found in source columns, so the "
-            f"student_rostering_grades scope cannot be applied. Available: {sorted(df.columns)}"
-        )
+    # failure-policy: pii_scope
+    require_columns(df.columns, [column_label or grade_col], entity=caller, guard=GuardKind.PII_SCOPE)
     if _SCOPE_CEDS_COLUMN in df.columns:
         raise ValueError(
             f"[{caller}] the source frame already carries the reserved column "

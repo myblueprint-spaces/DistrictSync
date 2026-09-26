@@ -48,7 +48,9 @@ class TestCliBranchUnaffected:
 
         def _spy(sis_type, input_path, output_path, **kwargs):
             seen.update({"sis": sis_type, "input": input_path, "output": output_path, **kwargs})
-            return PipelineResult(entity_counts={}, sftp_attempted=False, sftp_ok=False, anomalies=[])
+            return PipelineResult(
+                entity_outcomes=(), entity_counts={}, sftp_attempted=False, sftp_ok=False, anomalies=[]
+            )
 
         monkeypatch.setattr(main_mod, "run_pipeline", _spy)
 

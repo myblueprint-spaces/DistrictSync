@@ -1,7 +1,9 @@
 """Integration tests for the Family entity transformation."""
 
 import pandas as pd
+import pytest
 
+from src.etl.errors import GuardKind, RunErrorCategory, SourceSchemaError
 from src.etl.transformer import DataTransformer
 
 
@@ -95,14 +97,15 @@ class TestFamilyTransform:
         for field in family_mapping["field_map"]:
             assert field in result.columns, f"Missing expected output column: {field}"
 
-    def test_contacts_filtered_to_active_roster(self, emergency_contact_df, family_mapping, global_config, raw_data):
+    def test_contacts_filtered_to_active_roster(
+        self, emergency_contact_df, family_mapping, students_mapping, global_config, raw_data
+    ):
         """Zero-orphan invariant: a withdrawn (non-rostered) student's contacts are
         dropped; active students' contacts are kept.
 
         The fixture has contacts for S001 (x2), S002, S003, S004 — publishing a
         roster without S002 must drop exactly Robert's row.
         """
-        students_mapping = global_config["mappings"]["Students"]
         # Run Students first (registry order in the real pipeline) with S002
         # withdrawn so the published roster excludes them.
         demo = pd.DataFrame(
@@ -158,6 +161,37 @@ class TestFamilyTransform:
         # Only the two guardian rows survive; the non-guardian (S002, "N") is dropped.
         assert len(result) == 2
         assert list(result["First Name"]) == ["John", "Jake"]
+
+    def test_the_plain_report_without_the_guardian_column_raises_a_typed_pii_scope_error(self, global_config):
+        """The Unity 2026-09-22 shape (plan 0053 S1): the PLAIN emergency-contact report,
+        no ``Parent Auth / Guardian``. Shipping it unfiltered would deliver non-guardian
+        contacts, so it fails CLOSED — now as a ``SourceSchemaError`` naming the column
+        in the config's spelling (the run records ``source_schema``, was ``data``). The
+        positive twin is ``test_row_filters_drop_non_matching_rows`` above: same mapping,
+        column present, rows filtered."""
+        df = pd.DataFrame(
+            {
+                "student number": ["S001", "S002"],
+                "first name": ["John", "Jane"],
+                "last name": ["Smith", "Doe"],
+            }
+        )
+        mapping = {
+            "source_files": {"emergency_contacts": "EmergencyContactInformation.txt"},
+            "field_map": {
+                "First Name": "First Name",
+                "Last Name": "Last Name",
+                "Email": "Email Address",
+                "Student User ID": "Student Number",
+            },
+            "row_filters": [{"column": "Parent Auth / Guardian", "include": ["Y"]}],
+        }
+        with pytest.raises(SourceSchemaError) as exc:
+            self.transformer.transform(df, mapping, "Family", {"EmergencyContactInformation.txt": df}, global_config)
+        assert exc.value.entity == "Family"
+        assert exc.value.guard is GuardKind.PII_SCOPE
+        assert exc.value.columns == ("Parent Auth / Guardian",)
+        assert exc.value.category is RunErrorCategory.SOURCE_SCHEMA
 
 
 class TestFamilyNoEmailExclusion:

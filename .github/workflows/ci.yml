@@ -56,8 +56,10 @@ jobs:
       # bundled ones (mbp_all, mbp_core, mbponly, sd51attendance), while CLAUDE.md
       # claimed all 11. 7 + 4 = 11. The count is PINNED so a deleted or unregistered
       # config fails loudly instead of silently shrinking the sweep; a bare glob
-      # without the pin would not. Keep EXPECTED_CONFIGS in lockstep with the
-      # Makefile's `validate-config` list.
+      # without the pin would not. EXPECTED_CONFIGS is a LOCKSTEP COPY of
+      # tests/_pins.py BUNDLED_CONFIG_COUNT (this workflow cannot import it) and of
+      # the Makefile's `validate-config` list; tests/test_config_count_pin.py reads
+      # this step from the parsed YAML and fails if they disagree (plan 0053 S13a).
       - name: Validate all mapping configs
         run: |
           python - <<'PY'
@@ -109,3 +111,36 @@ jobs:
 
       - name: Run tests
         run: python -m pytest tests/ -q
+
+  # The schema-drift matrix (plan 0053 S13b): every bundled config x every headered source
+  # file its contract fixture writes x every column in it, dropped one at a time and run
+  # through the whole pipeline (~1,000 in-process runs). Its OWN job — its own time budget,
+  # as the plan's sizing finding asked — because it is ~3.5 minutes locally and would be the
+  # largest module in the suite by far. The `drift_matrix` marker is deselected by the
+  # default `addopts` (pyproject.toml), so the two jobs above do NOT run it; this job is
+  # where it runs, on both OSes the suite runs on. tests/test_schema_drift_matrix.py pins
+  # that this step exists (the deselection can never orphan the matrix).
+  #   * NO coverage gate — the ubuntu `test` job stays the single coverage gate.
+  #   * NO lint / type / security / config steps — enforced once above.
+  drift-matrix:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+          pip install paramiko keyring  # optional SFTP deps (needed by sftp/scheduler modules)
+
+      - name: Run the schema-drift matrix
+        run: python -m pytest tests/test_schema_drift_matrix.py -m drift_matrix -q -rx

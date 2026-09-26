@@ -28,7 +28,8 @@ Three things are pinned here, and each is a *partner-visible* contract:
    derivable from config alone: it is ``active_entities ∩ entities whose sources
    this fixture supplies``. ``sd51myedbc`` actively enables StudentAttendance yet
    its fixture deliberately supplies no absence files (the skip-on-empty pin), so
-   its expected set is the 5 rostering entities. Its VALUES are guarded against
+   its expected set is the 4 rostering entities its config enables (Family is off
+   in the config, 2026-09-25). Its VALUES are guarded against
    erosion in both directions by
    ``test_expected_entities_track_active_entities`` + :data:`DELIBERATELY_UNCOVERED`.
 3. **The on-disk encoding** — the rostering/course CSVs carry the Excel BOM;
@@ -40,7 +41,7 @@ Parametrized over ALL 12 bundled configs:
 
 * the 7 SpacesEDU rostering configs — myedbc (base), sd40myedbc (CSV files +
   headerless schedule + ATT--* exclusions), sd48myedbc, sd51myedbc (plain
-  inheritance + generated emails), sd54myedbc (renamed source files,
+  inheritance + generated emails; Family off), sd54myedbc (renamed source files,
   withdraw-date-only active detection, surname.firstname emails), sd60myedbc
   (Family row_filters, cross-enrollment collapse, sanitized learn60 emails with
   derived admission-year, Home-school rostering), sd74myedbc;
@@ -555,8 +556,13 @@ def _create_sd51_inputs(d: Path) -> None:
 
     StudentDailyAbsences.txt / StudentPeriodAbsencesEnhanced.txt are intentionally
     absent: the enabled StudentAttendance entity skips on all-empty sources
-    (attendance has its own dedicated test module) while the 5 rostering CSVs
-    still emit — this pins that a missing attendance drop never blocks rostering.
+    (attendance has its own dedicated test module) while the 4 rostering CSVs SD51
+    enables still emit — this pins that a missing attendance drop never blocks
+    rostering. The contacts file is still written, as the real drop carries one,
+    and the bundled config simply does not read it: Family is OFF for SD51
+    (2026-09-25 — its real contacts export has no email column). Tests that need
+    an SD51-shaped Family run (tests/test_standing_empty_warning.py) enable it
+    through their own overlay config.
     """
     _write_student_demographic(d, "StudentDemographicEnhanced.txt")
     _write_staff(d, "StaffInformation.txt")
@@ -807,6 +813,63 @@ def _create_unitychristian_inputs(d: Path) -> None:
             "Parent Auth / Guardian": ["Y", "Y", "N"],
         }
     ).to_csv(d / "EmergencyContactInformation.txt", index=False)
+
+
+#: The non-guardian contact the PLAIN report carries. A marker NAME, not an address: the
+#: plain report has no email column to plant one in. It must reach NO output file — the
+#: plain report cannot say who is a guardian, so Family is left out whole (plan 0053 S4).
+_PLAIN_REPORT_MARKER = "Plainreportmarker"
+
+#: The PLAIN Emergency Contact report's shape: 18 columns, and NEITHER of the two columns the
+#: Enhanced report adds that Unity's Family reads — ``Email Address`` (the field map) and
+#: ``Parent Auth / Guardian`` (the guardian ``row_filters``). The names are synthetic MyEd BC
+#: spellings authored for this fixture (the school's real header row is never copied into
+#: the repo); only the COUNT and the two absences are what the 2026-09-22 drop had.
+_PLAIN_CONTACT_COLUMNS: tuple[str, ...] = (
+    "School Number",
+    "Student Number",
+    "Student Legal Surname",
+    "Student Legal First Name",
+    "Grade",
+    "Homeroom",
+    "Contact Level Code",
+    "Relationship",
+    "First Name",
+    "Last Name",
+    "Home Phone",
+    "Work Phone",
+    "Cell Phone",
+    "Address",
+    "City",
+    "Province",
+    "Postal Code",
+    "Living With",
+)
+
+
+def _create_unitychristian_plain_report_inputs(d: Path) -> None:
+    """Unity's 2026-09-22 shape: the PLAIN contact report under the Enhanced report's name.
+
+    The same shared MyEd BC inputs as :func:`_create_unitychristian_inputs` (its twin), with
+    ``EmergencyContactInformation.txt`` replaced by an 18-column plain report that carries a
+    guardian AND a planted non-guardian (:data:`_PLAIN_REPORT_MARKER`). Deliberately NOT in
+    ``_DISTRICT_SETUP``: that sweep is one fixture per bundled config and pins the 20-config
+    count; this is a second INPUT shape for one config, exercised by
+    :class:`TestUnityPlainContactReport` and the entity-isolation tests.
+    """
+    _create_myedbc_inputs(d)
+    rows = [
+        ("100", "S001", "Smith", "Alice", "3", "A1", "1", "Father", "John", "Smith"),
+        ("200", "S002", "Jones", "Bob", "10", "C3", "1", "Mother", "Mei", "Wong"),
+        ("200", "S002", "Jones", "Bob", "10", "C3", "5", "Family Friend", _PLAIN_REPORT_MARKER, "Nonguardian"),
+    ]
+    frame = pd.DataFrame(
+        [row + ("555-0100", "", "", "1 Main St", "Chilliwack", "BC", "V2P 0A0", "Y") for row in rows],
+        columns=list(_PLAIN_CONTACT_COLUMNS),
+    )
+    assert len(frame.columns) == 18
+    assert {"Email Address", "Parent Auth / Guardian"}.isdisjoint(frame.columns)
+    frame.to_csv(d / "EmergencyContactInformation.txt", index=False)
 
 
 def _create_sd67_inputs(d: Path) -> None:
@@ -1725,3 +1788,194 @@ class TestDistrictQuirks:
     # `test_teacher_enrollments_reference_published_staff`, which runs for every
     # emitting district — sd83 was the one config that does not use `map_role`,
     # so it exercised none of the mechanism that decides which staff ship.
+
+
+# ---------------------------------------------------------------------------
+# The Unity plain contact report — the plan 0053 S4 incident, pinned end to end
+# ---------------------------------------------------------------------------
+
+#: The entities Unity's config builds that do NOT depend on the contacts file.
+_UNITY_REST = ("Students", "Staff", "Classes", "Enrollments")
+
+#: A user-dir overlay reproducing the owner's 2026-09-23 workaround: Unity with Family off.
+_UNITY_WITHOUT_FAMILY_SIS = "unitynofamilytest"
+_UNITY_WITHOUT_FAMILY_YAML = """_base: unitychristianmyedbc
+global_config:
+  enabled_entities:
+    - Students
+    - Staff
+    - Classes
+    - Enrollments
+"""
+
+
+def _run_unity_cli(input_dir: Path, output_dir: Path, monkeypatch: pytest.MonkeyPatch, sis: str) -> tuple[int, list]:
+    """Run the REAL command line with ``--sftp`` over ``input_dir``; return (exit code, manifests)."""
+    from src.main import cli
+
+    manifests: list[list[str]] = []
+
+    def _capture(*_args, manifest, **_kwargs) -> bool:
+        manifests.append(list(manifest))
+        return True
+
+    monkeypatch.setattr("src.etl.pipeline._sftp_upload", _capture)
+    code = cli(["--sis", sis, "--input", str(input_dir), "--output", str(output_dir), "--sftp"])
+    return code, manifests
+
+
+def _every_output_byte(output_dir: Path) -> bytes:
+    """Every file the run left under ``output_dir``, archives included, concatenated."""
+    return b"".join(p.read_bytes() for p in sorted(output_dir.rglob("*")) if p.is_file())
+
+
+@pytest.mark.integration
+class TestUnityPlainContactReport:
+    """Plan 0053 S4 — the Unity Christian 2026-09-22 incident, end to end on the CLI.
+
+    The plain contact report cannot say who is a guardian, so Family's ``row_filters``
+    raises (correctly: shipping every contact would send non-guardian PII). Family is
+    ISOLATABLE, so the run COMPLETES without it: every other file is built, written and
+    delivered exactly as it would be with Family switched off, and the record says the run
+    was PARTIAL. Before S4 the whole run failed (exit 1) and nothing was delivered.
+    """
+
+    _SIS = "unitychristianmyedbc"
+
+    @pytest.fixture()
+    def plain(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        input_dir, output_dir = tmp_path / "in", tmp_path / "out"
+        input_dir.mkdir()
+        output_dir.mkdir()
+        _create_unitychristian_plain_report_inputs(input_dir)
+        code, manifests = _run_unity_cli(input_dir, output_dir, monkeypatch, self._SIS)
+        return code, manifests, input_dir, output_dir
+
+    def test_the_run_completes_exit_0_and_delivers_everything_but_family(self, plain):
+        code, manifests, _input_dir, out = plain
+        assert code == 0
+        assert sorted(p.name for p in out.glob("*.csv")) == sorted(f"{e}.csv" for e in _UNITY_REST)
+        assert not (out / "Family.csv").exists()
+        assert len(manifests) == 1 and sorted(manifests[0]) == sorted(f"{e}.csv" for e in _UNITY_REST)
+
+    def test_the_record_is_a_success_with_family_failed(self, plain):
+        from src.history.store import read_run_records
+        from src.ui_flet.home_status import LatestReason, build_record_for, classify_latest_reason
+
+        records = read_run_records()
+        assert records is not None and len(records) == 1
+        record = records[0]
+        assert record["status"] == "success" and record["error_category"] == "none"
+        # Plan 0053 S6: the FAILED entry also names the two mapped columns the plain report lacks
+        # (config spelling); kind and reason are the bulkhead's, unchanged. Plan 0053 S7: its labels
+        # are the RAISING error's column only (the guardian filter), never the observation's whole
+        # list, plus Family's one configured source file.
+        assert record["entity_outcomes"]["Family"] == {
+            "kind": "failed",
+            "reason": "missing_source_column",
+            "rows": 0,
+            "missing_mapped": ["Email Address", "Parent Auth / Guardian"],
+            "labels": ["Parent Auth / Guardian"],
+            "file_label": "EmergencyContactInformation.txt",
+        }
+        for entity in _UNITY_REST:
+            assert record["entity_outcomes"][entity]["kind"] == "built"
+        assert classify_latest_reason(record, prior_build=build_record_for(records, 0)) is LatestReason.PARTIAL
+
+    def test_the_planted_non_guardian_reaches_no_output_file(self, plain):
+        _code, manifests, input_dir, out = plain
+        marker = _PLAIN_REPORT_MARKER.encode("utf-8")
+        # Non-vacuity: the marker IS in the input the run read.
+        assert marker in (input_dir / "EmergencyContactInformation.txt").read_bytes()
+        assert marker not in _every_output_byte(out)
+        assert all(_PLAIN_REPORT_MARKER not in name for name in manifests[0])
+
+    def test_the_planted_non_guardian_reaches_no_log_line(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog
+    ):
+        """Since S4 the ``ENTITY NOT BUILT`` line carries Family's whole traceback
+        (``exc_info=True``) — a log surface the old ``Pipeline failed:`` line never had. No
+        record, message or formatted traceback (chained causes included) may carry the
+        planted non-guardian."""
+        import logging
+        import logging.config
+
+        input_dir, out = tmp_path / "in", tmp_path / "out"
+        input_dir.mkdir()
+        out.mkdir()
+        _create_unitychristian_plain_report_inputs(input_dir)
+        # The CLI's ``fileConfig`` REPLACES the root logger's handlers (caplog's included), so
+        # re-attach caplog after it runs — at DEBUG, wider than the real INFO sink.
+        real_file_config = logging.config.fileConfig
+
+        def _file_config_keeping_caplog(*args, **kwargs):  # noqa: ANN202
+            real_file_config(*args, **kwargs)
+            logging.getLogger().addHandler(caplog.handler)
+            logging.getLogger().setLevel(logging.DEBUG)
+
+        monkeypatch.setattr(logging.config, "fileConfig", _file_config_keeping_caplog)
+        try:
+            with caplog.at_level(logging.DEBUG):
+                code, _manifests = _run_unity_cli(input_dir, out, monkeypatch, self._SIS)
+        finally:
+            logging.getLogger().removeHandler(caplog.handler)
+        assert code == 0
+        formatter = logging.Formatter()
+        texts = [
+            record.getMessage() + ("\n" + formatter.formatException(record.exc_info) if record.exc_info else "")
+            for record in caplog.records
+        ]
+        # Non-vacuity: the traceback-carrying line this test exists for WAS captured, once.
+        not_built = [
+            record
+            for record in caplog.records
+            if record.getMessage().startswith("ENTITY NOT BUILT [Family]") and record.exc_info is not None
+        ]
+        assert len(not_built) == 1, "the Family traceback line was not captured — the sweep below would be vacuous"
+        leaked = [text for text in texts if _PLAIN_REPORT_MARKER in text]
+        assert not leaked, f"{len(leaked)} log record(s) carried the planted non-guardian"
+        # …and the REAL sink, the district's etl_tool.log, holds the same traceback and no marker.
+        from src.utils.paths import user_log_file
+
+        log_text = user_log_file().read_text(encoding="utf-8")
+        assert "ENTITY NOT BUILT [Family]" in log_text and "Traceback" in log_text
+        assert _PLAIN_REPORT_MARKER not in log_text
+
+    def test_the_other_four_files_are_byte_identical_to_a_run_with_family_switched_off(
+        self, plain, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """What the owner did by hand on 2026-09-23 (an overlay with Family removed from
+        ``enabled_entities``) is exactly what the bulkhead now does automatically."""
+        from src.utils.paths import user_mappings_dir
+
+        _code, _manifests, input_dir, out = plain
+        (user_mappings_dir() / f"{_UNITY_WITHOUT_FAMILY_SIS}_mapping.yaml").write_text(
+            _UNITY_WITHOUT_FAMILY_YAML, encoding="utf-8"
+        )
+        switched_off = tmp_path / "out_without_family"
+        switched_off.mkdir()
+        code, _ = _run_unity_cli(input_dir, switched_off, monkeypatch, _UNITY_WITHOUT_FAMILY_SIS)
+        assert code == 0
+        assert sorted(p.name for p in switched_off.glob("*.csv")) == sorted(f"{e}.csv" for e in _UNITY_REST)
+        for entity in _UNITY_REST:
+            assert (out / f"{entity}.csv").read_bytes() == (switched_off / f"{entity}.csv").read_bytes(), entity
+
+    def test_the_twin_the_enhanced_report_builds_family_with_guardians_only(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        from src.history.store import read_run_records
+        from src.ui_flet.home_status import LatestReason, build_record_for, classify_latest_reason
+
+        input_dir, out = tmp_path / "in", tmp_path / "out"
+        input_dir.mkdir()
+        out.mkdir()
+        _create_unitychristian_inputs(input_dir)
+        code, manifests = _run_unity_cli(input_dir, out, monkeypatch, self._SIS)
+        assert code == 0
+        assert "Family.csv" in manifests[0]
+        shipped = set(_read_output(out, "Family")["Email"].dropna().astype(str))
+        assert _GUARDIAN_CONTACT_EMAIL in shipped and _NON_GUARDIAN_CONTACT_EMAIL not in shipped
+        records = read_run_records()
+        assert records is not None
+        assert {entry["kind"] for entry in records[0]["entity_outcomes"].values()} == {"built"}
+        assert classify_latest_reason(records[0], prior_build=build_record_for(records, 0)) is LatestReason.CLEAN

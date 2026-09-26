@@ -5,9 +5,13 @@ from typing import Any
 
 import pandas as pd
 
+from src.etl.column_names import STUDENT_NUMBER
+from src.etl.outcomes import OutcomeNote
 from src.etl.transformers.base import BaseTransformer
+from src.etl.transformers.columns import Previously, resolve_source_column
 from src.etl.transformers.context import TransformContext
 from src.etl.transformers.ids import clean_invalid_ids
+from src.etl.transformers.notes import record_note
 
 logger = logging.getLogger(__name__)
 
@@ -30,14 +34,17 @@ class FamilyTransformer(BaseTransformer):
         # order); when the roster is unavailable (e.g. a tier without the
         # Students entity), filter_to_active warns and returns the frame
         # unchanged — the same convention as Enrollments.
-        working = self.filter_to_active(working, self._student_number_col(field_map), context, caller="Family")
+        student_col = resolve_source_column(
+            field_map, "Student User ID", default=STUDENT_NUMBER, previously=Previously.AS_CONFIGURED
+        )
+        working = self.filter_to_active(working, student_col, context, caller="Family")
         result = pd.DataFrame()
         result = self.apply_field_map(working, result, field_map, "Family", context)
         # Last, on the OUTPUT frame: a contact with no email cannot be imported.
-        return self._exclude_rows_without_email(result)
+        return self._exclude_rows_without_email(result, context)
 
     @staticmethod
-    def _exclude_rows_without_email(result: pd.DataFrame) -> pd.DataFrame:
+    def _exclude_rows_without_email(result: pd.DataFrame, context: TransformContext) -> pd.DataFrame:
         """Drop contact rows whose output ``Email`` is blank, warning once.
 
         WHY (importer behaviour): SpacesEDU does not import a family contact
@@ -57,32 +64,43 @@ class FamilyTransformer(BaseTransformer):
         contract requires the column, so that is surfaced as its own WARNING
         rather than hidden, and the rows pass through untouched.
 
+        Both branches are RECORDED (plan 0053 S11, §5 #20): the exclusion as
+        ``OutcomeNote.CONTACTS_EXCLUDED_NO_EMAIL`` counting the contacts left out, a
+        missing ``Email`` column as ``EMAIL_OUTPUT_NOT_MAPPED`` counting the rows shipped
+        without it — each with the one WARNING it already had.
+
         PII rule: counts only — never a contact name, address or student id.
         """
         if EMAIL_OUTPUT_COLUMN not in result.columns:
-            logger.warning(
-                f"[Family] No '{EMAIL_OUTPUT_COLUMN}' output column — the no-email exclusion could not be "
-                f"applied. The Advanced CSV contract requires it for Family.csv; check the config field_map."
+            if result.empty:
+                return result
+            # failure-policy: contract_field
+            record_note(
+                context,
+                "Family",
+                OutcomeNote.EMAIL_OUTPUT_NOT_MAPPED,
+                len(result),
+                log=logger,
+                message=(
+                    f"[Family] No '{EMAIL_OUTPUT_COLUMN}' output column — the no-email exclusion could not be "
+                    f"applied. The Advanced CSV contract requires it for Family.csv; check the config field_map."
+                ),
             )
             return result
         total = len(result)
         kept: pd.DataFrame = clean_invalid_ids(result, EMAIL_OUTPUT_COLUMN).copy()
         excluded = total - len(kept)
         if excluded > 0:
-            logger.warning(
-                f"[Family] Excluded {excluded} of {total} contact row(s) with no email address — "
-                f"SpacesEDU does not import a family contact without one."
+            # failure-policy: contract_field
+            record_note(
+                context,
+                "Family",
+                OutcomeNote.CONTACTS_EXCLUDED_NO_EMAIL,
+                excluded,
+                log=logger,
+                message=(
+                    f"[Family] Excluded {excluded} of {total} contact row(s) with no email address — "
+                    f"SpacesEDU does not import a family contact without one."
+                ),
             )
         return kept
-
-    @staticmethod
-    def _student_number_col(field_map: dict[str, Any]) -> str:
-        """Source student-number column, resolved from the entity field_map.
-
-        Configurable Columns rule: the ``Student User ID`` output maps from a
-        district-configurable source column (default MyEd BC "Student Number").
-        """
-        config = field_map.get("Student User ID", "student number")
-        if isinstance(config, dict):
-            return str(config.get("column", "student number")).strip().lower()
-        return str(config).strip().lower()

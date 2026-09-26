@@ -1,0 +1,1094 @@
+"""``docs/developer/failure-policy.md`` ↔ code parity (plan 0053 P14; arrives in S2).
+
+A table in the standard that mirrors a code constant is pinned here, so the doc cannot
+drift from the code (or the code from the doc) without a red test that names the section:
+
+* §3 (the ``criticality`` table) == :data:`src.etl.outcomes.ENTITY_CRITICALITY`, row for
+  row, including the ``depends_on`` column == :data:`src.etl.outcomes.DEPENDS_ON`;
+* §6 (the ``vocabularies`` table) == the members of every closed enum it lists
+  (``RunErrorCategory``, ``OutcomeKind``, ``OutcomeReason``, and since S10 ``OutcomeNote``)
+  — name AND persisted value;
+* §6's rule "every closed-enum member maps to copy, a verdict and a row here" (plan 0053
+  S3): every documented ``RunErrorCategory`` except ``NONE`` has a
+  ``failure_copy.FAILED_CATEGORY_COPY`` entry, every documented ``OutcomeKind`` an
+  ``OUTCOME_TIER`` verdict for each of its valid reasons, every documented ``OutcomeReason`` an
+  ``outcome_sentence``, and (S10) every documented ``OutcomeNote`` a ``NOTE_TIER`` verdict and
+  note copy;
+* §7 (plan 0053 S8, owner decision D5): the ``may-be-empty`` table == ``outcomes.MAY_BE_EMPTY``,
+  and the ``outcome-tier`` table == ``failure_copy.OUTCOME_TIER`` over every valid (kind, reason)
+  for a ``MAY_BE_EMPTY`` member and for any other entity; since S10 (owner ruling 2026-09-25)
+  the ``note-tier`` table == ``failure_copy.NOTE_TIER`` over every ``OutcomeNote``;
+* §3 / P13 ↔ ``docs/partner/faq.md`` (plan 0053 S4): the FAQ's two criticality bullets name
+  exactly the CRITICAL and ISOLATABLE sets (by ``failure_copy.entity_phrase``), and the
+  ISOLATABLE bullet carries the "pending confirmation" clause exactly while
+  ``output-contract.md`` says ``Q5-status: open``;
+* §5 (plan 0053 S10): the ``require-columns`` table == every ``columns.require_columns`` call
+  under ``src/`` collected by AST as (site, entity, guard), both directions; each site's
+  call carries the matching ``# failure-policy: <guard>`` tag directly above it; every ``§5`` number the
+  table cites is a row of the site catalogue.
+* §5 (plan 0053 S11): a FULL BIJECTION between the site tags and the catalogue — the ``tags``
+  table == every ``# failure-policy: <class>`` line under ``src/`` as (innermost function, class,
+  count), both directions; every class is one of the five §5 classes and matches each catalogue row
+  it cites; every catalogue row is cited by a tag or listed, with its reason, in
+  ``untagged-sites`` (never both); every ``notes.record_note`` call carries a tag directly above
+  it; and every ``OutcomeNote`` member has a producer under ``src/etl``.
+
+Each pin has a non-vacuity assertion (the parser really found the rows) and a
+doctored-doc negative twin (an edited copy of the real doc turns it red). Tables are found
+by their ``<!-- failure-policy-table: <name> -->`` markers, never by line number.
+"""
+
+from __future__ import annotations
+
+import ast
+import re
+from enum import StrEnum
+from pathlib import Path
+
+import pytest
+
+from src.etl.errors import GuardKind, RunErrorCategory
+from src.etl.outcomes import (
+    DEPENDS_ON,
+    ENTITY_CRITICALITY,
+    MAY_BE_EMPTY,
+    VALID_REASONS,
+    EntityCriticality,
+    OutcomeKind,
+    OutcomeNote,
+    OutcomeReason,
+)
+from src.ui_flet.failure_copy import FAILED_CATEGORY_COPY, NOTE_TIER, OUTCOME_TIER, entity_phrase
+from tests.test_output_contract_doc import _Q5_STATUS_RE  # the ONE spelling of the status line
+
+_DOC = Path(__file__).resolve().parents[1] / "docs" / "developer" / "failure-policy.md"
+
+#: The enums §6's vocabulary table must list completely (a new member without a row is RED).
+_VOCABULARY_ENUMS: dict[str, type[StrEnum]] = {
+    "RunErrorCategory": RunErrorCategory,
+    "OutcomeKind": OutcomeKind,
+    "OutcomeReason": OutcomeReason,
+    "OutcomeNote": OutcomeNote,
+}
+
+_NO_DEPENDENCY = {"—", "-", ""}
+
+
+def _doc_text() -> str:
+    return _DOC.read_text(encoding="utf-8")
+
+
+def _table(text: str, name: str) -> list[dict[str, str]]:
+    """The rows of the markdown table directly under ``<!-- failure-policy-table: name -->``."""
+    marker = f"<!-- failure-policy-table: {name} -->"
+    if marker not in text:
+        return []
+    lines = text.split(marker, 1)[1].lstrip("\n").splitlines()
+    table_lines: list[str] = []
+    for line in lines:
+        if not line.startswith("|"):
+            break
+        table_lines.append(line)
+    if len(table_lines) < 2:
+        return []
+
+    def cells(line: str) -> list[str]:
+        return [cell.strip() for cell in line.strip().strip("|").split("|")]
+
+    header = cells(table_lines[0])
+    return [dict(zip(header, cells(line), strict=False)) for line in table_lines[2:]]
+
+
+def _unticked(cell: str) -> str:
+    return cell.replace("`", "").strip()
+
+
+def _criticality_mismatches(text: str) -> list[str]:
+    rows = _table(text, "criticality")
+    problems: list[str] = []
+    documented: dict[str, str] = {}
+    for row in rows:
+        entity = _unticked(row.get("entity", ""))
+        if entity in documented:
+            problems.append(f"failure-policy.md §3: {entity} has two rows")
+        documented[entity] = _unticked(row.get("criticality", ""))
+        doc_deps = {_unticked(d) for d in row.get("depends_on", "").split(",") if _unticked(d) not in _NO_DEPENDENCY}
+        code_deps = set(DEPENDS_ON.get(entity, frozenset()))
+        if doc_deps != code_deps:
+            problems.append(
+                f"failure-policy.md §3: {entity} depends_on is {sorted(doc_deps)} in the doc "
+                f"but {sorted(code_deps)} in outcomes.DEPENDS_ON"
+            )
+    code = {entity: criticality.name for entity, criticality in ENTITY_CRITICALITY.items()}
+    for entity in sorted(set(code) - set(documented)):
+        problems.append(f"failure-policy.md §3: no row for {entity} (outcomes.ENTITY_CRITICALITY lists it)")
+    for entity in sorted(set(documented) - set(code)):
+        problems.append(f"failure-policy.md §3: row for {entity}, which outcomes.ENTITY_CRITICALITY does not list")
+    for entity in sorted(set(code) & set(documented)):
+        if documented[entity] != code[entity]:
+            problems.append(
+                f"failure-policy.md §3: {entity} is {documented[entity]} in the doc but {code[entity]} in the code"
+            )
+    for entity in sorted(set(DEPENDS_ON) - set(documented)):
+        problems.append(f"failure-policy.md §3: outcomes.DEPENDS_ON has {entity}, which has no row")
+    return problems
+
+
+def _vocabulary_mismatches(text: str) -> list[str]:
+    rows = _table(text, "vocabularies")
+    documented = {
+        (_unticked(r.get("enum", "")), _unticked(r.get("member", "")), _unticked(r.get("value", ""))) for r in rows
+    }
+    listed = {enum for enum, _member, _value in documented}
+    code = {(name, member.name, member.value) for name, enum in _VOCABULARY_ENUMS.items() for member in enum}
+    problems = [
+        f"failure-policy.md §6: no row for {enum}.{member} = {value!r}"
+        for enum, member, value in sorted(code - documented)
+    ]
+    problems += [
+        f"failure-policy.md §6: row {enum}.{member} = {value!r} matches no enum member"
+        for enum, member, value in sorted(documented - code)
+        if enum in _VOCABULARY_ENUMS
+    ]
+    problems += [
+        f"failure-policy.md §6: table lists {enum}, which this test does not pin — add it to _VOCABULARY_ENUMS"
+        for enum in sorted(listed - set(_VOCABULARY_ENUMS))
+    ]
+    return problems
+
+
+# --------------------------------------------------------------------------- #
+# §3 — entity criticality                                                      #
+# --------------------------------------------------------------------------- #
+class TestSection3Criticality:
+    def test_the_table_equals_the_code(self):
+        assert _criticality_mismatches(_doc_text()) == []
+
+    def test_non_vacuity_the_parser_found_every_row(self):
+        rows = _table(_doc_text(), "criticality")
+        assert len(rows) >= 8, "failure-policy.md §3: the criticality table parsed to fewer than 8 rows"
+        assert {_unticked(r["entity"]) for r in rows} == set(ENTITY_CRITICALITY)
+        # The depends_on column is really read: at least one row carries two dependencies.
+        assert any("," in r["depends_on"] for r in rows)
+
+    def test_doctored_a_flipped_criticality_is_red(self):
+        doctored = _doc_text().replace("| Family | ISOLATABLE |", "| Family | CRITICAL |", 1)
+        assert doctored != _doc_text(), "the doctoring must actually change the doc"
+        assert _criticality_mismatches(doctored) == [
+            "failure-policy.md §3: Family is CRITICAL in the doc but ISOLATABLE in the code"
+        ]
+
+    def test_doctored_a_missing_row_is_red(self):
+        text = _doc_text()
+        row = next(line for line in text.splitlines() if line.startswith("| StudentAttendance |"))
+        doctored = text.replace(row + "\n", "", 1)
+        assert _criticality_mismatches(doctored) == [
+            "failure-policy.md §3: no row for StudentAttendance (outcomes.ENTITY_CRITICALITY lists it)"
+        ]
+
+    def test_doctored_a_changed_dependency_is_red(self):
+        text = _doc_text()
+        row = next(line for line in text.splitlines() if line.startswith("| Enrollments |"))
+        doctored = text.replace(row, row.replace("| Classes, Students |", "| Students |"), 1)
+        assert doctored != text
+        assert _criticality_mismatches(doctored) == [
+            "failure-policy.md §3: Enrollments depends_on is ['Students'] in the doc but "
+            "['Classes', 'Students'] in outcomes.DEPENDS_ON"
+        ]
+
+    def test_doctored_a_missing_marker_is_red(self):
+        doctored = _doc_text().replace("<!-- failure-policy-table: criticality -->", "")
+        problems = _criticality_mismatches(doctored)
+        for entity in ENTITY_CRITICALITY:
+            assert f"failure-policy.md §3: no row for {entity} (outcomes.ENTITY_CRITICALITY lists it)" in problems
+
+
+# --------------------------------------------------------------------------- #
+# §6 — closed vocabularies                                                     #
+# --------------------------------------------------------------------------- #
+class TestSection6Vocabularies:
+    def test_every_enum_member_has_exactly_its_row(self):
+        assert _vocabulary_mismatches(_doc_text()) == []
+
+    def test_non_vacuity_the_parser_found_every_row(self):
+        rows = _table(_doc_text(), "vocabularies")
+        expected = sum(len(enum) for enum in _VOCABULARY_ENUMS.values())
+        assert expected >= 8
+        assert len(rows) == expected, f"failure-policy.md §6: parsed {len(rows)} rows, expected {expected}"
+
+    @pytest.mark.parametrize(
+        ("old", "new", "expected"),
+        [
+            (
+                "| OutcomeReason | RUN_ABORTED | `run_aborted` |",
+                "| OutcomeReason | RUN_ABORTED | `aborted` |",
+                [
+                    "failure-policy.md §6: no row for OutcomeReason.RUN_ABORTED = 'run_aborted'",
+                    "failure-policy.md §6: row OutcomeReason.RUN_ABORTED = 'aborted' matches no enum member",
+                ],
+            ),
+            (
+                "| OutcomeKind | NOT_RUN | `not_run` |",
+                "| OutcomeKnd | NOT_RUN | `not_run` |",
+                [
+                    "failure-policy.md §6: no row for OutcomeKind.NOT_RUN = 'not_run'",
+                    "failure-policy.md §6: table lists OutcomeKnd, which this test does not pin — "
+                    "add it to _VOCABULARY_ENUMS",
+                ],
+            ),
+        ],
+        ids=["wrong-value", "unknown-enum"],
+    )
+    def test_doctored_a_drifted_row_is_red(self, old, new, expected):
+        text = _doc_text()
+        assert old in text, "the doctoring must target a real row"
+        assert _vocabulary_mismatches(text.replace(old, new, 1)) == expected
+
+    def test_doctored_a_missing_row_is_red(self):
+        text = _doc_text()
+        row = next(line for line in text.splitlines() if line.startswith("| RunErrorCategory | INPUT_UNREADABLE |"))
+        assert _vocabulary_mismatches(text.replace(row + "\n", "", 1)) == [
+            "failure-policy.md §6: no row for RunErrorCategory.INPUT_UNREADABLE = 'input_unreadable'"
+        ]
+
+
+# --------------------------------------------------------------------------- #
+# §6 ↔ copy — every documented member is worded (plan 0053 S3)                 #
+# --------------------------------------------------------------------------- #
+def _copy_gaps(text: str, *, category_copy, tier, reasons_with_copy, note_tier=None, notes_with_copy=None) -> list[str]:
+    """Documented §6 members the copy layer cannot word (empty = every member is covered)."""
+    note_tier = NOTE_TIER if note_tier is None else note_tier
+    notes_with_copy = _notes_with_copy() if notes_with_copy is None else notes_with_copy
+    problems: list[str] = []
+    for row in _table(text, "vocabularies"):
+        enum, member = _unticked(row.get("enum", "")), _unticked(row.get("member", ""))
+        if enum == "RunErrorCategory" and member != "NONE" and RunErrorCategory[member] not in category_copy:
+            problems.append(f"failure-policy.md §6: RunErrorCategory.{member} has no FAILED_CATEGORY_COPY entry")
+        if enum == "OutcomeKind" and not _has_tier(tier, OutcomeKind[member]):
+            problems.append(f"failure-policy.md §6: OutcomeKind.{member} has no OUTCOME_TIER verdict")
+        if enum == "OutcomeReason" and OutcomeReason[member] not in reasons_with_copy:
+            problems.append(f"failure-policy.md §6: OutcomeReason.{member} has no outcome_sentence")
+        if enum == "OutcomeNote" and OutcomeNote[member] not in note_tier:
+            problems.append(f"failure-policy.md §6: OutcomeNote.{member} has no NOTE_TIER verdict")
+        if enum == "OutcomeNote" and OutcomeNote[member] not in notes_with_copy:
+            problems.append(f"failure-policy.md §6: OutcomeNote.{member} has no note copy")
+    return problems
+
+
+def _notes_with_copy() -> set[OutcomeNote]:
+    from src.ui_flet import failure_copy
+
+    return set(failure_copy._NOTE_COPY)
+
+
+def _has_tier(tier, kind: OutcomeKind) -> bool:
+    """Whether ``tier`` (``OUTCOME_TIER``'s shape) answers a Verdict for ``kind`` × every valid reason."""
+    try:
+        return all(tier("Family", kind, reason) is not None for reason in VALID_REASONS[kind])
+    except (KeyError, ValueError):
+        return False
+
+
+def _reasons_with_copy() -> set[OutcomeReason]:
+    from src.ui_flet import failure_copy
+
+    return {reason for (_kind, reason) in failure_copy._OUTCOME_TEMPLATES}
+
+
+class TestSection6CopyParity:
+    def test_every_documented_member_is_worded(self):
+        assert (
+            _copy_gaps(
+                _doc_text(),
+                category_copy=FAILED_CATEGORY_COPY,
+                tier=OUTCOME_TIER,
+                reasons_with_copy=_reasons_with_copy(),
+            )
+            == []
+        )
+
+    def test_non_vacuity_the_rows_checked_are_the_real_ones(self):
+        rows = _table(_doc_text(), "vocabularies")
+        documented = {_unticked(r["member"]) for r in rows if _unticked(r["enum"]) == "RunErrorCategory"}
+        assert documented == {m.name for m in RunErrorCategory}
+        assert _reasons_with_copy() == {r for reasons in VALID_REASONS.values() for r in reasons}
+        notes = {_unticked(r["member"]) for r in rows if _unticked(r["enum"]) == "OutcomeNote"}
+        assert notes == {m.name for m in OutcomeNote} and notes, "the OutcomeNote rows are really checked"
+
+    def test_doctored_a_note_without_a_tier_or_copy_is_red(self):
+        # Plan 0053 S11 grew the enum from one member to the whole catalogue: every documented
+        # note is then reported twice (no tier, no copy) — pinned by count and by one named pair.
+        gaps = _copy_gaps(
+            _doc_text(),
+            category_copy=FAILED_CATEGORY_COPY,
+            tier=OUTCOME_TIER,
+            reasons_with_copy=_reasons_with_copy(),
+            note_tier={},
+            notes_with_copy=set(),
+        )
+        assert len(gaps) == 2 * len(OutcomeNote)
+        assert "failure-policy.md §6: OutcomeNote.COTEACHER_SOURCE_UNUSABLE has no NOTE_TIER verdict" in gaps
+        assert "failure-policy.md §6: OutcomeNote.COTEACHER_SOURCE_UNUSABLE has no note copy" in gaps
+
+    def test_doctored_one_note_without_a_tier_is_red_alone(self):
+        tier = {k: v for k, v in NOTE_TIER.items() if k is not OutcomeNote.ALL_ACTIVE_DEFAULT}
+        assert _copy_gaps(
+            _doc_text(),
+            category_copy=FAILED_CATEGORY_COPY,
+            tier=OUTCOME_TIER,
+            reasons_with_copy=_reasons_with_copy(),
+            note_tier=tier,
+        ) == ["failure-policy.md §6: OutcomeNote.ALL_ACTIVE_DEFAULT has no NOTE_TIER verdict"]
+
+    def test_doctored_a_category_without_copy_is_red(self):
+        missing = {k: v for k, v in FAILED_CATEGORY_COPY.items() if k is not RunErrorCategory.SOURCE_SCHEMA}
+        assert _copy_gaps(
+            _doc_text(), category_copy=missing, tier=OUTCOME_TIER, reasons_with_copy=_reasons_with_copy()
+        ) == ["failure-policy.md §6: RunErrorCategory.SOURCE_SCHEMA has no FAILED_CATEGORY_COPY entry"]
+
+    def test_doctored_a_kind_without_a_tier_and_a_reason_without_copy_are_red(self):
+        def tier(entity, kind, reason):
+            if kind is OutcomeKind.NOT_RUN:
+                raise KeyError(kind)  # a tier that forgot a kind
+            return OUTCOME_TIER(entity, kind, reason)
+
+        reasons = _reasons_with_copy() - {OutcomeReason.RUN_ABORTED}
+        assert _copy_gaps(_doc_text(), category_copy=FAILED_CATEGORY_COPY, tier=tier, reasons_with_copy=reasons) == [
+            "failure-policy.md §6: OutcomeKind.NOT_RUN has no OUTCOME_TIER verdict",
+            "failure-policy.md §6: OutcomeReason.RUN_ABORTED has no outcome_sentence",
+        ]
+
+
+# --------------------------------------------------------------------------- #
+# §7 — which EMPTY outcomes warn (plan 0053 S8, owner decision D5)              #
+# --------------------------------------------------------------------------- #
+#: A registry entity that is NOT in MAY_BE_EMPTY, to evaluate the "any other entity" column.
+_NON_MEMBER = "Family"
+
+
+def _may_be_empty_mismatches(text: str, *, members: frozenset[str]) -> list[str]:
+    documented = {_unticked(r.get("entity", "")) for r in _table(text, "may-be-empty")}
+    problems = [
+        f"failure-policy.md §7: no may-be-empty row for {e} (outcomes.MAY_BE_EMPTY lists it)"
+        for e in sorted(members - documented)
+    ]
+    problems += [
+        f"failure-policy.md §7: may-be-empty row for {e}, which outcomes.MAY_BE_EMPTY does not list"
+        for e in sorted(documented - members)
+    ]
+    return problems
+
+
+def _tier_mismatches(text: str, *, tier) -> list[str]:
+    member = next(iter(sorted(MAY_BE_EMPTY)))
+    documented: dict[tuple[str, str], tuple[str, str]] = {}
+    for row in _table(text, "outcome-tier"):
+        key = (_unticked(row.get("kind", "")), _unticked(row.get("reason", "")))
+        documented[key] = (_unticked(row.get("MAY_BE_EMPTY entity", "")), _unticked(row.get("any other entity", "")))
+    problems: list[str] = []
+    for kind, reasons in VALID_REASONS.items():
+        for reason in sorted(reasons):
+            key = (kind.name, reason.value)
+            code = (tier(member, kind, reason).name, tier(_NON_MEMBER, kind, reason).name)
+            if key not in documented:
+                problems.append(f"failure-policy.md §7: no outcome-tier row for {kind.name}/{reason.value}")
+            elif documented[key] != code:
+                problems.append(
+                    f"failure-policy.md §7: {kind.name}/{reason.value} is {documented[key]} in the doc "
+                    f"but {code} in failure_copy.OUTCOME_TIER"
+                )
+    valid = {(k.name, r.value) for k, rs in VALID_REASONS.items() for r in rs}
+    problems += [
+        f"failure-policy.md §7: outcome-tier row {k}/{r} is not a valid pair"
+        for k, r in documented
+        if (k, r) not in valid
+    ]
+    return problems
+
+
+class TestSection7EmptyTier:
+    def test_the_may_be_empty_table_equals_the_code(self):
+        assert _may_be_empty_mismatches(_doc_text(), members=MAY_BE_EMPTY) == []
+
+    def test_the_outcome_tier_table_equals_the_code(self):
+        assert _tier_mismatches(_doc_text(), tier=OUTCOME_TIER) == []
+
+    def test_non_vacuity_the_parser_found_every_row(self):
+        assert {_unticked(r["entity"]) for r in _table(_doc_text(), "may-be-empty")} == set(MAY_BE_EMPTY)
+        assert MAY_BE_EMPTY, "the set is not empty, so the member column is really exercised"
+        assert _NON_MEMBER not in MAY_BE_EMPTY and _NON_MEMBER in ENTITY_CRITICALITY
+        rows = _table(_doc_text(), "outcome-tier")
+        assert len(rows) == sum(len(r) for r in VALID_REASONS.values())
+        # The two columns really differ somewhere — the whole point of D5's entity split.
+        assert any(r["MAY_BE_EMPTY entity"] != r["any other entity"] for r in rows)
+
+    def test_doctored_an_extra_member_in_the_code_is_red(self):
+        assert _may_be_empty_mismatches(_doc_text(), members=MAY_BE_EMPTY | {"Family"}) == [
+            "failure-policy.md §7: no may-be-empty row for Family (outcomes.MAY_BE_EMPTY lists it)"
+        ]
+
+    def test_doctored_a_removed_row_is_red(self):
+        text = _doc_text()
+        row = next(line for line in text.splitlines() if line.startswith("| StudentAttendance | Absence files"))
+        doctored = text.replace(row + "\n", "", 1)
+        assert doctored != text
+        assert _may_be_empty_mismatches(doctored, members=MAY_BE_EMPTY) == [
+            "failure-policy.md §7: no may-be-empty row for StudentAttendance (outcomes.MAY_BE_EMPTY lists it)"
+        ]
+
+    def test_doctored_a_quieter_doc_row_is_red(self):
+        doctored = _doc_text().replace(
+            "| EMPTY | no_rows_after_transform | WARNING | WARNING |",
+            "| EMPTY | no_rows_after_transform | HEALTHY | WARNING |",
+            1,
+        )
+        assert doctored != _doc_text()
+        assert _tier_mismatches(doctored, tier=OUTCOME_TIER) == [
+            "failure-policy.md §7: EMPTY/no_rows_after_transform is ('HEALTHY', 'WARNING') in the doc "
+            "but ('WARNING', 'WARNING') in failure_copy.OUTCOME_TIER"
+        ]
+
+    def test_doctored_a_quieter_code_tier_is_red(self):
+        from src.ui_flet.verdict import Verdict
+
+        def muted(entity, kind, reason):
+            if kind is OutcomeKind.EMPTY:
+                return Verdict.HEALTHY  # the muting the standard forbids
+            return OUTCOME_TIER(entity, kind, reason)
+
+        problems = _tier_mismatches(_doc_text(), tier=muted)
+        assert (
+            "failure-policy.md §7: EMPTY/missing_source_column is ('WARNING', 'WARNING') in the doc but ('HEALTHY', 'HEALTHY') in failure_copy.OUTCOME_TIER"
+            in problems
+        )
+        assert len(problems) == 4  # every EMPTY row that warns anywhere
+
+
+# --------------------------------------------------------------------------- #
+# §7 — which outcome NOTES warn (plan 0053 S10, owner ruling 2026-09-25)        #
+# --------------------------------------------------------------------------- #
+def _note_tier_mismatches(text: str, *, tier) -> list[str]:
+    documented: dict[str, str] = {}
+    problems: list[str] = []
+    for row in _table(text, "note-tier"):
+        note = _unticked(row.get("note", ""))
+        if note in documented:
+            problems.append(f"failure-policy.md §7: note {note} has two note-tier rows")
+        documented[note] = _unticked(row.get("tier", ""))
+    code = {note.value: verdict.name for note, verdict in tier.items()}
+    problems += [
+        f"failure-policy.md §7: no note-tier row for {note} (failure_copy.NOTE_TIER lists it)"
+        for note in sorted(set(code) - set(documented))
+    ]
+    problems += [
+        f"failure-policy.md §7: note-tier row {note} matches no failure_copy.NOTE_TIER entry"
+        for note in sorted(set(documented) - set(code))
+    ]
+    problems += [
+        f"failure-policy.md §7: note {note} is {documented[note]} in the doc but {code[note]} in failure_copy.NOTE_TIER"
+        for note in sorted(set(code) & set(documented))
+        if documented[note] != code[note]
+    ]
+    return problems
+
+
+class TestSection7NoteTier:
+    def test_the_note_tier_table_equals_the_code(self):
+        assert _note_tier_mismatches(_doc_text(), tier=NOTE_TIER) == []
+
+    def test_non_vacuity_the_parser_found_every_row_and_the_code_is_total(self):
+        rows = _table(_doc_text(), "note-tier")
+        assert {_unticked(r["note"]) for r in rows} == {n.value for n in OutcomeNote}
+        assert set(NOTE_TIER) == set(OutcomeNote) and rows
+
+    def test_doctored_a_quieter_doc_row_is_red(self):
+        text = _doc_text()
+        doctored = text.replace("| coteacher_source_unusable | WARNING |", "| coteacher_source_unusable | HEALTHY |", 1)
+        assert doctored != text
+        assert _note_tier_mismatches(doctored, tier=NOTE_TIER) == [
+            "failure-policy.md §7: note coteacher_source_unusable is HEALTHY in the doc but WARNING in "
+            "failure_copy.NOTE_TIER"
+        ]
+
+    def test_doctored_a_quieter_code_tier_and_a_missing_row_are_red(self):
+        from src.ui_flet.verdict import Verdict
+
+        # Mute the co-teacher note alone (S11 added a second WARNING note, which stays as it is).
+        muted = {**NOTE_TIER, OutcomeNote.COTEACHER_SOURCE_UNUSABLE: Verdict.HEALTHY}
+        assert _note_tier_mismatches(_doc_text(), tier=muted) == [
+            "failure-policy.md §7: note coteacher_source_unusable is WARNING in the doc but HEALTHY in "
+            "failure_copy.NOTE_TIER"
+        ]
+        text = _doc_text()
+        doctored = text.replace("| coteacher_source_unusable | WARNING |\n", "", 1)
+        assert doctored != text
+        assert _note_tier_mismatches(doctored, tier=NOTE_TIER) == [
+            "failure-policy.md §7: no note-tier row for coteacher_source_unusable (failure_copy.NOTE_TIER lists it)"
+        ]
+
+
+# --------------------------------------------------------------------------- #
+# §3 / §7 P13 ↔ the partner FAQ (plan 0053 S4)                                 #
+# --------------------------------------------------------------------------- #
+_FAQ = Path(__file__).resolve().parents[1] / "docs" / "partner" / "faq.md"
+_CONTRACT = Path(__file__).resolve().parents[1] / "docs" / "developer" / "output-contract.md"
+
+#: The two bullets of the FAQ's "What happens if the GDE files are not present…" answer that
+#: state the criticality rule to a district, found by their LEADS (never by line number).
+_FAQ_LEADS: dict[EntityCriticality, tuple[str, str]] = {
+    EntityCriticality.CRITICAL: ("**If the output that can't be built is ", ", the whole run stops.**"),
+    EntityCriticality.ISOLATABLE: ("**If the output that can't be built is ", ", only that output is left out.**"),
+}
+
+#: P13: while SpacesEDU has not answered Q5, the isolatable bullet must SAY the consequence
+#: for earlier-linked records is unconfirmed — and must stop saying so once it is answered.
+FAQ_PENDING_CLAUSE = (
+    "What SpacesEDU does with records linked by an earlier delivery of that file is pending confirmation."
+)
+
+
+def _q5_status(contract_text: str) -> str:
+    statuses = _Q5_STATUS_RE.findall(contract_text)
+    return statuses[0] if len(statuses) == 1 else ""
+
+
+def _faq_bullet(faq_text: str, criticality: EntityCriticality) -> str:
+    """The one FAQ line carrying ``criticality``'s lead, or ``""``."""
+    lead, tail = _FAQ_LEADS[criticality]
+    lines = [line for line in faq_text.splitlines() if lead in line and tail in line]
+    return lines[0] if len(lines) == 1 else ""
+
+
+def _named_phrases(bullet: str, criticality: EntityCriticality) -> set[str]:
+    lead, tail = _FAQ_LEADS[criticality]
+    listed = bullet.split(lead, 1)[1].split(tail, 1)[0]
+    return {part.strip() for part in re.split(r",\s*|\s+or\s+", listed) if part.strip()}
+
+
+def _faq_mismatches(faq_text: str, contract_text: str) -> list[str]:
+    problems: list[str] = []
+    for criticality in EntityCriticality:
+        bullet = _faq_bullet(faq_text, criticality)
+        if not bullet:
+            problems.append(f"faq.md: no single {criticality.name} bullet (lead {_FAQ_LEADS[criticality][0]!r})")
+            continue
+        expected = {entity_phrase(e) for e, c in ENTITY_CRITICALITY.items() if c is criticality}
+        named = _named_phrases(bullet, criticality)
+        if named != expected:
+            problems.append(
+                f"faq.md: the {criticality.name} bullet names {sorted(named)}, "
+                f"but outcomes.ENTITY_CRITICALITY's {criticality.name} set reads {sorted(expected)}"
+            )
+    status = _q5_status(contract_text)
+    isolatable = _faq_bullet(faq_text, EntityCriticality.ISOLATABLE)
+    if status not in {"open", "answered"}:
+        problems.append(f"output-contract.md: Q5-status is {status!r}, not open/answered")
+    elif isolatable and (FAQ_PENDING_CLAUSE in isolatable) != (status == "open"):
+        problems.append(
+            f"faq.md: the ISOLATABLE bullet {'lacks' if status == 'open' else 'still carries'} the pending "
+            f"clause while Q5-status is {status!r} (P13)"
+        )
+    return problems
+
+
+class TestTheFaqStatesTheCriticalityRule:
+    def test_the_faq_names_exactly_the_declared_sets_and_the_pending_clause(self):
+        assert _faq_mismatches(_FAQ.read_text(encoding="utf-8"), _CONTRACT.read_text(encoding="utf-8")) == []
+
+    def test_non_vacuity_both_bullets_parse_and_q5_is_open_today(self):
+        faq = _FAQ.read_text(encoding="utf-8")
+        assert _named_phrases(_faq_bullet(faq, EntityCriticality.ISOLATABLE), EntityCriticality.ISOLATABLE) == {
+            "family contacts",
+            "courses",
+            "student courses",
+            "attendance rows",
+        }
+        assert len(_named_phrases(_faq_bullet(faq, EntityCriticality.CRITICAL), EntityCriticality.CRITICAL)) == 4
+        assert _q5_status(_CONTRACT.read_text(encoding="utf-8")) == "open"
+        assert FAQ_PENDING_CLAUSE in _faq_bullet(faq, EntityCriticality.ISOLATABLE)
+
+    def test_doctored_a_dropped_isolatable_entity_is_red(self):
+        faq = _FAQ.read_text(encoding="utf-8")
+        doctored = faq.replace(
+            "family contacts, courses, student courses or attendance rows", "family contacts or courses", 1
+        )
+        assert doctored != faq
+        assert _faq_mismatches(doctored, _CONTRACT.read_text(encoding="utf-8")) == [
+            "faq.md: the ISOLATABLE bullet names ['courses', 'family contacts'], but outcomes.ENTITY_CRITICALITY's "
+            "ISOLATABLE set reads ['attendance rows', 'courses', 'family contacts', 'student courses']"
+        ]
+
+    def test_doctored_a_missing_pending_clause_is_red_while_q5_is_open(self):
+        faq = _FAQ.read_text(encoding="utf-8")
+        doctored = faq.replace(" " + FAQ_PENDING_CLAUSE, "", 1)
+        assert doctored != faq
+        assert _faq_mismatches(doctored, _CONTRACT.read_text(encoding="utf-8")) == [
+            "faq.md: the ISOLATABLE bullet lacks the pending clause while Q5-status is 'open' (P13)"
+        ]
+
+    def test_doctored_an_answered_q5_makes_the_pending_clause_red(self):
+        contract = _CONTRACT.read_text(encoding="utf-8")
+        answered = contract.replace("Q5-status: open", "Q5-status: answered", 1)
+        assert answered != contract
+        assert _faq_mismatches(_FAQ.read_text(encoding="utf-8"), answered) == [
+            "faq.md: the ISOLATABLE bullet still carries the pending clause while Q5-status is 'answered' (P13)"
+        ]
+
+    def test_doctored_a_missing_bullet_is_red(self):
+        faq = _FAQ.read_text(encoding="utf-8")
+        doctored = faq.replace(", the whole run stops.**", ", everything stops.**", 1)
+        assert _faq_mismatches(doctored, _CONTRACT.read_text(encoding="utf-8")) == [
+            'faq.md: no single CRITICAL bullet (lead "**If the output that can\'t be built is ")'
+        ]
+
+
+# --------------------------------------------------------------------------- #
+# §5 ↔ the fail-closed guards' call sites (plan 0053 S10)                      #
+# --------------------------------------------------------------------------- #
+_SRC = Path(__file__).resolve().parents[1] / "src"
+
+#: How a call site's ``entity=`` reads when it is not a string literal: the entity is the
+#: CALLER's (a shared helper — ``apply_row_filters``, ``assign_class_ids``, ...).
+_CALLER = "(caller)"
+
+
+class _GuardCall:
+    """One ``require_columns(...)`` call: where, for which entity, guarding what.
+
+    ``tagged`` is PER CALL: the ``# failure-policy: <guard>`` tag must sit in the comment
+    block directly above the call's first line — a tag elsewhere in the function does not
+    cover a second call (so S11's tag bijection starts from per-call tags).
+    """
+
+    def __init__(self, site: str, entity: str, guard: str, call_line: int, lines: list[str]) -> None:
+        self.site, self.entity, self.guard = site, entity, guard
+        tag = f"# failure-policy: {guard}"
+        index = call_line - 2  # the line directly above the call, 0-based
+        self.tagged = False
+        while index >= 0 and lines[index].strip().startswith("#"):
+            if lines[index].strip() == tag:
+                self.tagged = True
+                break
+            index -= 1
+
+
+def _guard_calls(source: str, module: str) -> list[_GuardCall]:
+    """Every ``require_columns`` call in ``source``, by AST (never by grep)."""
+    lines = source.splitlines()
+    calls: list[_GuardCall] = []
+
+    def visit(node: ast.AST, scope: list[str]) -> None:
+        for child in ast.iter_child_nodes(node):
+            is_def = isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+            child_scope = [*scope, child.name] if is_def else scope
+            if isinstance(child, ast.Call):
+                callee = child.func
+                name = callee.id if isinstance(callee, ast.Name) else getattr(callee, "attr", "")
+                if name == "require_columns":
+                    keywords = {kw.arg: kw.value for kw in child.keywords}
+                    entity_node, guard_node = keywords.get("entity"), keywords.get("guard")
+                    entity = entity_node.value if isinstance(entity_node, ast.Constant) else _CALLER
+                    guard = (
+                        GuardKind[guard_node.attr].value
+                        if isinstance(guard_node, ast.Attribute) and guard_node.attr in GuardKind.__members__
+                        else "?"
+                    )
+                    site = ".".join([module, *scope])
+                    calls.append(_GuardCall(site, str(entity), guard, child.lineno, lines))
+            visit(child, child_scope)
+
+    visit(ast.parse(source), [])
+    return calls
+
+
+def _code_guard_calls() -> list[_GuardCall]:
+    return [
+        call
+        for path in sorted(_SRC.rglob("*.py"))
+        for call in _guard_calls(path.read_text(encoding="utf-8"), path.stem)
+    ]
+
+
+def _site_numbers(text: str) -> set[str]:
+    return {_unticked(row.get("#", "")) for row in _table(text, "sites")}
+
+
+def _guard_site_mismatches(text: str, calls: list[_GuardCall]) -> list[str]:
+    rows = _table(text, "require-columns")
+    documented = {
+        (_unticked(r.get("site", "")), _unticked(r.get("entity", "")), _unticked(r.get("guard", ""))) for r in rows
+    }
+    code = {(c.site, c.entity, c.guard) for c in calls}
+    problems = [
+        f"failure-policy.md §5: no require-columns row for {site} (entity {entity}, guard {guard})"
+        for site, entity, guard in sorted(code - documented)
+    ]
+    problems += [
+        f"failure-policy.md §5: require-columns row {site} (entity {entity}, guard {guard}) matches no call site"
+        for site, entity, guard in sorted(documented - code)
+    ]
+    problems += [f"{c.site}: require_columns guard is not a GuardKind member" for c in calls if c.guard == "?"]
+    problems += sorted(
+        {
+            f"{c.site}: a require_columns call has no `# failure-policy: {c.guard}` tag above it"
+            for c in calls
+            if not c.tagged
+        }
+    )
+    catalogue = _site_numbers(text)
+    for row in rows:
+        for cited in (part.strip() for part in _unticked(row.get("§5", "")).split(",")):
+            number = cited.split("(", 1)[0].strip()
+            if number not in catalogue:
+                problems.append(
+                    f"failure-policy.md §5: require-columns row {row.get('site')} cites #{cited}, not in the catalogue"
+                )
+    return problems
+
+
+class TestSection5FailClosedGuards:
+    def test_the_table_equals_the_call_sites_and_every_site_is_tagged(self):
+        assert _guard_site_mismatches(_doc_text(), _code_guard_calls()) == []
+
+    def test_non_vacuity_both_sides_found_the_guards(self):
+        calls = _code_guard_calls()
+        sites = {(c.site, c.entity, c.guard) for c in calls}
+        assert len(sites) >= 20, sorted(sites)
+        assert ("base.BaseTransformer.apply_row_filters", _CALLER, "pii_scope") in sites
+        assert ("enrollments.EnrollmentTransformer._homeroom_enrollments", "Enrollments", "join_key") in sites
+        assert len(_table(_doc_text(), "require-columns")) == len(sites)
+        assert {c.guard for c in calls} == {g.value for g in GuardKind}, "both guard kinds are in use"
+
+    def test_the_collector_reads_a_synthetic_site(self):
+        source = (
+            "class T:\n"
+            "    def m(self, df):\n"
+            "        # failure-policy: join_key\n"
+            "        require_columns(df.columns, ['X'], entity='Classes', guard=GuardKind.JOIN_KEY)\n"
+            "def f(df, who):\n"
+            "    columns.require_columns(df.columns, ['Y'], entity=who, guard=GuardKind.PII_SCOPE)\n"
+        )
+        calls = _guard_calls(source, "mod")
+        assert [(c.site, c.entity, c.guard, c.tagged) for c in calls] == [
+            ("mod.T.m", "Classes", "join_key", True),
+            ("mod.f", _CALLER, "pii_scope", False),
+        ]
+
+    def test_doctored_a_missing_row_is_red(self):
+        text = _doc_text()
+        doctored = text.replace("| `staff.StaffTransformer._merge_roster` | Staff | join_key | 13a |\n", "", 1)
+        assert doctored != text
+        assert _guard_site_mismatches(doctored, _code_guard_calls()) == [
+            "failure-policy.md §5: no require-columns row for staff.StaffTransformer._merge_roster "
+            "(entity Staff, guard join_key)"
+        ]
+
+    def test_doctored_a_wrong_guard_is_red_both_ways(self):
+        text = _doc_text()
+        doctored = text.replace(
+            "| `staff.StaffTransformer._merge_roster` | Staff | join_key | 13a |",
+            "| `staff.StaffTransformer._merge_roster` | Staff | pii_scope | 13a |",
+            1,
+        )
+        assert doctored != text
+        problems = _guard_site_mismatches(doctored, _code_guard_calls())
+        assert len(problems) == 2 and all("staff.StaffTransformer._merge_roster" in p for p in problems)
+
+    def test_doctored_an_untagged_or_uncatalogued_call_site_is_red(self):
+        calls = _code_guard_calls()
+        extra = _guard_calls(
+            "def g(df):\n    require_columns(df.columns, ['Z'], entity='Staff', guard=GuardKind.JOIN_KEY)\n", "planted"
+        )
+        assert _guard_site_mismatches(_doc_text(), [*calls, *extra]) == [
+            "failure-policy.md §5: no require-columns row for planted.g (entity Staff, guard join_key)",
+            "planted.g: a require_columns call has no `# failure-policy: join_key` tag above it",
+        ]
+
+    def test_doctored_a_second_call_under_one_function_tag_is_red(self):
+        """The tag is per CALL: one tag at the top of a function does not cover a second call."""
+        source = (
+            "def h(df, other):\n"
+            "    # failure-policy: join_key\n"
+            "    require_columns(df.columns, ['A'], entity='Staff', guard=GuardKind.JOIN_KEY)\n"
+            "    require_columns(other.columns, ['B'], entity='Staff', guard=GuardKind.JOIN_KEY)\n"
+        )
+        assert [c.tagged for c in _guard_calls(source, "mod")] == [True, False]
+
+    def test_doctored_a_cited_number_outside_the_catalogue_is_red(self):
+        text = _doc_text()
+        doctored = text.replace("| Staff | join_key | 13a |", "| Staff | join_key | 99 |", 1)
+        assert doctored != text
+        assert _guard_site_mismatches(doctored, _code_guard_calls()) == [
+            "failure-policy.md §5: require-columns row `staff.StaffTransformer._merge_roster` cites #99, not in the catalogue"
+        ]
+
+
+# --------------------------------------------------------------------------- #
+# §5 — every site tag ↔ the site catalogue, a full bijection (plan 0053 S11)   #
+# --------------------------------------------------------------------------- #
+#: A tag line is exactly this comment on its own line (a docstring that MENTIONS the tag in
+#: backticks is not one).
+_TAG_LINE = re.compile(r"^\s*# failure-policy: (\w+)\s*$")
+
+#: The five §5 classes, by the letter the catalogue's Class column uses. The first two are
+#: ``GuardKind``'s values (the fail-closed guards); the other three exist only as tags.
+_CLASS_OF_LETTER: dict[str, str] = {
+    "a": GuardKind.PII_SCOPE.value,
+    "b": GuardKind.JOIN_KEY.value,
+    "c": "contract_field",
+    "d": "optional_field",
+    "e": "safety_heuristic",
+}
+_SITE_CLASSES = frozenset(_CLASS_OF_LETTER.values())
+
+
+def _enclosing_defs(tree: ast.AST, module: str) -> list[tuple[int, int, str]]:
+    """``(first line, last line, module.Class.function)`` for every function in ``tree``."""
+    found: list[tuple[int, int, str]] = []
+
+    def visit(node: ast.AST, scope: list[str]) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                child_scope = [*scope, child.name]
+                if not isinstance(child, ast.ClassDef):
+                    found.append((child.lineno, child.end_lineno or child.lineno, ".".join([module, *child_scope])))
+                visit(child, child_scope)
+            else:
+                visit(child, scope)
+
+    visit(tree, [])
+    return found
+
+
+def _site_tags(source: str, module: str) -> dict[tuple[str, str], int]:
+    """``{(site, class): count}`` for every tag line in ``source`` (site = the innermost function)."""
+    defs = _enclosing_defs(ast.parse(source), module)
+    tags: dict[tuple[str, str], int] = {}
+    for number, line in enumerate(source.splitlines(), start=1):
+        match = _TAG_LINE.match(line)
+        if not match:
+            continue
+        enclosing = [d for d in defs if d[0] <= number <= d[1]]
+        site = min(enclosing, key=lambda d: d[1] - d[0])[2] if enclosing else module
+        key = (site, match.group(1))
+        tags[key] = tags.get(key, 0) + 1
+    return tags
+
+
+def _code_site_tags() -> dict[tuple[str, str], int]:
+    tags: dict[tuple[str, str], int] = {}
+    for path in sorted(_SRC.rglob("*.py")):
+        for key, count in _site_tags(path.read_text(encoding="utf-8"), path.stem).items():
+            tags[key] = tags.get(key, 0) + count
+    return tags
+
+
+def _cited(cell: str) -> list[str]:
+    """The catalogue numbers a ``§5`` cell cites (``27(i)`` → ``27``)."""
+    return [part.split("(", 1)[0].strip() for part in _unticked(cell).split(",") if part.strip()]
+
+
+def _row_classes(row: dict[str, str]) -> set[str]:
+    return {_CLASS_OF_LETTER[letter] for letter in re.findall(r"\(([a-e])\)", row.get("Class", ""))}
+
+
+def _tag_site_mismatches(text: str, tags: dict[tuple[str, str], int]) -> list[str]:
+    """Every problem with the ``tags`` / ``untagged-sites`` tables against the code (empty = bijection)."""
+    rows = _table(text, "tags")
+    documented = {
+        (_unticked(r.get("site", "")), _unticked(r.get("class", ""))): _unticked(r.get("tags", "")) for r in rows
+    }
+    problems = [
+        f"failure-policy.md §5: no tags row for {site} ({cls} ×{count})"
+        for (site, cls), count in sorted(tags.items())
+        if documented.get((site, cls)) is None
+    ]
+    problems += [
+        f"failure-policy.md §5: tags row {site} ({cls}) matches no tag in src/"
+        for (site, cls) in sorted(documented)
+        if (site, cls) not in tags
+    ]
+    problems += [
+        f"failure-policy.md §5: tags row {site} ({cls}) says ×{documented[(site, cls)]}, the code has ×{count}"
+        for (site, cls), count in sorted(tags.items())
+        if documented.get((site, cls)) not in (None, str(count))
+    ]
+    problems += [
+        f"{site}: `# failure-policy: {cls}` is not a §5 class"
+        for (site, cls) in sorted(tags)
+        if cls not in _SITE_CLASSES
+    ]
+
+    catalogue = {_unticked(r.get("#", "")): r for r in _table(text, "sites")}
+    covered: set[str] = set()
+    for row in rows:
+        site, cls = _unticked(row.get("site", "")), _unticked(row.get("class", ""))
+        for number in _cited(row.get("§5", "")):
+            if number not in catalogue:
+                problems.append(f"failure-policy.md §5: tags row {site} cites #{number}, not in the catalogue")
+                continue
+            covered.add(number)
+            if cls not in _row_classes(catalogue[number]):
+                problems.append(f"failure-policy.md §5: tags row {site} ({cls}) cites #{number}, whose class differs")
+    exempt = {_unticked(r.get("#", "")) for r in _table(text, "untagged-sites")}
+    problems += [
+        f"failure-policy.md §5: catalogue row #{n} has no tag and no untagged-sites reason"
+        for n in sorted(set(catalogue) - covered - exempt)
+    ]
+    problems += [
+        f"failure-policy.md §5: catalogue row #{n} is both tagged and listed as untagged"
+        for n in sorted(covered & exempt)
+    ]
+    problems += [
+        f"failure-policy.md §5: untagged-sites row #{n} is not in the catalogue"
+        for n in sorted(exempt - set(catalogue))
+    ]
+    return problems
+
+
+def _note_calls(source: str) -> list[ast.Call]:
+    """Every ``record_note`` call in ``source`` (by callee name, bare or attribute)."""
+    return [
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Call)
+        and (node.func.id if isinstance(node.func, ast.Name) else getattr(node.func, "attr", "")) == "record_note"
+    ]
+
+
+def _untagged_note_calls(source: str, module: str) -> list[str]:
+    """``record_note`` calls without a ``# failure-policy:`` tag in the comment block directly above."""
+    lines = source.splitlines()
+    missing: list[str] = []
+    for node in _note_calls(source):
+        index, tagged = node.lineno - 2, False
+        while index >= 0 and lines[index].strip().startswith("#"):
+            if _TAG_LINE.match(lines[index]):
+                tagged = True
+                break
+            index -= 1
+        if not tagged:
+            missing.append(f"{module}:{node.lineno}")
+    return missing
+
+
+def _produced_notes() -> set[str]:
+    """Every ``OutcomeNote.<member>`` referenced under ``src/etl`` (outside ``outcomes.py``)."""
+    produced: set[str] = set()
+    for path in sorted((_SRC / "etl").rglob("*.py")):
+        if path.name == "outcomes.py":
+            continue
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "OutcomeNote":
+                produced.add(node.attr)
+    return produced
+
+
+#: The ``record_note`` call sites under ``src/`` when S11 landed (a floor for the tag scan).
+_RECORD_NOTE_CALL_SITES_FLOOR = 16
+
+
+class TestSection5SiteTagBijection:
+    def test_every_tag_has_its_row_and_every_catalogue_row_is_tagged_or_exempt(self):
+        assert _tag_site_mismatches(_doc_text(), _code_site_tags()) == []
+
+    def test_non_vacuity_all_five_classes_are_tagged_and_both_tables_parse(self):
+        tags = _code_site_tags()
+        assert {cls for _site, cls in tags} == _SITE_CLASSES
+        assert ("base.BaseTransformer.decide_enroll_status", "safety_heuristic") in tags
+        assert ("family.FamilyTransformer._exclude_rows_without_email", "contract_field") in tags
+        assert len(_table(_doc_text(), "tags")) == len(tags) >= 30
+        assert len(_table(_doc_text(), "untagged-sites")) >= 1
+
+    def test_the_collector_reads_a_synthetic_site_and_ignores_a_docstring_mention(self):
+        source = (
+            "class T:\n"
+            '    """Mentions ``# failure-policy: join_key`` in prose."""\n'
+            "    def m(self):\n"
+            "        # failure-policy: optional_field\n"
+            "        return 1\n"
+            "def f():\n"
+            "    # failure-policy: safety_heuristic\n"
+            "    # failure-policy: safety_heuristic\n"
+            "    pass\n"
+        )
+        assert _site_tags(source, "mod") == {("mod.T.m", "optional_field"): 1, ("mod.f", "safety_heuristic"): 2}
+
+    def test_doctored_a_planted_tag_is_red(self):
+        planted = {**_code_site_tags(), ("planted.g", "optional_field"): 1}
+        assert _tag_site_mismatches(_doc_text(), planted) == [
+            "failure-policy.md §5: no tags row for planted.g (optional_field ×1)"
+        ]
+
+    def test_doctored_a_tag_outside_the_five_classes_is_red(self):
+        planted = {**_code_site_tags(), ("planted.g", "guessed_class"): 1}
+        problems = _tag_site_mismatches(_doc_text(), planted)
+        assert "planted.g: `# failure-policy: guessed_class` is not a §5 class" in problems
+
+    def test_doctored_a_removed_tag_and_a_changed_count_are_red(self):
+        tags = dict(_code_site_tags())
+        del tags[("course_codes.note_unapplied_exclusions", "safety_heuristic")]
+        tags[("base.BaseTransformer.decide_enroll_status", "safety_heuristic")] = 3
+        problems = _tag_site_mismatches(_doc_text(), tags)
+        assert (
+            "failure-policy.md §5: tags row course_codes.note_unapplied_exclusions (safety_heuristic) "
+            "matches no tag in src/"
+        ) in problems
+        assert any("decide_enroll_status (safety_heuristic) says ×4, the code has ×3" in p for p in problems)
+
+    def test_doctored_an_uncovered_catalogue_row_is_red(self):
+        text = _doc_text()
+        doctored = text.replace("| `course_codes.note_unapplied_exclusions` | safety_heuristic | 1 | 32 |\n", "", 1)
+        assert doctored != text
+        problems = _tag_site_mismatches(doctored, _code_site_tags())
+        assert "failure-policy.md §5: catalogue row #32 has no tag and no untagged-sites reason" in problems
+
+    def test_doctored_a_wrong_class_is_red(self):
+        text = _doc_text()
+        doctored = text.replace(
+            "| `course_codes.note_unapplied_exclusions` | safety_heuristic | 1 | 32 |",
+            "| `course_codes.note_unapplied_exclusions` | optional_field | 1 | 32 |",
+            1,
+        )
+        assert doctored != text
+        problems = _tag_site_mismatches(doctored, _code_site_tags())
+        assert (
+            "failure-policy.md §5: tags row course_codes.note_unapplied_exclusions (optional_field) cites #32, "
+            "whose class differs"
+        ) in problems
+
+    def test_doctored_an_exempt_row_that_is_also_tagged_is_red(self):
+        text = _doc_text()
+        marker = "<!-- failure-policy-table: untagged-sites -->\n| # | why it carries no tag of its own |\n|---|---|\n"
+        assert marker in text
+        doctored = text.replace(marker, marker + "| 32 | planted |\n", 1)
+        problems = _tag_site_mismatches(doctored, _code_site_tags())
+        assert "failure-policy.md §5: catalogue row #32 is both tagged and listed as untagged" in problems
+
+    def test_every_record_note_call_is_tagged(self):
+        missing = [
+            call
+            for path in sorted(_SRC.rglob("*.py"))
+            for call in _untagged_note_calls(path.read_text(encoding="utf-8"), path.stem)
+        ]
+        assert missing == []
+
+    def test_non_vacuity_the_tag_scan_sees_every_record_note_call_site(self):
+        """The scan above passes vacuously if it finds no call (a path or callee-matching slip):
+        it must see at least the call sites S11 left (a floor — a new site only raises it)."""
+        seen = sum(len(_note_calls(path.read_text(encoding="utf-8"))) for path in sorted(_SRC.rglob("*.py")))
+        assert seen >= _RECORD_NOTE_CALL_SITES_FLOOR
+
+    def test_doctored_an_untagged_record_note_call_is_red_and_a_tagged_one_is_not(self):
+        source = (
+            "def f(ctx):\n"
+            "    # failure-policy: optional_field\n"
+            "    record_note(ctx, 'Classes', note, 1, log=log, message='m')\n"
+            "    record_note(ctx, 'Classes', note, 1, log=log, message='m')\n"
+        )
+        assert _untagged_note_calls(source, "mod") == ["mod:4"]
+
+    def test_every_note_has_a_producer_under_src_etl(self):
+        produced = _produced_notes()
+        assert {note.name for note in OutcomeNote} <= produced, sorted({n.name for n in OutcomeNote} - produced)
+        assert "ALL_ACTIVE_DEFAULT" in produced and "COTEACHER_SOURCE_UNUSABLE" in produced

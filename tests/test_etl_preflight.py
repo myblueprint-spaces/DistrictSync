@@ -22,14 +22,20 @@ from src.config.loader import load_config
 from src.config.models import EntityConfig, GlobalConfig, MappingConfig
 from src.etl.column_names import normalize_column_name
 from src.etl.preflight import (
+    OBSERVATION_SCOPE,
     ROW_FILTER_FIELD,
+    ExpectationOrigin,
     ExpectedColumn,
     MissingColumn,
+    ObservationScope,
     PreflightReport,
     expected_columns,
     missing_columns,
+    missing_columns_by_entity,
+    observation_scope,
     preflight_report,
 )
+from tests.test_contract import _DISTRICT_SETUP
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "src" / "etl" / "preflight.py"
 SNAPSHOT_INPUT = Path(__file__).resolve().parent / "snapshots" / "input"
@@ -181,7 +187,6 @@ def _synthetic_config() -> MappingConfig:
                         "withdraw_date_column": "Withdraw Date",
                         "active_values": ["Active", "PreReg"],  # VALUES, not a column
                     },
-                    "Typo": {"unrecognised": "shape"},  # warn-passthrough → nothing
                 },
                 "row_filters": [{"column": "Parent Auth / Guardian", "include": ["Y"]}],
                 "source_columns": {"full_course_code": "Course Code Full", "unset_role": ""},
@@ -224,7 +229,7 @@ class TestExpectedColumnsOverEveryVariant:
         """Twinned against the assertion above: the same entity DOES contribute for the
         transform/format/name-config shapes, so an empty result here is not vacuous."""
         expected = expected_columns(_synthetic_config())
-        silent = {"EnrollStatus", "School ID", "Start Date", "Typo"}
+        silent = {"EnrollStatus", "School ID", "Start Date"}
         assert [item for item in expected if item.output_field in silent] == []
 
     def test_a_blank_configured_name_is_not_an_expectation(self):
@@ -662,3 +667,321 @@ class TestTotality:
         config.active_entities = lambda: {"Students"}  # type: ignore[method-assign]
 
         assert expected_columns(config) == ()  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# The run-time source observation — own files, per entity (plan 0053 S6)
+# ---------------------------------------------------------------------------
+
+# The myedbc file set with every column its active entities map — the all-present baseline the
+# per-entity twins below each take ONE column away from. Headers as the extractor observes them
+# (normalised); the keys are the config's own spelling of each file.
+_MYEDBC_OBSERVED: dict[str, tuple[str, ...]] = {
+    "StudentDemographicInformation.txt": (
+        "student number",
+        "legal first name",
+        "legal surname",
+        "date of birth",
+        "grade",
+        "school number",
+        "homeroom",
+        "next school code",
+        "usual first name",
+        "usual surname",
+        "student email address",
+    ),
+    "StaffInformationEnhanced.txt": (
+        "teacher id",
+        "first name",
+        "last name",
+        "email address",
+        "teaching staff",
+        "school number",
+    ),
+    "EmergencyContactInformation.txt": ("student number", "first name", "last name", "email address"),
+    "StudentSchedule.txt": (
+        "student id",
+        "teacher id",
+        "master timetable id",
+        "school number",
+        "grade",
+        "primary teacher",
+        "teacher name",
+        "course title",
+        "section letter",
+    ),
+    "CourseInformation.txt": ("school number", "course code", "title"),
+    "ClassInformationEnh.txt": ("school number", "teacher id", "master timetable id"),
+}
+
+
+def _observed_without(filename: str, *columns: str) -> dict[str, tuple[str, ...]]:
+    observed = dict(_MYEDBC_OBSERVED)
+    observed[filename] = tuple(c for c in observed[filename] if c not in columns)
+    return observed
+
+
+class TestMissingColumnsByEntity:
+    """The OWN-FILE claim (P11): an entity's mapped column absent from the file(s) IT reads.
+    Every negative ("no claim") is paired with a positive that proves the same input DOES
+    produce a claim once the one condition under test is removed."""
+
+    def test_the_all_present_baseline_makes_no_claim(self):
+        assert missing_columns_by_entity(load_config("myedbc"), _MYEDBC_OBSERVED) == {}
+
+    def test_the_sd67_shape_names_family_s_missing_email_column_in_config_spelling(self):
+        """SD67 2026-09-22 / SD51 2026-09-18: Family maps ``Email Address``; its contacts
+        file lacks it — every contact is then excluded for a blank email."""
+        config = load_config("sd67myedbc")
+        assert "Family" not in missing_columns_by_entity(config, _renamed_demographic(_MYEDBC_OBSERVED))
+
+        observed = _renamed_demographic(_observed_without("EmergencyContactInformation.txt", "email address"))
+        assert missing_columns_by_entity(config, observed)["Family"] == ("Email Address",)
+
+    def test_a_column_in_another_entity_s_file_does_not_hide_a_miss_in_this_one(self):
+        """The masking bug the file-agnostic union has: Staff's file carries
+        ``email address``, so ``missing_columns`` reports NOTHING for Family's miss."""
+        observed = _observed_without("EmergencyContactInformation.txt", "email address")
+        assert "email address" in observed["StaffInformationEnhanced.txt"]
+        config = load_config("myedbc")
+
+        assert missing_columns_by_entity(config, observed) == {"Family": ("Email Address",)}
+        # The file-agnostic twin cannot see it — the reason S6 compares OWN files.
+        assert "Email Address" not in {m.source_column for m in missing_columns(expected_columns(config), observed)}
+
+    def test_no_claim_for_an_entity_one_of_whose_files_was_not_observed(self):
+        """Soundness: Classes reads five files; with ClassInformation absent (an empty
+        tuple — what the extractor yields for a file not on disk) nothing is claimed for
+        Classes, even though a column it maps is missing. The twin, all five observed,
+        claims it."""
+        missing_title = _observed_without("StudentSchedule.txt", "course title")
+        config = load_config("myedbc")
+        assert missing_columns_by_entity(config, missing_title) == {"Classes": ("Course Title",)}
+
+        unobserved = dict(missing_title)
+        unobserved["ClassInformationEnh.txt"] = ()
+        assert "Classes" not in missing_columns_by_entity(config, unobserved)
+
+    def test_a_file_left_out_of_the_observation_entirely_is_not_observed(self):
+        missing_title = _observed_without("StudentSchedule.txt", "course title")
+        del missing_title["ClassInformationEnh.txt"]
+        assert "Classes" not in missing_columns_by_entity(load_config("myedbc"), missing_title)
+
+    def test_nothing_observed_makes_no_claim_at_all(self):
+        config = load_config("myedbc")
+        assert missing_columns_by_entity(config, {}) == {}
+        assert missing_columns_by_entity(config, dict.fromkeys(_MYEDBC_OBSERVED, ())) == {}
+
+    def test_a_row_filter_column_is_observed(self):
+        """SD60's guardian ``row_filters`` column is a mapped read of Family's OWN file."""
+        config = load_config("sd60myedbc")
+        family_files = tuple(config.mappings["Family"].source_files.values())
+        observed = {name: ("student number", "first name", "last name", "email address") for name in family_files}
+        findings = missing_columns_by_entity(config, observed)
+        assert "Parent Auth / Guardian" in findings["Family"]
+        observed = {name: (*cols, "parent auth / guardian") for name, cols in observed.items()}
+        assert "Parent Auth / Guardian" not in missing_columns_by_entity(config, observed).get("Family", ())
+
+    def test_source_columns_are_excluded_but_the_same_name_in_the_field_map_is_not(self):
+        """``source_columns`` are documented CROSS-file auxiliary reads: never an own-file
+        claim. The twin maps the SAME header through the field_map and is claimed."""
+        aux_only = _entity_config(
+            field_map={"User ID": "Student Number"}, source_columns={"full_course_code": "Course Code Full"}
+        )
+        observed = {"Demo.txt": ("student number",)}
+        assert missing_columns_by_entity(aux_only, observed) == {}
+
+        mapped = _entity_config(field_map={"User ID": "Student Number", "Code": "Course Code Full"})
+        assert missing_columns_by_entity(mapped, observed) == {"Students": ("Course Code Full",)}
+
+    def test_every_expectation_carries_its_origin(self):
+        origins = {(item.output_field, item.origin) for item in expected_columns(_synthetic_config())}
+        assert ("User ID", ExpectationOrigin.FIELD_MAP) in origins
+        assert (ROW_FILTER_FIELD, ExpectationOrigin.ROW_FILTER) in origins
+        assert ("full_course_code", ExpectationOrigin.SOURCE_COLUMN) in origins
+        assert ExpectedColumn("E", "F", "C").origin is ExpectationOrigin.FIELD_MAP  # the reporting default
+
+    def test_enrollments_compares_against_every_file_because_it_also_reads_classinformation(self):
+        """``Teacher ID`` present ONLY in ClassInformation (a Classes file, read by the
+        co-teacher rows) is not an Enrollments miss; absent everywhere, it is."""
+        nowhere = {name: tuple(c for c in cols if c != "teacher id") for name, cols in _MYEDBC_OBSERVED.items()}
+        only_in_class_info = {**nowhere, "ClassInformationEnh.txt": _MYEDBC_OBSERVED["ClassInformationEnh.txt"]}
+        assert "teacher id" in only_in_class_info["ClassInformationEnh.txt"]
+        config = load_config("myedbc")
+        assert "Enrollments" not in missing_columns_by_entity(config, only_in_class_info)
+
+        assert missing_columns_by_entity(config, nowhere)["Enrollments"] == ("Teacher ID",)
+
+    def test_an_id_role_pair_column_is_listed_once_in_config_spelling(self):
+        """Enrollments maps ``Student ID`` twice (User ID and Role): one finding."""
+        observed = _observed_without("StudentSchedule.txt", "student id")
+        assert missing_columns_by_entity(load_config("myedbc"), observed)["Enrollments"] == ("Student ID",)
+
+    def test_student_attendance_placeholders_are_never_claimed(self):
+        """Its field_map values are placeholders (it never calls ``apply_field_map``).
+        Twin: an OWN_FILES entity over the same empty-of-them file IS claimed."""
+        config = load_config("sd51attendance")
+        files = tuple(config.mappings["StudentAttendance"].source_files.values())
+        observed = dict.fromkeys(files, ("unrelated column",))
+        assert missing_columns_by_entity(config, observed) == {}
+
+        family_like = _entity_config(field_map={"School Number": "School Number"})
+        assert missing_columns_by_entity(family_like, {"Demo.txt": ("unrelated column",)}) == {
+            "Students": ("School Number",)
+        }
+
+    def test_a_headerless_file_matches_its_declared_headers(self, tmp_path: Path):
+        """SD40's schedule is headerless: the extractor injects the DECLARED names, so the
+        mapped columns match by construction and nothing is claimed for them."""
+        from src.etl.extractor import DataExtractor
+        from src.etl.pipeline import extract_required_files, observed_input_columns
+
+        _DISTRICT_SETUP["sd40myedbc"](tmp_path)
+        config = load_config("sd40myedbc")
+        headers: dict[str, list[str]] = {}
+        for entity_cfg in config.to_raw_dict()["mappings"].values():
+            headers.update(entity_cfg.get("headers", {}))
+        assert headers, "sd40 declares headers for a headerless file"
+        data = DataExtractor(str(tmp_path)).load_data(extract_required_files(config), file_headers=headers)
+        assert missing_columns_by_entity(config, observed_input_columns(data)) == {}
+
+    def test_an_unlisted_entity_defaults_to_its_own_files(self):
+        assert observation_scope("SomethingInvented") is ObservationScope.OWN_FILES
+        assert observation_scope("StudentAttendance") is ObservationScope.NO_CLAIM
+
+
+def _renamed_demographic(observed: dict[str, tuple[str, ...]]) -> dict[str, tuple[str, ...]]:
+    """SD67 reads its ENHANCED demographic export under its own filename."""
+    renamed = dict(observed)
+    renamed["StudentDemographicEnh.txt"] = renamed.pop("StudentDemographicInformation.txt")
+    return renamed
+
+
+def _entity_config(*, field_map: dict, source_columns: dict | None = None) -> MappingConfig:
+    return MappingConfig(
+        version="1.0",
+        sis="SyntheticSIS",
+        district_name="Synthetic",
+        global_config={"enabled_entities": ["Students"]},
+        mappings={
+            "Students": {
+                "source_files": {"student_demographic": "Demo.txt"},
+                "field_map": field_map,
+                "source_columns": source_columns or {},
+            }
+        },
+    )
+
+
+class TestObservationScopeIsComplete:
+    def test_every_registry_entity_declares_where_its_field_map_is_read(self):
+        from src.etl.transformers.registry import TRANSFORMER_REGISTRY
+
+        assert set(OBSERVATION_SCOPE) == set(TRANSFORMER_REGISTRY)
+        assert TRANSFORMER_REGISTRY, "non-vacuity: the registry is not empty"
+
+    def test_doctored_a_missing_entry_is_red(self):
+        from src.etl.transformers.registry import TRANSFORMER_REGISTRY
+
+        doctored = {k: v for k, v in OBSERVATION_SCOPE.items() if k != "Enrollments"}
+        assert set(doctored) != set(TRANSFORMER_REGISTRY)
+
+
+class TestMissingColumnsByEntityIsTotal:
+    def test_an_unreadable_config_yields_nothing(self):
+        assert missing_columns_by_entity(_HostileConfig(), _MYEDBC_OBSERVED) == {}  # type: ignore[arg-type]
+
+    def test_an_unreadable_observation_yields_nothing(self):
+        class _HostileMapping(dict):
+            def items(self):  # noqa: D102
+                raise RuntimeError("unreadable observation")
+
+        assert missing_columns_by_entity(load_config("myedbc"), _HostileMapping()) == {}
+
+    def test_a_header_row_that_raises_part_way_is_not_observed(self):
+        """A partial header row would make every column it did not yield look missing,
+        so the file counts as UNOBSERVED. Twin: the same row read in full claims the one
+        genuinely missing column."""
+
+        def _explodes():
+            yield "student number"
+            raise RuntimeError("truncated header row")
+
+        config = load_config("myedbc")
+        observed: dict = _observed_without("EmergencyContactInformation.txt", "email address")
+        assert missing_columns_by_entity(config, observed)["Family"] == ("Email Address",)
+        observed["EmergencyContactInformation.txt"] = _explodes()
+        assert "Family" not in missing_columns_by_entity(config, observed)
+
+    @pytest.mark.parametrize("junk", [None, "a string is not a header row", 5])
+    def test_a_non_sequence_header_row_is_not_observed(self, junk):
+        observed: dict = _observed_without("EmergencyContactInformation.txt", "email address")
+        observed["EmergencyContactInformation.txt"] = junk
+        assert "Family" not in missing_columns_by_entity(load_config("myedbc"), observed)
+
+
+# The findings the observation makes over every bundled config's CONTRACT FIXTURE
+# (`tests/test_contract.py` builders), recorded rather than hidden. Both are fixture
+# artefacts, not district faults: the shared demographic builder writes no `Next school code`
+# (the base's PreRegSchoolCode source), and the rostering CourseInformation builder carries
+# `Title` where the base's class-name config names `Course Title` (DECISIONS 2026-09-24, S6).
+_NEXT_SCHOOL = {"Students": ("Next school code",)}
+_NEXT_SCHOOL_AND_TITLE = {"Students": ("Next school code",), "Classes": ("Course Title",)}
+_FIXTURE_FINDINGS: dict[str, dict[str, tuple[str, ...]]] = {
+    "myedbc": _NEXT_SCHOOL_AND_TITLE,
+    "sd40myedbc": {},
+    "sd48myedbc": _NEXT_SCHOOL_AND_TITLE,
+    "sd51myedbc": _NEXT_SCHOOL_AND_TITLE,
+    "sd54myedbc": _NEXT_SCHOOL,
+    "sd60myedbc": {},
+    "sd74myedbc": _NEXT_SCHOOL,
+    "sd51attendance": {},
+    "sd83myedbc": _NEXT_SCHOOL_AND_TITLE,
+    "sd27myedbc": _NEXT_SCHOOL_AND_TITLE,
+    "sd67myedbc": _NEXT_SCHOOL_AND_TITLE,
+    "sd69myedbc": _NEXT_SCHOOL_AND_TITLE,
+    "sd71myedbc": _NEXT_SCHOOL_AND_TITLE,
+    "sd75myedbc": _NEXT_SCHOOL_AND_TITLE,
+    "sd10myedbc": _NEXT_SCHOOL_AND_TITLE,
+    "sd38myedbc": _NEXT_SCHOOL,
+    "unitychristianmyedbc": _NEXT_SCHOOL_AND_TITLE,
+    "mbp_all": _NEXT_SCHOOL_AND_TITLE,
+    "mbp_core": _NEXT_SCHOOL,
+    "mbponly": {},
+}
+
+
+def _fixture_findings(sis: str, input_dir: Path) -> dict[str, tuple[str, ...]]:
+    from src.etl.extractor import DataExtractor
+    from src.etl.pipeline import extract_required_files, observed_input_columns
+
+    config = load_config(sis)
+    headers: dict[str, list[str]] = {}
+    for entity_cfg in config.to_raw_dict()["mappings"].values():
+        headers.update(entity_cfg.get("headers", {}))
+    data = DataExtractor(str(input_dir)).load_data(extract_required_files(config), file_headers=headers)
+    return missing_columns_by_entity(config, observed_input_columns(data))
+
+
+class TestTheSweepOverEveryBundledFixture:
+    def test_the_recorded_table_covers_every_swept_config(self):
+        assert set(_FIXTURE_FINDINGS) == set(_DISTRICT_SETUP)
+
+    @pytest.mark.parametrize("sis", sorted(_DISTRICT_SETUP))
+    def test_each_fixture_makes_exactly_its_recorded_findings(self, sis: str, tmp_path: Path):
+        _DISTRICT_SETUP[sis](tmp_path)
+        assert _fixture_findings(sis, tmp_path) == _FIXTURE_FINDINGS[sis]
+
+    def test_doctored_dropping_one_mapped_column_adds_exactly_one_finding(self, tmp_path: Path):
+        """Non-vacuity: the sweep is not green because it cannot see anything."""
+        import pandas as pd
+
+        _DISTRICT_SETUP["myedbc"](tmp_path)
+        demographic = tmp_path / "StudentDemographicInformation.txt"
+        frame = pd.read_csv(demographic, dtype=str)
+        assert "Legal Surname" in frame.columns
+        frame.drop(columns=["Legal Surname"]).to_csv(demographic, index=False)
+
+        findings = _fixture_findings("myedbc", tmp_path)
+        assert findings["Students"] == ("Legal Surname", "Next school code")
+        assert {k: v for k, v in findings.items() if k != "Students"} == {"Classes": ("Course Title",)}

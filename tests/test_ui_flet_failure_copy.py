@@ -1,0 +1,794 @@
+"""``src/ui_flet/failure_copy.py`` — the ONE copy source for failures and outcomes (plan 0053 S3).
+
+What is pinned here, and why each pin has a twin:
+
+* **Totality.** ``FAILED_CATEGORY_COPY`` covers every ``RunErrorCategory`` except ``NONE`` (which
+  raises); ``outcome_sentence`` covers every valid ``(OutcomeKind, OutcomeReason)``;
+  ``OUTCOME_TIER`` answers every valid (entity, kind, reason) triple (plan 0053 S8 made it a
+  function of entity and cause; its full table is pinned in ``tests/test_standing_empty_warning.py``).
+  Each is derived from the ENUM, so a new member without copy is RED.
+* **Bounded surfacing (P9).** No copy string carries an interpolation slot, a path, an unknown
+  entity key or exception text — swept with a sentinel that would be visible anywhere. The ONE
+  name a sentence may carry is an outcome's config-declared label (plan 0053 S7, D4): the sweep
+  includes labelled outcomes, and a record whose stored labels are junk renders none of them.
+* **The misdirection this replaced.** Only ``NO_INPUT`` and ``INPUT_UNREADABLE`` mention the input
+  folder — asserted in both directions (the two that must, do).
+* **One copy source.** Home, Run History and Convert's card render the SAME category detail, and
+  the closing tail has ONE meaning everywhere — records are built the way the pipeline builds them
+  (``build_run_record``), never in a shape no producer writes.
+* **No permissive default.** The tail's and the outcome sentence's bools are keyword-only with no
+  default (signature-pinned, with a doctored twin proving the check can fail).
+* **Doc parity.** The PARTIAL strings ``docs/claugentic-PRODUCT.md`` quotes are computed from source.
+* **The import cycle the entity-map move avoided.** ``failure_copy`` imports nothing from
+  ``home_status``, and ``home_status`` defines no entity label map — AST-pinned with doctored twins.
+"""
+
+from __future__ import annotations
+
+import ast
+import inspect
+from collections.abc import Callable
+from datetime import datetime, timedelta
+from pathlib import Path
+
+import pytest
+
+from src.config.app_config import AppConfig
+from src.etl.errors import (
+    ConfigLoadError,
+    EtlError,
+    GuardKind,
+    NoUsableInputError,
+    RunErrorCategory,
+    SourceSchemaError,
+)
+from src.etl.extractor import ExtractionError
+from src.etl.outcomes import (
+    ENTITY_CRITICALITY,
+    VALID_REASONS,
+    EntityOutcome,
+    OutcomeKind,
+    OutcomeReason,
+    failed_entities,
+)
+from src.etl.pipeline import DeliveryIntegrityError, OutputWriteError, build_run_record
+from src.ui_flet import failure_copy, home_status, humanize
+from src.ui_flet.failure_copy import (
+    FAILED_CATEGORY_COPY,
+    FALLBACK_CATEGORY,
+    NOTHING_SAVED_TAIL,
+    NOTHING_SENT_TAIL,
+    OUTCOME_TIER,
+    UNKNOWN_ENTITY_PHRASE,
+    data_warnings_clause,
+    entity_phrase,
+    error_card_copy,
+    failed_copy,
+    failed_copy_for,
+    outcome_sentence,
+    partial_copy,
+)
+from src.ui_flet.home_status import derive_home_status
+from src.ui_flet.run_history import derive_history_banner, to_run_row
+from src.ui_flet.verdict import Verdict
+
+SENTINEL = r"SENTINEL_PII C:\secret"
+_SRC = Path(__file__).resolve().parents[1] / "src" / "ui_flet"
+
+_FAILURE_CATEGORIES = [c for c in RunErrorCategory if c is not RunErrorCategory.NONE]
+_INPUT_FOLDER_CATEGORIES = {RunErrorCategory.NO_INPUT, RunErrorCategory.INPUT_UNREADABLE}
+_VALID_PAIRS = [(kind, reason) for kind, reasons in VALID_REASONS.items() for reason in sorted(reasons)]
+
+
+def _outcome(entity: str, kind: OutcomeKind, reason: OutcomeReason) -> EntityOutcome:
+    return EntityOutcome(entity, kind, reason, 5 if kind is OutcomeKind.BUILT else 0)
+
+
+def _every_copy_string() -> list[str]:
+    """Every string this module can render, for every closed input (both bools, known + unknown)."""
+    out: list[str] = []
+    for category in _FAILURE_CATEGORIES:
+        for requested in (True, False):
+            out.extend(failed_copy(category, delivery_requested=requested))
+    for kind, reason in _VALID_PAIRS:
+        for entity in ("Family", SENTINEL):
+            for delivered in (True, False):
+                out.append(outcome_sentence(_outcome(entity, kind, reason), delivered=delivered))
+    # Plan 0053 S8: a single EMPTY outcome that warns is a PARTIAL detail of its own shape
+    # (sentence + "everything else" + that reason's next step) — every EMPTY reason, both entities.
+    for reason in sorted(VALID_REASONS[OutcomeKind.EMPTY]):
+        for entity in ("Family", SENTINEL):
+            for delivered in (True, False):
+                out.extend(partial_copy([_outcome(entity, OutcomeKind.EMPTY, reason)], delivered=delivered))
+    for failed in (
+        [_outcome("Family", OutcomeKind.FAILED, OutcomeReason.MISSING_SOURCE_COLUMN)],
+        [_outcome(SENTINEL, OutcomeKind.FAILED, OutcomeReason.TRANSFORM_ERROR)],
+        [
+            _outcome("Family", OutcomeKind.FAILED, OutcomeReason.MISSING_SOURCE_COLUMN),
+            _outcome("CourseInfo", OutcomeKind.FAILED, OutcomeReason.TRANSFORM_ERROR),
+            _outcome(SENTINEL, OutcomeKind.FAILED, OutcomeReason.TRANSFORM_ERROR),
+        ],
+        # Every key unknown: the branch where nothing named precedes the count.
+        [
+            _outcome(SENTINEL, OutcomeKind.FAILED, OutcomeReason.TRANSFORM_ERROR),
+            _outcome(SENTINEL + "_2", OutcomeKind.FAILED, OutcomeReason.MISSING_SOURCE_COLUMN),
+        ],
+    ):
+        for delivered in (True, False):
+            out.extend(partial_copy(failed, delivered=delivered))
+    # Plan 0053 S7: labelled outcomes — a known and an unknown entity, both label-carrying pairs.
+    for entity in ("Family", SENTINEL):
+        for kind in (OutcomeKind.FAILED, OutcomeKind.EMPTY):
+            for file_label in (_CONTACTS, ""):
+                labelled = _labelled_outcome(entity, kind, (_GUARDIAN, _EMAIL), file_label=file_label)
+                for delivered in (True, False):
+                    out.append(outcome_sentence(labelled, delivered=delivered))
+                    out.extend(partial_copy([labelled], delivered=delivered))  # both kinds warn (S8)
+    out.append(data_warnings_clause(3))
+    return out
+
+
+_GUARDIAN = "Parent Auth / Guardian"
+_EMAIL = "Email Address"
+_CONTACTS = "EmergencyContactInformation.txt"
+
+
+def _labelled_outcome(
+    entity: str, kind: OutcomeKind, labels: tuple[str, ...], *, file_label: str = ""
+) -> EntityOutcome:
+    return EntityOutcome(entity, kind, OutcomeReason.MISSING_SOURCE_COLUMN, 0, (), labels, file_label)
+
+
+# --------------------------------------------------------------------------- #
+# Entity phrases                                                               #
+# --------------------------------------------------------------------------- #
+class TestEntityPhrase:
+    def test_a_known_entity_reads_as_its_countable_plural(self) -> None:
+        assert entity_phrase("Family") == "family contacts"
+        assert entity_phrase("StudentAttendance") == "attendance rows"
+
+    @pytest.mark.parametrize("entity", sorted(ENTITY_CRITICALITY))
+    def test_every_registry_entity_has_an_authored_phrase(self, entity: str) -> None:
+        # A shipped entity reading "one of your files" would hide WHICH file from the admin.
+        assert entity_phrase(entity) == humanize.SIZE_NOUNS[entity][1]
+        assert entity_phrase(entity) != UNKNOWN_ENTITY_PHRASE
+
+    @pytest.mark.parametrize("entity", [SENTINEL, "", "family", None, 42])
+    def test_anything_else_is_the_generic_phrase_never_the_raw_key(self, entity: object) -> None:
+        assert entity_phrase(entity) == UNKNOWN_ENTITY_PHRASE
+
+
+# --------------------------------------------------------------------------- #
+# Outcome sentences + tier                                                     #
+# --------------------------------------------------------------------------- #
+class TestOutcomeSentence:
+    def test_the_templates_cover_exactly_the_valid_pairs(self) -> None:
+        # Both directions: no valid pair without copy, and no copy for a pair that cannot exist.
+        assert set(failure_copy._OUTCOME_TEMPLATES) == set(_VALID_PAIRS)
+        assert len(_VALID_PAIRS) >= 7  # non-vacuity: the enum really has these pairs
+
+    @pytest.mark.parametrize(("kind", "reason"), _VALID_PAIRS, ids=lambda v: getattr(v, "value", str(v)))
+    @pytest.mark.parametrize("delivered", [True, False])
+    def test_total_over_every_valid_pair(self, kind: OutcomeKind, reason: OutcomeReason, delivered: bool) -> None:
+        for entity in ("Family", SENTINEL):
+            sentence = outcome_sentence(_outcome(entity, kind, reason), delivered=delivered)
+            assert sentence and sentence[0].isupper() and sentence.endswith(".")
+            assert "{" not in sentence and "}" not in sentence
+
+    def test_the_family_missing_column_sentence(self) -> None:
+        outcome = _outcome("Family", OutcomeKind.FAILED, OutcomeReason.MISSING_SOURCE_COLUMN)
+        assert outcome_sentence(outcome, delivered=True) == (
+            "Family contacts were left out of this sync: their export file is missing a column this "
+            "district's mapping needs — often because a different report was saved under the same "
+            "name. Everything else was delivered. Re-export that file and the next sync picks it up "
+            "automatically."
+        )
+        assert "Everything else completed." in outcome_sentence(outcome, delivered=False)
+
+    def test_the_observed_missing_column_sentence_never_names_the_column(self) -> None:
+        """Plan 0053 S6: EMPTY / MISSING_SOURCE_COLUMN carries ``missing_mapped`` on the outcome,
+        but ``missing_mapped`` alone never reaches a sentence — since S7 only ``labels`` (which
+        passed ``safe_label``) do, and this outcome has none. The column is planted as a sentinel
+        so a leak would be visible; the labelled twin is ``TestLabelAwareSentences``."""
+        outcome = EntityOutcome("Family", OutcomeKind.EMPTY, OutcomeReason.MISSING_SOURCE_COLUMN, 0, ("SENTINEL_COL",))
+        sentence = outcome_sentence(outcome, delivered=True)
+        assert sentence == (
+            "Family contacts were not built: none of their rows could be used, and their export "
+            "file is missing a column this district's mapping reads."
+        )
+        assert "SENTINEL" not in sentence
+
+    def test_an_unknown_entity_is_worded_in_the_singular(self) -> None:
+        sentence = outcome_sentence(
+            _outcome(SENTINEL, OutcomeKind.FAILED, OutcomeReason.MISSING_SOURCE_COLUMN), delivered=True
+        )
+        assert sentence.startswith("One of your files was left out of this sync: its export file")
+
+
+class TestLabelAwareSentences:
+    """Plan 0053 S7 (D4): an outcome carrying config-declared labels NAMES them; one without
+    labels reads exactly as S3 wrote it."""
+
+    def test_the_labelled_templates_cover_exactly_the_pairs_that_may_carry_labels(self) -> None:
+        may_carry = {(kind, reason) for kind, reason in _VALID_PAIRS if reason is OutcomeReason.MISSING_SOURCE_COLUMN}
+        assert set(failure_copy._LABELLED_TEMPLATES) == may_carry
+        assert len(may_carry) == 2  # non-vacuity: FAILED and EMPTY
+        for kind, reason in _VALID_PAIRS:
+            if (kind, reason) not in may_carry:
+                with pytest.raises(ValueError):  # the outcome refuses labels, so no template is owed
+                    EntityOutcome("Family", kind, reason, 5 if kind is OutcomeKind.BUILT else 0, (), (_GUARDIAN,))
+
+    def test_the_unity_plain_report_sentence_names_the_file_and_the_column(self) -> None:
+        outcome = _labelled_outcome("Family", OutcomeKind.FAILED, (_GUARDIAN,), file_label=_CONTACTS)
+        assert outcome_sentence(outcome, delivered=True) == (
+            "Family contacts were left out of this sync: their export file, EmergencyContactInformation.txt, "
+            "is missing the column “Parent Auth / Guardian”, which this district's mapping needs — often "
+            "because a different report was saved under the same name. Everything else was delivered. "
+            "Re-export that file and the next sync picks it up automatically."
+        )
+
+    def test_the_twin_without_labels_the_s3_sentence_is_byte_identical(self) -> None:
+        for kind, reason in _VALID_PAIRS:
+            unlabelled = _outcome("Family", kind, reason)
+            for delivered in (True, False):
+                assert outcome_sentence(unlabelled, delivered=delivered) == failure_copy._OUTCOME_TEMPLATES[
+                    (kind, reason)
+                ].format(
+                    **failure_copy._grammar("Family"),
+                    everything_else=failure_copy._everything_else(delivered=delivered),
+                )
+
+    def test_the_empty_sentence_names_the_column_it_reads(self) -> None:
+        outcome = _labelled_outcome("Family", OutcomeKind.EMPTY, (_EMAIL,), file_label=_CONTACTS)
+        assert outcome_sentence(outcome, delivered=True) == (
+            "Family contacts were not built: none of their rows could be used, and their export file, "
+            "EmergencyContactInformation.txt, is missing the column “Email Address”, which this "
+            "district's mapping reads."
+        )
+
+    def test_a_column_only_outcome_names_no_file_and_several_columns_are_joined(self) -> None:
+        outcome = _labelled_outcome("Classes", OutcomeKind.FAILED, ("Grade", "Course Title", "Section"))
+        sentence = outcome_sentence(outcome, delivered=False)
+        assert sentence.startswith(
+            "Classes were left out of this sync: their export file is missing the columns “Grade”, "
+            "“Course Title” and “Section”, which this district's mapping needs"
+        )
+        assert ".txt" not in sentence
+
+    def test_an_unknown_entity_keeps_its_generic_singular_phrase(self) -> None:
+        outcome = _labelled_outcome(SENTINEL, OutcomeKind.FAILED, (_GUARDIAN,))
+        sentence = outcome_sentence(outcome, delivered=True)
+        assert sentence.startswith("One of your files was left out of this sync: its export file is missing the column")
+        assert "SENTINEL" not in sentence
+
+    def test_the_partial_detail_is_the_labelled_sentence(self) -> None:
+        outcome = _labelled_outcome("Family", OutcomeKind.FAILED, (_GUARDIAN,), file_label=_CONTACTS)
+        headline, detail = partial_copy([outcome], delivered=True)
+        assert headline == "Your roster synced without family contacts"  # the headline names no label
+        assert detail == outcome_sentence(outcome, delivered=True)
+
+
+class TestOutcomeTier:
+    def test_total_over_every_valid_triple(self) -> None:
+        # Plan 0053 S8: a function of (entity, kind, reason). Every registry entity and an unknown
+        # key, over every valid pair, answers a Verdict (the exact table is pinned in
+        # ``tests/test_standing_empty_warning.py``).
+        for entity in (*ENTITY_CRITICALITY, SENTINEL):
+            for kind, reason in _VALID_PAIRS:
+                assert isinstance(OUTCOME_TIER(entity, kind, reason), Verdict), (entity, kind, reason)
+
+    def test_every_failed_outcome_warns_so_failed_entities_is_a_subset(self) -> None:
+        # S3's FAILED-only predicate stays a subset of S8's warning predicate, entity by entity:
+        # widening the PARTIAL rule must never drop a FAILED entity from it.
+        for entity in (*ENTITY_CRITICALITY, SENTINEL):
+            outcomes = [_outcome(entity, kind, reason) for kind, reason in _VALID_PAIRS]
+            assert set(failed_entities(outcomes)) <= set(failure_copy.warning_outcomes(outcomes)), entity
+            assert failed_entities(outcomes), "non-vacuity: a FAILED outcome is among them"
+        # ...and strictly a subset: S8 selects EMPTY outcomes the FAILED predicate never did.
+        family = [_outcome("Family", kind, reason) for kind, reason in _VALID_PAIRS]
+        assert set(failure_copy.warning_outcomes(family)) - set(failed_entities(family))
+
+
+class TestPartialCopy:
+    def test_one_entity_delivered(self) -> None:
+        failed = [_outcome("Family", OutcomeKind.FAILED, OutcomeReason.MISSING_SOURCE_COLUMN)]
+        headline, detail = partial_copy(failed, delivered=True)
+        assert headline == "Your roster synced without family contacts"
+        assert detail == outcome_sentence(failed[0], delivered=True)
+
+    def test_one_entity_not_delivered(self) -> None:
+        failed = [_outcome("Family", OutcomeKind.FAILED, OutcomeReason.MISSING_SOURCE_COLUMN)]
+        headline, _detail = partial_copy(failed, delivered=False)
+        assert headline == "Your sync completed without family contacts"
+
+    def test_several_entities_are_counted_and_named_without_echoing_an_unknown_key(self) -> None:
+        failed = [
+            _outcome("Family", OutcomeKind.FAILED, OutcomeReason.MISSING_SOURCE_COLUMN),
+            _outcome("CourseInfo", OutcomeKind.FAILED, OutcomeReason.TRANSFORM_ERROR),
+            _outcome(SENTINEL, OutcomeKind.FAILED, OutcomeReason.TRANSFORM_ERROR),
+        ]
+        headline, detail = partial_copy(failed, delivered=True)
+        assert headline == "Your roster synced without 3 of your files"
+        assert detail.startswith("Family contacts, courses and 1 other file were left out of this sync.")
+        assert "SENTINEL" not in detail
+
+    def test_several_entities_all_unknown_are_counted_without_a_dangling_other(self) -> None:
+        # A hand-dropped YAML's inventions: none is echoed, and "other" would refer to nothing.
+        failed = [
+            _outcome(SENTINEL, OutcomeKind.FAILED, OutcomeReason.TRANSFORM_ERROR),
+            _outcome(SENTINEL + "_2", OutcomeKind.FAILED, OutcomeReason.MISSING_SOURCE_COLUMN),
+        ]
+        headline, detail = partial_copy(failed, delivered=True)
+        assert headline == "Your roster synced without 2 of your files"
+        assert detail == (
+            "2 of your files were left out of this sync. Everything else was delivered. Re-export those "
+            "files and the next sync picks them up automatically — if it keeps happening, the Help page "
+            "has our support contact."
+        )
+        assert "other" not in detail
+        assert "SENTINEL" not in headline + detail
+
+    def test_several_empty_outcomes_a_reexport_cannot_cure_get_the_neutral_step(self) -> None:
+        # S8: an undeclared source is not fixed by re-exporting, so "Re-export those files" would
+        # be false — the same distinction `_EMPTY_NEXT_STEP` draws for one entity.
+        failed = [
+            _outcome("CourseInfo", OutcomeKind.EMPTY, OutcomeReason.NO_SOURCE_FILES_DECLARED),
+            _outcome("StudentCourses", OutcomeKind.EMPTY, OutcomeReason.NO_SOURCE_FILES_DECLARED),
+        ]
+        _headline, detail = partial_copy(failed, delivered=True)
+        assert detail == (
+            "Courses and student courses were left out of this sync. Everything else was delivered. "
+            "If these files should be part of your sync, the Help page has our support contact."
+        )
+        assert "Re-export" not in detail
+
+    def test_a_mix_with_one_uncurable_outcome_gets_the_neutral_step(self) -> None:
+        failed = [
+            _outcome("Family", OutcomeKind.FAILED, OutcomeReason.TRANSFORM_ERROR),
+            _outcome("CourseInfo", OutcomeKind.EMPTY, OutcomeReason.NO_ROWS_AFTER_TRANSFORM),
+        ]
+        _headline, detail = partial_copy(failed, delivered=True)
+        assert detail.endswith("If these files should be part of your sync, the Help page has our support contact.")
+
+    def test_twin_several_empty_outcomes_a_reexport_cures_keep_the_reexport_step(self) -> None:
+        failed = [
+            _outcome("Family", OutcomeKind.EMPTY, OutcomeReason.MISSING_SOURCE_COLUMN),
+            _outcome("CourseInfo", OutcomeKind.EMPTY, OutcomeReason.SOURCE_FILES_EMPTY),
+            _outcome("StudentCourses", OutcomeKind.FAILED, OutcomeReason.TRANSFORM_ERROR),
+        ]
+        _headline, detail = partial_copy(failed, delivered=True)
+        assert detail.endswith(
+            "Re-export those files and the next sync picks them up automatically — if it keeps happening, "
+            "the Help page has our support contact."
+        )
+
+    def test_nothing_left_out_is_a_caller_bug(self) -> None:
+        with pytest.raises(ValueError, match="at least one"):
+            partial_copy([], delivered=True)
+
+
+class TestDataWarningsClause:
+    def test_none_is_empty_so_callers_append_unconditionally(self) -> None:
+        assert data_warnings_clause(0) == ""
+
+    def test_counts_are_worded_and_grouped(self) -> None:
+        assert data_warnings_clause(1).startswith("There was also 1 data warning:")
+        assert data_warnings_clause(1234).startswith("There were also 1,234 data warnings:")
+
+
+# --------------------------------------------------------------------------- #
+# Failure categories                                                           #
+# --------------------------------------------------------------------------- #
+class TestFailedCategoryCopy:
+    def test_total_over_every_category_except_none(self) -> None:
+        assert set(FAILED_CATEGORY_COPY) == set(_FAILURE_CATEGORIES)
+        assert len(_FAILURE_CATEGORIES) >= 9  # non-vacuity: incl. S1's two new members
+
+    def test_none_raises_a_completed_run_has_no_failure_copy(self) -> None:
+        with pytest.raises(ValueError, match="completed run"):
+            failed_copy(RunErrorCategory.NONE, delivery_requested=False)
+
+    @pytest.mark.parametrize("category", _FAILURE_CATEGORIES, ids=lambda c: c.value)
+    def test_no_interpolation_slot_anywhere_in_the_table(self, category: RunErrorCategory) -> None:
+        headline, detail = FAILED_CATEGORY_COPY[category]
+        assert headline and detail
+        assert "{" not in headline + detail and "}" not in headline + detail
+
+    @pytest.mark.parametrize("category", _FAILURE_CATEGORIES, ids=lambda c: c.value)
+    def test_only_the_two_input_categories_mention_the_input_folder(self, category: RunErrorCategory) -> None:
+        for requested in (True, False):
+            _headline, detail = failed_copy(category, delivery_requested=requested)
+            assert ("input folder" in detail.lower()) is (category in _INPUT_FOLDER_CATEGORIES), category
+
+    def test_the_tail_is_chosen_by_the_delivery_bool(self) -> None:
+        _h, sent = failed_copy(RunErrorCategory.SOURCE_SCHEMA, delivery_requested=True)
+        _h, saved = failed_copy(RunErrorCategory.SOURCE_SCHEMA, delivery_requested=False)
+        assert sent.endswith(NOTHING_SENT_TAIL) and NOTHING_SAVED_TAIL not in sent
+        assert saved.endswith(NOTHING_SAVED_TAIL) and NOTHING_SENT_TAIL not in saved
+
+    def test_the_tails_make_no_claim_about_what_spacesedu_holds(self) -> None:
+        for tail in (NOTHING_SENT_TAIL, NOTHING_SAVED_TAIL):
+            for claim in ("keeps", "still has", "last good", "untouched", "not changed"):
+                assert claim not in tail
+
+
+class TestFailedCopyFor:
+    @pytest.mark.parametrize("value", [None, "", "a_future_category", "none", 7, ["config"]])
+    def test_anything_unreadable_or_impossible_is_the_generic_copy(self, value: object) -> None:
+        assert failed_copy_for(value, delivery_requested=False) == failed_copy(
+            FALLBACK_CATEGORY, delivery_requested=False
+        )
+
+    @pytest.mark.parametrize("category", _FAILURE_CATEGORIES, ids=lambda c: c.value)
+    def test_a_stored_value_reads_its_own_category(self, category: RunErrorCategory) -> None:
+        # The positive twin: the fallback above is not the ONLY answer.
+        assert failed_copy_for(category.value, delivery_requested=True) == failed_copy(
+            category, delivery_requested=True
+        )
+
+
+class TestErrorCardCopy:
+    """Convert's crash card is the exception's category, decided by TYPE (never its text)."""
+
+    @pytest.mark.parametrize(
+        ("exc", "category"),
+        [
+            (
+                SourceSchemaError(SENTINEL, entity="Family", columns=("Guardian",), guard=GuardKind.PII_SCOPE),
+                RunErrorCategory.SOURCE_SCHEMA,
+            ),
+            (NoUsableInputError(SENTINEL), RunErrorCategory.NO_INPUT),
+            (ExtractionError(SENTINEL), RunErrorCategory.INPUT_UNREADABLE),
+            (ConfigLoadError(SENTINEL), RunErrorCategory.CONFIG),
+            (FileNotFoundError(SENTINEL), RunErrorCategory.CONFIG),
+            (OutputWriteError(SENTINEL), RunErrorCategory.OUTPUT),
+            (DeliveryIntegrityError(SENTINEL, category=RunErrorCategory.NO_OUTPUT), RunErrorCategory.NO_OUTPUT),
+            (
+                DeliveryIntegrityError(SENTINEL, category=RunErrorCategory.INCOMPLETE_ROSTER),
+                RunErrorCategory.INCOMPLETE_ROSTER,
+            ),
+            (ValueError(SENTINEL), RunErrorCategory.DATA),
+            (KeyError(SENTINEL), RunErrorCategory.UNKNOWN),
+            (RuntimeError(SENTINEL), RunErrorCategory.UNKNOWN),
+        ],
+        ids=lambda v: type(v).__name__ if isinstance(v, BaseException) else v.value,
+    )
+    def test_each_typed_exception_maps_to_its_categorys_copy(
+        self, exc: BaseException, category: RunErrorCategory
+    ) -> None:
+        for requested in (True, False):
+            card = error_card_copy(exc, delivery_requested=requested)
+            assert card == failed_copy(category, delivery_requested=requested)
+            assert "SENTINEL" not in card[0] + card[1]
+
+    def test_a_none_category_exception_still_gets_a_card(self) -> None:
+        # Total: an EtlError that claims "none" is a programming error, never a crash of the card.
+        card = error_card_copy(EtlError("x", category=RunErrorCategory.NONE), delivery_requested=False)
+        assert card == failed_copy(FALLBACK_CATEGORY, delivery_requested=False)
+
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            SourceSchemaError("x", entity="Family", columns=("Guardian",), guard=GuardKind.JOIN_KEY),
+            ConfigLoadError("x"),
+            ValueError("x"),
+        ],
+        ids=["source_schema", "config", "data"],
+    )
+    def test_schema_config_and_data_cards_never_point_at_the_input_folder(self, exc: BaseException) -> None:
+        _headline, detail = error_card_copy(exc, delivery_requested=False)
+        assert "input folder" not in detail.lower()
+
+
+# --------------------------------------------------------------------------- #
+# Bounded surfacing (P9)                                                       #
+# --------------------------------------------------------------------------- #
+class TestNothingUnboundedReachesCopy:
+    def test_the_sweep_is_not_vacuous(self) -> None:
+        strings = _every_copy_string()
+        assert len(strings) > 60  # 9 categories x 2 bools x 2 strings alone is 36
+        assert any("family contacts" in s.lower() for s in strings)  # the entity path IS exercised
+
+    def test_no_string_carries_the_sentinel_a_path_or_a_slot(self) -> None:
+        for text in _every_copy_string():
+            assert "SENTINEL" not in text
+            assert "secret" not in text
+            assert ":\\" not in text
+            assert "{" not in text and "}" not in text
+
+    def test_the_sweep_reaches_the_labelled_sentences(self) -> None:
+        # Non-vacuity for S7: the label path IS in the sweep above, so its assertions cover it.
+        strings = _every_copy_string()
+        assert any(_CONTACTS in s and f"“{_GUARDIAN}”" in s for s in strings)
+        assert any("“Email Address”" in s and _CONTACTS not in s for s in strings)
+
+
+# --------------------------------------------------------------------------- #
+# One copy source across Home, Run History and Convert                         #
+# --------------------------------------------------------------------------- #
+_NOW = datetime(2026, 7, 4, 8, 0, 0)
+_CFG = AppConfig(input_dir="/in", output_dir="/out", sis_type="sd48myedbc", schedule_registered=True)
+
+
+def _pipeline_failed_record(category: RunErrorCategory, *, attempted: bool = False, ok: bool = False) -> dict:
+    """A failed record built by the SAME builder the pipeline's failure sink uses.
+
+    The defaults are the shape that sink really writes for every pre-upload failure:
+    ``sftp_attempted`` is set only after the committed write, so it is False even for a nightly
+    with delivery configured. ``attempted``/``ok`` exist for the post-write windows only.
+    """
+    record = build_run_record(
+        status="failed",
+        elapsed=1.0,
+        entity_counts={},
+        sftp_attempted=attempted,
+        sftp_ok=ok,
+        source="scheduled",
+        sis_type="sd48myedbc",
+        error_category=category,
+        entity_outcomes=None,
+        timestamp=(_NOW - timedelta(hours=5)).isoformat(timespec="seconds"),
+    )
+    record["error"] = SENTINEL  # the log-only free text, planted to prove no surface reads it
+    return record
+
+
+def _surfaces(record: dict) -> tuple[str, str]:
+    home = derive_home_status([record], _CFG, now=_NOW)
+    banner = derive_history_banner([record], _CFG, now=_NOW)
+    assert home.verdict is banner.verdict is Verdict.FAILED
+    return home.detail, banner.detail
+
+
+class TestTheThreeSurfacesWordAFailureIdentically:
+    @pytest.mark.parametrize("category", _FAILURE_CATEGORIES, ids=lambda c: c.value)
+    def test_the_realistic_failed_record_and_the_convert_card_share_the_whole_detail(
+        self, category: RunErrorCategory
+    ) -> None:
+        # No delivery requested on Convert == the record the pipeline writes for a pre-upload
+        # failure: both end "Nothing new was saved..." -- the same words, tail included.
+        _headline, detail = failed_copy(category, delivery_requested=False)
+        home, banner = _surfaces(_pipeline_failed_record(category))
+        card = error_card_copy(EtlError("x", category=category), delivery_requested=False)
+
+        assert home == f"The sync that ran 5 hours ago didn't finish. {detail}"
+        assert banner == f"The most recent run didn't finish. {detail}"
+        assert card[1] == detail
+        for text in (home, banner, *card):
+            assert "SENTINEL" not in text
+
+    @pytest.mark.parametrize("category", _FAILURE_CATEGORIES, ids=lambda c: c.value)
+    def test_the_category_sentence_is_identical_whatever_each_surface_can_prove_about_delivery(
+        self, category: RunErrorCategory
+    ) -> None:
+        # With delivery requested, Convert's card may say "nothing was sent" (it knows the request);
+        # the record cannot, so it keeps the saved tail. The CATEGORY words never differ.
+        category_detail = FAILED_CATEGORY_COPY[category][1]
+        home, banner = _surfaces(_pipeline_failed_record(category))
+        card = error_card_copy(EtlError("x", category=category), delivery_requested=True)
+        for text in (home, banner, card[1]):
+            assert category_detail in text
+        assert card[1].endswith(NOTHING_SENT_TAIL)
+        assert home.endswith(NOTHING_SAVED_TAIL) and banner.endswith(NOTHING_SAVED_TAIL)
+
+    def test_a_record_proving_the_upload_failed_says_nothing_was_sent_on_both_record_surfaces(self) -> None:
+        # The one record shape that proves "not sent": an attempt that did not succeed.
+        home, banner = _surfaces(_pipeline_failed_record(RunErrorCategory.UNKNOWN, attempted=True, ok=False))
+        assert home.endswith(NOTHING_SENT_TAIL) and banner.endswith(NOTHING_SENT_TAIL)
+
+    def test_twin_a_record_whose_upload_succeeded_never_says_nothing_was_sent(self) -> None:
+        # The post-upload window (``--quality``/``--diff`` raising after ``_sftp_upload``): the files
+        # WERE sent. The doctored shape the old parity fixture used would have claimed otherwise.
+        home, banner = _surfaces(_pipeline_failed_record(RunErrorCategory.UNKNOWN, attempted=True, ok=True))
+        assert NOTHING_SENT_TAIL not in home and NOTHING_SENT_TAIL not in banner
+
+
+def _partial_record(family_entry: dict) -> dict:
+    """A success record (built by the pipeline's builder) whose Family entry is replaced as stored."""
+    record = build_run_record(
+        status="success",
+        elapsed=1.0,
+        entity_counts={"Students": 10},
+        sftp_attempted=True,
+        sftp_ok=True,
+        source="scheduled",
+        sis_type="sd48myedbc",
+        error_category=RunErrorCategory.NONE,
+        entity_outcomes=[
+            EntityOutcome.built("Students", 10),
+            EntityOutcome.failed("Family", OutcomeReason.MISSING_SOURCE_COLUMN),
+        ],
+        timestamp=(_NOW - timedelta(hours=5)).isoformat(timespec="seconds"),
+    )
+    record["entity_outcomes"]["Family"] = family_entry
+    record["error"] = SENTINEL
+    return record
+
+
+class TestTheThreeSurfacesNameTheLabels:
+    """Plan 0053 S7: Home, the Run History banner and Convert render the SAME labelled sentence,
+    and a stored label that fails the shape check never reaches any of them."""
+
+    _LABELLED = {
+        "kind": "failed",
+        "reason": "missing_source_column",
+        "rows": 0,
+        "missing_mapped": [_EMAIL, _GUARDIAN],
+        "labels": [_GUARDIAN],
+        "file_label": _CONTACTS,
+    }
+
+    def test_all_three_surfaces_name_the_file_and_the_column(self) -> None:
+        from src.ui_flet.convert_result import ConvertResult, ConvertStatus, summarize
+
+        record = _partial_record(dict(self._LABELLED))
+        home = derive_home_status([record], _CFG, now=_NOW)
+        banner = derive_history_banner([record], _CFG, now=_NOW)
+        outcome = _labelled_outcome("Family", OutcomeKind.FAILED, (_GUARDIAN,), file_label=_CONTACTS)
+        convert = summarize(
+            ConvertResult(
+                status=ConvertStatus.DELIVERED,
+                sftp_attempted=True,
+                sftp_ok=True,
+                entity_outcomes=(EntityOutcome.built("Students", 10), outcome),
+                delivery_requested=True,
+            )
+        )
+        expected = outcome_sentence(outcome, delivered=True)
+        assert home.verdict is banner.verdict is convert[0] is Verdict.WARNING
+        for detail in (home.detail, banner.detail, convert[2]):
+            assert expected in detail
+            assert _CONTACTS in detail and f"“{_GUARDIAN}”" in detail
+            assert "SENTINEL" not in detail
+
+    @pytest.mark.parametrize(
+        ("labels", "file_label"),
+        [
+            (["Parent\nGuardian"], _CONTACTS),  # a newline
+            (["x" * 121], _CONTACTS),  # over the cap
+            ([SENTINEL], ""),  # path-shaped
+            (["guardian@example.org"], ""),  # email-shaped
+        ],
+    )
+    def test_the_twin_a_junk_stored_label_is_never_rendered(self, labels: list, file_label: str) -> None:
+        entry = {**self._LABELLED, "labels": labels, "file_label": file_label}
+        record = _partial_record(entry)
+        unlabelled = outcome_sentence(
+            _outcome("Family", OutcomeKind.FAILED, OutcomeReason.MISSING_SOURCE_COLUMN), delivered=True
+        )
+        for detail in (
+            derive_home_status([record], _CFG, now=_NOW).detail,
+            derive_history_banner([record], _CFG, now=_NOW).detail,
+        ):
+            assert unlabelled in detail  # still PARTIAL, still worded — just names nothing
+            assert _CONTACTS not in detail and "SENTINEL" not in detail and "@" not in detail and "xxxx" not in detail
+
+
+# --------------------------------------------------------------------------- #
+# No permissive default on the bools that pick a claim                         #
+# --------------------------------------------------------------------------- #
+_CLAIM_BOOLS: list[tuple[Callable[..., object], str]] = [
+    (failed_copy, "delivery_requested"),
+    (failed_copy_for, "delivery_requested"),
+    (error_card_copy, "delivery_requested"),
+    (outcome_sentence, "delivered"),
+    (partial_copy, "delivered"),
+]
+
+
+def _is_required_keyword_only(fn: Callable[..., object], name: str) -> bool:
+    param = inspect.signature(fn).parameters[name]
+    return param.kind is inspect.Parameter.KEYWORD_ONLY and param.default is inspect.Parameter.empty
+
+
+class TestClaimBoolsHaveNoDefault:
+    @pytest.mark.parametrize(("fn", "name"), _CLAIM_BOOLS, ids=[f"{fn.__name__}-{name}" for fn, name in _CLAIM_BOOLS])
+    def test_required_keyword_only(self, fn: Callable[..., object], name: str) -> None:
+        # Each bool picks a claim about what did (not) happen; a default would let a caller make the
+        # wrong one silently.
+        assert _is_required_keyword_only(fn, name)
+
+    def test_doctored_a_defaulted_or_positional_parameter_is_caught(self) -> None:
+        def defaulted(category: RunErrorCategory, *, delivery_requested: bool = False) -> None:
+            del category, delivery_requested
+
+        def positional(category: RunErrorCategory, delivery_requested: bool) -> None:
+            del category, delivery_requested
+
+        assert not _is_required_keyword_only(defaulted, "delivery_requested")
+        assert not _is_required_keyword_only(positional, "delivery_requested")
+
+
+# --------------------------------------------------------------------------- #
+# The PARTIAL strings docs/claugentic-PRODUCT.md quotes                        #
+# --------------------------------------------------------------------------- #
+_PRODUCT_DOC = Path(__file__).resolve().parents[1] / "docs" / "claugentic-PRODUCT.md"
+
+
+def _product_doc_quotes() -> list[str]:
+    """The two PARTIAL strings PRODUCT.md quotes, COMPUTED from source (never copied)."""
+    headline, _detail = partial_copy(
+        [_outcome("Family", OutcomeKind.FAILED, OutcomeReason.MISSING_SOURCE_COLUMN)], delivered=True
+    )
+    outcomes = [
+        _outcome(name, OutcomeKind.FAILED, OutcomeReason.MISSING_SOURCE_COLUMN)
+        if name == "Family"
+        else _outcome(name, OutcomeKind.BUILT, OutcomeReason.NONE)
+        for name in ("Students", "Staff", "Family", "Classes", "Enrollments")
+    ]
+    record = build_run_record(
+        status="success",
+        elapsed=1.0,
+        entity_counts={"Students": 10},
+        sftp_attempted=True,
+        sftp_ok=True,
+        source="scheduled",
+        sis_type="sd48myedbc",
+        error_category=RunErrorCategory.NONE,
+        entity_outcomes=outcomes,
+        timestamp=(_NOW - timedelta(hours=5)).isoformat(timespec="seconds"),
+    )
+    row = to_run_row(record, prior_build=None, now=_NOW)
+    return [headline, row.status_label]
+
+
+class TestProductDocQuotesThePartialStrings:
+    def test_each_quoted_string_is_computed_and_present_verbatim(self) -> None:
+        quotes = _product_doc_quotes()
+        assert quotes == ["Your roster synced without family contacts", "Delivered · 1 file skipped"]
+        doc = _PRODUCT_DOC.read_text(encoding="utf-8")
+        for quote in quotes:
+            assert f'"{quote}"' in doc, quote
+
+    def test_doctored_a_reworded_doc_is_red(self) -> None:
+        doc = _PRODUCT_DOC.read_text(encoding="utf-8").replace("1 file skipped", "1 file left out")
+        assert not all(f'"{quote}"' in doc for quote in _product_doc_quotes())
+
+
+# --------------------------------------------------------------------------- #
+# The import cycle the entity-map move exists to avoid                         #
+# --------------------------------------------------------------------------- #
+_LABEL_MAPS = {"ENTITY_LABELS", "SIZE_NOUNS"}
+
+
+def _imported_modules(source: str) -> set[str]:
+    modules: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            modules.add(node.module)
+        elif isinstance(node, ast.Import):
+            modules.update(alias.name for alias in node.names)
+    return modules
+
+
+def _defined_label_maps(source: str) -> set[str]:
+    names: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        targets = (
+            node.targets if isinstance(node, ast.Assign) else [node.target] if isinstance(node, ast.AnnAssign) else []
+        )
+        names.update(t.id for t in targets if isinstance(t, ast.Name) and t.id in _LABEL_MAPS)
+    return names
+
+
+class TestNoImportCycle:
+    def _source(self, name: str) -> str:
+        return (_SRC / name).read_text(encoding="utf-8")
+
+    def test_failure_copy_imports_nothing_from_home_status(self) -> None:
+        imported = _imported_modules(self._source("failure_copy.py"))
+        assert "src.ui_flet.humanize" in imported  # non-vacuity: the walker sees real imports
+        assert not any(m.endswith("home_status") for m in imported)
+
+    def test_doctored_a_home_status_import_is_red(self) -> None:
+        doctored = self._source("failure_copy.py") + "\nfrom src.ui_flet.home_status import is_stale\n"
+        assert any(m.endswith("home_status") for m in _imported_modules(doctored))
+
+    def test_home_status_defines_no_label_map_of_its_own(self) -> None:
+        assert _defined_label_maps(self._source("home_status.py")) == set()
+        assert _defined_label_maps(self._source("humanize.py")) == _LABEL_MAPS  # the maps DO live somewhere
+        assert home_status.SIZE_NOUNS is humanize.SIZE_NOUNS  # re-imported, not copied
+
+    def test_doctored_a_redefined_map_is_red(self) -> None:
+        doctored = self._source("home_status.py") + "\nSIZE_NOUNS: dict[str, tuple[str, str]] = {}\n"
+        assert _defined_label_maps(doctored) == {"SIZE_NOUNS"}

@@ -12,6 +12,7 @@ import pandas as pd
 import pytest
 
 from src.etl import pipeline
+from src.etl.outcomes import EntityOutcome, OutcomeLedger
 from src.etl.pipeline import (
     TransformOutputs,
     compute_anomalies,
@@ -563,6 +564,12 @@ class TestPrintDiff:
 # -----------------------------------------------------------------------
 
 
+def _run(raw_data, mappings, global_config):
+    """``run_transform`` with the ledger every caller must build (plan 0053 S2)."""
+    ledger = OutcomeLedger(configured_entity_order(mappings, global_config))
+    return run_transform(raw_data, mappings, global_config, ledger=ledger)
+
+
 class TestRunTransform:
     """Unit tests for the shared transform-orchestration extracted from run_pipeline.
 
@@ -628,7 +635,7 @@ class TestRunTransform:
         }
         raw_data = {"Staff.txt": staff_df, "Sched.txt": schedule_df}
 
-        outputs, _, _, _ = run_transform(raw_data, mappings, self._global_config(enabled_entities=["Staff"]))
+        outputs = _run(raw_data, mappings, self._global_config(enabled_entities=["Staff"])).outputs
 
         roles = dict(zip(outputs["Staff"]["User ID"].astype(str), outputs["Staff"]["Role"]))
         assert roles == {"T001": "teacher", "T002": "teacher"}, (
@@ -640,11 +647,13 @@ class TestRunTransform:
         mappings = {"Widgets": self._entity("widgets.txt", {"Out": "in_col"})}
         raw_data = {"widgets.txt": pd.DataFrame({"in_col": ["a", "b"]})}
 
-        result = run_transform(raw_data, mappings, self._global_config())
+        result = _run(raw_data, mappings, self._global_config())
 
         assert isinstance(result, TransformOutputs)
-        # Unpacks cleanly into (outputs, field_orders, data_errors, school_year)
-        outputs, field_orders, data_errors, school_year = result
+        # Unpacks cleanly into (outputs, field_orders, data_errors, school_year, outcomes)
+        outputs, field_orders, data_errors, school_year, outcomes = result
+        # plan 0053 S2: one outcome per configured entity — here the one BUILT entity.
+        assert outcomes == (EntityOutcome.built("Widgets", 2),)
         assert "Widgets" in outputs
         assert list(outputs["Widgets"].columns) == ["Out"]
         # A clean run records no field-transform errors.
@@ -666,7 +675,7 @@ class TestRunTransform:
         }
         gc = self._global_config(enabled_entities=["Widgets"])
 
-        outputs = run_transform(raw_data, mappings, gc).outputs
+        outputs = _run(raw_data, mappings, gc).outputs
 
         assert set(outputs.keys()) == {"Widgets"}
         assert "Gadgets" not in outputs
@@ -682,7 +691,7 @@ class TestRunTransform:
         }
         gc = self._global_config(entity_order=["Gadgets", "Widgets"])
 
-        outputs = run_transform(raw_data, mappings, gc).outputs
+        outputs = _run(raw_data, mappings, gc).outputs
 
         assert list(outputs.keys()) == ["Gadgets", "Widgets"]
 
@@ -697,7 +706,8 @@ class TestRunTransform:
             "gadgets.txt": pd.DataFrame({"in_col": []}),  # empty primary
         }
 
-        outputs, field_orders, _, _ = run_transform(raw_data, mappings, self._global_config())
+        result = _run(raw_data, mappings, self._global_config())
+        outputs, field_orders = result.outputs, result.field_orders
 
         assert "Widgets" in outputs
         assert "Gadgets" not in outputs
@@ -709,7 +719,7 @@ class TestRunTransform:
         mappings = {"Widgets": self._entity("not_uploaded.txt", {"Out": "in_col"})}
         raw_data: dict[str, pd.DataFrame] = {}
 
-        outputs = run_transform(raw_data, mappings, self._global_config()).outputs
+        outputs = _run(raw_data, mappings, self._global_config()).outputs
 
         assert outputs == {}
 
@@ -723,7 +733,7 @@ class TestRunTransform:
         }
         raw_data = {"widgets.txt": pd.DataFrame({"a": ["1"], "b": ["2"], "c": ["3"]})}
 
-        field_orders = run_transform(raw_data, mappings, self._global_config()).field_orders
+        field_orders = _run(raw_data, mappings, self._global_config()).field_orders
 
         assert field_orders["Widgets"] == ["First", "Second", "Third"]
 

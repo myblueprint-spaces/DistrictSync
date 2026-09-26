@@ -11,7 +11,7 @@ derives two PII-free things the Run History view renders:
   precedence) and reuses ``home_status.is_stale`` (the landed staleness), keeping Home and Run
   History from ever drifting. Graceful degradation is a first-class OUTPUT: ``None`` → a calm
   "history unavailable" WARNING (never a raise); ``[]`` → "no runs yet" WARNING (never red).
-- **the per-run display rows** — ``to_run_row(record, *, now=None, active_sis=None)`` → a total,
+- **the per-run display rows** — ``to_run_row(record, *, prior_build, now=None, active_sis=None)`` → a total,
   PII-free ``RunRow`` (plain time, a category-only ``status_label`` + its ``Verdict``, entity
   counts, an SFTP enum, a warnings count, a plain duration, a bounded run-origin ``source`` label,
   an optional different-district note) and ``to_run_rows(records)`` over the newest-first list.
@@ -19,7 +19,9 @@ derives two PII-free things the Run History view renders:
 **Privacy (LIVE/top):** the record's free-text ``error`` (``str(e)`` in the emitter — path /
 ``sis_type`` / column risk) and the raw ``ANOMALY:``-prefixed strings are **NEVER** read into a
 ``RunRow`` field or a banner headline/detail. ``RunRow`` carries **no** ``error`` field at all, so
-a future view edit cannot render one; faults are named by CATEGORY, counts are safe scalars. This
+a future view edit cannot render one; faults are named by CATEGORY, counts are safe scalars (the
+PARTIAL banner's ``failure_copy`` sentence may name a left-out entity's config-declared file and
+column — validated labels, plan 0053 S7, D4 — never an observed header). This
 is the concrete fix for the Streamlit page's raw-``error`` column + log-path caption (dropped).
 The ONE deliberate identity fact surfaced (0034 Slice 4) is the DISTRICT: when a record's
 ``sis_type`` differs from the active district, ``district_note`` carries the friendly district
@@ -41,12 +43,12 @@ from datetime import datetime
 from enum import Enum
 
 from src.config.app_config import AppConfig
+from src.etl.outcomes import EntityOutcome, outcomes_from_record
+from src.ui_flet.failure_copy import data_warnings_clause, detail_note_labels, partial_copy, partial_label
 from src.ui_flet.home_status import (
     _MYBLUEPRINT_ENTITIES,
     _ROSTERING_ENTITIES,
-    EMPTY_FRESH_START_HEADLINE,
     EMPTY_NO_AUTO_SYNC_DETAIL,
-    EMPTY_NO_RUNS_HEADLINE,
     LatestReason,
     _as_int,
     _data_errors_total,
@@ -56,13 +58,18 @@ from src.ui_flet.home_status import (
     _schedule_confirmed_live,
     _schedule_confirmed_missing,
     _schedule_is_live,
+    build_record_for,
     classify_latest_reason,
+    empty_state_headline,
+    failed_detail,
     has_earlier_run_history,
     is_delivery_only,
     is_stale,
+    left_out_outcomes,
     sftp_delivered,
     sync_window_paused,
     verdict_for_reason,
+    verdict_records,
 )
 from src.ui_flet.humanize import (
     AnomalyVariant,
@@ -126,6 +133,11 @@ class RunRow:
             not be established. Never the raw ``DOMAIN\\user`` off the record: this row is bounded
             to counts, bounded vocabularies and safe strings, and a raw account name repeated on
             every historical row would be the first raw identifying value in it.
+        notes: the row's detail line (plan 0053 S11) — the authored labels of the HEALTHY-tier
+            outcome notes the build behind this row recorded (``failure_copy.detail_note_labels``:
+            a fail-open posture that was recorded but does not warn, e.g. "no status column,
+            withdraw dates used"). ``()`` on a failed row, where nothing was delivered for a note
+            to qualify. A WARNING-tier note is not here — it is in ``status_label``.
     """
 
     when: str
@@ -139,6 +151,7 @@ class RunRow:
     source: str = "—"
     district_note: str | None = None
     run_as: str = ""
+    notes: tuple[str, ...] = ()
 
 
 # The bounded run-as vocabulary (plan 0049 S-2a.5). Two members plus ``""`` for "not
@@ -226,6 +239,13 @@ _FRESH_START_LEAD = (
     "New runs will appear here from now on. If you used an earlier version, its run history isn't carried over."
 )
 
+# Run History's OWN lead for the D14 failed-attempts-only state (plan 0053 S5): the banner sits
+# directly above the rows it describes, so it points at them rather than at this screen. The
+# headline is Home's (``home_status.empty_state_headline``), single-sourced.
+_FAILED_ATTEMPTS_ONLY_LEAD = (
+    "The conversions run from the Convert tab so far didn't finish — each attempt is listed below."
+)
+
 
 def derive_history_banner(
     records: list[dict] | None,
@@ -243,6 +263,10 @@ def derive_history_banner(
     the per-run rows. Graceful degradation (``None``/``[]``) is a first-class calm WARNING output,
     never a raise. NEVER interpolates the raw ``error`` / ``ANOMALY:`` string.
 
+    The banner reads the records the VERDICT reads (``home_status.verdict_records``, owner
+    decision D14): a failed MANUAL attempt never sets it, exactly as on Home — while the rows
+    beneath it (``to_run_rows``) still list every record, that attempt included.
+
     ``store_created_at`` (the run store's ``meta.created_at``) is the established-install signal
     for the fresh-start empty state; ``schedule_status`` (D4, injected off-thread) supplies the
     honest LIVE next-run reassurance — Run History is read-only (no fix CTA), so it does not
@@ -255,6 +279,10 @@ def derive_history_banner(
             headline="Run history unavailable",
             detail="We couldn't read the run history right now — your nightly sync may still be running normally.",
         )
+
+    # D14 (plan 0053 S5): the SAME filter, at the same point, as ``derive_home_status``.
+    failed_attempts_only = bool(records) and not verdict_records(records)
+    records = verdict_records(records)
 
     # FIX 1: the seasonal-pause fact, gated to Home's EXACT precedence so the two surfaces can never
     # disagree about one state — an ENABLED window outside its season, UNLESS a confirmed-MISSING
@@ -313,6 +341,10 @@ def derive_history_banner(
             # own — the SAME sentence Home shows, from the same constant, rather than implying
             # automation. Only on a CONFIRMED MISSING read-back (never an unconfirmed None/UNKNOWN).
             detail = EMPTY_NO_AUTO_SYNC_DETAIL
+        elif failed_attempts_only:
+            detail = _FAILED_ATTEMPTS_ONLY_LEAD
+            if _schedule_is_live(schedule_status):
+                detail += f" Scheduled for {schedule_status.next_run_display} each night."  # type: ignore[union-attr]
         elif upgrade:
             detail = _FRESH_START_LEAD
             if _schedule_is_live(schedule_status):
@@ -326,18 +358,21 @@ def derive_history_banner(
             detail = "Runs will appear here once the first one completes."
         return HistoryBanner(
             verdict=Verdict.WARNING,
-            headline=EMPTY_FRESH_START_HEADLINE if upgrade else EMPTY_NO_RUNS_HEADLINE,
+            headline=empty_state_headline(upgrade=upgrade, failed_attempts_only=failed_attempts_only),
             detail=detail,
         )
 
     latest = records[0]
-    reason = classify_latest_reason(latest)
+    prior_build = build_record_for(records, 0)
+    reason = classify_latest_reason(latest, prior_build=prior_build)
 
+    # Plan 0053 S3: the cause is the record's bounded ``error_category``, through the SAME
+    # ``home_status.failed_detail`` Home uses — so the two surfaces word one failure identically.
     if reason is LatestReason.FAILED_ETL:
         return HistoryBanner(
             verdict=verdict_for_reason(reason),
             headline="Your last sync failed",
-            detail="The most recent run hit a problem and didn't finish — see the run below.",
+            detail=f"The most recent run didn't finish. {failed_detail(latest)}",
         )
 
     if reason is LatestReason.FAILED_DELIVERY:
@@ -366,6 +401,19 @@ def derive_history_banner(
     # the anomaly/data-warning copy would already be false by construction.
     if foreign_records:
         return _foreign_records_banner(schedule_status)  # type: ignore[arg-type]
+
+    # Plan 0053 S3: at HOME'S EXACT POSITION (below the pause and the foreign-principal rule,
+    # above the anomaly), with Home's EXACT copy — ``failure_copy.partial_copy`` is the one source.
+    if reason is LatestReason.PARTIAL:
+        headline, detail = partial_copy(
+            left_out_outcomes(latest, prior_build=prior_build), delivered=sftp_delivered(latest)
+        )
+        clause = data_warnings_clause(_data_errors_total(latest))
+        return HistoryBanner(
+            verdict=verdict_for_reason(reason),
+            headline=headline,
+            detail=f"{detail} {clause}" if clause else detail,
+        )
 
     if reason is LatestReason.ANOMALY:
         anomalies = latest.get("anomalies") or []
@@ -472,8 +520,17 @@ def _row_entity_counts(record: dict) -> dict[str, int]:
     return counts
 
 
-def _status_label(reason: LatestReason, record: dict, *, sftp: SftpDelivery) -> str:
+def _status_label(
+    reason: LatestReason, record: dict, *, sftp: SftpDelivery, left_out: tuple[EntityOutcome, ...]
+) -> str:
     """The plain per-run category label from the shared ``LatestReason`` (no emoji, no raw string).
+
+    ``PARTIAL`` (plan 0053 S3) reads "<Delivered|Completed> · <suffix>", the suffix worded by
+    ``failure_copy.partial_label`` over ``left_out`` (the outcomes that warn; the banner names
+    them): "N file(s) skipped" for files the run was set up to build and left out, and since
+    plan 0053 S10 a note's own words for a file that BUILT without part of itself
+    ("co-teachers left out") — never counted as skipped. A delivery-only record's form is
+    "Delivered saved files · <suffix>": the saved files it shipped are the partial build's.
 
     ``DATA_WARNINGS`` and ``CLEAN`` both open with "Delivered" ONLY when the SFTP axis says the
     run genuinely shipped, else "Completed" (SFTP not attempted — a local-only run must never
@@ -487,6 +544,12 @@ def _status_label(reason: LatestReason, record: dict, *, sftp: SftpDelivery) -> 
         if reason is LatestReason.FAILED_DELIVERY and is_delivery_only(record):
             return "Delivery failed"
         return _REASON_LABELS[reason]
+    if reason is LatestReason.PARTIAL:
+        if is_delivery_only(record):
+            word = "Delivered saved files"
+        else:
+            word = "Delivered" if sftp is SftpDelivery.DELIVERED else "Completed"
+        return f"{word} · {partial_label(left_out)}"
     if reason is LatestReason.DATA_WARNINGS:
         total = _data_errors_total(record)
         word = "Delivered" if sftp is SftpDelivery.DELIVERED else "Completed"
@@ -536,6 +599,7 @@ def _duration(record: dict) -> str:
 def to_run_row(
     record: dict,
     *,
+    prior_build: dict | None,
     now: datetime | None = None,
     active_sis: str | None = None,
     district_displays: dict[str, str] | None = None,
@@ -549,6 +613,11 @@ def to_run_row(
     (the default) derives no note. ``district_displays`` is an optional pre-resolved
     district-display cache (see ``to_run_rows``) so a single record resolves live when absent.
 
+    ``prior_build`` (plan 0053 S3) is REQUIRED keyword-only for the same reason it is on
+    ``home_status.classify_latest_reason``, which receives it: a delivery-only row's PARTIAL is
+    the build's, and a forgotten walk-back would paint that row green. ``to_run_rows`` passes
+    ``home_status.build_record_for`` of each row's position; ``None`` for a build record.
+
     ``current_account`` (``accounts.process_account()``, injected by the view — this module is
     pure and never reads the environment) enables the bounded ``run_as`` display. It DEFAULTS to
     ``""`` deliberately: a caller that cannot name the account gets "not established" and no
@@ -556,12 +625,14 @@ def to_run_row(
     about a run's verdict, delivery or counts depends on it.
     """
     sftp = _sftp_delivery(record)
-    reason = classify_latest_reason(record)
+    reason = classify_latest_reason(record, prior_build=prior_build)
     counts = _row_entity_counts(record)
+    left_out = left_out_outcomes(record, prior_build=prior_build)
+    verdict = verdict_for_reason(reason)
     return RunRow(
         when=friendly_timestamp(str(record.get("timestamp", "")), now=now),
-        status_label=_status_label(reason, record, sftp=sftp),
-        status_verdict=verdict_for_reason(reason),
+        status_label=_status_label(reason, record, sftp=sftp, left_out=left_out),
+        status_verdict=verdict,
         entity_counts=counts,
         entity_total=sum(counts.values()),
         sftp=sftp,
@@ -570,7 +641,21 @@ def to_run_row(
         source=_source_label(record),
         district_note=_district_note(record, active_sis, district_displays),
         run_as=run_as_display(record.get("run_as"), current_account=current_account),
+        notes=() if verdict is Verdict.FAILED else _detail_notes(record, prior_build=prior_build),
     )
+
+
+def _detail_notes(record: dict, *, prior_build: dict | None) -> tuple[str, ...]:
+    """The HEALTHY-tier note labels of the build behind ``record`` (TOTAL, never raises).
+
+    The same source rule as ``home_status.left_out_outcomes``: a build record answers from its own
+    ``entity_outcomes``, a delivery-only record from ``prior_build``; read through the total
+    ``outcomes_from_record``.
+    """
+    source = prior_build if is_delivery_only(record) else record
+    if source is None:
+        return ()
+    return detail_note_labels(outcomes_from_record(source))
 
 
 def to_run_rows(
@@ -579,6 +664,7 @@ def to_run_rows(
     now: datetime | None = None,
     active_sis: str | None = None,
     current_account: str = "",
+    limit: int | None = None,
 ) -> list[RunRow]:
     """Map a newest-first list of run records → ``RunRow``s (one per record, never raises).
 
@@ -586,21 +672,28 @@ def to_run_rows(
     an actual list (``[]`` → ``[]``; a mixed valid/partial list → one safe ``RunRow`` per record).
     Each distinct differing district's display name is resolved ONCE per call (the resolution is
     a config read — never repeated per row for the same district).
+
+    ``limit`` caps the rows to the newest ``limit`` records (``None`` = every record) WITHOUT
+    narrowing what a row can see: a delivery-only row's ``prior_build`` walk-back still searches
+    the WHOLE list. The screen hands this the full ledger — the one Home reads — so the banner's
+    verdict (plan 0053 S5, D14) and the table's walk-backs are never decided by a 50-row window.
     """
+    shown = records if limit is None else records[: max(limit, 0)]
     active = (active_sis or "").strip()
     displays: dict[str, str] = {}
     if active:
-        for record in records:
+        for record in shown:
             sis = str(record.get("sis_type", "") or "").strip()
             if sis and sis != active and sis not in displays:
                 displays[sis] = friendly_district_name(sis)
     return [
         to_run_row(
             record,
+            prior_build=build_record_for(records, index),
             now=now,
             active_sis=active_sis,
             district_displays=displays,
             current_account=current_account,
         )
-        for record in records
+        for index, record in enumerate(shown)
     ]

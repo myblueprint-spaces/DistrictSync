@@ -27,13 +27,26 @@ HOMEROOM_GC = {
 
 
 def _global_config(base_mapping, **overrides):
+    """The ``global_config`` SECTION only — production's shape (plan 0053 S9).
+
+    The per-entity mappings reach the context the production way, through
+    :func:`_transformer` (``set_entity_mappings``); they used to be injected into
+    this section, a path a real run never had.
+    """
     gc = {
         **base_mapping.get("global_config", {}),
-        "mappings": base_mapping.get("mappings", {}),
         **HOMEROOM_GC,
     }
     gc.update(overrides)
     return gc
+
+
+def _transformer(base_mapping):
+    """A transformer whose context carries the config's mappings as ``run_transform`` publishes them."""
+    t = DataTransformer()
+    t.set_school_year(2025, "08-25", "07-25")
+    t.set_entity_mappings(base_mapping["mappings"])
+    return t
 
 
 # ---------------------------------------------------------------------------
@@ -156,8 +169,7 @@ def _run_full(base_mapping, demographic, **overrides):
     its published active set is visible to Classes/Enrollments — matching the
     pipeline's entity order. ``overrides`` are merged into ``global_config``.
     """
-    t = DataTransformer()
-    t.set_school_year(2025, "08-25", "07-25")
+    t = _transformer(base_mapping)
     gc = _global_config(base_mapping, **overrides)
     raw = _raw_data(demographic)
 
@@ -215,8 +227,7 @@ class TestZeroOrphanInvariant:
 
     def test_set_identity_after_students_transform(self, base_mapping):
         """``active_student_ids`` equals ``set(Students.User ID)`` by construction."""
-        t = DataTransformer()
-        t.set_school_year(2025, "08-25", "07-25")
+        t = _transformer(base_mapping)
         gc = _global_config(base_mapping)
         demographic = _demographic()
         raw = _raw_data(demographic)
@@ -279,8 +290,7 @@ class TestHomeroomClassFiltering:
             ],
             columns=_DEMO_COLUMNS,
         )
-        t = DataTransformer()
-        t.set_school_year(2025, "08-25", "07-25")
+        t = _transformer(base_mapping)
         gc = _global_config(base_mapping)
         raw = _raw_data(demographic)
 
@@ -307,8 +317,7 @@ class TestEmptyRosterGuard:
         """Running Classes/Enrollments WITHOUT Students first → empty roster →
         all student rows survive (back-compat) + a warning is emitted.
         """
-        t = DataTransformer()
-        t.set_school_year(2025, "08-25", "07-25")
+        t = _transformer(base_mapping)
         gc = _global_config(base_mapping)
         demographic = _demographic()
         raw = _raw_data(demographic)

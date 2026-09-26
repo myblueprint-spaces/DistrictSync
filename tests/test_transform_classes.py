@@ -4,15 +4,15 @@ Tests homeroom class generation, subject class creation, and blended class integ
 """
 
 import pandas as pd
-
-from src.etl.transformer import DataTransformer
+import pytest
 
 
 class TestClassesTransformHomeroom:
     """Tests for homeroom class generation (grades K-7)."""
 
-    def setup_method(self):
-        self.transformer = DataTransformer()
+    @pytest.fixture(autouse=True)
+    def _published_transformer(self, published_transformer):
+        self.transformer = published_transformer
         self.transformer.set_school_year(2025, "08-25", "07-25")
 
     def test_homeroom_classes_created(self, student_schedule_df, classes_mapping, global_config, raw_data):
@@ -50,8 +50,9 @@ class TestClassesTransformHomeroom:
 class TestClassesTransformSubject:
     """Tests for subject class creation (non-homeroom grades)."""
 
-    def setup_method(self):
-        self.transformer = DataTransformer()
+    @pytest.fixture(autouse=True)
+    def _published_transformer(self, published_transformer):
+        self.transformer = published_transformer
         self.transformer.set_school_year(2025, "08-25", "07-25")
 
     def test_subject_classes_created(self, student_schedule_df, classes_mapping, global_config, raw_data):
@@ -160,8 +161,9 @@ def _straddling_blend_with_an_inactive_senior() -> dict[str, pd.DataFrame]:
 class TestClassesTransformBlended:
     """Tests for blended class integration in class output."""
 
-    def setup_method(self):
-        self.transformer = DataTransformer()
+    @pytest.fixture(autouse=True)
+    def _published_transformer(self, published_transformer):
+        self.transformer = published_transformer
         self.transformer.set_school_year(2025, "08-25", "07-25")
 
     def test_blended_classes_in_output(self, students_mapping, classes_mapping, enrollments_mapping, global_config):
@@ -181,8 +183,7 @@ class TestClassesTransformBlended:
         emitter is the only thing standing between it and an orphan.
         """
         raw_data = _straddling_blend_with_an_inactive_senior()
-        transformer = DataTransformer()
-        transformer.set_school_year(2025, "08-25", "07-25")
+        transformer = self.transformer  # the published (production-shape) transformer
 
         students = transformer.transform(
             raw_data["StudentDemographicInformation.txt"], students_mapping, "Students", raw_data, global_config
@@ -240,8 +241,9 @@ class TestNameConfigDrivesClassNames:
     primary-teacher flag was never consulted.
     """
 
-    def setup_method(self):
-        self.transformer = DataTransformer()
+    @pytest.fixture(autouse=True)
+    def _published_transformer(self, published_transformer):
+        self.transformer = published_transformer
         self.transformer.set_school_year(2025, "08-25", "07-25")
 
     def test_spaced_keys_drive_section_letter_and_primary_teacher_flag(
@@ -282,8 +284,9 @@ class TestExcludedCourseCodes:
     attendance-only schedule entries for SD40).
     """
 
-    def setup_method(self):
-        self.transformer = DataTransformer()
+    @pytest.fixture(autouse=True)
+    def _published_transformer(self, published_transformer):
+        self.transformer = published_transformer
         self.transformer.set_school_year(2025, "08-25", "07-25")
 
     def test_attendance_codes_filtered_from_subject_classes(
@@ -332,8 +335,9 @@ class TestHomeroomClassIdCollision:
     that visible on the data-errors axis without failing the run.
     """
 
-    def setup_method(self):
-        self.transformer = DataTransformer()
+    @pytest.fixture(autouse=True)
+    def _published_transformer(self, published_transformer):
+        self.transformer = published_transformer
         self.transformer.set_school_year(2025, "08-25", "07-25")
 
     @staticmethod

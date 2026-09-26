@@ -31,6 +31,7 @@ import pandas as pd
 import pytest
 from pandas.testing import assert_frame_equal
 
+from src.etl.errors import GuardKind, SourceSchemaError
 from src.etl.transformer import DataTransformer
 from src.etl.transformers.grades import (
     filter_to_grade_scope,
@@ -156,16 +157,26 @@ class TestFilterToGradeScope:
         filter_to_grade_scope(source, "grade", {"KG"}, caller="Students")
         assert_frame_equal(source, before)
 
-    def test_an_unresolvable_grade_column_RAISES_naming_the_available_columns(self):
+    def test_an_unresolvable_grade_column_RAISES_a_typed_error_that_counts_but_never_names_the_headers(self):
         """Fail-open is the dangerous direction: this is an EXCLUSION key, so a
-        renamed/absent column must never mean "keep everyone"."""
+        renamed/absent column must never mean "keep everyone".
+
+        Plan 0053 S1 changed this pin deliberately: it used to assert the message
+        LISTED the available columns, which is exactly the observed-header dump §8
+        bans (a headerless file read without its header makes row 1 a pupil). The
+        error is now TYPED (``PII_SCOPE``), names the missing CONFIG column, and
+        carries only the COUNT of the source's columns."""
         frame = _student_frame().drop(columns="grade")
-        with pytest.raises(KeyError) as exc:
+        with pytest.raises(SourceSchemaError) as exc:
             filter_to_grade_scope(frame, "grade", {"KG"}, caller="Students")
-        message = str(exc.value)
-        assert "grade" in message
-        assert "student number" in message, "the message must name the available columns"
-        assert "Students" in message, "the message must name the consumer"
+        err = exc.value
+        message = str(err)
+        assert err.guard is GuardKind.PII_SCOPE
+        assert err.entity == "Students", "the error must name the consumer"
+        assert err.columns == ("grade",)
+        assert "'grade'" in message and "Students" in message
+        assert "has 2 columns" in message, "the message carries the COUNT of source columns"
+        assert "student number" not in message, "an observed header must never reach the message"
 
     def test_a_frame_already_carrying_the_temp_column_RAISES(self):
         """Collision-proofing, pinned: the drop would otherwise delete a real
@@ -279,12 +290,14 @@ class TestStudentsUnderAScope:
         self, students_transformer, students_mapping, global_config
     ):
         """`{value: ""}` is legal config (SD83 does it for Date of Birth) and
-        `resolve_column` does not honour a bare string, so "column absent" is
-        reachable in ordinary config — and fail-open here delivers the PII of
-        students the district is not licensed to send."""
+        reads the documented default column (`columns.resolve_source_column`),
+        which the export may not carry, so "column absent" is reachable in
+        ordinary config — and fail-open here delivers the PII of students the
+        district is not licensed to send."""
         mapping = {**students_mapping, "field_map": {**students_mapping["field_map"], "Grade": {"value": ""}}}
         demographic = _demographic(["K", "12"]).drop(columns="grade")
-        with pytest.raises(KeyError, match="grade"):
+        # Plan 0053 S1: a typed SourceSchemaError (PII_SCOPE), was a bare KeyError.
+        with pytest.raises(SourceSchemaError, match="grade") as exc:
             _run_students(
                 students_transformer,
                 mapping,
@@ -292,12 +305,15 @@ class TestStudentsUnderAScope:
                 demographic,
                 student_rostering_grades=["KG"],
             )
+        assert exc.value.guard is GuardKind.PII_SCOPE
+        assert exc.value.entity == "Students"
 
     def test_the_grade_column_is_resolved_from_the_field_map_not_hardcoded(
         self, students_transformer, students_mapping, global_config
     ):
         """Configurable Columns: a district that renames the source column keeps
-        working, through the SAME `resolve_column` seam Classes/Enrollments use."""
+        working, through the ONE resolver Classes/Enrollments use too
+        (`columns.resolve_source_column`)."""
         mapping = {
             **students_mapping,
             "field_map": {
@@ -315,6 +331,21 @@ class TestStudentsUnderAScope:
         )
         assert set(result["User ID"]) == {"S001"}
         assert list(result["Grade"]) == ["KG"]
+
+    def test_a_bare_string_grade_rename_scopes_the_roster(self, students_transformer, students_mapping, global_config):
+        """Plan 0053 S9, §5 #6: the retired `resolve_column` IGNORED a bare-string
+        `Grade` and scoped on `grade`, a column this export does not carry (so the run
+        failed); the one resolver reads the column the district named."""
+        mapping = {**students_mapping, "field_map": {**students_mapping["field_map"], "Grade": "Grade Level"}}
+        demographic = _demographic(["K", "12"]).rename(columns={"grade": "grade level"})
+        result = _run_students(
+            students_transformer,
+            mapping,
+            global_config,
+            demographic,
+            student_rostering_grades=["KG"],
+        )
+        assert set(result["User ID"]) == {"S001"}
 
     @pytest.mark.parametrize(
         ("home_grade", "other_grade", "expected"),

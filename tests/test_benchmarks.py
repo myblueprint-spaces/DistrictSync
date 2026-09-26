@@ -60,7 +60,8 @@ def global_config_module():
 
     with open(Path("config/mappings/myedbc_mapping.yaml")) as f:
         full = yaml.safe_load(f)
-    return {**full.get("global_config", {}), "mappings": full.get("mappings", {})}
+    # The global_config SECTION only — production never nests `mappings` in it (plan 0053 S9).
+    return dict(full.get("global_config", {}))
 
 
 @pytest.mark.benchmark
