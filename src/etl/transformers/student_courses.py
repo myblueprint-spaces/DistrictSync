@@ -24,16 +24,20 @@ when the row is a pass.
 
 import logging
 import re
+from collections.abc import Mapping
 from datetime import datetime
-from typing import Any, Optional
+from types import MappingProxyType
+from typing import Any, Final, Optional
 
 import pandas as pd
 
 from src.etl.column_names import SCHOOL_NUMBER
+from src.etl.outcomes import OutcomeNote
 from src.etl.transformers.base import BaseTransformer
 from src.etl.transformers.columns import Previously, resolve_source_column
 from src.etl.transformers.context import TransformContext
-from src.etl.transformers.course_codes import course_grade, strip_trailing_hyphens
+from src.etl.transformers.course_codes import course_grade, note_unapplied_exclusions, strip_trailing_hyphens
+from src.etl.transformers.notes import record_note
 from src.utils.helpers import describe_value_for_log as _describe_value
 
 logger = logging.getLogger(__name__)
@@ -120,6 +124,11 @@ class StudentCoursesTransformer(BaseTransformer):
 
         patterns = self.effective_course_code_patterns(context.global_config)
         flavors = context.global_config.get("excluded_course_flavors", [])
+        self._note_absent_columns(context, {"history": history_df, "selection": selection_df, "info": info_df}, cols)
+        for frame in (history_df, selection_df):
+            note_unapplied_exclusions(
+                context, "StudentCourses", frame, configured=bool(patterns), column=cols["course_code"]
+            )
 
         info_exact, info_prefix = self._build_info_lookups(info_df, cols)
 
@@ -167,6 +176,64 @@ class StudentCoursesTransformer(BaseTransformer):
         for role, default in cls.AUX_SOURCE_DEFAULTS.items():
             resolved[role] = resolve_source_column(aux, role, default=default, previously=Previously.UNCHANGED)
         return resolved
+
+    #: The resolved roles each source reads (``_resolve_source_columns``), plus the structural
+    #: ``SCHOOL_NUMBER`` every one of them reads too.
+    SOURCE_READS: Final[Mapping[str, tuple[str, ...]]] = MappingProxyType(
+        {
+            "history": (
+                "student_id",
+                "course_code",
+                "final_mark",
+                "completion_date",
+                "full_course_code",
+                "section",
+                "dl_start_date",
+            ),
+            "selection": ("student_id", "course_code", "dl_start_date"),
+            "info": ("course_code", "title", "credit_value"),
+        }
+    )
+
+    @classmethod
+    def _note_absent_columns(
+        cls, context: TransformContext, frames: dict[str, pd.DataFrame], cols: dict[str, str]
+    ) -> None:
+        """Record a transcript source that lacks a column it reads (§5 #34/#34a, plan 0053 S11).
+
+        Every read here is ``record.get(col)``, so an absent column is silent today and its cost
+        depends on the column: an absent student-ID or course-code column skips every row of
+        that source (the entity can end EMPTY), an absent course-code column in Course
+        Information leaves every transcript row without a title or credit value, and any other
+        absent column reads blank. Those DIRECTIONS stay (StudentCourses is ISOLATABLE). What
+        changes is that it is never silent: ONE WARNING naming each source's absent columns in
+        resolved config spelling (never an observed header) and
+        ``OutcomeNote.TRANSCRIPT_SOURCE_COLUMN_ABSENT`` counting the rows of the sources
+        concerned. A source that is absent or empty reads nothing and is not reported.
+        """
+        missing: dict[str, list[str]] = {}
+        rows = 0
+        for source, frame in frames.items():
+            if frame.empty:
+                continue
+            wanted = [cols[role] for role in cls.SOURCE_READS[source]] + [SCHOOL_NUMBER]
+            absent = [column for column in wanted if column not in frame.columns]
+            if absent:
+                missing[source] = absent
+                rows += len(frame)
+        if missing:
+            # failure-policy: join_key
+            record_note(
+                context,
+                "StudentCourses",
+                OutcomeNote.TRANSCRIPT_SOURCE_COLUMN_ABSENT,
+                rows,
+                log=logger,
+                message=(
+                    f"[StudentCourses] TRANSCRIPT COLUMNS MISSING — {missing} (source: absent columns); "
+                    f"{rows} row(s) of those sources are read without them."
+                ),
+            )
 
     # ------------------------------------------------------------------
     # Source loading

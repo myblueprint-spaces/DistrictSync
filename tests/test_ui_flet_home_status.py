@@ -2557,7 +2557,13 @@ class TestLegacyRecordSnapshot:
                 {
                     "home": asdict(home),
                     "banner": asdict(banner),
-                    "rows": [{k: getattr(v, "value", v) for k, v in asdict(r).items()} for r in rows],
+                    # `notes` (plan 0053 S11, the row's note detail) postdates the snapshot; it is
+                    # asserted EMPTY for every legacy ledger in `_legacy_rows_carry_no_notes` and
+                    # dropped here only then, so the frozen rendering stays byte-for-byte.
+                    "rows": [
+                        {k: getattr(v, "value", v) for k, v in asdict(r).items() if not (k == "notes" and not v)}
+                        for r in rows
+                    ],
                 },
                 sort_keys=True,
                 default=str,
@@ -2584,6 +2590,32 @@ class TestLegacyRecordSnapshot:
             ledger = self._ledgers()["clean_delivered"]
             ledger[0]["entity_outcomes"] = value
             assert self._render(ledger) == snapshot["clean_delivered"]
+
+    def test_legacy_rows_carry_no_notes(self) -> None:
+        """What `_render` drops is EMPTY on every legacy ledger (plan 0053 S11) — so the frozen
+        snapshot still pins every row field that has a value."""
+        from src.ui_flet.run_history import to_run_rows
+
+        for name, ledger in self._ledgers().items():
+            assert all(row.notes == () for row in to_run_rows(ledger, now=_NOW)), name
+
+    def test_twin_a_healthy_note_reaches_the_row_and_changes_the_rendering(self) -> None:
+        """The positive twin: a recorded HEALTHY-tier note is on the row (so `_render` keeps it)
+        while the verdict the snapshot pins is unchanged."""
+        from src.ui_flet.run_history import to_run_rows
+
+        ledger = self._ledgers()["clean_delivered"]
+        outcomes = _outcomes_record()
+        first = next(iter(outcomes))
+        outcomes[first]["notes"] = {"status_column_absent_date_only": 5}
+        ledger[0]["entity_outcomes"] = outcomes
+        (row,) = to_run_rows(ledger, now=_NOW)
+        assert row.notes == ("no status column, withdraw dates used",)
+        snapshot = json.loads(self._SNAPSHOT.read_text(encoding="utf-8"))
+        rendered = self._render(ledger)
+        assert rendered != snapshot["clean_delivered"]
+        assert rendered["home"] == snapshot["clean_delivered"]["home"]
+        assert rendered["banner"] == snapshot["clean_delivered"]["banner"]
 
 
 # --------------------------------------------------------------------------- #

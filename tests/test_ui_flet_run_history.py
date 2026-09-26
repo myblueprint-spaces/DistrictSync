@@ -1411,3 +1411,29 @@ class TestD14TheBannerAndTheRows:
             [_d14_failed_manual()], _CONFIGURED, now=_NOW, store_created_at=_RECENT, schedule_status=live
         )
         assert banner.detail.endswith(" Scheduled for 3:00 AM each night.")
+
+
+class TestTheStatusCellCarriesTheNoteDetail:
+    """Plan 0053 S11: a row's HEALTHY-tier notes render as a muted line under its status."""
+
+    @staticmethod
+    def _status_cell(row: RunRow) -> ft.Control:
+        table = components.run_table([row])
+        return table.rows[0].cells[1].content
+
+    def test_a_row_with_notes_stacks_the_label_and_the_detail(self) -> None:
+        row = RunRow(
+            when="recently",
+            status_label="Completed",
+            status_verdict=Verdict.HEALTHY,
+            notes=("no status column, withdraw dates used", "contacts without email left out"),
+        )
+        cell = self._status_cell(row)
+        assert isinstance(cell, ft.Column)
+        label, detail = cell.controls
+        assert label.value == "Completed"
+        assert detail.value == "no status column, withdraw dates used · contacts without email left out"
+
+    def test_twin_a_row_without_notes_is_the_plain_label(self) -> None:
+        cell = self._status_cell(RunRow(when="recently", status_label="Completed", status_verdict=Verdict.HEALTHY))
+        assert isinstance(cell, ft.Text) and cell.value == "Completed"

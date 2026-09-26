@@ -80,7 +80,7 @@ class TransformContext:
     #   {"entity": str, "field": str, "failed_rows": int, "sample": str}
     data_errors: list[dict[str, Any]] = field(default_factory=list)
 
-    # Per-run outcome notes (plan 0053 S10 — the carrier S11 extends): closed
+    # Per-run outcome notes (plan 0053 S10 — the carrier S11 extended): closed
     # `OutcomeNote` facts a transformer records about an entity it DID build,
     # as `(entity, note, count)`. Written ONLY through `record_outcome_note` (a
     # method on state the context already owns — never a new attribute, so the

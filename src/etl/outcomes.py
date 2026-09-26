@@ -28,7 +28,7 @@ shape check (a member of the RESOLVED config's own vocabulary, printable, at mos
 :data:`MAX_LABEL_LENGTH` characters), and are produced in exactly one place,
 :func:`apply_labels`. Never an OBSERVED header, a path, a cell value or ``str(exc)`` (§8).
 
-**Notes (plan 0053 S10, owner ruling 2026-09-25 — the carrier S11 extends).** An outcome
+**Notes (plan 0053 S10, owner ruling 2026-09-25 — the carrier S11 extended).** An outcome
 may also carry ``notes``: closed :class:`OutcomeNote` codes, each with a COUNT, that a
 transformer recorded through ``TransformContext.record_outcome_note`` while it ran — a fact
 about a BUILT (or EMPTY) entity that its kind and reason cannot say, such as "built, but the
@@ -181,9 +181,47 @@ VALID_REASONS: Final[Mapping[OutcomeKind, frozenset[OutcomeReason]]] = MappingPr
 
 class OutcomeNote(StrEnum):
     """A closed fact a transformer records about an entity it DID build (persisted values — never
-    change; additive only). Plan 0053 S10 introduces the carrier with the one member owner ruling
-    2026-09-25 needs; S11 adds the rest of its catalogue as further members.
+    change; additive only). Plan 0053 S10 introduced the carrier with the one member owner ruling
+    2026-09-25 needed; S11 adds the rest of the §5 catalogue: every fail-open (d)/(e) posture — and
+    the (b)/(c) sites whose direction stays open — records one of these, never silence.
+
+    Every member carries a COUNT of at least one, and each comment below says what it counts
+    (``failure-policy.md`` §6). One note per entity per run: the first count recorded stands
+    (``TransformContext.record_outcome_note``). Whether a note makes the run PARTIAL is decided in
+    ONE place, ``failure_copy.NOTE_TIER`` — every member below is Run-History detail only
+    (HEALTHY) except ``ALL_ACTIVE_DEFAULT`` and ``COTEACHER_SOURCE_UNUSABLE`` (WARNING).
     """
+
+    # --- Students: which signal decided "active" (§5 #17/#18). At most ONE of the first four per
+    # run: ALL_ACTIVE_DEFAULT > CONFIGURED_STATUS_COLUMN_ABSENT > STATUS_COLUMN_ABSENT_DATE_ONLY
+    # (`BaseTransformer.decide_enroll_status`). Each counts the demographic rows the step decided.
+    # Neither a status nor a withdraw-date column: every student shipped Active (H1).
+    ALL_ACTIVE_DEFAULT = "all_active_default"
+    # The EnrollStatus config names a status column the export does not carry; the withdraw date
+    # decided instead.
+    CONFIGURED_STATUS_COLUMN_ABSENT = "configured_status_column_absent"
+    # No enrollment-status column (none configured, neither default spelling present); the
+    # withdraw date alone decided.
+    STATUS_COLUMN_ABSENT_DATE_ONLY = "status_column_absent_date_only"
+    # Rows kept Active with NO positive signal: a blank status (or no status column) AND a blank
+    # (or absent) withdraw date. Counts those rows. Not recorded beside ALL_ACTIVE_DEFAULT, whose
+    # count already covers every row.
+    ACTIVE_WITHOUT_POSITIVE_SIGNAL = "active_without_positive_signal"
+
+    # --- Staff: the departed-staff filter could not run (§5 #12/#21) or the roster merge was
+    # skipped (§5 #13). Each counts the staff rows shipped as they were.
+    STAFF_STATUS_COLUMN_ABSENT = "staff_status_column_absent"
+    STAFF_STATUS_VOCABULARY_UNRECOGNISED = "staff_status_vocabulary_unrecognised"
+    STAFF_FILTER_WOULD_EMPTY = "staff_filter_would_empty"
+    ROSTER_MERGE_SKIPPED = "roster_merge_skipped"
+
+    # --- The zero-orphan roster filter was skipped (§5 #14, #27(i)), on the entity that asked for
+    # it. Each counts the rows of the first filter reached, kept unfiltered (on Enrollments, the first
+    # of its homeroom / subject filters — the second adds nothing: the first count stands).
+    # The source lacks the student column the filter matches on (the roster exists).
+    ACTIVE_ROSTER_COLUMN_UNRESOLVABLE = "active_roster_column_unresolvable"
+    # No roster was published this run (Students not enabled, not run first, or no `User ID`).
+    ACTIVE_ROSTER_UNAVAILABLE = "active_roster_unavailable"
 
     # Enrollments: a present, non-empty ClassInformation lacked a column the co-teacher rows are
     # linked by (primary-teacher flag, its teacher id, Path 1's section column, Path 2's Master
@@ -192,6 +230,38 @@ class OutcomeNote(StrEnum):
     # the primary-teacher rows when a path column is — with one path missing, the other path may
     # still have linked some of those same rows, so it is never a count of rows "not used".
     COTEACHER_SOURCE_UNUSABLE = "coteacher_source_unusable"
+
+    # --- Classes: display-name and lookup columns (d). Blended detection read a lookup without a
+    # column it needs — no blend could be detected, or blend names lost a segment (§5 #16/#31);
+    # counts the ClassInformation rows detection read.
+    BLENDED_LOOKUP_COLUMN_ABSENT = "blended_lookup_column_absent"
+    # The homeroom teacher-name column is absent (§5 #35); counts the homeroom classes named
+    # without it.
+    HOMEROOM_TEACHER_NAME_ABSENT = "homeroom_teacher_name_absent"
+    # A subject class-name column (course title, teacher name, section) is absent (§5 #37); counts
+    # the subject classes named without that segment.
+    CLASS_NAME_COLUMN_ABSENT = "class_name_column_absent"
+
+    # Classes / Enrollments / CourseInfo / StudentCourses: exclusions are configured but the source
+    # has no course-code column, so they were not applied (§5 #32); counts the rows of the first
+    # source found without one.
+    COURSE_CODE_EXCLUSIONS_NOT_APPLIED = "course_code_exclusions_not_applied"
+
+    # --- Contract fields (c). Family contacts left out for a blank Email (§5 #20); counts them.
+    CONTACTS_EXCLUDED_NO_EMAIL = "contacts_excluded_no_email"
+    # Family / Students: the mapping produces no email output column at all (§5 #20, #40); counts
+    # the rows shipped without it.
+    EMAIL_OUTPUT_NOT_MAPPED = "email_output_not_mapped"
+
+    # --- Identity / key reads whose direction is still open (b)/(c). An identity field
+    # (`User ID`, `Student User ID`, `Class ID`, `School ID`) mapped to a source column the
+    # frame lacks ships blank (§5 #19); counts the rows.
+    IDENTITY_FIELD_BLANKED = "identity_field_blanked"
+    # StudentAttendance: a band's configured column is absent (§5 #33); counts that band's rows.
+    ATTENDANCE_SOURCE_COLUMN_ABSENT = "attendance_source_column_absent"
+    # StudentCourses: a transcript source lacks a column it reads (§5 #34/#34a); counts the rows of
+    # the sources concerned.
+    TRANSCRIPT_SOURCE_COLUMN_ABSENT = "transcript_source_column_absent"
 
 
 #: The outcome kinds that may carry notes: an entity whose transform RAN TO COMPLETION. A FAILED
@@ -735,7 +805,7 @@ def _notes_from(raw: Any, kind: OutcomeKind) -> tuple[Note, ...]:
     kept only when its key is a note this build knows and its count is an ``int`` of at least 1;
     anything else is dropped, never the entry's kind and reason. A note code this build does not
     know — written by a NEWER build — is DROPPED rather than read as a warning: most of the
-    catalogue S11 adds is Run-History detail only, so erring toward amber would light an older
+    catalogue S11 added is Run-History detail only, so erring toward amber would light an older
     build's Home on facts that are not warnings (DECISIONS 2026-09-25).
     """
     if not isinstance(raw, Mapping) or kind not in NOTE_BEARING_KINDS:

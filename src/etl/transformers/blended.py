@@ -27,9 +27,14 @@ from src.etl.column_names import (
     TEACHER_NAME,
 )
 from src.etl.errors import GuardKind
+from src.etl.outcomes import OutcomeNote
 from src.etl.transformers.columns import Previously, require_columns, resolve_source_column, source_column_label
 from src.etl.transformers.context import TransformContext
-from src.etl.transformers.course_codes import filter_excluded_course_codes, resolve_course_code_column
+from src.etl.transformers.course_codes import (
+    filter_excluded_course_codes,
+    note_unapplied_exclusions,
+    resolve_course_code_column,
+)
 from src.etl.transformers.grades import (
     ceds_grade_series,
     grade_to_ceds,
@@ -39,6 +44,7 @@ from src.etl.transformers.grades import (
 )
 from src.etl.transformers.ids import normalize_id_series
 from src.etl.transformers.naming import MAX_CLASS_NAME_LENGTH, truncate_name
+from src.etl.transformers.notes import record_note
 from src.etl.transformers.sources import get_source_file, normalize_source_config
 from src.utils.helpers import normalize_columns
 
@@ -185,12 +191,22 @@ class BlendedClassDetector:
         course_title_map = self._build_course_title_map(course_df)
         teacher_name_map = self._build_teacher_name_map(schedule_df, field_map, teacher_id_col)
 
+        # Which lookups detection could not build for want of a column (plan 0053 S11, §5 #16/#31).
+        # Each already says so in its own ONE line; the note records the fact on the Classes outcome.
+        gaps: list[str] = []
+        if MASTER_TIMETABLE_ID not in schedule_df.columns or grade_col not in schedule_df.columns:
+            gaps.append("section grades")  # `_build_grade_map` warned: no blend can qualify
+        if COURSE_CODE not in course_df.columns or COURSE_TITLE not in course_df.columns:
+            gaps.append("course titles")  # `_build_course_title_map` warned: every title "Unknown Course"
+
         working = self._resolve_working_frame(class_info_df, schedule_df, teacher_id_col)
         if working is None:
+            self._note_lookup_gaps(context, [*gaps, "sections"], rows=len(class_info_df))
             return BlendedDetection.empty()
 
         working = self._drop_teacherless_sections(working, teacher_id_col)
         if working is None:
+            self._note_lookup_gaps(context, gaps, rows=len(class_info_df))
             return BlendedDetection.empty()
 
         # §5 #39 (plan 0053 S10): the school and EVERY time-slot component IN FORCE
@@ -208,7 +224,7 @@ class BlendedClassDetector:
             guard=GuardKind.JOIN_KEY,
         )
         working = self._add_session_key(working, teacher_id_col, components=components)
-        return self._register_blends(
+        result = self._register_blends(
             working,
             field_map,
             teacher_id_col,
@@ -219,6 +235,67 @@ class BlendedClassDetector:
             context,
             components=components,
         )
+        named = len(result.metadata)
+        if named and resolve_course_code_column(working) is None:
+            gaps.append("course codes")  # `_register_blends` warned: names omit their course titles
+        if named and self._teacher_name_lost(schedule_df, working, field_map, teacher_id_col, named=named):
+            gaps.append("teacher names")
+        self._note_lookup_gaps(context, gaps, rows=len(class_info_df))
+        return result
+
+    @staticmethod
+    def _note_lookup_gaps(context: TransformContext, gaps: list[str], *, rows: int) -> None:
+        """Record lookups blended detection could not build (§5 #16/#31, plan 0053 S11).
+
+        ``gaps`` names each lookup a missing column cost (section grades → no blend can
+        qualify; the ClassInformation sections → no detection; course titles / codes and
+        teacher names → blend names lose that segment). Each lookup has already logged its
+        OWN one line, so the note adds none above DEBUG — at most one line per lookup per run,
+        never one per blend. ``OutcomeNote.BLENDED_LOOKUP_COLUMN_ABSENT`` counts the
+        ClassInformation rows detection read. Nothing about the blends changes.
+        """
+        if not gaps or rows < 1:
+            return
+        # failure-policy: optional_field
+        record_note(
+            context,
+            "Classes",
+            OutcomeNote.BLENDED_LOOKUP_COLUMN_ABSENT,
+            rows,
+            log=logger,
+            level=logging.DEBUG,
+            message=f"[Blended Classes] Lookups not built for want of a column: {gaps} ({rows} Class Information row(s)).",
+        )
+
+    @classmethod
+    def _teacher_name_lost(
+        cls,
+        schedule_df: pd.DataFrame,
+        working: pd.DataFrame,
+        field_map: dict[str, Any],
+        teacher_id_col: str,
+        *,
+        named: int,
+    ) -> bool:
+        """Whether blend names lost the teacher for want of a column — warned ONCE (§5 #16).
+
+        The schedule map (:meth:`_build_teacher_name_map`) is empty when the schedule lacks the
+        teacher-name or teacher-id column, and the frame fallback (:meth:`_teacher_from_frame`)
+        answers only when the grouped frame carries the name. Both missing → every one of the
+        ``named`` blends omits the teacher: ONE WARNING, consistent with :meth:`_build_grade_map`'s
+        (it used to be silent). A ``Name`` that is not a block names no teacher column at all — a
+        configuration, not a missing column — and is not reported.
+        """
+        teacher_col = cls._teacher_name_column(field_map)
+        if teacher_col is None or teacher_col in working.columns:
+            return False
+        missing = [col for col in (teacher_id_col, teacher_col) if col not in schedule_df.columns]
+        if not missing:
+            return False
+        logger.warning(
+            f"Missing {missing} in student schedule; the {named} blended class name(s) omit the teacher's name."
+        )
+        return True
 
     # ------------------------------------------------------------------
     # detect() steps
@@ -244,6 +321,7 @@ class BlendedClassDetector:
         course_df = normalize_columns(course_df)
 
         excluded_codes = context.global_config.get("excluded_course_codes", [])
+        note_unapplied_exclusions(context, "Classes", schedule_df, configured=bool(excluded_codes))
         schedule_df = filter_excluded_course_codes(schedule_df, excluded_codes)
 
         if MASTER_TIMETABLE_ID in schedule_df.columns:

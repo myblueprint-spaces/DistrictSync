@@ -26,6 +26,12 @@ drift from the code (or the code from the doc) without a red test that names the
   under ``src/`` collected by AST as (site, entity, guard), both directions; each site's
   call carries the matching ``# failure-policy: <guard>`` tag directly above it; every ``§5`` number the
   table cites is a row of the site catalogue.
+* §5 (plan 0053 S11): a FULL BIJECTION between the site tags and the catalogue — the ``tags``
+  table == every ``# failure-policy: <class>`` line under ``src/`` as (innermost function, class,
+  count), both directions; every class is one of the five §5 classes and matches each catalogue row
+  it cites; every catalogue row is cited by a tag or listed, with its reason, in
+  ``untagged-sites`` (never both); every ``notes.record_note`` call carries a tag directly above
+  it; and every ``OutcomeNote`` member has a producer under ``src/etl``.
 
 Each pin has a non-vacuity assertion (the parser really found the rows) and a
 doctored-doc negative twin (an edited copy of the real doc turns it red). Tables are found
@@ -310,17 +316,29 @@ class TestSection6CopyParity:
         assert notes == {m.name for m in OutcomeNote} and notes, "the OutcomeNote rows are really checked"
 
     def test_doctored_a_note_without_a_tier_or_copy_is_red(self):
-        assert _copy_gaps(
+        # Plan 0053 S11 grew the enum from one member to the whole catalogue: every documented
+        # note is then reported twice (no tier, no copy) — pinned by count and by one named pair.
+        gaps = _copy_gaps(
             _doc_text(),
             category_copy=FAILED_CATEGORY_COPY,
             tier=OUTCOME_TIER,
             reasons_with_copy=_reasons_with_copy(),
             note_tier={},
             notes_with_copy=set(),
-        ) == [
-            "failure-policy.md §6: OutcomeNote.COTEACHER_SOURCE_UNUSABLE has no NOTE_TIER verdict",
-            "failure-policy.md §6: OutcomeNote.COTEACHER_SOURCE_UNUSABLE has no note copy",
-        ]
+        )
+        assert len(gaps) == 2 * len(OutcomeNote)
+        assert "failure-policy.md §6: OutcomeNote.COTEACHER_SOURCE_UNUSABLE has no NOTE_TIER verdict" in gaps
+        assert "failure-policy.md §6: OutcomeNote.COTEACHER_SOURCE_UNUSABLE has no note copy" in gaps
+
+    def test_doctored_one_note_without_a_tier_is_red_alone(self):
+        tier = {k: v for k, v in NOTE_TIER.items() if k is not OutcomeNote.ALL_ACTIVE_DEFAULT}
+        assert _copy_gaps(
+            _doc_text(),
+            category_copy=FAILED_CATEGORY_COPY,
+            tier=OUTCOME_TIER,
+            reasons_with_copy=_reasons_with_copy(),
+            note_tier=tier,
+        ) == ["failure-policy.md §6: OutcomeNote.ALL_ACTIVE_DEFAULT has no NOTE_TIER verdict"]
 
     def test_doctored_a_category_without_copy_is_red(self):
         missing = {k: v for k, v in FAILED_CATEGORY_COPY.items() if k is not RunErrorCategory.SOURCE_SCHEMA}
@@ -495,7 +513,8 @@ class TestSection7NoteTier:
     def test_doctored_a_quieter_code_tier_and_a_missing_row_are_red(self):
         from src.ui_flet.verdict import Verdict
 
-        muted = {note: Verdict.HEALTHY for note in NOTE_TIER}
+        # Mute the co-teacher note alone (S11 added a second WARNING note, which stays as it is).
+        muted = {**NOTE_TIER, OutcomeNote.COTEACHER_SOURCE_UNUSABLE: Verdict.HEALTHY}
         assert _note_tier_mismatches(_doc_text(), tier=muted) == [
             "failure-policy.md §7: note coteacher_source_unusable is WARNING in the doc but HEALTHY in "
             "failure_copy.NOTE_TIER"
@@ -802,3 +821,274 @@ class TestSection5FailClosedGuards:
         assert _guard_site_mismatches(doctored, _code_guard_calls()) == [
             "failure-policy.md §5: require-columns row `staff.StaffTransformer._merge_roster` cites #99, not in the catalogue"
         ]
+
+
+# --------------------------------------------------------------------------- #
+# §5 — every site tag ↔ the site catalogue, a full bijection (plan 0053 S11)   #
+# --------------------------------------------------------------------------- #
+#: A tag line is exactly this comment on its own line (a docstring that MENTIONS the tag in
+#: backticks is not one).
+_TAG_LINE = re.compile(r"^\s*# failure-policy: (\w+)\s*$")
+
+#: The five §5 classes, by the letter the catalogue's Class column uses. The first two are
+#: ``GuardKind``'s values (the fail-closed guards); the other three exist only as tags.
+_CLASS_OF_LETTER: dict[str, str] = {
+    "a": GuardKind.PII_SCOPE.value,
+    "b": GuardKind.JOIN_KEY.value,
+    "c": "contract_field",
+    "d": "optional_field",
+    "e": "safety_heuristic",
+}
+_SITE_CLASSES = frozenset(_CLASS_OF_LETTER.values())
+
+
+def _enclosing_defs(tree: ast.AST, module: str) -> list[tuple[int, int, str]]:
+    """``(first line, last line, module.Class.function)`` for every function in ``tree``."""
+    found: list[tuple[int, int, str]] = []
+
+    def visit(node: ast.AST, scope: list[str]) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                child_scope = [*scope, child.name]
+                if not isinstance(child, ast.ClassDef):
+                    found.append((child.lineno, child.end_lineno or child.lineno, ".".join([module, *child_scope])))
+                visit(child, child_scope)
+            else:
+                visit(child, scope)
+
+    visit(tree, [])
+    return found
+
+
+def _site_tags(source: str, module: str) -> dict[tuple[str, str], int]:
+    """``{(site, class): count}`` for every tag line in ``source`` (site = the innermost function)."""
+    defs = _enclosing_defs(ast.parse(source), module)
+    tags: dict[tuple[str, str], int] = {}
+    for number, line in enumerate(source.splitlines(), start=1):
+        match = _TAG_LINE.match(line)
+        if not match:
+            continue
+        enclosing = [d for d in defs if d[0] <= number <= d[1]]
+        site = min(enclosing, key=lambda d: d[1] - d[0])[2] if enclosing else module
+        key = (site, match.group(1))
+        tags[key] = tags.get(key, 0) + 1
+    return tags
+
+
+def _code_site_tags() -> dict[tuple[str, str], int]:
+    tags: dict[tuple[str, str], int] = {}
+    for path in sorted(_SRC.rglob("*.py")):
+        for key, count in _site_tags(path.read_text(encoding="utf-8"), path.stem).items():
+            tags[key] = tags.get(key, 0) + count
+    return tags
+
+
+def _cited(cell: str) -> list[str]:
+    """The catalogue numbers a ``§5`` cell cites (``27(i)`` → ``27``)."""
+    return [part.split("(", 1)[0].strip() for part in _unticked(cell).split(",") if part.strip()]
+
+
+def _row_classes(row: dict[str, str]) -> set[str]:
+    return {_CLASS_OF_LETTER[letter] for letter in re.findall(r"\(([a-e])\)", row.get("Class", ""))}
+
+
+def _tag_site_mismatches(text: str, tags: dict[tuple[str, str], int]) -> list[str]:
+    """Every problem with the ``tags`` / ``untagged-sites`` tables against the code (empty = bijection)."""
+    rows = _table(text, "tags")
+    documented = {
+        (_unticked(r.get("site", "")), _unticked(r.get("class", ""))): _unticked(r.get("tags", "")) for r in rows
+    }
+    problems = [
+        f"failure-policy.md §5: no tags row for {site} ({cls} ×{count})"
+        for (site, cls), count in sorted(tags.items())
+        if documented.get((site, cls)) is None
+    ]
+    problems += [
+        f"failure-policy.md §5: tags row {site} ({cls}) matches no tag in src/"
+        for (site, cls) in sorted(documented)
+        if (site, cls) not in tags
+    ]
+    problems += [
+        f"failure-policy.md §5: tags row {site} ({cls}) says ×{documented[(site, cls)]}, the code has ×{count}"
+        for (site, cls), count in sorted(tags.items())
+        if documented.get((site, cls)) not in (None, str(count))
+    ]
+    problems += [
+        f"{site}: `# failure-policy: {cls}` is not a §5 class"
+        for (site, cls) in sorted(tags)
+        if cls not in _SITE_CLASSES
+    ]
+
+    catalogue = {_unticked(r.get("#", "")): r for r in _table(text, "sites")}
+    covered: set[str] = set()
+    for row in rows:
+        site, cls = _unticked(row.get("site", "")), _unticked(row.get("class", ""))
+        for number in _cited(row.get("§5", "")):
+            if number not in catalogue:
+                problems.append(f"failure-policy.md §5: tags row {site} cites #{number}, not in the catalogue")
+                continue
+            covered.add(number)
+            if cls not in _row_classes(catalogue[number]):
+                problems.append(f"failure-policy.md §5: tags row {site} ({cls}) cites #{number}, whose class differs")
+    exempt = {_unticked(r.get("#", "")) for r in _table(text, "untagged-sites")}
+    problems += [
+        f"failure-policy.md §5: catalogue row #{n} has no tag and no untagged-sites reason"
+        for n in sorted(set(catalogue) - covered - exempt)
+    ]
+    problems += [
+        f"failure-policy.md §5: catalogue row #{n} is both tagged and listed as untagged"
+        for n in sorted(covered & exempt)
+    ]
+    problems += [
+        f"failure-policy.md §5: untagged-sites row #{n} is not in the catalogue"
+        for n in sorted(exempt - set(catalogue))
+    ]
+    return problems
+
+
+def _note_calls(source: str) -> list[ast.Call]:
+    """Every ``record_note`` call in ``source`` (by callee name, bare or attribute)."""
+    return [
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Call)
+        and (node.func.id if isinstance(node.func, ast.Name) else getattr(node.func, "attr", "")) == "record_note"
+    ]
+
+
+def _untagged_note_calls(source: str, module: str) -> list[str]:
+    """``record_note`` calls without a ``# failure-policy:`` tag in the comment block directly above."""
+    lines = source.splitlines()
+    missing: list[str] = []
+    for node in _note_calls(source):
+        index, tagged = node.lineno - 2, False
+        while index >= 0 and lines[index].strip().startswith("#"):
+            if _TAG_LINE.match(lines[index]):
+                tagged = True
+                break
+            index -= 1
+        if not tagged:
+            missing.append(f"{module}:{node.lineno}")
+    return missing
+
+
+def _produced_notes() -> set[str]:
+    """Every ``OutcomeNote.<member>`` referenced under ``src/etl`` (outside ``outcomes.py``)."""
+    produced: set[str] = set()
+    for path in sorted((_SRC / "etl").rglob("*.py")):
+        if path.name == "outcomes.py":
+            continue
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "OutcomeNote":
+                produced.add(node.attr)
+    return produced
+
+
+#: The ``record_note`` call sites under ``src/`` when S11 landed (a floor for the tag scan).
+_RECORD_NOTE_CALL_SITES_FLOOR = 16
+
+
+class TestSection5SiteTagBijection:
+    def test_every_tag_has_its_row_and_every_catalogue_row_is_tagged_or_exempt(self):
+        assert _tag_site_mismatches(_doc_text(), _code_site_tags()) == []
+
+    def test_non_vacuity_all_five_classes_are_tagged_and_both_tables_parse(self):
+        tags = _code_site_tags()
+        assert {cls for _site, cls in tags} == _SITE_CLASSES
+        assert ("base.BaseTransformer.decide_enroll_status", "safety_heuristic") in tags
+        assert ("family.FamilyTransformer._exclude_rows_without_email", "contract_field") in tags
+        assert len(_table(_doc_text(), "tags")) == len(tags) >= 30
+        assert len(_table(_doc_text(), "untagged-sites")) >= 1
+
+    def test_the_collector_reads_a_synthetic_site_and_ignores_a_docstring_mention(self):
+        source = (
+            "class T:\n"
+            '    """Mentions ``# failure-policy: join_key`` in prose."""\n'
+            "    def m(self):\n"
+            "        # failure-policy: optional_field\n"
+            "        return 1\n"
+            "def f():\n"
+            "    # failure-policy: safety_heuristic\n"
+            "    # failure-policy: safety_heuristic\n"
+            "    pass\n"
+        )
+        assert _site_tags(source, "mod") == {("mod.T.m", "optional_field"): 1, ("mod.f", "safety_heuristic"): 2}
+
+    def test_doctored_a_planted_tag_is_red(self):
+        planted = {**_code_site_tags(), ("planted.g", "optional_field"): 1}
+        assert _tag_site_mismatches(_doc_text(), planted) == [
+            "failure-policy.md §5: no tags row for planted.g (optional_field ×1)"
+        ]
+
+    def test_doctored_a_tag_outside_the_five_classes_is_red(self):
+        planted = {**_code_site_tags(), ("planted.g", "guessed_class"): 1}
+        problems = _tag_site_mismatches(_doc_text(), planted)
+        assert "planted.g: `# failure-policy: guessed_class` is not a §5 class" in problems
+
+    def test_doctored_a_removed_tag_and_a_changed_count_are_red(self):
+        tags = dict(_code_site_tags())
+        del tags[("course_codes.note_unapplied_exclusions", "safety_heuristic")]
+        tags[("base.BaseTransformer.decide_enroll_status", "safety_heuristic")] = 3
+        problems = _tag_site_mismatches(_doc_text(), tags)
+        assert (
+            "failure-policy.md §5: tags row course_codes.note_unapplied_exclusions (safety_heuristic) "
+            "matches no tag in src/"
+        ) in problems
+        assert any("decide_enroll_status (safety_heuristic) says ×4, the code has ×3" in p for p in problems)
+
+    def test_doctored_an_uncovered_catalogue_row_is_red(self):
+        text = _doc_text()
+        doctored = text.replace("| `course_codes.note_unapplied_exclusions` | safety_heuristic | 1 | 32 |\n", "", 1)
+        assert doctored != text
+        problems = _tag_site_mismatches(doctored, _code_site_tags())
+        assert "failure-policy.md §5: catalogue row #32 has no tag and no untagged-sites reason" in problems
+
+    def test_doctored_a_wrong_class_is_red(self):
+        text = _doc_text()
+        doctored = text.replace(
+            "| `course_codes.note_unapplied_exclusions` | safety_heuristic | 1 | 32 |",
+            "| `course_codes.note_unapplied_exclusions` | optional_field | 1 | 32 |",
+            1,
+        )
+        assert doctored != text
+        problems = _tag_site_mismatches(doctored, _code_site_tags())
+        assert (
+            "failure-policy.md §5: tags row course_codes.note_unapplied_exclusions (optional_field) cites #32, "
+            "whose class differs"
+        ) in problems
+
+    def test_doctored_an_exempt_row_that_is_also_tagged_is_red(self):
+        text = _doc_text()
+        marker = "<!-- failure-policy-table: untagged-sites -->\n| # | why it carries no tag of its own |\n|---|---|\n"
+        assert marker in text
+        doctored = text.replace(marker, marker + "| 32 | planted |\n", 1)
+        problems = _tag_site_mismatches(doctored, _code_site_tags())
+        assert "failure-policy.md §5: catalogue row #32 is both tagged and listed as untagged" in problems
+
+    def test_every_record_note_call_is_tagged(self):
+        missing = [
+            call
+            for path in sorted(_SRC.rglob("*.py"))
+            for call in _untagged_note_calls(path.read_text(encoding="utf-8"), path.stem)
+        ]
+        assert missing == []
+
+    def test_non_vacuity_the_tag_scan_sees_every_record_note_call_site(self):
+        """The scan above passes vacuously if it finds no call (a path or callee-matching slip):
+        it must see at least the call sites S11 left (a floor — a new site only raises it)."""
+        seen = sum(len(_note_calls(path.read_text(encoding="utf-8"))) for path in sorted(_SRC.rglob("*.py")))
+        assert seen >= _RECORD_NOTE_CALL_SITES_FLOOR
+
+    def test_doctored_an_untagged_record_note_call_is_red_and_a_tagged_one_is_not(self):
+        source = (
+            "def f(ctx):\n"
+            "    # failure-policy: optional_field\n"
+            "    record_note(ctx, 'Classes', note, 1, log=log, message='m')\n"
+            "    record_note(ctx, 'Classes', note, 1, log=log, message='m')\n"
+        )
+        assert _untagged_note_calls(source, "mod") == ["mod:4"]
+
+    def test_every_note_has_a_producer_under_src_etl(self):
+        produced = _produced_notes()
+        assert {note.name for note in OutcomeNote} <= produced, sorted({n.name for n in OutcomeNote} - produced)
+        assert "ALL_ACTIVE_DEFAULT" in produced and "COTEACHER_SOURCE_UNUSABLE" in produced

@@ -18,10 +18,12 @@ from src.etl.column_names import (
     TEACHER_NAME,
 )
 from src.etl.errors import GuardKind
+from src.etl.outcomes import OutcomeNote
 from src.etl.transformers.base import BaseTransformer
 from src.etl.transformers.blended import BlendedClassDetector, BlendedDetection
 from src.etl.transformers.columns import Previously, require_columns, resolve_source_column, source_column_label
 from src.etl.transformers.context import ClassArtifacts, TransformContext
+from src.etl.transformers.course_codes import note_unapplied_exclusions
 from src.etl.transformers.grades import (
     resolve_timetable_scope,
     schedule_grade_column,
@@ -29,6 +31,7 @@ from src.etl.transformers.grades import (
     split_by_homeroom_grades,
 )
 from src.etl.transformers.ids import normalize_id_series
+from src.etl.transformers.notes import record_note
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +104,7 @@ class ClassTransformer(BaseTransformer):
             class_info_df[MASTER_TIMETABLE_ID] = normalize_id_series(class_info_df[MASTER_TIMETABLE_ID])
 
         excluded_codes = context.global_config.get("excluded_course_codes", [])
+        note_unapplied_exclusions(context, "Classes", class_info_df, configured=bool(excluded_codes))
         class_info_df = self.filter_excluded_course_codes(class_info_df, excluded_codes)
 
         logger.info(f"[Classes] Class info data loaded: {len(class_info_df)} records")
@@ -208,7 +212,7 @@ class ClassTransformer(BaseTransformer):
 
         self._check_homeroom_id_collisions(hc, homeroom_col, teacher_id_col, context)
 
-        teacher_name_col = self._homeroom_teacher_name_column(hc)
+        teacher_name_col = self._homeroom_teacher_name_column(hc, context)
         hc["Name"] = hc.apply(
             lambda row: self._homeroom_name(row, homeroom_col, teacher_name_col, context.school_year),
             axis=1,
@@ -297,21 +301,29 @@ class ClassTransformer(BaseTransformer):
         )
 
     @staticmethod
-    def _homeroom_teacher_name_column(hc: pd.DataFrame) -> str | None:
-        """The homeroom teacher-name column, or ``None`` — with ONE WARNING when it is absent.
+    def _homeroom_teacher_name_column(hc: pd.DataFrame, context: TransformContext) -> str | None:
+        """The homeroom teacher-name column, or ``None`` — with ONE WARNING + a note when it is absent.
 
         An OPTIONAL display value (§5 #35, class (d)): the teacher's name is only a
         segment of the homeroom class NAME, so a demographic export without it names
         every homeroom class without its teacher — never a run failure (owner, Gate A
         2026-09-24). It used to be a raw ``KeyError`` that failed the whole run. One
-        aggregated line per Classes transform, a count only.
+        aggregated line per Classes transform, a count only — and since plan 0053 S11
+        ``OutcomeNote.HOMEROOM_TEACHER_NAME_ABSENT`` counting those homeroom classes.
         """
         if TEACHER_NAME in hc.columns:
             return TEACHER_NAME
         # failure-policy: optional_field
-        logger.warning(
-            f"[Classes] No '{TEACHER_NAME}' column in the student demographic source, so the "
-            f"{len(hc)} homeroom class name(s) omit the teacher's name. Everything else is built as usual."
+        record_note(
+            context,
+            "Classes",
+            OutcomeNote.HOMEROOM_TEACHER_NAME_ABSENT,
+            len(hc),
+            log=logger,
+            message=(
+                f"[Classes] No '{TEACHER_NAME}' column in the student demographic source, so the "
+                f"{len(hc)} homeroom class name(s) omit the teacher's name. Everything else is built as usual."
+            ),
         )
         return None
 
@@ -350,6 +362,7 @@ class ClassTransformer(BaseTransformer):
             schedule_df[MASTER_TIMETABLE_ID] = normalize_id_series(schedule_df[MASTER_TIMETABLE_ID])
 
         excluded_codes = context.global_config.get("excluded_course_codes", [])
+        note_unapplied_exclusions(context, "Classes", schedule_df, configured=bool(excluded_codes))
         schedule_df = self.filter_excluded_course_codes(schedule_df, excluded_codes)
         if schedule_df.empty:
             return
@@ -533,6 +546,65 @@ class ClassTransformer(BaseTransformer):
             return self.generate_class_name(row, teacher_flag, teacher_last, course_title, section, context)
 
         output["Name"] = merged.apply(get_name, axis=1)
+        self._note_class_name_gaps(
+            merged, name_config, context, course_title=course_title, columns=(teacher_last, section)
+        )
+
+    @staticmethod
+    def _note_class_name_gaps(
+        merged: pd.DataFrame,
+        name_config: dict,
+        context: TransformContext,
+        *,
+        course_title: str,
+        columns: tuple[str, str],
+    ) -> None:
+        """Record a subject class-name column the rows lack (§5 #37, plan 0053 S11).
+
+        ``naming.generate_class_name`` reads each Name-block column with a silent default: no
+        course-title column (neither the configured one nor the CourseInformation title the
+        course merge joins) names every class "Unknown Course", and no teacher-name or section
+        column drops that segment. The names stay exactly as they are; ONE WARNING per run names
+        the absent columns in config spelling and ``OutcomeNote.CLASS_NAME_COLUMN_ABSENT`` counts
+        the subject classes named without them (blended classes carry their own name). Not
+        consulted: the primary-teacher flag, whose absence INCLUDES the teacher (no segment lost).
+        """
+        subject = merged[~merged["Class ID"].isin(set(context.blended_class_metadata))]
+        classes = int(subject["Class ID"].nunique())
+        if not classes:
+            return
+        teacher_last, section = columns
+        absent = [
+            *(
+                [source_column_label(name_config, "course title", default=COURSE_TITLE)]
+                if course_title not in merged.columns and COURSE_TITLE not in merged.columns
+                else []
+            ),
+            *(
+                [source_column_label(name_config, "teacher last name", default=LAST_NAME)]
+                if teacher_last not in merged.columns
+                else []
+            ),
+            *(
+                [source_column_label(name_config, "section letter", default=SECTION_LETTER)]
+                if section not in merged.columns
+                else []
+            ),
+        ]
+        if absent:
+            # failure-policy: optional_field
+            record_note(
+                context,
+                "Classes",
+                OutcomeNote.CLASS_NAME_COLUMN_ABSENT,
+                classes,
+                log=logger,
+                message=(
+                    f"[Classes] CLASS NAMES INCOMPLETE — no column {absent} for the subject class names, so "
+                    f"{classes} subject class name(s) are built without "
+                    f"{'that part' if len(absent) == 1 else 'those parts'}. Everything else is built as usual."
+                ),
+            )
 
     def _assign_grades(
         self, output: pd.DataFrame, merged: pd.DataFrame, field_map: dict, context: TransformContext

@@ -689,6 +689,25 @@ def _source_cell(row: RunRow) -> ft.DataCell:
     )
 
 
+def _status_cell(row: RunRow) -> ft.DataCell:
+    """The Status cell: the bold plain-language label, with the muted note detail beneath.
+
+    ``row.notes`` (plan 0053 S11) are authored labels of the recorded-but-not-warning outcome
+    notes (``failure_copy.detail_note_labels``) — never a raw record value. Stacked like the
+    Source cell's different-district note, in the same muted caption tier (an AA-gated pair).
+    """
+    label = ft.Text(row.status_label, size=tokens.type_body, weight=ft.FontWeight.W_700, color=tokens.color_text)
+    if not row.notes:
+        return ft.DataCell(content=label)
+    return ft.DataCell(
+        content=ft.Column(
+            spacing=2,
+            tight=True,
+            controls=[label, ft.Text(" · ".join(row.notes), size=tokens.type_caption, color=tokens.color_muted)],
+        )
+    )
+
+
 def run_table(rows: list[RunRow]) -> ft.Control:
     """The DS-1-styled ``ft.DataTable`` of past runs — the first ``ft.DataTable`` consumer.
 
@@ -711,7 +730,8 @@ def run_table(rows: list[RunRow]) -> ft.Control:
 
     Every cell is a uniform string (a not-produced entity → "—"). Status is TEXT-first
     (``status_label``), with an optional AA-safe row tint from ``status_verdict`` (never
-    colour-only). Source is the bounded origin label ("Nightly" / "Manual" / "Command line" / "—"),
+    colour-only), and the muted note detail (``row.notes``, plan 0053 S11) stacked beneath when
+    the run recorded one. Source is the bounded origin label ("Nightly" / "Manual" / "Command line" / "—"),
     with the muted different-district note stacked beneath when present. SFTP renders a glyph +
     word. No sort / select / checkbox (YAGNI, read-only).
     """
@@ -742,7 +762,7 @@ def run_table(rows: list[RunRow]) -> ft.Control:
     for row in rows:
         cells: list[ft.DataCell] = [
             _cell(row.when),
-            _cell(row.status_label, weight=ft.FontWeight.W_700),
+            _status_cell(row),
             _source_cell(row),
         ]
         if show_run_as:

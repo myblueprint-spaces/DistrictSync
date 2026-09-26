@@ -8,11 +8,13 @@ import pandas as pd
 from src.config.models import FieldAppendYear, FieldTransform, ensure_field_mapping
 from src.etl.column_names import GRADE, SCHOOL_NUMBER, STUDENT_NUMBER
 from src.etl.errors import GuardKind
+from src.etl.outcomes import OutcomeNote
 from src.etl.transformers.base import BaseTransformer
 from src.etl.transformers.columns import Previously, require_columns, resolve_source_column, source_column_label
 from src.etl.transformers.context import TransformContext
 from src.etl.transformers.grades import filter_to_grade_scope, resolve_student_scope
 from src.etl.transformers.ids import clean_invalid_ids, normalize_id_series
+from src.etl.transformers.notes import record_note
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +30,7 @@ class StudentTransformer(BaseTransformer):
         result = pd.DataFrame()
         field_map = mapping.get("field_map", {})
 
-        self._determine_enrollment_status(working, field_map)
+        self._determine_enrollment_status(working, field_map, context)
         working = self._filter_active(working, field_map)
         working = self._collapse_cross_enrollment(working, field_map, context)
         working = self._filter_to_rostered_grades(working, field_map, context)
@@ -40,7 +42,7 @@ class StudentTransformer(BaseTransformer):
         if "Date of Birth" in result.columns:
             result["Date of Birth"] = result["Date of Birth"].apply(self.normalize_iso_date)
         self._coalesce_required_names(result)
-        self._warn_rows_without_email(result)
+        self._warn_rows_without_email(result, context)
 
         # Publish the active roster (zero-orphan invariant). `result` is already
         # filtered to active-only, so this IS the Students.csv `User ID` set by
@@ -102,7 +104,7 @@ class StudentTransformer(BaseTransformer):
             result.loc[is_blank, primary] = result.loc[is_blank, fallback]
 
     @staticmethod
-    def _warn_rows_without_email(result: pd.DataFrame) -> None:
+    def _warn_rows_without_email(result: pd.DataFrame, context: TransformContext) -> None:
         """Count students with no ``Email Address`` and warn once — never drop.
 
         WHY (importer behaviour): SpacesEDU DOES import a student without an
@@ -121,14 +123,25 @@ class StudentTransformer(BaseTransformer):
         its CONTRACT OUTPUT name (:data:`EMAIL_OUTPUT_COLUMN`), never a
         hardcoded source column. A config that maps no ``Email Address`` cannot
         be counted; the contract requires the column, so that is surfaced as its
-        own WARNING rather than hidden.
+        own WARNING rather than hidden — and, since plan 0053 S11, recorded
+        (``OutcomeNote.EMAIL_OUTPUT_NOT_MAPPED``, §5 #40, counting the rows).
 
         PII rule: counts only — never a student name, id or address.
         """
         if EMAIL_OUTPUT_COLUMN not in result.columns:
-            logger.warning(
-                f"[Students] No '{EMAIL_OUTPUT_COLUMN}' output column — the no-email count could not be "
-                f"taken. The Advanced CSV contract requires it for Students.csv; check the config field_map."
+            if result.empty:
+                return
+            # failure-policy: contract_field
+            record_note(
+                context,
+                "Students",
+                OutcomeNote.EMAIL_OUTPUT_NOT_MAPPED,
+                len(result),
+                log=logger,
+                message=(
+                    f"[Students] No '{EMAIL_OUTPUT_COLUMN}' output column — the no-email count could not be "
+                    f"taken. The Advanced CSV contract requires it for Students.csv; check the config field_map."
+                ),
             )
             return
         total = len(result)
@@ -256,7 +269,9 @@ class StudentTransformer(BaseTransformer):
         )
         return filtered
 
-    def _determine_enrollment_status(self, working: pd.DataFrame, field_map: dict[str, Any]) -> None:
+    def _determine_enrollment_status(
+        self, working: pd.DataFrame, field_map: dict[str, Any], context: TransformContext
+    ) -> None:
         """Set the 'EnrollStatus' column in-place via the shared base predicate.
 
         Source column names (status / withdraw date) and the active-value set
@@ -265,9 +280,14 @@ class StudentTransformer(BaseTransformer):
         ``PreReg`` are both retained by default (the Advanced CSV spec's expected
         ``EnrollStatus`` values; overridable via ``active_values``). The live
         status value wins; the withdraw date is only a fallback for rows with no
-        status value. See ``BaseTransformer.compute_enroll_status``.
+        status value. See ``BaseTransformer.decide_enroll_status``, whose notes — which
+        signal decided, and how many rows went Active with none (plan 0053 S11, §5
+        #17/#18) — are recorded here on the Students outcome.
         """
-        working["EnrollStatus"] = self.compute_enroll_status(working, field_map)
+        decision = self.decide_enroll_status(working, field_map)
+        working["EnrollStatus"] = decision.labels
+        for note, count in decision.notes:
+            context.record_outcome_note("Students", note, count)
 
     @classmethod
     def _filter_active(cls, working: pd.DataFrame, field_map: dict[str, Any]) -> pd.DataFrame:

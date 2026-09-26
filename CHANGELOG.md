@@ -11,6 +11,19 @@ Per-release download links and auto-generated commit notes live on the
 
 ### Changed
 
+- **Run History now says when a safety check could not run.** When an export is missing a
+  column one of DistrictSync's safety checks relies on, the sync still sends what it always
+  sent — but the run's row in Run History now carries a short note saying so: that no
+  enrollment-status column was found and withdraw dates decided who is active; that
+  students with neither a status nor a withdraw date were sent as active; that family
+  contacts without an email were left out; that departed staff could not be told apart;
+  that the configured course exclusions could not be applied; or that class names or
+  blended-class details are missing a part. These notes appear in Run History only and do
+  not change the Home screen. One is serious enough to warn: when the student export has
+  neither an enrollment-status nor a withdraw-date column, every student is sent as active,
+  and Home and Run History now show a warning every sync until the export carries one of
+  them. The run log names the missing column, and the run record counts the rows
+  concerned. Nothing that is sent has changed.
 - **A missing column that links records now stops the run instead of sending a
   file with rows quietly missing.** When an export is missing a column DistrictSync
   needs to link records — a student, teacher, class or school ID, the homeroom

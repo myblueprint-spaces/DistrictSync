@@ -1575,6 +1575,8 @@ class TestSourceObservation:
             "missing_mapped": ["Email Address"],
             "labels": ["Email Address"],
             "file_label": "EmergencyContactInformation.txt",
+            # Plan 0053 S11: the contacts the blank Email excluded are COUNTED on the outcome.
+            "notes": {"contacts_excluded_no_email": 2},
         }
         family = next(o for o in result.entity_outcomes if o.entity == "Family")
         assert family.missing_mapped == ("Email Address",)
@@ -1663,6 +1665,8 @@ class TestSourceObservation:
             "kind": "empty",
             "reason": "no_rows_after_transform",
             "rows": 0,
+            # Plan 0053 S11: the transform's own note — independent of the observation seam.
+            "notes": {"contacts_excluded_no_email": 2},
         }
         debug = [r for r in caplog.records if r.getMessage().startswith("Source-column observation skipped")]
         if seam == "missing_columns_by_entity":
@@ -1759,6 +1763,7 @@ class TestSourceObservation:
             "reason": "missing_source_column",
             "rows": 0,
             "missing_mapped": ["Email Address"],
+            "notes": {"contacts_excluded_no_email": 2},  # plan 0053 S11
         }
         debug = [r for r in caplog.records if r.getMessage().startswith("Label vocabulary skipped")]
         assert debug and all(r.levelno == logging.DEBUG for r in debug)

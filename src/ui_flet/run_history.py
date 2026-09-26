@@ -43,8 +43,8 @@ from datetime import datetime
 from enum import Enum
 
 from src.config.app_config import AppConfig
-from src.etl.outcomes import EntityOutcome
-from src.ui_flet.failure_copy import data_warnings_clause, partial_copy, partial_label
+from src.etl.outcomes import EntityOutcome, outcomes_from_record
+from src.ui_flet.failure_copy import data_warnings_clause, detail_note_labels, partial_copy, partial_label
 from src.ui_flet.home_status import (
     _MYBLUEPRINT_ENTITIES,
     _ROSTERING_ENTITIES,
@@ -133,6 +133,11 @@ class RunRow:
             not be established. Never the raw ``DOMAIN\\user`` off the record: this row is bounded
             to counts, bounded vocabularies and safe strings, and a raw account name repeated on
             every historical row would be the first raw identifying value in it.
+        notes: the row's detail line (plan 0053 S11) — the authored labels of the HEALTHY-tier
+            outcome notes the build behind this row recorded (``failure_copy.detail_note_labels``:
+            a fail-open posture that was recorded but does not warn, e.g. "no status column,
+            withdraw dates used"). ``()`` on a failed row, where nothing was delivered for a note
+            to qualify. A WARNING-tier note is not here — it is in ``status_label``.
     """
 
     when: str
@@ -146,6 +151,7 @@ class RunRow:
     source: str = "—"
     district_note: str | None = None
     run_as: str = ""
+    notes: tuple[str, ...] = ()
 
 
 # The bounded run-as vocabulary (plan 0049 S-2a.5). Two members plus ``""`` for "not
@@ -622,10 +628,11 @@ def to_run_row(
     reason = classify_latest_reason(record, prior_build=prior_build)
     counts = _row_entity_counts(record)
     left_out = left_out_outcomes(record, prior_build=prior_build)
+    verdict = verdict_for_reason(reason)
     return RunRow(
         when=friendly_timestamp(str(record.get("timestamp", "")), now=now),
         status_label=_status_label(reason, record, sftp=sftp, left_out=left_out),
-        status_verdict=verdict_for_reason(reason),
+        status_verdict=verdict,
         entity_counts=counts,
         entity_total=sum(counts.values()),
         sftp=sftp,
@@ -634,7 +641,21 @@ def to_run_row(
         source=_source_label(record),
         district_note=_district_note(record, active_sis, district_displays),
         run_as=run_as_display(record.get("run_as"), current_account=current_account),
+        notes=() if verdict is Verdict.FAILED else _detail_notes(record, prior_build=prior_build),
     )
+
+
+def _detail_notes(record: dict, *, prior_build: dict | None) -> tuple[str, ...]:
+    """The HEALTHY-tier note labels of the build behind ``record`` (TOTAL, never raises).
+
+    The same source rule as ``home_status.left_out_outcomes``: a build record answers from its own
+    ``entity_outcomes``, a delivery-only record from ``prior_build``; read through the total
+    ``outcomes_from_record``.
+    """
+    source = prior_build if is_delivery_only(record) else record
+    if source is None:
+        return ()
+    return detail_note_labels(outcomes_from_record(source))
 
 
 def to_run_rows(

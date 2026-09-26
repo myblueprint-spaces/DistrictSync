@@ -17,6 +17,7 @@ import pandas as pd
 import pytest
 
 from src.etl.errors import GuardKind, RunErrorCategory, SourceSchemaError
+from src.etl.outcomes import OutcomeNote
 from src.etl.transformers.base import BaseTransformer
 from src.etl.transformers.context import TransformContext
 from tests.test_etl_errors import SENTINEL_PII
@@ -613,13 +614,13 @@ class TestFilterToActive:
 
     def test_keeps_only_active_rows(self):
         df = pd.DataFrame({"student number": ["S001", "S002", "S003"], "x": [1, 2, 3]})
-        out = BaseTransformer.filter_to_active(df, "student number", self._ctx({"S001", "S003"}))
+        out = BaseTransformer.filter_to_active(df, "student number", self._ctx({"S001", "S003"}), caller="Enrollments")
         assert list(out["student number"]) == ["S001", "S003"]
 
     def test_normalizes_whitespace_both_sides(self):
         # Frame values carry incidental whitespace; the roster set is trimmed.
         df = pd.DataFrame({"student number": [" S001 ", "S002"], "x": [1, 2]})
-        out = BaseTransformer.filter_to_active(df, "student number", self._ctx({"S001"}))
+        out = BaseTransformer.filter_to_active(df, "student number", self._ctx({"S001"}), caller="Enrollments")
         assert list(out["x"]) == [1]
 
     def test_empty_roster_returns_unchanged_and_warns(self, caplog):
@@ -632,15 +633,20 @@ class TestFilterToActive:
         assert any("[Classes]" in r.message for r in caplog.records)
 
     def test_missing_column_returns_unchanged_and_warns(self, caplog):
+        """Plan 0053 S11: an absent student column is its OWN posture, no longer worded as an
+        empty roster (the roster here is NOT empty) — and it is recorded on the caller."""
         df = pd.DataFrame({"other col": ["S001"]})
+        ctx = self._ctx({"S001"})
         with caplog.at_level("WARNING"):
-            out = BaseTransformer.filter_to_active(df, "student number", self._ctx({"S001"}))
+            out = BaseTransformer.filter_to_active(df, "student number", ctx, caller="Enrollments")
         assert len(out) == 1
-        assert any("active_student_ids empty" in r.message for r in caplog.records)
+        assert any("ACTIVE FILTER SKIPPED" in r.message and "'student number'" in r.message for r in caplog.records)
+        assert not any("active_student_ids empty" in r.message for r in caplog.records)
+        assert ctx.outcome_notes_for("Enrollments") == ((OutcomeNote.ACTIVE_ROSTER_COLUMN_UNRESOLVABLE, 1),)
 
     def test_returns_copy_safe_to_mutate(self):
         df = pd.DataFrame({"student number": ["S001", "S002"], "grade": ["K", "1"]})
-        out = BaseTransformer.filter_to_active(df, "student number", self._ctx({"S001"}))
+        out = BaseTransformer.filter_to_active(df, "student number", self._ctx({"S001"}), caller="Enrollments")
         out.loc[out.index[0], "grade"] = "MUTATED"
         # Source frame is untouched (no shared view).
         assert "MUTATED" not in df["grade"].values
@@ -669,7 +675,7 @@ class TestFilterToActive:
     def test_no_dropped_rows_stays_silent(self, caplog):
         df = pd.DataFrame({"student number": ["S001", "S002"]})
         with caplog.at_level("WARNING"):
-            BaseTransformer.filter_to_active(df, "student number", self._ctx({"S001", "S002"}))
+            BaseTransformer.filter_to_active(df, "student number", self._ctx({"S001", "S002"}), caller="Enrollments")
         assert not any("Dropped" in r.message for r in caplog.records)
 
 

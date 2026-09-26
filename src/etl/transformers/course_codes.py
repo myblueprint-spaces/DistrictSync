@@ -6,12 +6,17 @@ legacy "flavor" truncation ported from the SD62 PowerShell scripts. Shared by
 Classes, Enrollments, blended detection, CourseInfo, and StudentCourses.
 """
 
+import logging
 from typing import Any, Optional
 
 import pandas as pd
 
 from src.etl.column_names import COURSE_CODE, DISTRICT_COURSE_CODE
+from src.etl.outcomes import OutcomeNote
 from src.etl.transformers.ids import normalize_id_series
+from src.etl.transformers.notes import NoteCarrier, record_note
+
+logger = logging.getLogger(__name__)
 
 
 def resolve_course_code_column(df: pd.DataFrame) -> Optional[str]:
@@ -77,6 +82,45 @@ def filter_excluded_course_code_patterns(
         matches = values.str.contains(combined, regex=True, case=False, na=False)
         return df[~matches].copy()  # type: ignore[return-value]
     return df
+
+
+def note_unapplied_exclusions(
+    context: NoteCarrier,
+    entity: str,
+    df: pd.DataFrame,
+    *,
+    configured: bool,
+    column: Optional[str] = None,
+) -> None:
+    """Record configured course-code exclusions that could not be applied (§5 #32, plan 0053 S11).
+
+    The two filters above return ``df`` UNCHANGED when it has no course-code column — the
+    configured exclusions are then simply not applied and the rows they target ship (SD40's
+    ``ATT--AM/PM`` sections as classes; CourseInfo's K/X/ATT patterns). The direction stays
+    (a surplus row, not a lost one); what changes is that it is never silent: ONE WARNING per
+    entity per run and ``OutcomeNote.COURSE_CODE_EXCLUSIONS_NOT_APPLIED`` counting the rows of
+    the first source found without the column. Call it beside the filter, with ``configured``
+    = whether that filter had anything to apply and ``column`` = the filter's explicit column
+    (``None`` for the alias precedence of :func:`resolve_course_code_column`).
+    """
+    if not configured or df.empty:
+        return
+    missing = column not in df.columns if column else resolve_course_code_column(df) is None
+    if not missing:
+        return
+    wanted = f"'{column}'" if column else f"'{COURSE_CODE}' or '{DISTRICT_COURSE_CODE}'"
+    # failure-policy: safety_heuristic
+    record_note(
+        context,
+        entity,
+        OutcomeNote.COURSE_CODE_EXCLUSIONS_NOT_APPLIED,
+        len(df),
+        log=logger,
+        message=(
+            f"[{entity}] COURSE-CODE EXCLUSIONS NOT APPLIED — the source has no {wanted} column, so the "
+            f"configured course-code exclusions could not be applied to its {len(df)} row(s)."
+        ),
+    )
 
 
 def course_grade(code: Any) -> Optional[int]:

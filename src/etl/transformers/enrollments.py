@@ -49,6 +49,7 @@ from src.etl.transformers.columns import (
     source_column_label,
 )
 from src.etl.transformers.context import ClassArtifacts, TransformContext
+from src.etl.transformers.course_codes import note_unapplied_exclusions
 from src.etl.transformers.grades import resolve_timetable_scope, split_by_homeroom_grades
 from src.etl.transformers.ids import normalize_id_series
 
@@ -68,6 +69,7 @@ class EnrollmentTransformer(BaseTransformer):
         # UNCONDITIONALLY — not only when a schedule happens to be present.
         artifacts = context.class_artifacts
         if artifacts is None:
+            # failure-policy: join_key
             raise ValueError(
                 "[Enrollments] No class artifacts on the shared context: ClassTransformer "
                 "must run before EnrollmentTransformer (it publishes the homeroom classes "
@@ -278,6 +280,7 @@ class EnrollmentTransformer(BaseTransformer):
             schedule_df[staff_id_col] = normalize_id_series(schedule_df[staff_id_col])
 
         excluded_codes = context.global_config.get("excluded_course_codes", [])
+        note_unapplied_exclusions(context, "Enrollments", schedule_df, configured=bool(excluded_codes))
         schedule_df = self.filter_excluded_course_codes(schedule_df, excluded_codes)
         if schedule_df.empty:
             return None

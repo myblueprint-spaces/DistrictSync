@@ -239,13 +239,37 @@ def OUTCOME_TIER(entity: object, kind: OutcomeKind, reason: OutcomeReason) -> Ve
 # How much ONE outcome note says about the run (plan 0053 S10, owner ruling 2026-09-25) — TOTAL
 # over `OutcomeNote` (pinned, and mirrored by the `note-tier` table in failure-policy.md §7). A
 # WARNING note makes an otherwise-HEALTHY outcome warn: the entity built, but the note says what it
-# left out, every night it persists. S11's detail-only notes will be HEALTHY here (Run History
-# detail, no amber). RESTRICTIVE BY DEFAULT for a new member: no entry → the totality test is red.
+# left out, every night it persists. A HEALTHY note (plan 0053 S11 — most of the catalogue) is Run
+# History row detail only (`detail_note_labels`): recorded, visible, never amber. RESTRICTIVE BY
+# DEFAULT for a new member: no entry → the totality test is red. Raising a HEALTHY note to WARNING
+# is an owner decision — measure the real drops it would turn amber first (DECISIONS 2026-09-25).
 NOTE_TIER: Final[Mapping[OutcomeNote, Verdict]] = MappingProxyType(
     {
         # Co-teacher rows left out of a BUILT Enrollments: a shrink in a deactivating file the
         # owner accepted ONLY with a standing amber (ruling 2026-09-25) — never silent.
         OutcomeNote.COTEACHER_SOURCE_UNUSABLE: Verdict.WARNING,
+        # Every student shipped Active with no status and no withdraw date: the one H1 exposure
+        # S11 surfaces (failure-policy §1) — amber every night it persists (plan 0053 S11).
+        OutcomeNote.ALL_ACTIVE_DEFAULT: Verdict.WARNING,
+        # Row detail only: each is a recorded fail-open posture whose direction stays (D10 open).
+        OutcomeNote.CONFIGURED_STATUS_COLUMN_ABSENT: Verdict.HEALTHY,
+        OutcomeNote.STATUS_COLUMN_ABSENT_DATE_ONLY: Verdict.HEALTHY,
+        OutcomeNote.ACTIVE_WITHOUT_POSITIVE_SIGNAL: Verdict.HEALTHY,
+        OutcomeNote.STAFF_STATUS_COLUMN_ABSENT: Verdict.HEALTHY,
+        OutcomeNote.STAFF_STATUS_VOCABULARY_UNRECOGNISED: Verdict.HEALTHY,
+        OutcomeNote.STAFF_FILTER_WOULD_EMPTY: Verdict.HEALTHY,
+        OutcomeNote.ROSTER_MERGE_SKIPPED: Verdict.HEALTHY,
+        OutcomeNote.ACTIVE_ROSTER_COLUMN_UNRESOLVABLE: Verdict.HEALTHY,
+        OutcomeNote.ACTIVE_ROSTER_UNAVAILABLE: Verdict.HEALTHY,
+        OutcomeNote.BLENDED_LOOKUP_COLUMN_ABSENT: Verdict.HEALTHY,
+        OutcomeNote.HOMEROOM_TEACHER_NAME_ABSENT: Verdict.HEALTHY,
+        OutcomeNote.CLASS_NAME_COLUMN_ABSENT: Verdict.HEALTHY,
+        OutcomeNote.COURSE_CODE_EXCLUSIONS_NOT_APPLIED: Verdict.HEALTHY,
+        OutcomeNote.CONTACTS_EXCLUDED_NO_EMAIL: Verdict.HEALTHY,
+        OutcomeNote.EMAIL_OUTPUT_NOT_MAPPED: Verdict.HEALTHY,
+        OutcomeNote.IDENTITY_FIELD_BLANKED: Verdict.HEALTHY,
+        OutcomeNote.ATTENDANCE_SOURCE_COLUMN_ABSENT: Verdict.HEALTHY,
+        OutcomeNote.TRANSCRIPT_SOURCE_COLUMN_ABSENT: Verdict.HEALTHY,
     }
 )
 
@@ -336,13 +360,15 @@ def _reexport_cures(outcome: EntityOutcome) -> bool:
 # Outcome notes (plan 0053 S10, owner ruling 2026-09-25)                       #
 # --------------------------------------------------------------------------- #
 
-# What a WARNING-tier note on a BUILT entity says — one entry per note (pinned TOTAL over
-# `OutcomeNote`, whatever its tier, so S11's members arrive with copy). Authored words only: the
-# note's count and the column it concerns stay in the record and the log (no slot, no label).
-#   * `phrase`   — the headline's object: "Your roster synced without <phrase>";
-#   * `label`    — Run History's row suffix: "Delivered · <label>";
+# What a note says — one entry per note (pinned TOTAL over `OutcomeNote`, whatever its tier, so a
+# HEALTHY note raised to WARNING by a later decision already has its headline words). Authored
+# words only: the note's count and the column it concerns stay in the record and the log (no slot,
+# no label).
+#   * `phrase`   — the headline's object: "Your roster synced without <phrase>" (WARNING tier);
+#   * `label`    — Run History: the row suffix "Delivered · <label>" for a WARNING note, the row's
+#                  detail line (`detail_note_labels`) for a HEALTHY one;
 #   * `sentence` — what happened, true on every path that records the note;
-#   * `next_step`— what would change it (the warning repeats every sync until something does).
+#   * `next_step`— what would change it (a warning repeats every sync until something does).
 _NOTE_COPY: Final[Mapping[OutcomeNote, Mapping[str, str]]] = MappingProxyType(
     {
         OutcomeNote.COTEACHER_SOURCE_UNUSABLE: MappingProxyType(
@@ -359,6 +385,227 @@ _NOTE_COPY: Final[Mapping[OutcomeNote, Mapping[str, str]]] = MappingProxyType(
                 ),
             }
         ),
+        OutcomeNote.ALL_ACTIVE_DEFAULT: MappingProxyType(
+            {
+                "phrase": "an enrollment status check",
+                "label": "every student sent as active",
+                "sentence": (
+                    "Every student in the student export was sent as active: it has no enrollment-status column and no withdraw-date column, so students who have left could not be told apart."
+                ),
+                "next_step": (
+                    "Re-export the student file with its Enrollment Status or Withdraw Date column and the next sync leaves withdrawn students out again — if your export doesn't include either, the Help page has our support contact."
+                ),
+            }
+        ),
+        OutcomeNote.CONFIGURED_STATUS_COLUMN_ABSENT: MappingProxyType(
+            {
+                "phrase": "the enrollment status column",
+                "label": "status column not found, withdraw dates used",
+                "sentence": (
+                    "The enrollment-status column this district's mapping names is not in the student export, so withdraw dates decided who is active."
+                ),
+                "next_step": (
+                    "Re-export the student file with that column, or — if your export names it differently — the Help page has our support contact."
+                ),
+            }
+        ),
+        OutcomeNote.STATUS_COLUMN_ABSENT_DATE_ONLY: MappingProxyType(
+            {
+                "phrase": "an enrollment status column",
+                "label": "no status column, withdraw dates used",
+                "sentence": (
+                    "The student export has no enrollment-status column, so withdraw dates alone decided who is active."
+                ),
+                "next_step": (
+                    "If your student export can include Enrollment Status, adding it lets the sync leave out students who have left but have no withdraw date."
+                ),
+            }
+        ),
+        OutcomeNote.ACTIVE_WITHOUT_POSITIVE_SIGNAL: MappingProxyType(
+            {
+                "phrase": "an enrollment status for some students",
+                "label": "students with no status or withdraw date sent as active",
+                "sentence": (
+                    "Students with neither an enrollment status nor a withdraw date on their record were sent "
+                    "as active."
+                ),
+                "next_step": (
+                    "If students who have left appear in SpacesEDU, check their enrollment status in the student export."
+                ),
+            }
+        ),
+        OutcomeNote.STAFF_STATUS_COLUMN_ABSENT: MappingProxyType(
+            {
+                "phrase": "a staff status check",
+                "label": "no staff status column, all staff sent",
+                "sentence": (
+                    "The staff export has no status column, so every staff member was sent, including any who have left."
+                ),
+                "next_step": (
+                    "Re-export the staff file with its Status column and the next sync leaves departed staff out."
+                ),
+            }
+        ),
+        OutcomeNote.STAFF_STATUS_VOCABULARY_UNRECOGNISED: MappingProxyType(
+            {
+                "phrase": "a staff status check",
+                "label": "staff status not recognised, all staff sent",
+                "sentence": (
+                    "The staff export's status column holds values other than Active and Inactive, so every staff member was sent rather than risk sending none."
+                ),
+                "next_step": ("If staff who have left appear in SpacesEDU, the Help page has our support contact."),
+            }
+        ),
+        OutcomeNote.STAFF_FILTER_WOULD_EMPTY: MappingProxyType(
+            {
+                "phrase": "a staff status check",
+                "label": "no staff marked active, all staff sent",
+                "sentence": (
+                    "The staff export marks no one as Active, so every staff member was sent rather than an empty staff file."
+                ),
+                "next_step": (
+                    "Check the staff export's status column — if it keeps happening, the Help page has our support contact."
+                ),
+            }
+        ),
+        OutcomeNote.ROSTER_MERGE_SKIPPED: MappingProxyType(
+            {
+                "phrase": "staff roster IDs",
+                "label": "staff roster not merged",
+                "sentence": (
+                    "The staff roster file could not be merged because a column it is joined on is missing, so staff were sent without their roster IDs."
+                ),
+                "next_step": (
+                    "Re-export the staff and roster files with their ID columns — if it keeps happening, the Help page has our support contact."
+                ),
+            }
+        ),
+        OutcomeNote.ACTIVE_ROSTER_COLUMN_UNRESOLVABLE: MappingProxyType(
+            {
+                "phrase": "the active-student check on one file",
+                "label": "active-student check skipped",
+                "sentence": (
+                    "One file has no student-number column to check against the student roster, so its rows were sent without leaving out students who have left."
+                ),
+                "next_step": (
+                    "Re-export that file with its student-number column, or — if your export names it differently — the Help page has our support contact."
+                ),
+            }
+        ),
+        OutcomeNote.ACTIVE_ROSTER_UNAVAILABLE: MappingProxyType(
+            {
+                "phrase": "the active-student check",
+                "label": "no student roster to check against",
+                "sentence": (
+                    "No student roster was built this sync, so rows that depend on it were sent without leaving out students who have left."
+                ),
+                "next_step": (
+                    "If this district's sync should include students, the Help page has our support contact."
+                ),
+            }
+        ),
+        OutcomeNote.BLENDED_LOOKUP_COLUMN_ABSENT: MappingProxyType(
+            {
+                "phrase": "some blended-class details",
+                "label": "blended-class details incomplete",
+                "sentence": (
+                    "Blended-class detection was missing a column it reads, so blended classes could not be found or their names are missing a part."
+                ),
+                "next_step": (
+                    "Re-export Class Information and the schedule with all their columns — if it keeps happening, the Help page has our support contact."
+                ),
+            }
+        ),
+        OutcomeNote.HOMEROOM_TEACHER_NAME_ABSENT: MappingProxyType(
+            {
+                "phrase": "homeroom teacher names",
+                "label": "homeroom names without teachers",
+                "sentence": (
+                    "The student export has no homeroom teacher-name column, so homeroom class names don't include the teacher."
+                ),
+                "next_step": ("Re-export the student file with its Teacher Name column and the next sync adds them."),
+            }
+        ),
+        OutcomeNote.CLASS_NAME_COLUMN_ABSENT: MappingProxyType(
+            {
+                "phrase": "part of some class names",
+                "label": "class names incomplete",
+                "sentence": (
+                    "A column used to name classes (course title, teacher name or section) is missing, so some class names leave that part out."
+                ),
+                "next_step": (
+                    "Re-export the schedule and Course Information with those columns — if your export doesn't include them, the Help page has our support contact."
+                ),
+            }
+        ),
+        OutcomeNote.COURSE_CODE_EXCLUSIONS_NOT_APPLIED: MappingProxyType(
+            {
+                "phrase": "course exclusions",
+                "label": "course exclusions not applied",
+                "sentence": (
+                    "A file has no course-code column, so the courses this district's mapping leaves out were sent."
+                ),
+                "next_step": (
+                    "Re-export that file with its Course Code column and the next sync leaves those courses out again."
+                ),
+            }
+        ),
+        OutcomeNote.CONTACTS_EXCLUDED_NO_EMAIL: MappingProxyType(
+            {
+                "phrase": "contacts without an email",
+                "label": "contacts without email left out",
+                "sentence": (
+                    "Family contacts without an email address were left out — SpacesEDU does not import a family contact without one."
+                ),
+                "next_step": (
+                    "Add email addresses to those contacts in your student information system and the next sync includes them."
+                ),
+            }
+        ),
+        OutcomeNote.EMAIL_OUTPUT_NOT_MAPPED: MappingProxyType(
+            {
+                "phrase": "an email column",
+                "label": "no email column",
+                "sentence": ("This district's mapping sends no email column, which SpacesEDU needs to invite people."),
+                "next_step": ("If you use email invitations, the Help page has our support contact."),
+            }
+        ),
+        OutcomeNote.IDENTITY_FIELD_BLANKED: MappingProxyType(
+            {
+                "phrase": "some IDs",
+                "label": "some IDs blank",
+                "sentence": (
+                    "An ID column this district's mapping reads is missing from the export, so that ID was sent blank."
+                ),
+                "next_step": (
+                    "Re-export the file with its ID column, or — if your export names it differently — the Help page has our support contact."
+                ),
+            }
+        ),
+        OutcomeNote.ATTENDANCE_SOURCE_COLUMN_ABSENT: MappingProxyType(
+            {
+                "phrase": "part of the attendance",
+                "label": "attendance columns missing",
+                "sentence": (
+                    "The absence export is missing a column this district's mapping reads, so some attendance was sent incomplete or left out."
+                ),
+                "next_step": (
+                    "Re-export the absence files with all their columns — if it keeps happening, the Help page has our support contact."
+                ),
+            }
+        ),
+        OutcomeNote.TRANSCRIPT_SOURCE_COLUMN_ABSENT: MappingProxyType(
+            {
+                "phrase": "part of the course history",
+                "label": "course-history columns missing",
+                "sentence": (
+                    "A course-history file is missing a column this district's mapping reads, so some student courses were sent incomplete or left out."
+                ),
+                "next_step": (
+                    "Re-export the course history, course selection and Course Information files with all their columns — if it keeps happening, the Help page has our support contact."
+                ),
+            }
+        ),
     }
 )
 
@@ -366,6 +613,23 @@ _NOTE_COPY: Final[Mapping[OutcomeNote, Mapping[str, str]]] = MappingProxyType(
 def note_sentence(note: OutcomeNote) -> str:
     """The plain sentence for one outcome note — TOTAL over :class:`OutcomeNote` (pinned)."""
     return _NOTE_COPY[note]["sentence"]
+
+
+def detail_note_labels(outcomes: Iterable[EntityOutcome]) -> tuple[str, ...]:
+    """The labels of every HEALTHY-tier note across ``outcomes`` — Run History's row detail.
+
+    Plan 0053 S11: a recorded fail-open posture that does not warn (``NOTE_TIER`` HEALTHY) is
+    shown on its run's row, never on Home and never as amber. Distinct, in first-seen order; a
+    WARNING-tier note is not here (it is already in the row's PARTIAL suffix,
+    :func:`partial_label`). Authored words only — the counts stay in the record.
+    """
+    labels: list[str] = []
+    for outcome in outcomes:
+        for note, _count in outcome.notes:
+            label = _NOTE_COPY[note]["label"]
+            if NOTE_TIER[note] is Verdict.HEALTHY and label not in labels:
+                labels.append(label)
+    return tuple(labels)
 
 
 def _noted_parts(noted: Sequence[EntityOutcome]) -> tuple[OutcomeNote, ...]:

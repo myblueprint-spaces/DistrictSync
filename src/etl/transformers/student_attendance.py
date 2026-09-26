@@ -59,20 +59,29 @@ never code.
 """
 
 import logging
-import re
 from typing import Any
 
 import pandas as pd
 
+from src.etl.outcomes import OutcomeNote
 from src.etl.transformers.base import BaseTransformer
 from src.etl.transformers.context import TransformContext
+from src.etl.transformers.notes import is_code_shaped, record_note
 
 logger = logging.getLogger(__name__)
 
-#: What an absence CODE looks like: empty, or 1-4 UPPER-CASE letters/digits/hyphens (``A``,
-#: ``T``, ``L-E``). Upper-case only, deliberately: MyEd BC codes arrive upper-case, while a
-#: pupil's name arrives mixed-case — a mixed-case pattern echoed ``Li``/``Kai``/``Wong``.
-_CODE_SHAPE = re.compile(r"(?:[A-Z0-9][A-Z0-9-]{0,3})?")
+#: The configured columns each band reads (``global_config.attendance.daily`` / ``.period``) —
+#: the keys ``_build_daily_rows`` / ``_build_period_rows`` resolve with ``_require``.
+_DAILY_KEYS: tuple[str, ...] = (
+    "daily_school_col",
+    "daily_student_col",
+    "daily_date_col",
+    "daily_absent_code_col",
+    "daily_authorized_col",
+    "daily_portion_col",
+)
+_PERIOD_KEYS: tuple[str, ...] = ("period_school_col", "period_student_col", "period_date_col", "period_category_col")
+
 
 #: The CLOSED vocabulary of the authorized flag (compared upper-cased): yes, no, or blank.
 #: Anything else is not a flag, so it is never echoed.
@@ -80,8 +89,8 @@ _FLAG_VOCABULARY: frozenset[str] = frozenset({"Y", "N", ""})
 
 
 def _is_code(value: str) -> bool:
-    """Whether ``value`` may be echoed as an absence code (see :data:`_CODE_SHAPE`)."""
-    return _CODE_SHAPE.fullmatch(value) is not None
+    """Whether ``value`` may be echoed as an absence code (:func:`notes.is_code_shaped`)."""
+    return is_code_shaped(value)
 
 
 def _is_flag(value: str) -> bool:
@@ -148,16 +157,17 @@ class StudentAttendanceTransformer(BaseTransformer):
         # daily rows; its config is required ONLY when its data is present.
         daily_rows: list[dict[str, str]] = []
         daily = self._daily_frame(mapping, context)
+        period = self._period_frame(mapping, context)
+        daily_cfg = self._daily_config(context.global_config) if not daily.empty else {}
+        period_cfg = self._period_config(context.global_config) if not period.empty else {}
+        self._note_absent_columns(context, ((daily, daily_cfg, _DAILY_KEYS), (period, period_cfg, _PERIOD_KEYS)))
         if not daily.empty:
-            daily_cfg = self._daily_config(context.global_config)
             daily_rows = self._build_daily_rows(daily, mapping, daily_cfg, context, strftime_fmt)
 
         # 8-12 Period band. Read via role `period_absences`. Empty/absent -> no
         # period rows; its config is required ONLY when its data is present.
         period_rows: list[dict[str, str]] = []
-        period = self._period_frame(mapping, context)
         if not period.empty:
-            period_cfg = self._period_config(context.global_config)
             period_rows = self._build_period_rows(period, period_cfg, strftime_fmt)
 
         # The two bands are independent SOURCES, not independent FACTS: a
@@ -174,6 +184,47 @@ class StudentAttendanceTransformer(BaseTransformer):
         rows.extend(daily_rows)
         rows.extend(period_rows)
         return self._frame(rows)
+
+    @classmethod
+    def _note_absent_columns(
+        cls,
+        context: TransformContext,
+        bands: tuple[tuple[pd.DataFrame, dict[str, Any], tuple[str, ...]], ...],
+    ) -> None:
+        """Record a band whose configured column is absent (§5 #33, plan 0053 S11).
+
+        Each band reads its configured columns with ``record.get``, so an absent one is silent
+        today — and what it costs differs (an absent code or student drops every row, an absent
+        school or date ships that field blank, an absent portion counts every day as one row,
+        an absent authorized flag raises via the category map). Those DIRECTIONS stay (the
+        entity is ISOLATABLE, so the raise leaves only attendance out). What changes is that
+        the absence is never silent: ONE WARNING naming the absent columns as configured
+        (config vocabulary — never a header or a cell) and
+        ``OutcomeNote.ATTENDANCE_SOURCE_COLUMN_ABSENT`` counting the rows of the band(s)
+        concerned. Checked only for a band whose data is present (its config is required then).
+        """
+        missing: list[str] = []
+        rows = 0
+        for frame, cfg, keys in bands:
+            if frame.empty:
+                continue
+            absent = [column for column in (cls._require(cfg, key) for key in keys) if column not in frame.columns]
+            if absent:
+                missing += absent
+                rows += len(frame)
+        if missing:
+            # failure-policy: join_key
+            record_note(
+                context,
+                "StudentAttendance",
+                OutcomeNote.ATTENDANCE_SOURCE_COLUMN_ABSENT,
+                rows,
+                log=logger,
+                message=(
+                    f"[StudentAttendance] ABSENCE COLUMNS MISSING — the absence export has no column {missing}, "
+                    f"so its {rows} row(s) are read without {'it' if len(missing) == 1 else 'them'}."
+                ),
+            )
 
     # ------------------------------------------------------------------
     # Config resolution (Configurable-Columns: no hardcoded source names)
@@ -391,6 +442,7 @@ class StudentAttendanceTransformer(BaseTransformer):
                 else "A value that is not a code usually means the daily absences file's columns are "
                 "not in the order this district's mapping declares."
             )
+            # failure-policy: join_key
             raise ValueError(
                 f"StudentAttendance: no category mapping for (Absent Code={_for_message(absent_code, echoable=code_ok)}, "
                 f"Authorized={_for_message(authorized, echoable=flag_ok)}). {advice}"
