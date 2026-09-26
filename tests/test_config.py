@@ -127,9 +127,10 @@ class TestClassifyField:
         Closes the prior bug where a recognizable-but-malformed EnrollStatus
         dict only warned and passed through. A dict routed into the branch by a
         valid key (``active_values``) that ALSO carries an unknown key
-        (``withdraw_colum`` typo) must raise.
+        (``withdraw_colum`` typo) must raise — since plan 0053 S12 as a ``ValueError``
+        naming the nearest known key (Pydantic's own refusal named none).
         """
-        with pytest.raises(ValidationError):
+        with pytest.raises(ValueError, match="unknown key 'withdraw_colum' .*did you mean 'withdraw_date_column'"):
             classify_field({"active_values": ["Active"], "withdraw_colum": "Left"})
 
 

@@ -20,7 +20,7 @@ from src.etl.column_names import (
 from src.etl.errors import GuardKind
 from src.etl.outcomes import OutcomeNote
 from src.etl.transformers.base import BaseTransformer
-from src.etl.transformers.blended import BlendedClassDetector, BlendedDetection
+from src.etl.transformers.blended import SESSION_TIME_COMPONENTS, BlendedClassDetector, BlendedDetection
 from src.etl.transformers.columns import Previously, require_columns, resolve_source_column, source_column_label
 from src.etl.transformers.context import ClassArtifacts, TransformContext
 from src.etl.transformers.course_codes import note_unapplied_exclusions
@@ -37,6 +37,9 @@ logger = logging.getLogger(__name__)
 
 
 class ClassTransformer(BaseTransformer):
+    # Blended detection reads the Classes ``source_columns`` block through exactly these roles.
+    SOURCE_COLUMN_ROLES = frozenset(SESSION_TIME_COMPONENTS)
+
     def __init__(self):
         self._blended_detector = BlendedClassDetector()
 

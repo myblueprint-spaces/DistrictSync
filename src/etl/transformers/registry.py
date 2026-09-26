@@ -48,6 +48,19 @@ TRANSFORMER_REGISTRY: dict[str, BaseTransformer] = {
 }
 
 
+def source_column_roles(entity_name: str) -> frozenset[str]:
+    """The ``source_columns`` ROLES the transformer for ``entity_name`` reads (plan 0053 S12).
+
+    Read off the transformer class (``BaseTransformer.SOURCE_COLUMN_ROLES``), so the
+    config loader judges a role against exactly what the read sites resolve. An entity
+    with no registered transformer runs through :class:`DefaultTransformer`, which reads
+    no ``source_columns`` block — every role there is unknown. No log line (unlike
+    :func:`get_transformer`): this is asked at config load, not at run time.
+    """
+    transformer = TRANSFORMER_REGISTRY.get(entity_name)
+    return transformer.SOURCE_COLUMN_ROLES if transformer is not None else DefaultTransformer.SOURCE_COLUMN_ROLES
+
+
 def get_transformer(entity_name: str) -> BaseTransformer:
     transformer = TRANSFORMER_REGISTRY.get(entity_name)
     if transformer is None:

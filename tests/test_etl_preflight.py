@@ -187,7 +187,6 @@ def _synthetic_config() -> MappingConfig:
                         "withdraw_date_column": "Withdraw Date",
                         "active_values": ["Active", "PreReg"],  # VALUES, not a column
                     },
-                    "Typo": {"unrecognised": "shape"},  # warn-passthrough → nothing
                 },
                 "row_filters": [{"column": "Parent Auth / Guardian", "include": ["Y"]}],
                 "source_columns": {"full_course_code": "Course Code Full", "unset_role": ""},
@@ -230,7 +229,7 @@ class TestExpectedColumnsOverEveryVariant:
         """Twinned against the assertion above: the same entity DOES contribute for the
         transform/format/name-config shapes, so an empty result here is not vacuous."""
         expected = expected_columns(_synthetic_config())
-        silent = {"EnrollStatus", "School ID", "Start Date", "Typo"}
+        silent = {"EnrollStatus", "School ID", "Start Date"}
         assert [item for item in expected if item.output_field in silent] == []
 
     def test_a_blank_configured_name_is_not_an_expectation(self):

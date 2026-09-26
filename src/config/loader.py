@@ -34,6 +34,14 @@ never an echoed value; see :func:`_apply_user_dir_domains_floor`) while a BUNDLE
 config keeps the model validator's loud raise, because a typo in a hand-edited
 file must not kill a district's nightly sync but a shipped one is CI's to catch.
 
+The FOURTH guardrail follows the same direction (plan 0053 S12, failure-policy.md P15):
+an unknown ``global_config`` / entity key or ``source_columns`` role — found by the ONE
+pure walker :func:`unknown_config_keys` — RAISES :class:`UnknownConfigKeyError` for a
+BUNDLED config, WARNS one line per key for a USER-dir config (the key is ignored and the
+run continues), and is REFUSED at authoring (:func:`validate_overlay`). The root stays
+``extra="ignore"`` (forward compatibility), and a misspelled key INSIDE a field mapping is
+refused for every origin by the model itself (``models.ConfiguredField``).
+
 :func:`validate_overlay` runs the same resolve → gate → floor → validate pipeline
 over an in-memory dict, for the authoring layer's load-back-before-write check.
 """
@@ -41,14 +49,21 @@ over an in-memory dict, for the authoring layer's load-back-before-write check.
 import copy
 import logging
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any, Literal, NamedTuple, Optional
+from typing import Any, Literal, NamedTuple, Optional, get_args
 
 import yaml
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
-from src.config.models import MappingConfig, is_valid_district_domain
+from src.config.models import (
+    MappingConfig,
+    UnknownKey,
+    is_valid_district_domain,
+    model_keys,
+    switch_field_shape,
+    unknown_keys_in,
+)
 from src.utils.paths import bundle_mappings_dir, user_mappings_dir
 
 logger = logging.getLogger(__name__)
@@ -258,7 +273,7 @@ def _check_config_version(version: object, path: Path) -> None:
         )
 
 
-def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+def _deep_merge(base: dict[str, Any], override: dict[str, Any], _path: tuple[str, ...] = ()) -> dict[str, Any]:
     """Recursively merge ``override`` into ``base``. Override values win.
 
     Only dicts merge key-by-key (recursively). Every other value type —
@@ -267,14 +282,33 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
     sets ``global_config.enabled_entities: [Students]`` over a base
     declaring all seven entities ends up with exactly ``[Students]``, not
     a union — an override must restate the FULL list it wants.
+
+    ONE dict exception: a ``mappings.<Entity>.field_map.<field>`` entry whose override
+    SWITCHES the field's shape (``models.switch_field_shape`` — e.g. ``{value: "09"}`` over
+    an inherited ``{column, transform}``) keeps only the inherited keys the new shape
+    accepts, because merged key by key it would carry the base's keys into a variant that
+    forbids them (plan 0053 S12). A partial override (``{column: "Gr"}``) still merges and
+    inherits the rest. ``_path`` is internal (the keys walked so far); callers never pass it.
     """
     result = copy.deepcopy(base)
     for key, val in override.items():
-        if key in result and isinstance(result[key], dict) and isinstance(val, dict):
-            result[key] = _deep_merge(result[key], val)
+        path = (*_path, str(key))
+        switched = _switched_field_entry(path, result.get(key), val)
+        if switched is not None:
+            result[key] = copy.deepcopy(switched)
+        elif key in result and isinstance(result[key], dict) and isinstance(val, dict):
+            result[key] = _deep_merge(result[key], val, path)
         else:
             result[key] = copy.deepcopy(val)
     return result
+
+
+def _switched_field_entry(path: tuple[str, ...], base: Any, override: Any) -> Optional[dict[str, Any]]:
+    """``models.switch_field_shape`` for a ``mappings.<Entity>.field_map.<field>`` dict pair, else ``None``."""
+    is_field_entry = len(path) == 4 and path[0] == "mappings" and path[2] == "field_map"
+    if not (is_field_entry and isinstance(base, dict) and isinstance(override, dict)):
+        return None
+    return switch_field_shape(base, override)
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
@@ -421,6 +455,130 @@ def _apply_user_dir_domains_floor(
     return updated
 
 
+# ---------------------------------------------------------------------------
+# Unknown keys (plan 0053 S12, failure-policy.md P15)
+# ---------------------------------------------------------------------------
+
+#: What an unknown ``global_config`` / entity key or ``source_columns`` role costs a load:
+#: ``"raise"`` (:class:`UnknownConfigKeyError`) or ``"warn"`` (one WARNING line per key; the
+#: key is ignored and the load continues).
+UnknownKeyPolicy = Literal["raise", "warn"]
+
+#: The origin → policy rule, spelled ONCE, in the ``district_domains`` floor's direction —
+#: never invert it. A BUNDLED config raises, because ``make validate-config`` gates it in CI
+#: before a release ships, where a loud failure costs nothing. A USER-dir config (hand-
+#: editable, authored on a district server, never seen by CI) warns, because a stray key
+#: must never stop that district's nightly sync. Authoring (:func:`validate_overlay`) is not
+#: an origin: it refuses, since nothing has been written yet.
+_UNKNOWN_KEY_POLICY_BY_ORIGIN: dict[ConfigOrigin, UnknownKeyPolicy] = {"user": "warn", "bundled": "raise"}
+
+#: ONE WARNING per unknown key in a USER-dir config. Config vocabulary only (the location
+#: and the key the admin typed, plus the nearest known key) — never a value.
+_UNKNOWN_KEY_WARNING = (
+    "Mapping config '%s' at '%s' is user-authored and carries an unknown key (%s). The key is "
+    "IGNORED (this run continues as if it were absent); fix its spelling in the mapping file."
+)
+
+
+class UnknownConfigKeyError(ValueError):
+    """A config carries keys nothing reads — raised for a BUNDLED config and at authoring.
+
+    A ``ValueError`` so every existing config-failure path (the pipeline's ``config``
+    category, ``make validate-config``, the creator's refusal) handles it unchanged.
+    ``findings`` carries the typed :class:`~src.config.models.UnknownKey` list; the message
+    names each location, key and nearest known key — config vocabulary, never a value.
+    """
+
+    def __init__(self, sis_type: str, path: Path, findings: Sequence[UnknownKey]) -> None:
+        self.findings: tuple[UnknownKey, ...] = tuple(findings)
+        lines = "\n".join(f"  {finding.describe()}" for finding in self.findings)
+        super().__init__(
+            f"Mapping config '{sis_type}' at '{path}' carries {len(self.findings)} unknown key(s) — a "
+            f"misspelled key is otherwise silently ignored (a misspelled enabled_entities would enable "
+            f"EVERY entity):\n{lines}"
+        )
+
+
+def _model_in(annotation: Any) -> type[BaseModel]:
+    """The ONE Pydantic model an annotation carries (``X``, ``Optional[X]``, ``dict[str, X]``)."""
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return annotation
+    for argument in get_args(annotation):
+        if isinstance(argument, type) and issubclass(argument, BaseModel):
+            return argument
+    raise TypeError(f"no Pydantic model in annotation {annotation!r}")
+
+
+def _source_column_roles(entity: str) -> frozenset[str]:
+    """The ``source_columns`` roles ``entity``'s transformer reads — THE vocabulary.
+
+    DEFERRED import, as ``models._session_time_roles`` does: the transformers own the roles
+    (``BaseTransformer.SOURCE_COLUMN_ROLES``, derived from their read-site constants), and a
+    module-level import would be circular (``transformers`` → ``base`` → ``src.config``).
+    """
+    from src.etl.transformers.registry import source_column_roles
+
+    return source_column_roles(entity)
+
+
+def unknown_config_keys(resolved_raw: Mapping[str, Any], model: type[MappingConfig]) -> list[UnknownKey]:
+    """Every key in ``resolved_raw`` that ``model``'s schema (or a transformer) does not know. PURE.
+
+    Walks the RESOLVED raw dict (after ``_base`` inheritance, before Pydantic) and reports:
+
+    - an unknown key directly under ``global_config`` (the model of the root's
+      ``global_config`` field — ``GlobalConfig``);
+    - an unknown key in any ``mappings.<Entity>`` block (``EntityConfig``);
+    - an unknown ROLE in any ``mappings.<Entity>.source_columns`` block — judged against the
+      roles THAT entity's transformer reads (:func:`_source_column_roles`), because an unknown
+      role silently reads its default column.
+
+    Deliberately NOT walked: the root (``extra="ignore"`` is the forward-compatibility
+    contract), the open dicts (``global_config.attendance``, ``school_year_sources``,
+    ``headers``, ``source_files``), and every ``extra="forbid"`` model (a field mapping, a
+    row filter, ``cross_enrollment``), which Pydantic already refuses for every origin. A
+    wrongly SHAPED section is not judged here either — its shape is the model's to refuse.
+
+    Known keys are read off the model (:func:`~src.config.models.model_keys`), never
+    restated. Never mutates ``resolved_raw``. Findings are in document order.
+    """
+    global_model = _model_in(model.model_fields["global_config"].annotation)
+    entity_model = _model_in(model.model_fields["mappings"].annotation)
+    findings = unknown_keys_in(resolved_raw.get("global_config"), model_keys(global_model), location="global_config")
+    entities = resolved_raw.get("mappings")
+    if isinstance(entities, dict):
+        entity_keys = model_keys(entity_model)
+        for entity, block in entities.items():
+            location = f"mappings.{entity}"
+            findings.extend(unknown_keys_in(block, entity_keys, location=location))
+            if isinstance(block, dict):
+                findings.extend(
+                    unknown_keys_in(
+                        block.get("source_columns"),
+                        _source_column_roles(str(entity)),
+                        location=f"{location}.source_columns",
+                    )
+                )
+    return findings
+
+
+def _apply_unknown_key_policy(
+    resolved: Mapping[str, Any],
+    *,
+    sis_type: str,
+    path: Path,
+    policy: UnknownKeyPolicy,
+) -> None:
+    """Raise :class:`UnknownConfigKeyError`, or WARN once per key — per ``policy``."""
+    findings = unknown_config_keys(resolved, MappingConfig)
+    if not findings:
+        return
+    if policy == "raise":
+        raise UnknownConfigKeyError(sis_type, path, findings)
+    for finding in findings:
+        logger.warning(_UNKNOWN_KEY_WARNING, sis_type, path, finding.describe())
+
+
 def _resolve_gate_and_validate(
     raw: dict[str, Any],
     *,
@@ -428,12 +586,16 @@ def _resolve_gate_and_validate(
     path: Path,
     origin: ConfigOrigin,
     search_dirs: list[Path],
+    unknown_keys: UnknownKeyPolicy,
 ) -> MappingConfig:
-    """Resolve ``_base`` → version-gate → user-dir domains floor → Pydantic validate.
+    """Resolve ``_base`` → version-gate → user-dir domains floor → unknown keys → Pydantic validate.
 
-    The ONE spelling of that four-step pipeline, shared by :func:`load_config` (a file
-    on disk) and :func:`validate_overlay` (a dict that has no file yet), so the two can
-    never drift on an error message, a gate or the floor.
+    The ONE spelling of that pipeline, shared by :func:`load_config` (a file on disk) and
+    :func:`validate_overlay` (a dict that has no file yet), so the two can never drift on
+    an error message, a gate or the floor. ``unknown_keys`` is REQUIRED keyword-only with
+    no default — whether a typo stops the load is safety-relevant, so no caller may get
+    either answer by omission (``load_config`` derives it from the origin,
+    ``validate_overlay`` always refuses).
 
     Mutates ``raw`` (``_resolve_inheritance`` pops ``_base``) — callers own the copy.
     """
@@ -448,6 +610,8 @@ def _resolve_gate_and_validate(
 
     if origin == "user":
         resolved = _apply_user_dir_domains_floor(resolved, sis_type=sis_type, path=path)
+
+    _apply_unknown_key_policy(resolved, sis_type=sis_type, path=path, policy=unknown_keys)
 
     try:
         return MappingConfig(**resolved)
@@ -502,11 +666,17 @@ def load_config(
     Returns:
         Validated MappingConfig.
 
+    An unknown ``global_config`` / entity key or ``source_columns`` role follows the
+    origin (plan 0053 S12): a USER-dir config WARNS once per key and loads; a BUNDLED
+    config — and the single ``config_dir`` seam, bundled-equivalent as above — raises
+    :class:`UnknownConfigKeyError`.
+
     Raises:
         FileNotFoundError: If the mapping file doesn't exist in any search path.
         ValueError: If validation fails (wraps Pydantic errors with clear
-            messages), or if the resolved config's version is outside the
-            supported major range (see ``_check_config_version``).
+            messages), if a bundled config carries an unknown key
+            (:class:`UnknownConfigKeyError`), or if the resolved config's version
+            is outside the supported major range (see ``_check_config_version``).
     """
     origin: ConfigOrigin
     if config_dir is None:
@@ -540,6 +710,7 @@ def load_config(
         path=path,
         origin=origin,
         search_dirs=search_dirs,
+        unknown_keys=_UNKNOWN_KEY_POLICY_BY_ORIGIN[origin],
     )
 
 
@@ -574,8 +745,14 @@ def validate_overlay(
     Reads NO file for the overlay itself and does not mutate ``raw`` (a deepcopy
     is validated, because ``_resolve_inheritance`` pops ``_base``).
 
+    **One deliberate difference from a user-dir** :func:`load_config` **(plan 0053 S12):**
+    an unknown ``global_config`` / entity key or ``source_columns`` role is REFUSED here
+    (:class:`UnknownConfigKeyError`), where loading the same file from the user dir would
+    only WARN — authoring is the one moment a typo costs nothing to fix.
+
     Raises:
         FileNotFoundError: unknown ``_base``.
+        UnknownConfigKeyError: an unknown key (a ``ValueError``).
         ValueError: version outside the supported major range, or schema invalid.
     """
     dirs = _require_search_pair(search_dirs)
@@ -591,4 +768,7 @@ def validate_overlay(
         path=Path(_UNSAVED_OVERLAY_LABEL),
         origin="user",
         search_dirs=dirs,
+        # Authoring REFUSES an unknown key (plan 0053 S12): nothing has been written yet,
+        # so a typo costs nothing to fix now — and a written one would only warn nightly.
+        unknown_keys="raise",
     )

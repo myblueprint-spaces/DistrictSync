@@ -87,11 +87,17 @@ class TestShapePolicy:
             pytest.param({"format": "{student number}"}, "grade", id="email-format"),
             pytest.param({"use_academic_year": True}, "grade", id="academic-year"),
             pytest.param({"teacher last name": "Teacher Name"}, "grade", id="name-block"),
-            pytest.param({"colum": "Typo"}, "grade", id="unrecognised-dict"),
         ],
     )
     def test_every_shape_resolves_by_the_one_policy(self, value, expected):
         assert _resolve(value) == expected
+
+    def test_a_dict_with_no_mapping_shape_is_refused_not_read_as_the_default(self):
+        """Plan 0053 S12: ``classify_field`` refuses a typo'd dict (it used to be read as the
+        default column, silently). Twin: the correctly spelled key resolves."""
+        with pytest.raises(ValueError, match="unknown key 'colum' .*did you mean 'column'"):
+            _resolve({"colum": "Typo"})
+        assert _resolve({"column": "Typo"}) == "typo"
 
     def test_an_already_typed_value_resolves_exactly_as_its_raw_dict(self):
         """`ensure_field_mapping` is the one boundary: a validated MappingConfig's typed

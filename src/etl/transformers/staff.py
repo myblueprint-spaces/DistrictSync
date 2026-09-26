@@ -77,7 +77,14 @@ TEACHING_ASSIGNMENT_SOURCE_ROLES: tuple[str, ...] = (
 KNOWN_STATUS_VALUES = frozenset({ACTIVE_STATUS_VALUE, "inactive"})
 
 
+#: The Staff ``source_columns`` ROLE for the employment-status column (read by
+#: :meth:`StaffTransformer.resolve_status_column`; named once — plan 0053 S12).
+STAFF_STATUS_ROLE = "staff_status"
+
+
 class StaffTransformer(BaseTransformer):
+    SOURCE_COLUMN_ROLES = frozenset({STAFF_STATUS_ROLE})
+
     def transform(self, df: pd.DataFrame, mapping: dict[str, Any], context: TransformContext) -> pd.DataFrame:
         working = self.normalize_columns(df)
         result = pd.DataFrame()
@@ -405,7 +412,7 @@ class StaffTransformer(BaseTransformer):
         resolver's policy (:func:`~src.etl.transformers.columns.resolve_source_column`).
         """
         aux = mapping.get("source_columns") or {}
-        return resolve_source_column(aux, "staff_status", default=STAFF_STATUS, previously=Previously.UNCHANGED)
+        return resolve_source_column(aux, STAFF_STATUS_ROLE, default=STAFF_STATUS, previously=Previously.UNCHANGED)
 
     def _merge_roster(self, working: pd.DataFrame, mapping: dict[str, Any], context: TransformContext) -> pd.DataFrame:
         """Merge staff with roster to add 'staff sourceid' when available.

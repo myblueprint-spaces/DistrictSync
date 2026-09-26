@@ -243,8 +243,9 @@ def expected_columns(config: MappingConfig) -> tuple[ExpectedColumn, ...]:
 
     And which name none: ``FieldFixedValue`` / ``FieldAcademicYear`` (a literal
     names no column), the ``None`` auto-detect sentinel (its aliases are a SET —
-    naming one would be false), ``classify_field``'s warn-passthrough dict, and
-    any other shape.
+    naming one would be false), and any other shape. (A dict with no mapping
+    shape no longer reaches here as a dict: since plan 0053 S12 ``classify_field``
+    refuses it at load, and for a raw caller the ``ValueError`` is caught below.)
 
     Every derived name then passes ONE shape filter, :func:`_looks_like_header`: a
     VALIDATED config has already turned an unreadable field_map value into a string
@@ -351,8 +352,9 @@ def _field_map_columns(raw: Any) -> list[str]:
         return []
 
     # A dict / typed variant from here on, so ``ensure_field_mapping`` can only
-    # return a structured variant or the warn-passthrough dict — the bare-string
-    # and ``None`` cases were both handled above.
+    # return a structured variant (or raise for a dict with no mapping shape —
+    # caught by the caller, total by contract) — the bare-string and ``None``
+    # cases were both handled above.
     spec = ensure_field_mapping(raw)
     if isinstance(spec, FieldEmailFormat):
         return _email_format_columns(spec)
@@ -369,9 +371,7 @@ def _field_map_columns(raw: Any) -> list[str]:
         return _non_blank(spec.status_column, spec.withdraw_date_column)
     if isinstance(spec, (FieldTransform, FieldAppendYear)):
         return _non_blank(spec.column)
-    # FieldFixedValue / FieldAcademicYear (a literal names no column) and
-    # classify_field's warn-passthrough dict (no usable column key by
-    # definition) — nothing, never a raise.
+    # FieldFixedValue / FieldAcademicYear (a literal names no column) — nothing.
     return []
 
 

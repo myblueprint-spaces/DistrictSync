@@ -108,6 +108,7 @@ class StudentCoursesTransformer(BaseTransformer):
         "section": "section",
         "dl_start_date": "dl start date",
     }
+    SOURCE_COLUMN_ROLES = frozenset(AUX_SOURCE_DEFAULTS)
 
     def transform(self, df: pd.DataFrame, mapping: dict[str, Any], context: TransformContext) -> pd.DataFrame:
         source_files = mapping.get("source_files", {})

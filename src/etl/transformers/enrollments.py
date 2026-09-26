@@ -55,8 +55,17 @@ from src.etl.transformers.ids import normalize_id_series
 
 logger = logging.getLogger(__name__)
 
+#: The Enrollments ``source_columns`` ROLES for the two ClassInformation columns the
+#: co-teacher path reads (plan 0053 S9, §5 #11) — named ONCE, read by
+#: :meth:`EnrollmentTransformer._classinfo_coteacher_enrollments` and by the config
+#: loader's unknown-key walker through ``SOURCE_COLUMN_ROLES`` (plan 0053 S12).
+CLASS_INFO_PRIMARY_TEACHER_ROLE = "class_info_primary_teacher"
+CLASS_INFO_SECTION_LETTER_ROLE = "class_info_section_letter"
+
 
 class EnrollmentTransformer(BaseTransformer):
+    SOURCE_COLUMN_ROLES = frozenset({CLASS_INFO_PRIMARY_TEACHER_ROLE, CLASS_INFO_SECTION_LETTER_ROLE})
+
     def transform(self, df: pd.DataFrame, mapping: dict[str, Any], context: TransformContext) -> pd.DataFrame:
         source_config = mapping.get("source_files", {})
         normalized_sources = self.normalize_source_config(source_config)
@@ -419,12 +428,12 @@ class EnrollmentTransformer(BaseTransformer):
         class_info_df = class_info_df.copy()
 
         primary_col = resolve_source_column(
-            source_columns, "class_info_primary_teacher", default=PRIMARY_TEACHER, previously=Previously.DEFAULT
+            source_columns, CLASS_INFO_PRIMARY_TEACHER_ROLE, default=PRIMARY_TEACHER, previously=Previously.DEFAULT
         )
         section_col = resolve_source_column(
-            source_columns, "class_info_section_letter", default=SECTION_LETTER, previously=Previously.DEFAULT
+            source_columns, CLASS_INFO_SECTION_LETTER_ROLE, default=SECTION_LETTER, previously=Previously.DEFAULT
         )
-        section_label = source_column_label(source_columns, "class_info_section_letter", default=SECTION_LETTER)
+        section_label = source_column_label(source_columns, CLASS_INFO_SECTION_LETTER_ROLE, default=SECTION_LETTER)
 
         # The two columns EVERY co-teacher row is built from: without either, no row can be
         # (§5 #15, owner ruling 2026-09-25 — left out with a standing warning, never a failure).
@@ -432,7 +441,7 @@ class EnrollmentTransformer(BaseTransformer):
         entry_missing = absent_columns(
             class_info_df.columns,
             [
-                source_column_label(source_columns, "class_info_primary_teacher", default=PRIMARY_TEACHER),
+                source_column_label(source_columns, CLASS_INFO_PRIMARY_TEACHER_ROLE, default=PRIMARY_TEACHER),
                 staff_id_label,
             ],
         )

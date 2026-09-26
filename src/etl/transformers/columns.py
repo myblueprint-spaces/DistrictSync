@@ -17,7 +17,10 @@ a shape that names NO source column for this key —      the documented ``defau
 :data:`DEFAULT_COLUMN_SHAPES` (``{value: …}``, an
 id/role pair, an email ``format:``)
 any other shape (an academic-year date, a Name block,   the documented ``default``, with ONE
-an EnrollStatus block, an unrecognised dict)            WARNING per run naming the key
+an EnrollStatus block)                                  WARNING per run naming the key
+a dict with no mapping shape (``{colum: …}``)           ``ValueError`` — ``classify_field``
+                                                        refuses it (plan 0053 S12); a
+                                                        validated config never carries one
 =====================================================  ======================================
 
 The answer is always passed through :func:`~src.etl.column_names.normalize_column_name`

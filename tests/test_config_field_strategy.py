@@ -245,9 +245,13 @@ class TestEnsureFieldMapping:
         assert isinstance(spec, FieldTransform)
         assert spec.transform == "grade_to_ceds"
 
-    def test_unrecognized_dict_passes_through_unwrapped(self):
-        raw = {"unknown_key": "x"}
-        assert ensure_field_mapping(raw) is raw
+    def test_unrecognized_dict_is_refused(self):
+        """Plan 0053 S12: a dict with no mapping shape is refused, never passed through raw
+        (the field-map engine used to ship it blank with nothing recorded). The message
+        names every unknown key; twin: a recognised dict classifies."""
+        with pytest.raises(ValueError, match="unknown key 'unknown_key'"):
+            ensure_field_mapping({"unknown_key": "x"})
+        assert isinstance(ensure_field_mapping({"column": "x"}), FieldTransform)
 
     def test_idempotent(self):
         once = ensure_field_mapping({"value": "V"})

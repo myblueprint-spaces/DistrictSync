@@ -11,6 +11,20 @@ Per-release download links and auto-generated commit notes live on the
 
 ### Changed
 
+- **A misspelled key in a district mapping is no longer silently ignored.** A mapping
+  file in DistrictSync's own mappings folder that carries a key DistrictSync does not
+  know — in its `global_config` section, in an entity block, or as a `source_columns`
+  column role — now logs one warning per key naming the nearest correct key (for
+  example "did you mean 'enabled_entities'?"); the sync still runs, ignoring the key,
+  as it always did. A misspelled key inside one field's mapping (for example
+  `transfrom:` for `transform:`) now stops the run, and Home, Run History and the
+  Convert screen say the district mapping couldn't be read, where it used to send that
+  field untransformed or blank with no sign anywhere — fix the spelling and the next
+  sync runs. Replacing a field the shipped mapping defines with a different kind of
+  mapping (for example a fixed value where it reads a column) is not a misspelling and
+  keeps working. A mapping set up in DistrictSync itself never carries such a key (setting
+  one up refuses it). The mappings shipped with DistrictSync carry none, so their output
+  is unchanged.
 - **Run History now says when a safety check could not run.** When an export is missing a
   column one of DistrictSync's safety checks relies on, the sync still sends what it always
   sent — but the run's row in Run History now carries a short note saying so: that no

@@ -73,6 +73,18 @@ class BaseTransformer(ABC):
     # -----------------------------------------------------------------------
     ALLOWED_TRANSFORMS: frozenset[str] = _ALLOWED_TRANSFORMS
 
+    # -----------------------------------------------------------------------
+    # The ``source_columns`` ROLE names this entity's transformer reads (plan
+    # 0053 S12). THE vocabulary: a subclass derives it from the SAME constant
+    # its read sites resolve through (never a restated list), and the config
+    # loader's unknown-key walker (``loader.unknown_config_keys``, via
+    # ``registry.source_column_roles``) judges an entity's ``source_columns``
+    # block against it — a role no transformer reads is a typo that would
+    # otherwise silently read the default column. Empty here: an entity that
+    # declares none reads no ``source_columns`` block at all.
+    # -----------------------------------------------------------------------
+    SOURCE_COLUMN_ROLES: frozenset[str] = frozenset()
+
     # CEDS grade mapping — canonical table lives in grades.py (same object).
     CEDS_MAPPING: dict[str, str] = _grades.CEDS_MAPPING
 
@@ -897,11 +909,6 @@ class BaseTransformer(ABC):
                 spec = ensure_field_mapping(raw_spec)
                 if isinstance(spec, ConfiguredField):
                     result[tgt_field] = spec.apply(working, self, tgt_field, entity, context)
-                elif isinstance(spec, dict):
-                    # classify_field's warn-passthrough (unrecognized dict
-                    # structure): no usable 'column' key by definition — the
-                    # legacy loop yielded an intended blank. NOT recorded.
-                    result[tgt_field] = pd.NA
                 else:
                     # Bare column name (str) or the auto-detect None sentinel —
                     # the direct read. An absent column is an intended blank
