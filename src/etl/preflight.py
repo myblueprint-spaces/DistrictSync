@@ -640,11 +640,19 @@ def label_vocabulary_by_entity(config: MappingConfig) -> dict[str, LabelVocabula
       (:func:`expected_columns`, so already through :func:`_looks_like_header`), in CONFIG
       spelling (trimmed, never lowercased). Never its ``source_columns``: those are cross-file
       auxiliary reads. Empty for an :attr:`ObservationScope.NO_CLAIM` entity, whose field_map
-      values are placeholders rather than columns it reads — naming one would be false;
+      values are placeholders rather than columns it reads — naming one would be false
+      (except StudentAttendance, below);
     * ``files`` — its configured ``source_files`` (config spelling, deduped);
-    * ``reads_own_files`` — :attr:`ObservationScope.OWN_FILES` only. An ALL_FILES entity
+    * ``reads_own_files`` — :attr:`ObservationScope.OWN_FILES` only (except StudentAttendance,
+      below). An ALL_FILES entity
       (Enrollments) may read a mapped column from ANOTHER entity's file, so its own file
       must never be named beside that column.
+
+    **StudentAttendance** (NO_CLAIM — its field_map holds placeholders) reads its real columns
+    from ``global_config.attendance``'s band blocks, every one on its OWN source files; those
+    configured column names are its vocabulary (:func:`_attendance_band_columns`, since plan 0053
+    S13b — owner ruling 2026-09-26: an absent REQUIRED band column is named), and it reads its
+    own files. The single-file rule still decides whether a file can be named beside one.
 
     Membership itself is decided in ONE place, ``outcomes.safe_label``; this only says what
     the resolved config declares. TOTAL: never raises (``{}`` at worst — no labels).
@@ -660,18 +668,49 @@ def label_vocabulary_by_entity(config: MappingConfig) -> dict[str, LabelVocabula
     for entity, files in sources.items():
         scope = observation_scope(entity)
         columns: frozenset[str] = frozenset()
+        reads_own_files = scope is ObservationScope.OWN_FILES
         if scope is not ObservationScope.NO_CLAIM:
             columns = frozenset(
                 _clean(item.source_column)
                 for item in expected
                 if item.entity == entity and item.origin is not ExpectationOrigin.SOURCE_COLUMN
             ) - {""}
-        vocabularies[entity] = LabelVocabulary(
-            columns=columns,
-            files=files,
-            reads_own_files=scope is ObservationScope.OWN_FILES,
-        )
+        if entity == ATTENDANCE_ENTITY:
+            columns = _attendance_band_columns(config)
+            reads_own_files = True
+        vocabularies[entity] = LabelVocabulary(columns=columns, files=files, reads_own_files=reads_own_files)
     return vocabularies
+
+
+#: The entity whose real reads are ``global_config.attendance``'s band columns rather than its
+#: field_map (:data:`OBSERVATION_SCOPE` — NO_CLAIM) — the registry key of
+#: ``StudentAttendanceTransformer``.
+ATTENDANCE_ENTITY: Final = "StudentAttendance"
+#: The band blocks of ``global_config.attendance`` and the key suffix that marks a COLUMN in
+#: them (``daily_authorized_col`` …; the other keys — ``category_map``, ``portion`` — are
+#: derivation knobs). ``tests/test_etl_outcome_labels.py`` pins that every key the transformer
+#: reads (``student_attendance._DAILY_KEYS`` / ``_PERIOD_KEYS``) carries the suffix, so the two
+#: cannot drift.
+ATTENDANCE_BANDS: Final = ("daily", "period")
+ATTENDANCE_COLUMN_KEY_SUFFIX: Final = "_col"
+
+
+def _attendance_band_columns(config: MappingConfig) -> frozenset[str]:
+    """Every column ``global_config.attendance``'s band blocks configure, in CONFIG spelling
+    (trimmed, never lower-cased). TOTAL: an unreadable block contributes nothing."""
+    try:
+        attendance = config.global_config.attendance or {}
+        names = {
+            _clean(value)
+            for band in ATTENDANCE_BANDS
+            if isinstance(attendance.get(band), dict)
+            for key, value in attendance[band].items()
+            if str(key).endswith(ATTENDANCE_COLUMN_KEY_SUFFIX) and isinstance(value, str)
+        }
+    except Exception as exc:  # noqa: BLE001 — total by contract; no vocabulary names nothing
+        logger.debug(f"Pre-flight: no attendance band vocabulary ({type(exc).__name__})")
+        return frozenset()
+    return frozenset(names) - {""}
 
 
 def _pool_for(

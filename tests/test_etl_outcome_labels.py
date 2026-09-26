@@ -457,9 +457,46 @@ class TestLabelVocabularyFromTheRealConfigs:
         assert observation_scope("Enrollments") is ObservationScope.ALL_FILES
         assert not label_vocabulary_by_entity(load_config("myedbc"))["Enrollments"].reads_own_files
 
-    def test_attendance_placeholders_are_not_columns(self) -> None:
-        attendance = label_vocabulary_by_entity(load_config("sd51attendance"))["StudentAttendance"]
-        assert attendance.columns == frozenset() and not attendance.reads_own_files
+    def test_attendance_placeholders_are_not_columns_but_its_band_columns_are(self) -> None:
+        """Its field_map values are placeholders (NO_CLAIM) and never labels; its REAL reads — the
+        ``global_config.attendance`` band columns, all on its own files — are (0053 S13b, owner
+        ruling 2026-09-26: an absent required band column is named)."""
+        config = load_config("sd51attendance")
+        attendance = label_vocabulary_by_entity(config)["StudentAttendance"]
+        band = config.global_config.attendance
+        configured = {str(v).strip() for b in ("daily", "period") for k, v in band[b].items() if k.endswith("_col")}
+        assert attendance.columns == configured and "authorized am" in attendance.columns
+        assert not ({"School Number", "Absence Date", "Student Number"} & attendance.columns)  # the placeholders
+        assert attendance.reads_own_files
+        # Two band files, so the single-file rule still names no file beside the column.
+        assert len(attendance.files) == 2
+        assert derive_labels(["authorized am"], attendance) == ("", ("authorized am",))
+
+    def test_a_malformed_attendance_band_contributes_nothing_and_never_raises(self) -> None:
+        """``_attendance_band_columns`` is TOTAL: ``global_config.attendance`` is a free
+        ``dict[str, Any]``, so a user overlay can carry a non-dict band or a non-str ``_col``
+        value. Those drop out; the well-formed columns still come through (the positive twin)."""
+        config = load_config("sd51attendance")
+        band = config.global_config.attendance
+        band["period"] = ["x"]
+        band["daily"] = {**band["daily"], "daily_authorized_col": 7}
+        expected = {v.strip() for k, v in band["daily"].items() if k.endswith("_col") and isinstance(v, str)} - {""}
+        assert expected  # non-vacuous: some well-formed daily columns survive
+
+        attendance = label_vocabulary_by_entity(config)["StudentAttendance"]
+
+        assert attendance.columns == expected
+        assert "7" not in attendance.columns and "x" not in attendance.columns
+
+    def test_the_attendance_vocabulary_suffix_covers_every_key_the_transformer_reads(self) -> None:
+        """``preflight`` finds band columns by the ``_col`` suffix; the transformer reads exactly
+        ``_DAILY_KEYS`` / ``_PERIOD_KEYS`` — pinned so the two cannot drift (and non-vacuous)."""
+        from src.etl.preflight import ATTENDANCE_COLUMN_KEY_SUFFIX
+        from src.etl.transformers.student_attendance import _DAILY_KEYS, _PERIOD_KEYS
+
+        assert _DAILY_KEYS and _PERIOD_KEYS
+        assert all(key.endswith(ATTENDANCE_COLUMN_KEY_SUFFIX) for key in (*_DAILY_KEYS, *_PERIOD_KEYS))
+        assert not "category_map".endswith(ATTENDANCE_COLUMN_KEY_SUFFIX)  # the twin: a knob is not a column
 
     def test_source_columns_are_never_label_vocabulary_but_field_map_and_row_filters_are(self) -> None:
         # No bundled config declares `source_columns` today, so the synthetic config that exercises

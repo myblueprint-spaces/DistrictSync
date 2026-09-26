@@ -34,7 +34,7 @@ python -m pytest tests/ -v                    # all tests
 python -m pytest tests/ --cov=src --cov-report=term-missing --cov-fail-under=80  # with coverage
 ```
 
-CI coverage gate 80% (`--cov-fail-under=80`). Coverage omits `src/utils/logger.py` and the `src/ui_flet` view glue (`shell`/`nav_rail`/`launcher`/`components`/`picker_field` + `screens/*`; configured in `pyproject.toml`). Benchmarks deselected by default (`-m 'not benchmark'` in addopts).
+CI coverage gate 80% (`--cov-fail-under=80`). Coverage omits `src/utils/logger.py` and the `src/ui_flet` view glue (`shell`/`nav_rail`/`launcher`/`components`/`picker_field` + `screens/*`; configured in `pyproject.toml`). Benchmarks and the schema-drift matrix deselected by default (`-m 'not benchmark and not drift_matrix'` in addopts); the matrix (plan 0053 S13b) runs in CI's own `drift-matrix` job — locally `python -m pytest tests/test_schema_drift_matrix.py -m drift_matrix`.
 
 ### Lint + Format
 ```bash

@@ -417,8 +417,16 @@ this setting — the second year is always taken as the end. Default is
 
 ### School year fallback rollover
 
-When no source file has a ``school year`` column, the pipeline falls back to
-the system date. The rollover month-day controls when "today" should be
+When no configured source yields a ``school year`` value, the pipeline falls
+back to the system date — that is, when no ``school_year_sources`` file is
+configured, loaded (an enabled entity must read it) and non-empty, or its
+``school year`` cells are blank or unparseable. **A configured source that IS
+loaded with rows but has NO ``school year`` column stops the run** (plan 0053
+S13b, owner ruling 2026-09-26, `failure-policy.md` §5 #41): Classes raises a
+typed `source_schema` error rather than let the calendar pick the year every
+Class ID and academic date is built from. So a district whose schedule export
+genuinely lacks the column must not name that file in `school_year_sources`.
+The rollover month-day controls when "today" should be
 treated as belonging to the **next** academic year (rather than the current
 one). Default ``07-25`` means anything from July 25 onwards rolls forward.
 Districts that upload upcoming-year exports earlier can lower it:

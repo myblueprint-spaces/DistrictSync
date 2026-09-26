@@ -63,8 +63,10 @@ from typing import Any
 
 import pandas as pd
 
+from src.etl.errors import GuardKind
 from src.etl.outcomes import OutcomeNote
 from src.etl.transformers.base import BaseTransformer
+from src.etl.transformers.columns import require_columns
 from src.etl.transformers.context import TransformContext
 from src.etl.transformers.notes import is_code_shaped, record_note
 
@@ -195,13 +197,18 @@ class StudentAttendanceTransformer(BaseTransformer):
 
         Each band reads its configured columns with ``record.get``, so an absent one is silent
         today — and what it costs differs (an absent code or student drops every row, an absent
-        school or date ships that field blank, an absent portion counts every day as one row,
-        an absent authorized flag raises via the category map). Those DIRECTIONS stay (the
-        entity is ISOLATABLE, so the raise leaves only attendance out). What changes is that
-        the absence is never silent: ONE WARNING naming the absent columns as configured
-        (config vocabulary — never a header or a cell) and
-        ``OutcomeNote.ATTENDANCE_SOURCE_COLUMN_ABSENT`` counting the rows of the band(s)
+        school or date ships that field blank, an absent portion counts every day as one row).
+        Those DIRECTIONS stay. What changes is that the absence is never silent: ONE WARNING
+        naming the absent columns as configured (config vocabulary — never a header or a cell)
+        and ``OutcomeNote.ATTENDANCE_SOURCE_COLUMN_ABSENT`` counting the rows of the band(s)
         concerned. Checked only for a band whose data is present (its config is required then).
+
+        The daily band's authorized flag is the exception: since the owner ruling of 2026-09-26
+        it is REQUIRED (``_build_daily_rows``' ``require_columns`` guard, §5 #33), so the entity
+        (ISOLATABLE) then fails as FAILED/``missing_source_column``. The WARNING above is still
+        logged first — naming every absent column, the authorized one included — but the NOTE
+        cannot survive: a FAILED outcome carries no notes (``outcomes.NOTE_BEARING_KINDS``), so
+        the record says only what the failure says.
         """
         missing: list[str] = []
         rows = 0
@@ -316,6 +323,20 @@ class StudentAttendanceTransformer(BaseTransformer):
         code_col = self._require(daily_cfg, "daily_absent_code_col")
         authorized_col = self._require(daily_cfg, "daily_authorized_col")
         portion_col = self._require(daily_cfg, "daily_portion_col")
+
+        # The authorized flag is half of every category-map key (§5 #23): without the column,
+        # every present code misses the map and the band cannot build a single row. So it is
+        # REQUIRED once the band has rows (§5 #33, owner ruling 2026-09-26) — one typed
+        # `SourceSchemaError` naming it in config spelling, so the entity (ISOLATABLE) reads
+        # FAILED/`missing_source_column` with a label, never #23's `transform_error`. The other
+        # band columns keep their recorded S11 directions (`_note_absent_columns`).
+        # failure-policy: join_key
+        require_columns(
+            working.columns,
+            [self._configured(daily_cfg, "daily_authorized_col")],
+            entity="StudentAttendance",
+            guard=GuardKind.JOIN_KEY,
+        )
 
         category_map = self._category_map(daily_cfg)
         portion_rule = self._portion_rule(daily_cfg)
@@ -487,6 +508,14 @@ class StudentAttendanceTransformer(BaseTransformer):
                 f"StudentAttendance: required key '{key}' missing from global_config.attendance.{sub_block}."
             )
         return str(value).strip().lower()
+
+    @classmethod
+    def _configured(cls, cfg: dict[str, Any], key: str) -> str:
+        """The configured column for ``key`` in CONFIG spelling (trimmed, never lower-cased) — what
+        a ``require_columns`` guard names, so the outcome's label is the config's own word
+        (plan 0053 S7: ``preflight.label_vocabulary_by_entity`` declares these spellings)."""
+        cls._require(cfg, key)  # the same presence refusal as every other key
+        return str(cfg[key]).strip()
 
     @staticmethod
     def _category_map(daily_cfg: dict[str, Any]) -> dict[str, str]:

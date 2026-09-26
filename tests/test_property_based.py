@@ -179,3 +179,129 @@ class TestTruncateNamePropertyBased:
         """Names <= 100 chars must be returned unchanged."""
         if len(name) <= 100:
             assert BaseTransformer.truncate_name(name) == name
+
+
+# ---------------------------------------------------------------------------
+# apply_field_map totality (plan 0053 S13b, failure-policy.md §2 scope ladder / §5)
+# ---------------------------------------------------------------------------
+
+import pandas as pd  # noqa: E402
+
+from src.config.models import (  # noqa: E402
+    ALLOWED_TRANSFORMS,
+    FieldAcademicYear,
+    FieldAppendYear,
+    FieldEmailFormat,
+    FieldEnrollStatus,
+    FieldFixedValue,
+    FieldIdRolePair,
+    FieldNameConfig,
+    FieldTransform,
+)
+from src.etl.errors import SourceSchemaError  # noqa: E402
+from src.etl.transformers.context import TransformContext  # noqa: E402
+
+#: The normalized (lower-cased) header vocabulary a generated export draws from; a mapping may
+#: also name a column the export does not carry (the intended-blank branch).
+_HEADER_VOCABULARY = ("student number", "grade", "legal first name", "teacher id", "master timetable id", "email")
+_ABSENT = "not in this export"
+_OUTPUT_FIELDS = ("User ID", "Grade", "First Name", "Class ID", "Email", "Role", "Start Date", "School ID", "Name")
+
+_cell = st.one_of(
+    st.none(),
+    st.text(max_size=12),
+    st.sampled_from(["", " ", "K", "12", "Y", "N", "nan", "teacher", "administrator", "2025-09-01", "01/02/2024"]),
+)
+# Any case: every shape lower-cases its column before reading it.
+_column = st.sampled_from((*_HEADER_VOCABULARY, _ABSENT)).flatmap(lambda c: st.sampled_from([c, c.upper(), c.title()]))
+
+#: One strategy per supported field-mapping shape (the `models.FieldMapping` union), built through
+#: the models themselves so every generated spec is one a validated config could hold.
+_field_spec = st.one_of(
+    st.none(),
+    _column,
+    st.builds(FieldTransform, column=_column, transform=st.sampled_from(["", *sorted(ALLOWED_TRANSFORMS)])),
+    st.builds(FieldFixedValue, value=st.text(max_size=8)),
+    st.just(FieldAcademicYear()),
+    st.just(FieldAcademicYear(use_academic_year=False, value="2025-09-01")),
+    st.builds(FieldAppendYear, column=_column, append_year_to_id=st.booleans()),
+    st.builds(FieldEmailFormat, format=st.just("{student number}@example.test"), sanitize=st.booleans()),
+    st.builds(FieldNameConfig, primary_teacher_flag=_column, teacher_last_name=_column),
+    st.builds(FieldIdRolePair, student_id_col=_column, staff_id_col=_column),
+    st.just(FieldEnrollStatus()),
+)
+
+
+@st.composite
+def _export(draw) -> pd.DataFrame:
+    header = draw(st.lists(st.sampled_from(_HEADER_VOCABULARY), unique=True, max_size=len(_HEADER_VOCABULARY)))
+    rows = draw(st.integers(min_value=0, max_value=6))
+    return pd.DataFrame(
+        {column: draw(st.lists(_cell, min_size=rows, max_size=rows)) for column in header}, index=range(rows)
+    )
+
+
+class _Host(BaseTransformer):
+    """A concrete ``BaseTransformer`` (the ABC requires ``transform``) to host the engine."""
+
+    def transform(self, df, mapping, context):  # pragma: no cover — unused
+        return df
+
+
+def _apply(working: pd.DataFrame, field_map: dict) -> pd.DataFrame:
+    context = TransformContext()
+    context.set_school_year(2026, "09-01", "06-30")
+    return _Host().apply_field_map(working, pd.DataFrame(index=working.index), field_map, "Students", context)
+
+
+def _must_raise(working: pd.DataFrame, field_map: dict) -> bool:
+    """The ONE sanctioned raise: an append-year ID whose column the export lacks (§5 #29)."""
+    return any(
+        isinstance(spec, FieldAppendYear) and spec.append_year_to_id and spec.column.lower() not in working.columns
+        for spec in field_map.values()
+    )
+
+
+@pytest.mark.property
+class TestApplyFieldMapTotality:
+    """The field-map engine is TOTAL over the supported shape vocabulary (plan 0053 S13b).
+
+    Whatever the export and the mapping, ``apply_field_map`` returns exactly one output row per
+    input row with every mapped field present — a bad cell or column blanks and never raises —
+    and the only exception that may escape is the typed ``SourceSchemaError`` of an append-year
+    identity whose column is absent (§5 #29), which then ALWAYS escapes. (That a blanked cell is
+    also RECORDED in ``context.data_errors`` is not asserted here.)
+    """
+
+    @given(working=_export(), field_map=st.dictionaries(st.sampled_from(_OUTPUT_FIELDS), _field_spec, max_size=6))
+    @settings(max_examples=150, deadline=None)
+    def test_never_raises_and_keeps_every_row(self, working: pd.DataFrame, field_map: dict) -> None:
+        try:
+            out = _apply(working, field_map)
+        except SourceSchemaError as exc:
+            assert _must_raise(working, field_map), f"unsanctioned raise: {exc.columns} / {exc.guard}"
+            return
+        assert not _must_raise(working, field_map), "an absent append-year ID column must fail closed"
+        assert len(out) == len(working)
+        assert list(out.index) == list(working.index)
+        assert set(field_map) <= set(out.columns)
+
+    # The twins: each branch of the property is reachable, with the inputs it names.
+    def test_twin_an_absent_append_year_column_raises_typed(self) -> None:
+        working = pd.DataFrame({"grade": ["1"]})
+        with pytest.raises(SourceSchemaError):
+            _apply(working, {"Class ID": FieldAppendYear(column="Master Timetable ID")})
+
+    def test_twin_the_same_map_over_an_export_carrying_the_column_keeps_every_row(self) -> None:
+        working = pd.DataFrame({"master timetable id": ["MT1", "MT2"], "grade": ["1", None]})
+        out = _apply(
+            working,
+            {
+                "Class ID": FieldAppendYear(column="Master Timetable ID"),
+                "Grade": FieldTransform(column="Grade", transform="grade_to_ceds"),
+                "Role": FieldTransform(column="Grade", transform="normalize_staff_role"),  # raises per row → blank
+                "Email": _ABSENT,  # an intended blank
+            },
+        )
+        assert len(out) == 2 and {"Class ID", "Grade", "Role", "Email"} <= set(out.columns)
+        assert out["Role"].isna().all()

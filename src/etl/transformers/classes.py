@@ -14,6 +14,7 @@ from src.etl.column_names import (
     LAST_NAME,
     MASTER_TIMETABLE_ID,
     SCHOOL_NUMBER,
+    SCHOOL_YEAR,
     SECTION_LETTER,
     TEACHER_NAME,
 )
@@ -24,6 +25,7 @@ from src.etl.transformers.blended import SESSION_TIME_COMPONENTS, BlendedClassDe
 from src.etl.transformers.columns import Previously, require_columns, resolve_source_column, source_column_label
 from src.etl.transformers.context import ClassArtifacts, TransformContext
 from src.etl.transformers.course_codes import note_unapplied_exclusions
+from src.etl.transformers.dates import school_year_source_frames
 from src.etl.transformers.grades import (
     resolve_timetable_scope,
     schedule_grade_column,
@@ -49,6 +51,11 @@ class ClassTransformer(BaseTransformer):
         field_map = mapping.get("field_map", {})
         homeroom_grades = context.global_config.get("homeroom_grades", [])
         teacher_id_col = context.get_teacher_id_col()
+
+        # Before anything reads `context.school_year` (every appended Class ID, every
+        # homeroom/blended name, every academic Start/End date): the year was decided
+        # from the export, or its source is refused (§5 #41).
+        self._require_school_year_source(context)
 
         final_classes: list[pd.DataFrame] = []
 
@@ -81,6 +88,34 @@ class ClassTransformer(BaseTransformer):
             return result
 
         return pd.DataFrame()
+
+    @staticmethod
+    def _require_school_year_source(context: TransformContext) -> None:
+        """Every ``global_config.school_year_sources`` file that has rows must carry its
+        ``School Year`` column (failure-policy §5 #41 — owner ruling 2026-09-26: stop the night).
+
+        ``pipeline.run_transform`` decides the school year BEFORE the entity loop
+        (``dates.determine_school_year_detailed``, total and pure), and Classes is the entity
+        that consumes it: it keys every appended Class ID (``append_year_to_id``), every
+        homeroom and blended class name and every academic Start/End date, and Enrollments
+        (which DEPENDS_ON Classes) reuses those IDs. A source that is loaded with rows but has
+        no ``School Year`` column used to hand the year to the calendar fallback with one INFO
+        line — and when the calendar disagreed with the export, every Class ID moved with
+        nothing on the record. So the column is a (b) JOIN_KEY here: absent, one typed
+        ``SourceSchemaError`` on Classes (CRITICAL — the run fails ``source_schema`` and the
+        last good output is untouched), in the ``require_columns`` shape (the column in its
+        ``column_names`` spelling, the source's column COUNT, never its headers).
+
+        The calendar fallback stays the legitimate path everywhere else, and this never
+        fires there: no source configured, a source not loaded (no enabled entity reads it)
+        or loaded EMPTY (``dates.school_year_source_frames`` — the SAME answer the scan
+        uses), or a present column with no parseable value (a VALUE fault, not a column
+        one — the determination's own WARNINGs cover a disagreeing value).
+        """
+        sources = BaseTransformer.normalize_source_config(context.global_config.get("school_year_sources") or {})
+        for _role, _filename, frame in school_year_source_frames(context.raw_data, sources):
+            # failure-policy: join_key
+            require_columns(frame.columns, [SCHOOL_YEAR], entity="Classes", guard=GuardKind.JOIN_KEY)
 
     # -------------------------------------------------------------------
     # Blended detection

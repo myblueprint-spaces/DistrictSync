@@ -61,9 +61,13 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-addopts = "-v --tb=short -m 'not benchmark'"
+# `drift_matrix` (plan 0053 S13b) is deselected here and run by its OWN CI job
+# (`drift-matrix` in .github/workflows/ci.yml) — its own time budget; the pin that the
+# deselection cannot orphan it is tests/test_schema_drift_matrix.py.
+addopts = "-v --tb=short -m 'not benchmark and not drift_matrix'"
 markers = [
     "benchmark: performance benchmarks (deselect with '-m \"not benchmark\"')",
+    "drift_matrix: the schema-drift matrix — every bundled config x source file x dropped column (own CI job; run with '-m drift_matrix')",
     "regression: golden-file snapshot tests — fail means output changed",
     "integration: tests that use real servers or filesystem I/O",
     "property: Hypothesis property-based tests",

@@ -17,6 +17,11 @@ TEACHER_NAME = "teacher name"
 
 # Schedule / timetable
 MASTER_TIMETABLE_ID = "master timetable id"
+#: The MyEd BC "School Year" column of a ``global_config.school_year_sources`` file — read by
+#: ``dates.determine_school_year_detailed`` and REQUIRED, once such a file has rows, by
+#: ``ClassTransformer._require_school_year_source`` (failure-policy §5 #41, owner ruling
+#: 2026-09-26). Not configurable: no mapping key renames it.
+SCHOOL_YEAR = "school year"
 
 # Staff roster
 STAFF_SOURCEID = "staff sourceid"

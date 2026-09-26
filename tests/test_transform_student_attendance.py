@@ -18,6 +18,7 @@ import pandas as pd
 import pytest
 
 from src.config.loader import load_config
+from src.etl.errors import GuardKind, SourceSchemaError
 from src.etl.transformer import DataTransformer
 from src.etl.transformers.student_attendance import StudentAttendanceTransformer
 from tests.contract_schema import OUTPUT_SCHEMA
@@ -320,6 +321,50 @@ class TestFailLoud:
             assert f"'{value}'" not in message and f"{value}|" not in message and f"|{value}" not in message
         assert "not a code — not shown" in message
         assert "Add '" not in message, "a pair holding a non-code must not be offered as a key to add"
+
+    @staticmethod
+    def _daily_without_authorized(code: str = "A") -> pd.DataFrame:
+        return pd.DataFrame(
+            {
+                "school number": ["100"],
+                "student number": ["S1"],
+                "absence date": ["18-Sep-2024"],
+                "absent code am": [code],
+                "portion absent": [0.5],
+            }
+        )
+
+    def test_an_absent_authorized_column_is_a_typed_join_key_error_naming_it(
+        self, student_attendance_mapping, attendance_global_config
+    ):
+        """§5 #33, owner ruling 2026-09-26 (plan 0053 S13b): the authorized flag is half of every
+        category-map key, so its COLUMN is required once the daily band has rows — a typed error
+        naming it in config spelling (the entity then reads FAILED/missing_source_column), never
+        #23's untyped category-map miss."""
+        with pytest.raises(SourceSchemaError) as raised:
+            _run(self._daily_without_authorized(), student_attendance_mapping, attendance_global_config)
+        err = raised.value
+        configured = attendance_global_config["attendance"]["daily"]["daily_authorized_col"]
+        assert (err.entity, err.columns, err.guard) == ("StudentAttendance", (configured,), GuardKind.JOIN_KEY)
+        assert "S1" not in str(err) and "the source has 5 columns" in str(err)  # a count, never a value
+
+    def test_the_error_names_the_column_in_the_configs_own_spelling(
+        self, student_attendance_mapping, attendance_global_config
+    ):
+        """Config spelling, trimmed, never lower-cased — what S7's label vocabulary declares."""
+        gc = copy.deepcopy(attendance_global_config)
+        gc["attendance"]["daily"]["daily_authorized_col"] = "  Authorized AM "
+        with pytest.raises(SourceSchemaError) as raised:
+            _run(self._daily_without_authorized(), student_attendance_mapping, gc)
+        assert raised.value.columns == ("Authorized AM",)
+
+    def test_twin_the_column_present_or_the_band_empty_requires_nothing(
+        self, student_attendance_mapping, attendance_global_config
+    ):
+        present = self._daily_without_authorized().assign(**{"authorized am": ["N"]})
+        assert len(_run(present, student_attendance_mapping, attendance_global_config)) == 1
+        empty = self._daily_without_authorized().iloc[0:0]
+        assert _run(empty, student_attendance_mapping, attendance_global_config).empty
 
     def test_missing_attendance_config_raises(self, student_attendance_mapping):
         df = pd.DataFrame(

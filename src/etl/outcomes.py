@@ -443,10 +443,14 @@ class LabelVocabulary:
 
     * ``columns`` — the entity's ``field_map`` + ``row_filters`` columns in config spelling
       (never its ``source_columns``: those are cross-file reads, so naming the entity's own
-      file beside one would point at the wrong export);
+      file beside one would point at the wrong export) — except StudentAttendance, whose
+      field_map holds placeholders: its columns are its configured ``global_config.attendance``
+      band columns (``preflight._attendance_band_columns``, plan 0053 S13b — owner ruling
+      2026-09-26);
     * ``files`` — the entity's configured ``source_files`` names, config spelling;
     * ``reads_own_files`` — whether every mapped column is read from the entity's OWN files
-      (``preflight.OBSERVATION_SCOPE`` is ``OWN_FILES``). Only then can a file be named.
+      (``preflight.OBSERVATION_SCOPE`` is ``OWN_FILES``, or the entity is StudentAttendance,
+      which reads its band columns from its own files — S13b). Only then can a file be named.
     """
 
     columns: frozenset[str] = frozenset()

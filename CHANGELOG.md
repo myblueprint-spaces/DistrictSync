@@ -55,6 +55,25 @@ Per-release download links and auto-generated commit notes live on the
   itself over a schedule whose student column is not the standard `Student ID` now
   stops here too, where it used to send its enrollments without any timetable
   student.
+- **A schedule export missing its School Year column now stops the night instead of
+  silently using the calendar year.** The school year comes from the School Year
+  column of the export the district's mapping names for it (the student schedule for
+  every shipped mapping), and every class ID and every class start and end date is
+  built from it. When that export arrived without the column, DistrictSync used to
+  work the year out from today's date instead, with no warning — and when the two
+  disagreed, every class ID changed. Now the run stops, nothing new is written or
+  sent that night (SpacesEDU keeps the last successful sync), the run log names the
+  missing column, and Home, Run History and the Convert screen say an export file is
+  missing a column the district's mapping needs. Every shipped mapping's exports
+  carry the column, so their output is unchanged; today's date is still used where
+  that is the intended way to find the year — when no export is named for it, or
+  its School Year cells are blank.
+- **When the daily absences export is missing its "authorized" column, attendance now
+  names the column.** Attendance is still left out of that night's sync on its own —
+  students, staff, family contacts, classes and enrollments are built and sent as
+  normal — but Home, Run History and the Convert screen now say the export file is
+  missing the column (for example “authorized am”) and to re-export it, where they
+  used to say only that something went wrong while building attendance.
 - **Co-teachers a Class Information export cannot link are left out with a
   warning, never in silence.** When a Class Information file is present but missing
   a column co-teachers are linked by — the primary-teacher flag (the basic report
