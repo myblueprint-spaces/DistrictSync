@@ -85,6 +85,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import csv
 import json
 import os
 import platform
@@ -1001,6 +1002,17 @@ _SD93_OVERLAY_SPEC: dict[str, Any] = {
         "ClassInformationEnh.txt": "ClassInfoEnhanced.txt",
     },
 }
+# The Enrollments student column the overlay inherits from `_base: myedbc` (its
+# `User ID.student_id_col`). The frozen SD74 schedule carries `Student Number` instead, and
+# since plan 0053 S10 that column is REQUIRED where the timetable enrollments read it (§5
+# #28): over the unmodified extract the overlay now STOPS with a typed source_schema error
+# rather than ship an Enrollments.csv with every timetable student left out (owner ruling
+# 2026-09-25 keeps that stop). This phase proves the overlay MECHANISM, so it feeds a copy
+# whose schedule also carries the base's column — the same copy
+# `tests/test_config_authoring.py::snapshot_input_with_base_student_id` builds, and
+# `tests/test_ci_flet_pack_smoke.py` ties both literals back to the base config.
+_BASE_SCHEDULE_STUDENT_COLUMN = "Student ID"
+_SNAPSHOT_SCHEDULE_STUDENT_COLUMN = "Student Number"
 _SD93_OVERLAY_YAML = """_base: myedbc
 district_name: SD93 - Packed exe smoke
 district_domains:
@@ -1026,6 +1038,26 @@ mappings:
 """
 
 
+def input_with_base_student_id(source: Path, dest: Path) -> Path:
+    """Copy ``source`` to ``dest`` and give the overlay's schedule the base's student column.
+
+    The new column duplicates ``Student Number`` value for value; nothing else in the
+    extract changes. ``dest`` must not exist yet. Pure file I/O over synthetic fixture data.
+    """
+    shutil.copytree(source, dest)
+    schedule = dest / _SD93_OVERLAY_SPEC["source_file_renames"]["StudentSchedule.txt"]
+    with schedule.open(encoding="utf-8", newline="") as handle:
+        rows = list(csv.reader(handle))
+    header = rows[0]
+    if _BASE_SCHEDULE_STUDENT_COLUMN in header:
+        raise ValueError(f"{schedule.name} already carries {_BASE_SCHEDULE_STUDENT_COLUMN!r}")
+    at = header.index(_SNAPSHOT_SCHEDULE_STUDENT_COLUMN)
+    rows = [header + [_BASE_SCHEDULE_STUDENT_COLUMN]] + [row + [row[at]] for row in rows[1:]]
+    with schedule.open("w", encoding="utf-8", newline="") as handle:
+        csv.writer(handle, lineterminator="\n").writerows(rows)
+    return dest
+
+
 def _smoke_user_overlay(art: Path, ctx: CliSmokeContext) -> bool:
     """4 — a USER-DIR mapping overlay: the frozen exe reads one and converts through it.
 
@@ -1049,7 +1081,8 @@ def _smoke_user_overlay(art: Path, ctx: CliSmokeContext) -> bool:
         return False
 
     overlay = ctx.seam_dir / "mappings" / f"{_SD93_OVERLAY_SIS}_mapping.yaml"
-    args = ["--sis", _SD93_OVERLAY_SIS, "--input", str(ctx.input_dir)]
+    overlay_input = input_with_base_student_id(ctx.input_dir, ctx.new_output("user-overlay-input") / "input")
+    args = ["--sis", _SD93_OVERLAY_SIS, "--input", str(overlay_input)]
     try:
         control_out = ctx.new_output("user-overlay-control")
         control = _run_cli(art, [*args, "--output", str(control_out), "--dry-run"])

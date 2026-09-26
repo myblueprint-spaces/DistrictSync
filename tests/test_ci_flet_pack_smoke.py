@@ -804,3 +804,55 @@ def test_main_cli_smoke_dispatches_without_launching(tmp_path: Path) -> None:
 
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+# --- plan 0053 S10: the user-overlay phase's input copy ------------------------------
+
+
+def _base_enrollments_student_column() -> str:
+    """The ``student_id_col`` the self-service base (``myedbc``) reads from the schedule."""
+    from src.config.loader import load_config
+
+    field_map = load_config("myedbc").to_raw_dict()["mappings"]["Enrollments"]["field_map"]
+    cols = {v["student_id_col"] for v in field_map.values() if isinstance(v, dict) and "student_id_col" in v}
+    assert len(cols) == 1, cols
+    return cols.pop()
+
+
+def test_the_overlay_input_literals_match_the_base_config_and_the_pytest_copy() -> None:
+    """Both literals the phase copies out of ``src`` are tied back (no vacuous greens)."""
+    from tests.test_config_authoring import BASE_SCHEDULE_STUDENT_COLUMN
+
+    assert _base_enrollments_student_column() == smoke._BASE_SCHEDULE_STUDENT_COLUMN
+    assert smoke._BASE_SCHEDULE_STUDENT_COLUMN == BASE_SCHEDULE_STUDENT_COLUMN
+
+
+def test_the_overlay_input_copy_adds_only_the_base_student_column(tmp_path: Path) -> None:
+    source = smoke.DEFAULT_SMOKE_INPUT
+    schedule_name = smoke._SD93_OVERLAY_SPEC["source_file_renames"]["StudentSchedule.txt"]
+    # Positive precondition: the frozen extract really lacks the base's column (else the
+    # copy would be pointless and the phase would be testing nothing new).
+    original = (source / schedule_name).read_text(encoding="utf-8").splitlines()
+    assert smoke._BASE_SCHEDULE_STUDENT_COLUMN not in original[0].split(",")
+    assert smoke._SNAPSHOT_SCHEDULE_STUDENT_COLUMN in original[0].split(",")
+
+    dest = smoke.input_with_base_student_id(source, tmp_path / "input")
+
+    copied = (dest / schedule_name).read_text(encoding="utf-8").splitlines()
+    assert copied[0] == original[0].rstrip("\r") + "," + smoke._BASE_SCHEDULE_STUDENT_COLUMN
+    assert len(copied) == len(original)
+    header = copied[0].split(",")
+    at_old = header.index(smoke._SNAPSHOT_SCHEDULE_STUDENT_COLUMN)
+    for line in copied[1:6]:
+        cells = line.split(",")
+        assert cells[-1] == cells[at_old]
+    # Every other file is byte-identical to the frozen extract.
+    for path in source.iterdir():
+        if path.name != schedule_name and path.is_file():
+            assert (dest / path.name).read_bytes() == path.read_bytes(), path.name
+
+
+def test_the_overlay_input_copy_refuses_a_schedule_that_already_has_the_column(tmp_path: Path) -> None:
+    first = smoke.input_with_base_student_id(smoke.DEFAULT_SMOKE_INPUT, tmp_path / "once")
+    with pytest.raises(ValueError, match="already carries"):
+        smoke.input_with_base_student_id(first, tmp_path / "twice")
