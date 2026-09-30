@@ -9,6 +9,27 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+## [3.26.0] - 2026-09-30
+
+West Vancouver (SD45) can now run DistrictSync. Their existing classes keep their
+IDs, so teachers see no change in the classes they have been using since September.
+No other district's output changes.
+
+### Added
+
+- **SD45 – West Vancouver** mapping (`sd45myedbc`). It reads the district's own
+  `.csv` Enhanced extracts (`StudentDemographicEnhanced.csv`,
+  `StaffInformationEnhanced.csv`, `EmergencyContactInfoEnhanced.csv`,
+  `StudentScheduleDrops.csv`, `CourseInformationEnhanced.csv`). No
+  ClassInformation file is needed yet; blended classes stay off until one is
+  sent. Compared with the district's previous converter: inactive students no
+  longer reach SpacesEDU, and staff who do not teach are no longer sent as
+  administrators.
+- **A setting to keep a district's existing Class IDs** (`class_id_year`, config
+  version 1.14). A district whose previous feed ended Class IDs with the
+  school year's *start* year (2026-27 → `_2026`) keeps them, so switching to
+  DistrictSync does not recreate every class. Off by default; only SD45 uses it.
+
 ## [3.25.0] - 2026-09-23
 
 Staff who do not teach are no longer delivered to SpacesEDU as administrators.
