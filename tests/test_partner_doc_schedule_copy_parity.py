@@ -36,12 +36,16 @@ contacts weren't included" section.
 
 from __future__ import annotations
 
+import dataclasses
+from datetime import datetime
 from pathlib import Path
 
 import pytest
 
+from src.config.app_config import AppConfig
 from src.etl import pipeline
-from src.etl.outcomes import EntityOutcome, OutcomeReason, outcomes_to_record
+from src.etl.errors import EmptyRequiredOutputError, IncompleteInputError, RunErrorCategory
+from src.etl.outcomes import OUTCOMES_RECORD_KEY, EntityOutcome, OutcomeReason, outcomes_to_record
 from src.scheduler import windows
 from src.scheduler.task_com import (
     HR_NO_SUCH_LOGON_SESSION,
@@ -53,9 +57,9 @@ from src.scheduler.task_com import (
     PrincipalKind,
     format_hresult,
 )
-from src.ui_flet.failure_copy import partial_copy
-from src.ui_flet.home_status import MACHINE_SCOPE_LINE_LEAD, machine_scope_line
-from src.ui_flet.run_history import to_run_row
+from src.ui_flet.failure_copy import error_card_copy, partial_copy
+from src.ui_flet.home_status import MACHINE_SCOPE_LINE_LEAD, derive_home_status, machine_scope_line
+from src.ui_flet.run_history import derive_history_banner, to_run_row
 from src.ui_flet.setup_errors import classify_schedule_error
 from src.ui_flet.setup_flow import GMSA_IT_DOC_TITLE, GMSA_PREREQUISITES
 from src.utils.diagnostics import SCOPE_PER_USER, SCOPE_SHARED
@@ -80,9 +84,73 @@ _POLICY_CODE = format_hresult(HR_NO_SUCH_LOGON_SESSION)
 #: entity bulkhead writes — the troubleshooting page tells an admin to search the log for it.
 _NOT_BUILT_ANCHOR = pipeline._ENTITY_NOT_BUILT_LOG_FORMAT.split(" [", 1)[0]
 
+#: Owner decisions 2026-09-28 (plan 0053 S13c). The two grep anchors of a stopped night — the
+#: input gate's and the empty-output stop's — DERIVED from their one log format each; the
+#: troubleshooting page's "The sync stopped" section tells an admin to search for them.
+_INPUT_STOP_ANCHOR = pipeline._REQUIRED_INPUT_UNUSABLE_LOG_FORMAT.split(" —", 1)[0]
+_OUTPUT_STOP_ANCHOR = pipeline._REQUIRED_OUTPUT_EMPTY_LOG_FORMAT.split(" [", 1)[0]
+
 #: The PARTIAL run the "Family contacts weren't included" section describes: Family left out
 #: for a missing column, everything else built.
 _FAMILY_LEFT_OUT = (EntityOutcome.failed("Family", OutcomeReason.MISSING_SOURCE_COLUMN),)
+
+
+#: A record each S13c stop writes: the input gate stopped Classes for its one missing file, and
+#: the empty-output stop recorded Classes EMPTY — the outcome shapes the pipeline records.
+_INPUT_STOP_RECORD = {
+    "status": "failed",
+    "error_category": RunErrorCategory.INCOMPLETE_INPUT.value,
+    "timestamp": "2026-09-28T02:00:00",
+    OUTCOMES_RECORD_KEY: outcomes_to_record(
+        (
+            dataclasses.replace(
+                EntityOutcome.failed("Classes", OutcomeReason.MISSING_SOURCE_FILE), file_label="StudentSchedule.txt"
+            ),
+        )
+    ),
+}
+_EMPTY_STOP_RECORD = {
+    "status": "failed",
+    "error_category": RunErrorCategory.EMPTY_REQUIRED_OUTPUT.value,
+    "timestamp": "2026-09-28T02:00:00",
+    OUTCOMES_RECORD_KEY: outcomes_to_record((EntityOutcome.empty("Classes", OutcomeReason.NO_ROWS_AFTER_TRANSFORM),)),
+}
+_STOP_CONFIG = AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc", schedule_registered=True)
+# Owner rulings 2026-09-30: an attendance-only night without absences (a SUCCESS that sent nothing —
+# timestamped NOW, or Home would call it stale), and blended matching stopped by ClassInformation's
+# missing school (the column NAMED on the record).
+_NOTHING_TO_SEND_RECORD = {
+    "status": "success",
+    "error_category": RunErrorCategory.NONE.value,
+    "sis_type": "sd51attendance",
+    "timestamp": datetime.now().isoformat(timespec="seconds"),
+    OUTCOMES_RECORD_KEY: outcomes_to_record(
+        (EntityOutcome.empty("StudentAttendance", OutcomeReason.SOURCE_FILES_EMPTY),)
+    ),
+}
+_SCHOOL_STOP_RECORD = {
+    "status": "failed",
+    "error_category": RunErrorCategory.SOURCE_SCHEMA.value,
+    "timestamp": "2026-09-30T02:00:00",
+    OUTCOMES_RECORD_KEY: outcomes_to_record(
+        (
+            dataclasses.replace(
+                EntityOutcome.failed("Classes", OutcomeReason.MISSING_SOURCE_COLUMN), labels=("School Number",)
+            ),
+            EntityOutcome.not_run("Enrollments"),
+        )
+    ),
+}
+
+
+def _stopped_home(record: dict):
+    """Home's verdict for ``record`` — through the real derivation."""
+    return derive_home_status([record], _STOP_CONFIG)
+
+
+def _stopped_history(record: dict):
+    """Run History's banner for ``record`` — through the real derivation."""
+    return derive_history_banner([record], _STOP_CONFIG)
 
 
 def _partial_row_label(*, delivered: bool) -> str:
@@ -187,6 +255,46 @@ _PINNED: dict[str, tuple[str, str | None]] = {
     "partial_row_delivered": ("Delivered · 1 file skipped", _partial_row_label(delivered=True)),
     "partial_row_completed": ("Completed · 1 file skipped", _partial_row_label(delivered=False)),
     "entity_not_built_anchor": (_NOT_BUILT_ANCHOR, None),
+    # Plan 0053 S13c — "The sync stopped: a file is missing or came out empty": the words each
+    # surface paints for the two stops the owner added on 2026-09-28, each proved against the
+    # renderer that paints it — Home's and Run History's headlines (which do NOT change with the
+    # category) and the named DETAIL they carry, through the real derivations over a record the
+    # input gate / empty-output stop writes; and the category HEADLINES, which only Convert's
+    # error card shows, through `error_card_copy` over the raised error — plus the two log
+    # anchors the section sends an admin to.
+    "home_failed_headline": ("Last sync failed", _stopped_home(_INPUT_STOP_RECORD).headline),
+    "history_failed_headline": ("Your last sync failed", _stopped_history(_INPUT_STOP_RECORD).headline),
+    "input_stop_detail": (
+        "“StudentSchedule.txt” is missing from the input folder or has no rows",
+        _stopped_home(_INPUT_STOP_RECORD).detail,
+    ),
+    "empty_output_detail": (
+        "This district's sync built no classes from its export",
+        _stopped_history(_EMPTY_STOP_RECORD).detail,
+    ),
+    "input_stop_headline": (
+        "A file your sync needs is missing or empty",
+        error_card_copy(
+            IncompleteInputError("x", missing=("StudentSchedule.txt",), empty=(), named=("StudentSchedule.txt",)),
+            delivery_requested=False,
+        )[0],
+    ),
+    "empty_output_headline": (
+        "No classes came out of your export",
+        error_card_copy(EmptyRequiredOutputError("x", entity="Classes"), delivery_requested=False)[0],
+    ),
+    "nothing_to_send_detail": (
+        "No absences were recorded, so there was nothing to send",
+        derive_home_status(
+            [_NOTHING_TO_SEND_RECORD], AppConfig(sis_type="sd51attendance", setup_completed=True)
+        ).detail,
+    ),
+    "school_number_detail": (
+        "One of your MyEd BC extract files is missing the column “School Number”",
+        _stopped_home(_SCHOOL_STOP_RECORD).detail,
+    ),
+    "required_input_anchor": (_INPUT_STOP_ANCHOR, None),
+    "required_output_anchor": (_OUTPUT_STOP_ANCHOR, None),
 }
 
 #: doc -> the strings that doc is DECLARED to quote. Anything not listed must be ABSENT.
@@ -216,7 +324,11 @@ _DOC_QUOTES: dict[str, frozenset[str]] = {
     # words). Plan 0049 S-4 adds two: the entry names the hand-to-IT page so a district can
     # ask for it, and quotes the policy CODE so an admin can recognise their own situation
     # from the release notes. It still carries no failure sentence.
-    "CHANGELOG.md": frozenset({"machine_scope_lead", "gmsa_doc_title", "policy_code"}),
+    # Plan 0053 S13c's entry quotes the two headlines a stopped night shows, so a district can
+    # recognise it from the release notes (no log anchor, no failure sentence).
+    "CHANGELOG.md": frozenset(
+        {"machine_scope_lead", "gmsa_doc_title", "policy_code", "input_stop_headline", "empty_output_headline"}
+    ),
     "docs/partner/faq.md": frozenset(),
     "docs/partner/help-centre-myedbc-districtsync-guide.md": frozenset(),
 }
@@ -260,6 +372,32 @@ def test_the_derived_rows_are_really_derived() -> None:
     assert _LOG_ANCHOR in windows._FAIL_LOG_FORMAT
     assert _POLICY_CODE == "0x80070520", f"HR_NO_SUCH_LOGON_SESSION now formats as {_POLICY_CODE}"
     assert _NOT_BUILT_ANCHOR == "ENTITY NOT BUILT", f"the bulkhead's log line now opens {_NOT_BUILT_ANCHOR!r}"
+    assert _INPUT_STOP_ANCHOR == "REQUIRED INPUT UNUSABLE", f"the input gate's line now opens {_INPUT_STOP_ANCHOR!r}"
+    assert _OUTPUT_STOP_ANCHOR == "REQUIRED OUTPUT EMPTY", f"the empty-output line now opens {_OUTPUT_STOP_ANCHOR!r}"
+
+
+def test_the_stop_anchors_are_what_the_pipeline_really_logs(caplog) -> None:
+    """The twin for the two derived S13c anchors: the input gate and the empty-output stop log
+    THROUGH their formats, so the troubleshooting page's search terms find real lines."""
+    import logging
+
+    import pandas as pd
+
+    from src.etl.errors import EmptyRequiredOutputError, IncompleteInputError
+    from src.etl.outcomes import OutcomeLedger
+
+    mappings = {"Students": {"source_files": {"p": "Students.txt"}, "field_map": {"Out": "c"}}}
+    gc = {"academic_start_month_day": "09-01", "academic_end_month_day": "06-30"}
+    with caplog.at_level(logging.ERROR, logger="src.etl.pipeline"):
+        with pytest.raises(IncompleteInputError):
+            pipeline.check_required_inputs(
+                mappings, {"Students.txt": pd.DataFrame()}, absent={"Students.txt"}, ledger=OutcomeLedger(["Students"])
+            )
+        with pytest.raises(EmptyRequiredOutputError):
+            pipeline.run_transform({"Students.txt": pd.DataFrame()}, mappings, gc, ledger=OutcomeLedger(["Students"]))
+    messages = [r.getMessage() for r in caplog.records]
+    assert any(m.startswith(_INPUT_STOP_ANCHOR + " —") for m in messages)
+    assert any(m.startswith(f"{_OUTPUT_STOP_ANCHOR} [Students]") for m in messages)
 
 
 def test_the_not_built_anchor_is_what_the_bulkhead_really_logs(caplog, monkeypatch) -> None:

@@ -13,7 +13,7 @@ helpers it needs are now imported from the focused helper modules.)
 """
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from typing import Any, NamedTuple, Optional
 
 import pandas as pd
@@ -24,11 +24,19 @@ from src.etl.column_names import (
     DISTRICT_COURSE_CODE,
     MASTER_TIMETABLE_ID,
     SCHOOL_NUMBER,
+    SCHOOL_NUMBER_LABEL,
     TEACHER_NAME,
+    normalize_column_name,
 )
 from src.etl.errors import GuardKind
 from src.etl.outcomes import OutcomeNote
-from src.etl.transformers.columns import Previously, require_columns, resolve_source_column, source_column_label
+from src.etl.transformers.columns import (
+    Previously,
+    absent_columns,
+    require_columns,
+    resolve_source_column,
+    source_column_label,
+)
 from src.etl.transformers.context import TransformContext
 from src.etl.transformers.course_codes import (
     filter_excluded_course_codes,
@@ -148,6 +156,14 @@ class BlendedDetection(NamedTuple):
         return BlendedDetection({}, {}, {})
 
 
+def _columns_other_than(available: Iterable[object], labels: Iterable[str]) -> list[object]:
+    """``available`` minus any column matching one of ``labels`` (the same trim + lower-case
+    comparison :func:`~src.etl.transformers.columns.absent_columns` makes) — so a check that
+    spans two files judges each label against its own file only."""
+    excluded = {normalize_column_name(label) for label in labels}
+    return [column for column in available if normalize_column_name(str(column)) not in excluded]
+
+
 class BlendedClassDetector:
     """Detects blended classes and returns the blended mappings."""
 
@@ -216,13 +232,39 @@ class BlendedClassDetector:
         # one blended class, re-keying their students to a BLENDED_ Class ID. SD40's
         # export has no term column, so its config DECLARES the three it has (owner ruling
         # 2026-09-25) — the key it effectively used before S10, byte-identical.
+        # The school is named by its STRUCTURAL label ("School Number" — the column the session
+        # key reads, which no mapping key renames), so the record and every surface name it
+        # (owner ruling 2026-09-30 — the stop is typed AND named); `require_columns` compares
+        # trimmed + lower-cased, so the check is unchanged.
+        session_key_labels = [SCHOOL_NUMBER_LABEL, *session_time_labels(source_columns, roles=roles)]
+        if self._fell_back(class_info_df, teacher_id_col) and absent_columns(working.columns, session_key_labels):
+            # The schedule cannot stand in for a ClassInformation without its teacher id or
+            # Master Timetable ID: a MyEd BC schedule carries no full time slot (measured: no
+            # real drop's schedule has all four). The ONE stop names BOTH facts — the
+            # ClassInformation columns that sent detection to the schedule AND the session
+            # columns the schedule lacks — because this code cannot tell a column the export
+            # LOST from one it never had (SD40's has no Master Timetable ID): naming only one
+            # side would point the admin at a file that did not change (the drift matrix's
+            # `error_misnames_column`, 2026-09-30). Each label is checked against ITS file, so
+            # the schedule's own teacher id / Master Timetable ID cannot mask the ClassInformation
+            # side, nor a ClassInformation school or time column the schedule's. A schedule that
+            # carries every component in force still falls back exactly as before.
+            class_info_labels = [
+                context.get_teacher_id_label(),
+                source_column_label(field_map, "Class ID", default=MASTER_TIMETABLE_ID),
+            ]
+            # failure-policy: join_key
+            require_columns(
+                [
+                    *_columns_other_than(class_info_df.columns, session_key_labels),
+                    *_columns_other_than(working.columns, class_info_labels),
+                ],
+                [*class_info_labels, *session_key_labels],
+                entity="Classes",
+                guard=GuardKind.JOIN_KEY,
+            )
         # failure-policy: join_key
-        require_columns(
-            working.columns,
-            [SCHOOL_NUMBER, *session_time_labels(source_columns, roles=roles)],
-            entity="Classes",
-            guard=GuardKind.JOIN_KEY,
-        )
+        require_columns(working.columns, session_key_labels, entity="Classes", guard=GuardKind.JOIN_KEY)
         working = self._add_session_key(working, teacher_id_col, components=components)
         result = self._register_blends(
             working,
@@ -330,6 +372,12 @@ class BlendedClassDetector:
         return schedule_df, course_df
 
     @staticmethod
+    def _fell_back(class_info_df: pd.DataFrame, teacher_id_col: str) -> bool:
+        """Whether :meth:`_resolve_working_frame` used the SCHEDULE — ClassInformation lacks one of
+        the two columns it needs (the same test, stated once for both)."""
+        return any(col not in class_info_df.columns for col in (teacher_id_col, MASTER_TIMETABLE_ID))
+
+    @staticmethod
     def _resolve_working_frame(
         class_info_df: pd.DataFrame, schedule_df: pd.DataFrame, teacher_id_col: str
     ) -> Optional[pd.DataFrame]:
@@ -341,7 +389,7 @@ class BlendedClassDetector:
         one-row-per-section structure (e.g. non-enhanced exports).
         """
         required = [teacher_id_col, MASTER_TIMETABLE_ID]
-        if any(col not in class_info_df.columns for col in required):
+        if BlendedClassDetector._fell_back(class_info_df, teacher_id_col):
             if all(col in schedule_df.columns for col in required):
                 logger.info(
                     "class_info missing required columns; falling back to student schedule for blended detection"

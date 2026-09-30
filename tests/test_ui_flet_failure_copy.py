@@ -11,8 +11,12 @@ What is pinned here, and why each pin has a twin:
   entity key or exception text — swept with a sentinel that would be visible anywhere. The ONE
   name a sentence may carry is an outcome's config-declared label (plan 0053 S7, D4): the sweep
   includes labelled outcomes, and a record whose stored labels are junk renders none of them.
-* **The misdirection this replaced.** Only ``NO_INPUT`` and ``INPUT_UNREADABLE`` mention the input
-  folder — asserted in both directions (the two that must, do).
+* **The misdirection this replaced.** Only ``NO_INPUT``, ``INPUT_UNREADABLE`` and (owner 2026-09-28)
+  ``INCOMPLETE_INPUT`` mention the input folder — asserted in both directions (the three that must, do).
+* **Named failures (owner 2026-09-28).** A stopped night names its missing files, the output that came
+  out empty (by its authored phrase) or a STRUCTURAL column ("School Year") — the SAME words on Home,
+  Run History and Convert's card, read off the record's outcomes or the raised error's typed
+  attributes, never text; each with the twin that keeps the category copy.
 * **One copy source.** Home, Run History and Convert's card render the SAME category detail, and
   the closing tail has ONE meaning everywhere — records are built the way the pipeline builds them
   (``build_run_record``), never in a shape no producer writes.
@@ -36,8 +40,10 @@ import pytest
 from src.config.app_config import AppConfig
 from src.etl.errors import (
     ConfigLoadError,
+    EmptyRequiredOutputError,
     EtlError,
     GuardKind,
+    IncompleteInputError,
     NoUsableInputError,
     RunErrorCategory,
     SourceSchemaError,
@@ -50,6 +56,7 @@ from src.etl.outcomes import (
     OutcomeKind,
     OutcomeReason,
     failed_entities,
+    outcomes_to_record,
 )
 from src.etl.pipeline import DeliveryIntegrityError, OutputWriteError, build_run_record
 from src.ui_flet import failure_copy, home_status, humanize
@@ -76,7 +83,11 @@ SENTINEL = r"SENTINEL_PII C:\secret"
 _SRC = Path(__file__).resolve().parents[1] / "src" / "ui_flet"
 
 _FAILURE_CATEGORIES = [c for c in RunErrorCategory if c is not RunErrorCategory.NONE]
-_INPUT_FOLDER_CATEGORIES = {RunErrorCategory.NO_INPUT, RunErrorCategory.INPUT_UNREADABLE}
+_INPUT_FOLDER_CATEGORIES = {
+    RunErrorCategory.NO_INPUT,
+    RunErrorCategory.INPUT_UNREADABLE,
+    RunErrorCategory.INCOMPLETE_INPUT,
+}
 _VALID_PAIRS = [(kind, reason) for kind, reasons in VALID_REASONS.items() for reason in sorted(reasons)]
 
 
@@ -131,6 +142,7 @@ def _every_copy_string() -> list[str]:
 _GUARDIAN = "Parent Auth / Guardian"
 _EMAIL = "Email Address"
 _CONTACTS = "EmergencyContactInformation.txt"
+_SCHEDULE = "StudentSchedule.txt"
 
 
 def _labelled_outcome(
@@ -211,12 +223,26 @@ class TestLabelAwareSentences:
 
     def test_the_labelled_templates_cover_exactly_the_pairs_that_may_carry_labels(self) -> None:
         may_carry = {(kind, reason) for kind, reason in _VALID_PAIRS if reason is OutcomeReason.MISSING_SOURCE_COLUMN}
+        # owner 2026-09-28: the input gate's stop names its FILE (a file label alone)
+        may_carry.add((OutcomeKind.FAILED, OutcomeReason.MISSING_SOURCE_FILE))
         assert set(failure_copy._LABELLED_TEMPLATES) == may_carry
-        assert len(may_carry) == 2  # non-vacuity: FAILED and EMPTY
+        assert len(may_carry) == 3  # non-vacuity: FAILED and EMPTY missing_source_column, and the file stop
         for kind, reason in _VALID_PAIRS:
             if (kind, reason) not in may_carry:
                 with pytest.raises(ValueError):  # the outcome refuses labels, so no template is owed
                     EntityOutcome("Family", kind, reason, 5 if kind is OutcomeKind.BUILT else 0, (), (_GUARDIAN,))
+
+    def test_a_missing_file_stop_names_its_file_and_never_a_column(self) -> None:
+        stop = EntityOutcome("Classes", OutcomeKind.FAILED, OutcomeReason.MISSING_SOURCE_FILE, 0, (), (), _SCHEDULE)
+        assert outcome_sentence(stop, delivered=False) == (
+            f"Classes were not built: their export file, {_SCHEDULE}, was missing from the input folder or had "
+            "no rows. Re-export that file and the next sync picks it up automatically."
+        )
+        # the twin: without a file label the sentence is the unlabelled one
+        bare = EntityOutcome("Classes", OutcomeKind.FAILED, OutcomeReason.MISSING_SOURCE_FILE, 0)
+        assert _SCHEDULE not in outcome_sentence(bare, delivered=False)
+        with pytest.raises(ValueError, match="never a column"):
+            EntityOutcome("Classes", OutcomeKind.FAILED, OutcomeReason.MISSING_SOURCE_FILE, 0, (), (_GUARDIAN,))
 
     def test_the_unity_plain_report_sentence_names_the_file_and_the_column(self) -> None:
         outcome = _labelled_outcome("Family", OutcomeKind.FAILED, (_GUARDIAN,), file_label=_CONTACTS)
@@ -395,7 +421,7 @@ class TestFailedCategoryCopy:
         assert "{" not in headline + detail and "}" not in headline + detail
 
     @pytest.mark.parametrize("category", _FAILURE_CATEGORIES, ids=lambda c: c.value)
-    def test_only_the_two_input_categories_mention_the_input_folder(self, category: RunErrorCategory) -> None:
+    def test_only_the_input_categories_mention_the_input_folder(self, category: RunErrorCategory) -> None:
         for requested in (True, False):
             _headline, detail = failed_copy(category, delivery_requested=requested)
             assert ("input folder" in detail.lower()) is (category in _INPUT_FOLDER_CATEGORIES), category
@@ -415,16 +441,21 @@ class TestFailedCategoryCopy:
 class TestFailedCopyFor:
     @pytest.mark.parametrize("value", [None, "", "a_future_category", "none", 7, ["config"]])
     def test_anything_unreadable_or_impossible_is_the_generic_copy(self, value: object) -> None:
-        assert failed_copy_for(value, delivery_requested=False) == failed_copy(
+        assert failed_copy_for(value, delivery_requested=False, outcomes=()) == failed_copy(
             FALLBACK_CATEGORY, delivery_requested=False
         )
 
     @pytest.mark.parametrize("category", _FAILURE_CATEGORIES, ids=lambda c: c.value)
     def test_a_stored_value_reads_its_own_category(self, category: RunErrorCategory) -> None:
         # The positive twin: the fallback above is not the ONLY answer.
-        assert failed_copy_for(category.value, delivery_requested=True) == failed_copy(
+        assert failed_copy_for(category.value, delivery_requested=True, outcomes=()) == failed_copy(
             category, delivery_requested=True
         )
+
+    def test_the_outcomes_are_required_keyword_only(self) -> None:
+        """No surface may forget to hand the record's outcomes over (owner 2026-09-28): a default of
+        ``()`` would silently turn every named stop back into the generic copy."""
+        assert _is_required_keyword_only(failed_copy_for, "outcomes")
 
 
 class TestErrorCardCopy:
@@ -581,6 +612,113 @@ class TestTheThreeSurfacesWordAFailureIdentically:
         # WERE sent. The doctored shape the old parity fixture used would have claimed otherwise.
         home, banner = _surfaces(_pipeline_failed_record(RunErrorCategory.UNKNOWN, attempted=True, ok=True))
         assert NOTHING_SENT_TAIL not in home and NOTHING_SENT_TAIL not in banner
+
+
+def _named_failed_record(category: RunErrorCategory, *outcomes: EntityOutcome) -> dict:
+    """A failed record with outcomes, built — and read back — the way the pipeline's sink does."""
+    record = _pipeline_failed_record(category)
+    record["entity_outcomes"] = outcomes_to_record(outcomes)
+    return record
+
+
+def _file_stop(entity: str, file_label: str = "") -> EntityOutcome:
+    return EntityOutcome(entity, OutcomeKind.FAILED, OutcomeReason.MISSING_SOURCE_FILE, 0, (), (), file_label)
+
+
+class TestAStoppedNightNamesWhatStoppedIt:
+    """Owner 2026-09-28: the input gate names its files, the empty-output stop its output, and the
+    §5 #41 stop "School Year" — identically on Home, Run History and Convert's card."""
+
+    def test_the_missing_file_is_named_on_every_surface(self) -> None:
+        record = _named_failed_record(
+            RunErrorCategory.INCOMPLETE_INPUT, _file_stop("Classes", _SCHEDULE), _file_stop("Enrollments", _SCHEDULE)
+        )
+        home, banner = _surfaces(record)
+        exc = IncompleteInputError("x", missing=(_SCHEDULE,), empty=(), named=(_SCHEDULE,))
+        headline, card = error_card_copy(exc, delivery_requested=False)
+        named = f"“{_SCHEDULE}” is missing from the input folder or has no rows"
+        for text in (home, banner, card):
+            assert named in text
+        assert headline == "A file your sync needs is missing or empty"
+        assert home.endswith(card) and banner.endswith(card), "the same words on all three surfaces"
+
+    def test_twin_an_unnamed_stop_keeps_the_category_copy(self) -> None:
+        """One stopped entity that could not name its file (two problem files) names NOTHING: a
+        list that silently omitted a file would tell the admin the rest of the folder is fine."""
+        record = _named_failed_record(
+            RunErrorCategory.INCOMPLETE_INPUT, _file_stop("Classes"), _file_stop("Enrollments", _SCHEDULE)
+        )
+        home, _banner = _surfaces(record)
+        category_detail = FAILED_CATEGORY_COPY[RunErrorCategory.INCOMPLETE_INPUT][1]
+        assert category_detail in home and _SCHEDULE not in home
+
+    def test_two_named_files_are_joined_and_pluralised(self) -> None:
+        record = _named_failed_record(
+            RunErrorCategory.INCOMPLETE_INPUT, _file_stop("Staff", "Staff.txt"), _file_stop("Classes", _SCHEDULE)
+        )
+        home, _banner = _surfaces(record)
+        assert f"“Staff.txt” and “{_SCHEDULE}” are missing from the input folder or have no rows" in home
+
+    def test_the_output_that_came_out_empty_is_named_by_its_phrase(self) -> None:
+        empty = EntityOutcome("Enrollments", OutcomeKind.EMPTY, OutcomeReason.NO_ROWS_AFTER_TRANSFORM, 0)
+        record = _named_failed_record(
+            RunErrorCategory.EMPTY_REQUIRED_OUTPUT, empty, EntityOutcome.not_run("CourseInfo")
+        )
+        home, banner = _surfaces(record)
+        headline, card = error_card_copy(EmptyRequiredOutputError("x", entity="Enrollments"), delivery_requested=False)
+        assert headline == "No enrollments came out of your export"
+        for text in (home, banner, card):
+            assert "This district's sync built no enrollments from its export" in text
+            assert "Enrollments" not in text, "the phrase, never the entity key"
+        assert home.endswith(card) and banner.endswith(card)
+
+    def test_twin_an_empty_family_or_an_unknown_entity_is_never_named_as_the_stop(self) -> None:
+        """Family may be empty without stopping anything, and an entity the vocabulary does not know
+        is never echoed: both leave the category copy."""
+        category_detail = FAILED_CATEGORY_COPY[RunErrorCategory.EMPTY_REQUIRED_OUTPUT][1]
+        family = EntityOutcome("Family", OutcomeKind.EMPTY, OutcomeReason.NO_ROWS_AFTER_TRANSFORM, 0)
+        unknown = EntityOutcome(SENTINEL, OutcomeKind.EMPTY, OutcomeReason.NO_ROWS_AFTER_TRANSFORM, 0)
+        for outcome in (family, unknown):
+            home, _banner = _surfaces(_named_failed_record(RunErrorCategory.EMPTY_REQUIRED_OUTPUT, outcome))
+            assert category_detail in home and "SENTINEL" not in home
+        card = error_card_copy(EmptyRequiredOutputError("x", entity=SENTINEL), delivery_requested=False)
+        assert card == failed_copy(RunErrorCategory.EMPTY_REQUIRED_OUTPUT, delivery_requested=False)
+
+    def test_school_year_is_named_on_home_run_history_and_convert(self) -> None:
+        stop = EntityOutcome(
+            "Classes", OutcomeKind.FAILED, OutcomeReason.MISSING_SOURCE_COLUMN, 0, (), ("School Year",)
+        )
+        home, banner = _surfaces(_named_failed_record(RunErrorCategory.SOURCE_SCHEMA, stop))
+        exc = SourceSchemaError("x", entity="Classes", columns=("School Year",), guard=GuardKind.JOIN_KEY)
+        headline, card = error_card_copy(exc, delivery_requested=False)
+        assert headline == "An export file is missing its “School Year” column"
+        for text in (home, banner, card):
+            assert "is missing the column “School Year”, which this district's sync needs" in text
+        assert home.endswith(card) and banner.endswith(card)
+
+    def test_twin_a_config_declared_column_keeps_the_category_copy(self) -> None:
+        """Only a STRUCTURAL label is named on a stopped night (the owner named that one); a column
+        the config declares — here the guardian flag on Staff — reads the category copy, unchanged."""
+        stop = EntityOutcome("Staff", OutcomeKind.FAILED, OutcomeReason.MISSING_SOURCE_COLUMN, 0, (), (_GUARDIAN,))
+        home, _banner = _surfaces(_named_failed_record(RunErrorCategory.SOURCE_SCHEMA, stop))
+        assert FAILED_CATEGORY_COPY[RunErrorCategory.SOURCE_SCHEMA][1] in home and _GUARDIAN not in home
+        exc = SourceSchemaError("x", entity="Staff", columns=("School Year",), guard=GuardKind.JOIN_KEY)
+        card = error_card_copy(exc, delivery_requested=False)
+        assert card == failed_copy(RunErrorCategory.SOURCE_SCHEMA, delivery_requested=False), (
+            "School Year is structural for Classes only"
+        )
+
+    def test_a_damaged_record_names_nothing_it_should_not(self) -> None:
+        """The TOTAL record reader drops a path-shaped file label, so a hand-edited record cannot put
+        a folder layout into the copy."""
+        record = _pipeline_failed_record(RunErrorCategory.INCOMPLETE_INPUT)
+        record["entity_outcomes"] = {
+            "Classes": {"kind": "failed", "reason": "missing_source_file", "rows": 0, "file_label": SENTINEL}
+        }
+        home, banner = _surfaces(record)
+        for text in (home, banner):
+            assert "SENTINEL" not in text
+            assert FAILED_CATEGORY_COPY[RunErrorCategory.INCOMPLETE_INPUT][1] in text
 
 
 def _partial_record(family_entry: dict) -> dict:
@@ -744,6 +882,30 @@ class TestProductDocQuotesThePartialStrings:
         doc = _PRODUCT_DOC.read_text(encoding="utf-8").replace("1 file skipped", "1 file left out")
         assert not all(f'"{quote}"' in doc for quote in _product_doc_quotes())
 
+    @staticmethod
+    def _stop_headlines() -> list[str]:
+        """The three S13c stop headlines PRODUCT.md quotes, COMPUTED from source (owner 2026-09-28)."""
+        return [
+            failed_copy(RunErrorCategory.INCOMPLETE_INPUT, delivery_requested=False, names=("x.txt",))[0],
+            failed_copy(RunErrorCategory.EMPTY_REQUIRED_OUTPUT, delivery_requested=False, names=("Classes",))[0],
+            failed_copy(RunErrorCategory.SOURCE_SCHEMA, delivery_requested=False, names=("School Year",))[0],
+        ]
+
+    def test_the_stop_headlines_are_computed_and_present_verbatim(self) -> None:
+        quotes = self._stop_headlines()
+        assert quotes == [
+            "A file your sync needs is missing or empty",
+            "No classes came out of your export",
+            "An export file is missing its “School Year” column",
+        ]
+        doc = _PRODUCT_DOC.read_text(encoding="utf-8")
+        for quote in quotes:
+            assert f'"{quote}"' in doc, quote
+
+    def test_doctored_a_reworded_stop_headline_is_red(self) -> None:
+        doc = _PRODUCT_DOC.read_text(encoding="utf-8").replace("came out of your export", "came from your export")
+        assert not all(f'"{quote}"' in doc for quote in self._stop_headlines())
+
 
 # --------------------------------------------------------------------------- #
 # The import cycle the entity-map move exists to avoid                         #
@@ -792,3 +954,27 @@ class TestNoImportCycle:
     def test_doctored_a_redefined_map_is_red(self) -> None:
         doctored = self._source("home_status.py") + "\nSIZE_NOUNS: dict[str, tuple[str, str]] = {}\n"
         assert _defined_label_maps(doctored) == {"SIZE_NOUNS"}
+
+
+# --------------------------------------------------------------------------- #
+# A night with nothing to send (owner ruling 2026-09-30)                       #
+# --------------------------------------------------------------------------- #
+class TestNothingToSendCopy:
+    def test_every_may_be_empty_entity_has_its_phrase_and_nothing_else_does(self) -> None:
+        """TOTAL over ``MAY_BE_EMPTY`` — a new member cannot reach a surface without its words."""
+        from src.etl.outcomes import MAY_BE_EMPTY
+
+        assert set(failure_copy.NOTHING_TO_SEND_PHRASES) == set(MAY_BE_EMPTY)
+
+    def test_the_sentence_names_what_there_was_none_of_and_that_nothing_was_sent(self) -> None:
+        sentence = failure_copy.nothing_to_send_detail(
+            (EntityOutcome.empty("StudentAttendance", OutcomeReason.SOURCE_FILES_EMPTY),)
+        )
+        assert sentence == "No absences were recorded, so there was nothing to send — nothing was written or delivered."
+
+    def test_twin_an_unphrased_entity_is_never_echoed(self) -> None:
+        sentence = failure_copy.nothing_to_send_detail(
+            (EntityOutcome.empty("Mystery", OutcomeReason.SOURCE_FILES_EMPTY),)
+        )
+        assert "Mystery" not in sentence
+        assert sentence.startswith("There were no records, so there was nothing to send")

@@ -334,12 +334,14 @@ class TestSchoolYearSourceColumnIsRequired:
             run_pipeline(E2E_SIS_TYPE, str(input_dir), str(output_dir))
 
         err = raised.value
-        assert (err.entity, err.columns, err.guard) == ("Classes", ("school year",), GuardKind.JOIN_KEY)
+        # "School Year" — the column_names STRUCTURAL label (owner 2026-09-28), so Home can name it
+        assert (err.entity, err.columns, err.guard) == ("Classes", ("School Year",), GuardKind.JOIN_KEY)
         assert "the source has" in str(err)  # the require_columns shape: a column COUNT, never a header
         record = read_run_records()[0]
         assert (record["status"], record["error_category"]) == ("failed", "source_schema")
         classes = record["entity_outcomes"]["Classes"]
         assert (classes["kind"], classes["reason"]) == ("failed", "missing_source_column")
+        assert classes["labels"] == ["School Year"], "the record names the column for Home and Run History"
         assert _tree(output_dir) == before, "the last good output is untouched"
 
     def test_the_twin_the_column_present_decides_the_year_from_the_export(self, myedbc_dirs: tuple[Path, Path]) -> None:

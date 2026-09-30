@@ -206,7 +206,9 @@ class StudentCoursesTransformer(BaseTransformer):
         depends on the column: an absent student-ID or course-code column skips every row of
         that source (the entity can end EMPTY), an absent course-code column in Course
         Information leaves every transcript row without a title or credit value, and any other
-        absent column reads blank. Those DIRECTIONS stay (StudentCourses is ISOLATABLE). What
+        absent column reads blank. Those DIRECTIONS stay, but StudentCourses is CRITICAL since
+        owner decision 2026-09-28, so a source that leaves it EMPTY now stops the night
+        (``outcomes.stops_when_empty``) rather than shipping a header-only file. What
         changes is that it is never silent: ONE WARNING naming each source's absent columns in
         resolved config spelling (never an observed header) and
         ``OutcomeNote.TRANSCRIPT_SOURCE_COLUMN_ABSENT`` counting the rows of the sources

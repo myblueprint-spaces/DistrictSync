@@ -16,11 +16,12 @@ out, never a partial set. ``Enrollments.csv`` is a DEACTIVATING file (a student 
 from it may be removed from the class — ``docs/partner/faq.md``, "What happens to
 enrollments no longer in the file?"), so Enrollments is CRITICAL and such a fault fails
 the run with the last good output untouched. **The one owner-approved exception** (ruling
-2026-09-25, §5 #15): ClassInformation's CO-TEACHER columns are optional — missing, those
-co-teacher rows are left out with ONE WARNING and ``OutcomeNote.COTEACHER_SOURCE_UNUSABLE``
-on the outcome (a standing warning on Home), never silently and never as a failure. An
-ABSENT or EMPTY optional source (no ClassInformation, no schedule) is not a missing column:
-that path simply contributes nothing, as before.
+2026-09-25, §5 #15, extended 2026-09-28 to its school number): ClassInformation's CO-TEACHER
+columns are optional — missing, those co-teacher rows are left out with ONE WARNING and
+``OutcomeNote.COTEACHER_SOURCE_UNUSABLE`` on the outcome (a standing warning on Home), never
+silently and never as a failure. An EMPTY source is not a missing column: that path simply
+contributes nothing. (Since 2026-09-28 a MISSING or row-less file an enabled entity lists
+stops the night before any transform runs — ``pipeline.check_required_inputs``.)
 """
 
 import logging
@@ -406,18 +407,20 @@ class EnrollmentTransformer(BaseTransformer):
         defaults ``primary teacher`` / ``section letter`` when unset.
 
         **The co-teacher columns are OPTIONAL, never silent** (§5 #15 — owner ruling
-        2026-09-25, reversing Gate A answer 2 for these columns only). With
-        ClassInformation present and non-empty, a missing primary-teacher flag or teacher
-        id leaves every co-teacher row out; with primary-teacher rows found, a missing
-        section column leaves Path 1's rows out (when homeroom classes exist) and a
-        missing Master Timetable ID Path 2's (when blended classes exist) — the other
-        path still runs. Each case logs ONE aggregated WARNING (config-spelled column
-        names + a count) and records ``OutcomeNote.COTEACHER_SOURCE_UNUSABLE`` on the
-        Enrollments outcome, which Home and Run History show as a standing WARNING every
-        night it persists (``failure_copy.NOTE_TIER``). Every other linking column stays
-        fail-CLOSED — here, ClassInformation's school number once co-teacher rows are
-        being built. An ABSENT or EMPTY ClassInformation contributes nothing and records
-        nothing: there is no co-teacher source to have been unusable.
+        2026-09-25, reversing Gate A answer 2 for these columns only; extended on
+        2026-09-28 to ClassInformation's ``School Number``, the one column that ruling did
+        not name). With ClassInformation present and non-empty, a missing primary-teacher
+        flag, teacher id or school number leaves every co-teacher row out (every row is
+        built from all three); with primary-teacher rows found, a missing section column
+        leaves Path 1's rows out (when homeroom classes exist) and a missing Master
+        Timetable ID Path 2's (when blended classes exist) — the other path still runs.
+        Each case logs ONE aggregated WARNING (column names + a count) and records
+        ``OutcomeNote.COTEACHER_SOURCE_UNUSABLE`` on the Enrollments outcome, which Home and
+        Run History show as a standing WARNING every night it persists
+        (``failure_copy.NOTE_TIER``) — never a run failure. An EMPTY ClassInformation
+        contributes nothing and records nothing: there is no co-teacher source to have been
+        unusable (and since 2026-09-28 a missing or row-less one stops the night before
+        this runs — ``pipeline.check_required_inputs``).
         """
         class_info_df = artifacts.class_info_df
         if class_info_df.empty:
@@ -435,23 +438,21 @@ class EnrollmentTransformer(BaseTransformer):
         )
         section_label = source_column_label(source_columns, CLASS_INFO_SECTION_LETTER_ROLE, default=SECTION_LETTER)
 
-        # The two columns EVERY co-teacher row is built from: without either, no row can be
-        # (§5 #15, owner ruling 2026-09-25 — left out with a standing warning, never a failure).
+        # The three columns EVERY co-teacher row is built from: without any one, no row can be
+        # (§5 #15, owner rulings 2026-09-25 and — for the school — 2026-09-28: left out with a
+        # standing warning, never a failure).
         # failure-policy: optional_field
         entry_missing = absent_columns(
             class_info_df.columns,
             [
                 source_column_label(source_columns, CLASS_INFO_PRIMARY_TEACHER_ROLE, default=PRIMARY_TEACHER),
                 staff_id_label,
+                SCHOOL_NUMBER,
             ],
         )
         if entry_missing:
             self._note_coteachers_left_out(context, entry_missing, unused_rows=len(class_info_df))
             return None
-
-        # Every co-teacher row is about to read the school: that one stays a linking column.
-        # failure-policy: join_key
-        require_columns(class_info_df.columns, [SCHOOL_NUMBER], entity="Enrollments", guard=GuardKind.JOIN_KEY)
 
         primary_rows: pd.DataFrame = class_info_df[
             normalize_id_series(class_info_df[primary_col]).str.upper() == "Y"

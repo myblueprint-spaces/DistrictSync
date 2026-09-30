@@ -549,8 +549,9 @@ class TestCoteacherSites:
     The co-teacher columns of a present, non-empty ClassInformation are OPTIONAL: missing, the
     co-teacher rows they would link are left out, ONE aggregated WARNING names the columns in
     config spelling, and ``COTEACHER_SOURCE_UNUSABLE`` is recorded for the Enrollments outcome
-    (a standing WARNING on Home — ``tests/test_coteacher_standing_warning.py``). Every other
-    linking column stays fail-CLOSED: ClassInformation's school, once co-teacher rows are built.
+    (a standing WARNING on Home — ``tests/test_coteacher_standing_warning.py``). Since owner
+    decision 2026-09-28 that includes ClassInformation's school number — the one column the
+    2026-09-25 ruling did not name — so no co-teacher column ever fails the run.
     """
 
     NOTE = ((OutcomeNote.COTEACHER_SOURCE_UNUSABLE, 2),)
@@ -590,21 +591,27 @@ class TestCoteacherSites:
         (line,) = self._left_out_lines(caplog)
         assert repr([label]) in line
 
-    def test_the_school_column_stays_fail_closed(self) -> None:
-        """The ruling covers the co-teacher columns only; the school every co-teacher row reads
-        is still a linking column (D9 keeps it strict)."""
-        ctx = _coteacher_context(class_info=_class_info(**{"school number": True}), homerooms=False, blended=False)
-        with pytest.raises(SourceSchemaError) as exc:
-            _coteacher(ctx)
-        _assert_schema_error(exc, entity="Enrollments", guard=GuardKind.JOIN_KEY, columns=("school number",))
-        assert ctx.outcome_notes_for("Enrollments") == ()
+    def test_a_missing_school_column_leaves_every_coteacher_out_with_one_note(self, caplog) -> None:
+        """Owner decision 2026-09-28: ClassInformation's school number is optional like the other
+        co-teacher columns — every co-teacher row is built from it, so without it they are all
+        left out, with the one WARNING and the standing note, and the run is never failed (it
+        used to raise a ``join_key`` ``SourceSchemaError``). Twin: both paths enrol above."""
+        ctx = _coteacher_context(class_info=_class_info(**{"school number": True}), homerooms=True, blended=True)
+        with caplog.at_level(logging.WARNING):
+            assert _coteacher(ctx) is None
+        assert ctx.outcome_notes_for("Enrollments") == self.NOTE
+        (line,) = self._left_out_lines(caplog)
+        assert repr(["school number"]) in line
 
-    def test_the_school_is_never_read_when_no_coteacher_row_can_be_built(self) -> None:
-        """An entry column missing means no co-teacher row is built, so the school is never read."""
+    def test_a_missing_school_and_another_entry_column_are_one_note_and_one_line(self, caplog) -> None:
+        """Two entry columns missing: still ONE warning naming both, ONE note."""
         class_info = _class_info(**{"school number": True, "primary teacher": True})
         ctx = _coteacher_context(class_info=class_info, homerooms=True, blended=True)
-        assert _coteacher(ctx) is None
+        with caplog.at_level(logging.WARNING):
+            assert _coteacher(ctx) is None
         assert ctx.outcome_notes_for("Enrollments") == self.NOTE
+        (line,) = self._left_out_lines(caplog)
+        assert repr(["primary teacher", "school number"]) in line
 
     def test_twin_an_absent_class_info_contributes_nothing_and_notes_nothing(self) -> None:
         ctx = _coteacher_context(class_info=pd.DataFrame(), homerooms=True, blended=True)
@@ -834,7 +841,9 @@ class TestBlendedSessionColumns:
         raw = _drop(raw_data_with_blended, "ClassInformationEnh.txt", "school number")
         with pytest.raises(SourceSchemaError) as exc:
             self._run(published_transformer, classes_mapping, raw, global_config)
-        _assert_schema_error(exc, entity="Classes", guard=GuardKind.JOIN_KEY, columns=("school number",))
+        # Named by its STRUCTURAL label — the spelling a stopped night's copy may print (owner
+        # ruling 2026-09-30: the stop is typed AND named).
+        _assert_schema_error(exc, entity="Classes", guard=GuardKind.JOIN_KEY, columns=("School Number",))
 
     @pytest.mark.parametrize("column", ["term", "semester", "day", "period"])
     def test_a_DEFAULT_time_column_absent_fails_closed_too(
@@ -923,8 +932,15 @@ class TestDeclaredSessionComponents:
     @pytest.mark.integration
     def test_sd40_end_to_end_builds_declared_and_fails_undeclared(self, tmp_path) -> None:
         """The bundled ``sd40myedbc`` on its term-less contract fixture BUILDS; the same drop through
-        an overlay that puts ``term`` back in force (all four roles) fails on Classes naming it —
-        the guard is strict on the effective set, never narrowed to "configured only"."""
+        an overlay that puts ``term`` back in force (all four roles) fails on Classes — the guard is
+        strict on the effective set, never narrowed to "configured only".
+
+        SD40's ClassInformation has no Master Timetable ID, so detection runs on its schedule; with
+        ``term`` in force that schedule cannot key a session either, and since 2026-09-30 the ONE
+        stop names BOTH facts — the Master Timetable ID the ClassInformation lacks (why the
+        schedule stood in) AND the ``term`` the schedule lacks — because detection cannot tell a
+        column an export lost from one it never had: naming only either side points the admin at a
+        file that did not change (DECISIONS 2026-09-30)."""
         from src.utils.paths import user_mappings_dir
         from tests.test_contract import _create_sd40_inputs
 
@@ -943,7 +959,7 @@ class TestDeclaredSessionComponents:
         )
         with pytest.raises(SourceSchemaError) as exc:
             run_pipeline("sd40allfourmyedbc", str(inp), str(tmp_path / "out_all_four"), dry_run=True)
-        _assert_schema_error(exc, entity="Classes", guard=GuardKind.JOIN_KEY, columns=("term",))
+        _assert_schema_error(exc, entity="Classes", guard=GuardKind.JOIN_KEY, columns=("Master Timetable ID", "term"))
 
     @pytest.mark.parametrize(
         ("declared", "expected"),
@@ -1153,3 +1169,90 @@ def test_a_critical_guard_fails_the_run_with_source_schema_and_the_entity_named(
         OutcomeReason.MISSING_SOURCE_COLUMN.value,
     )
     assert outcomes["Enrollments"]["kind"] == "not_run"
+
+
+class TestClassInformationSchoolAtBlendedDetection:
+    """ClassInformation's ``School Number`` — owner rulings 2026-09-28 and 2026-09-30.
+
+    It is a LINKING column for blended-class matching (§5 #39, strict on the effective set,
+    school included — an absent school let a blend cross schools), and optional only on the
+    Enrollments CO-TEACHER path (#15). So: a config whose blended detection runs on
+    ClassInformation (not opted out) and whose ClassInformation lacks the school STOPS the night,
+    typed and NAMED ("School Number", a structural label every surface may print); a config with
+    blended detection off (``sd51myedbc``'s opt-out) leaves the co-teacher rows out and turns Home
+    amber. Pinned end to end on the SD74 snapshot input (the real-shaped drop the golden reads)
+    and on the SD51 contract fixture.
+    """
+
+    SNAPSHOT_INPUT = Path(__file__).parent / "snapshots" / "input"
+
+    def _copy_input(self, tmp_path: Path) -> Path:
+        import shutil
+
+        input_dir = tmp_path / "input"
+        shutil.copytree(self.SNAPSHOT_INPUT, input_dir)
+        return input_dir
+
+    def test_twin_the_intact_snapshot_input_builds_classes(self, tmp_path: Path) -> None:
+        output_dir = tmp_path / "output"
+        output_dir.mkdir()
+        result = run_pipeline("sd74myedbc", str(self._copy_input(tmp_path)), str(output_dir))
+        assert {o.entity: o.kind for o in result.entity_outcomes}["Classes"] is OutcomeKind.BUILT
+
+    def test_without_the_school_blended_matching_stops_the_night_and_names_it(self, tmp_path: Path) -> None:
+        from src.config.app_config import AppConfig
+        from src.ui_flet.home_status import derive_home_status, failed_detail
+
+        input_dir = self._copy_input(tmp_path)
+        output_dir = tmp_path / "output"
+        output_dir.mkdir()
+        class_info = input_dir / "ClassInfoEnhanced.txt"
+        pd.read_csv(class_info, dtype=str).drop(columns="School Number").to_csv(class_info, index=False)
+
+        with pytest.raises(SourceSchemaError) as exc:
+            run_pipeline("sd74myedbc", str(input_dir), str(output_dir))
+
+        _assert_schema_error(exc, entity="Classes", guard=GuardKind.JOIN_KEY, columns=("School Number",))
+        assert list(output_dir.glob("*.csv")) == [], "nothing is written"
+        records = read_run_records() or []
+        record = records[0]
+        assert (record["status"], record["error_category"]) == ("failed", "source_schema")
+        outcomes = record["entity_outcomes"]
+        assert (outcomes["Classes"]["kind"], outcomes["Classes"]["reason"]) == (
+            "failed",
+            OutcomeReason.MISSING_SOURCE_COLUMN.value,
+        )
+        assert outcomes["Classes"]["labels"] == ["School Number"], "the record names the column"
+        assert outcomes["Enrollments"]["kind"] == "not_run", "the co-teacher path is never reached"
+        # Named on Home / Run History (the shared failed detail) — never "a column".
+        assert "School Number" in failed_detail(record)
+        home = derive_home_status(records, AppConfig(sis_type="sd74myedbc", setup_completed=True))
+        assert "School Number" in home.detail
+
+    def test_twin_with_blended_detection_off_the_co_teacher_rows_are_left_out_and_home_is_amber(
+        self, tmp_path: Path
+    ) -> None:
+        """``sd51myedbc`` opts out of blended detection, so nothing links blends by the school:
+        its absence costs the co-teacher rows alone (#15) — a completed night, amber."""
+        from src.config.app_config import AppConfig
+        from src.ui_flet.home_status import derive_home_status
+        from src.ui_flet.verdict import Verdict
+        from tests.test_contract import _create_sd51_inputs
+
+        input_dir = tmp_path / "input"
+        output_dir = tmp_path / "output"
+        input_dir.mkdir()
+        output_dir.mkdir()
+        _create_sd51_inputs(input_dir)
+        class_info = input_dir / "ClassInformationEnh.txt"
+        pd.read_csv(class_info, dtype=str).drop(columns="School Number").to_csv(class_info, index=False)
+
+        result = run_pipeline("sd51myedbc", str(input_dir), str(output_dir))
+
+        enrollments = {o.entity: o for o in result.entity_outcomes}["Enrollments"]
+        assert enrollments.kind is OutcomeKind.BUILT
+        assert dict(enrollments.notes) == {OutcomeNote.COTEACHER_SOURCE_UNUSABLE: 3}
+        records = read_run_records() or []
+        assert records[0]["status"] == "success"
+        home = derive_home_status(records, AppConfig(sis_type="sd51myedbc", setup_completed=True))
+        assert home.verdict is Verdict.WARNING

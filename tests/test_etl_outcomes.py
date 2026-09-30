@@ -22,6 +22,7 @@ from __future__ import annotations
 import ast
 import dataclasses
 import inspect
+import logging
 import sys
 from pathlib import Path
 
@@ -29,7 +30,7 @@ import pandas as pd
 import pytest
 
 from src.etl import outcomes, pipeline
-from src.etl.errors import GuardKind, SourceSchemaError
+from src.etl.errors import EmptyRequiredOutputError, GuardKind, RunErrorCategory, SourceSchemaError
 from src.etl.outcomes import (
     DEPENDS_ON,
     ENTITY_CRITICALITY,
@@ -38,11 +39,13 @@ from src.etl.outcomes import (
     VALID_REASONS,
     EntityCriticality,
     EntityOutcome,
+    LabelVocabulary,
     OutcomeKind,
     OutcomeLedger,
     OutcomeReason,
     apply_observation,
     criticality_of,
+    derive_file_label,
     outcomes_from_record,
     outcomes_to_record,
     reason_for,
@@ -59,8 +62,14 @@ from src.etl.transformers.registry import TRANSFORMER_REGISTRY
 _REPO = Path(__file__).resolve().parents[1]
 _TRANSFORMERS_DIR = _REPO / "src" / "etl" / "transformers"
 
-_D1_ISOLATABLE = {"Family", "StudentAttendance", "CourseInfo", "StudentCourses"}
-_D1_CRITICAL = {"Students", "Staff", "Classes", "Enrollments"}
+#: D1 as REVISED by the owner on 2026-09-28: "we don't have optional files; maybe family info can
+#: be optional" — Family is the ONE isolatable entity (it was four under D1 (c), 2026-09-23).
+_D1_ISOLATABLE = {"Family"}
+_D1_CRITICAL = {"Students", "Staff", "Classes", "Enrollments", "CourseInfo", "StudentCourses", "StudentAttendance"}
+#: The four feeds D1 (c) made isolatable on 2026-09-23. Promotion rule (b) — publishes no
+#: `TransformContext` state — still holds for every one of them (pinned below), so a future
+#: re-promotion would need only the evidence and the decision, never a code change there.
+_ONCE_ISOLATABLE = {"Family", "StudentAttendance", "CourseInfo", "StudentCourses"}
 
 
 # --------------------------------------------------------------------------- #
@@ -96,6 +105,7 @@ class TestEntityOutcomeRefusesIllegalStates:
             (OutcomeKind.EMPTY, OutcomeReason.MISSING_SOURCE_COLUMN, 0),  # plan 0053 S6's refinement
             (OutcomeKind.FAILED, OutcomeReason.MISSING_SOURCE_COLUMN, 0),
             (OutcomeKind.FAILED, OutcomeReason.TRANSFORM_ERROR, 0),
+            (OutcomeKind.FAILED, OutcomeReason.MISSING_SOURCE_FILE, 0),  # the input gate (owner 2026-09-28)
             (OutcomeKind.NOT_RUN, OutcomeReason.RUN_ABORTED, 0),
         ],
     )
@@ -107,7 +117,7 @@ class TestEntityOutcomeRefusesIllegalStates:
         legal = {(k, r) for k, reasons in VALID_REASONS.items() for r in reasons}
         assert set(VALID_REASONS) == set(OutcomeKind), "every kind has its reason set"
         assert {r for _, r in legal} == set(OutcomeReason), "every reason is valid for some kind"
-        assert len(legal) == 8  # S6 added EMPTY/MISSING_SOURCE_COLUMN
+        assert len(legal) == 9  # S6 added EMPTY/MISSING_SOURCE_COLUMN; S13c FAILED/MISSING_SOURCE_FILE
 
     @pytest.mark.parametrize(
         "bad",
@@ -432,45 +442,112 @@ def _run(raw_data: dict, mappings: dict, global_config: dict = _GC):
     return run_transform(raw_data, mappings, global_config, ledger=ledger), ledger
 
 
+#: Every EMPTY branch of `run_transform`: (the entity's mapping block, the raw data it sees, whether
+#: its transform is stubbed to keep no row, the reason recorded).
+_EMPTY_BRANCHES = {
+    "no_source_files": ({"source_files": {}, "field_map": {"Out": "in_col"}}, {}, False, "no_source_files_declared"),
+    "no_file_list": ({"source_files": [], "field_map": {}}, {}, False, "no_source_files_declared"),
+    "every_file_empty": (_entity("missing.txt", {"Out": "in_col"}), {}, False, "source_files_empty"),
+    # Input, but the transform keeps no row (as Family does when every contact lacks an email).
+    "no_rows": (_entity("norows.txt", {"Out": "in_col"}), {"norows.txt": ["x"]}, True, "no_rows_after_transform"),
+}
+
+
+def _stub_no_rows(monkeypatch, target: str) -> None:
+    original = DataTransformer.transform
+
+    def _stub(self, df, mapping, entity, raw_data, global_config):
+        if entity == target:
+            return pd.DataFrame()
+        return original(self, df, mapping, entity, raw_data, global_config)
+
+    monkeypatch.setattr(DataTransformer, "transform", _stub)
+
+
 class TestRunTransformRecords:
-    def test_every_branch_records_its_outcome(self, monkeypatch):
-        mappings = {
-            "Built": _entity("built.txt", {"Out": "in_col"}),
-            "NoSources": {"source_files": {}, "field_map": {"Out": "in_col"}},
-            "NoFileList": {"source_files": [], "field_map": {}},
-            "EmptyFiles": _entity("missing.txt", {"Out": "in_col"}),
-            "NoRows": _entity("norows.txt", {"Out": "in_col"}),
-        }
-        raw = {
-            "built.txt": pd.DataFrame({"in_col": ["a", "b", "c"]}),
-            "norows.txt": pd.DataFrame({"other": ["x"]}),
-        }
-        # "NoRows" has input but its transform keeps no row (as Family does when every contact
-        # lacks an email): a stub scoped to that one entity returns the empty frame.
-        original = DataTransformer.transform
-
-        def _stub(self, df, mapping, entity, raw_data, global_config):
-            if entity == "NoRows":
-                return pd.DataFrame()
-            return original(self, df, mapping, entity, raw_data, global_config)
-
-        monkeypatch.setattr(DataTransformer, "transform", _stub)
+    @pytest.mark.parametrize("branch", sorted(_EMPTY_BRANCHES))
+    def test_every_empty_branch_records_its_reason_and_family_is_only_left_out(self, monkeypatch, branch):
+        """Family — the ONE entity that may be left out (owner 2026-09-28) — records each EMPTY
+        branch's reason and the run goes on; the stop below is the same branch on anything else."""
+        block, frames, stub, reason = _EMPTY_BRANCHES[branch]
+        mappings = {"Built": _entity("built.txt", {"Out": "in_col"}), "Family": block}
+        raw = {"built.txt": pd.DataFrame({"in_col": ["a", "b", "c"]})}
+        raw.update({name: pd.DataFrame({"other": rows}) for name, rows in frames.items()})
+        if stub:
+            _stub_no_rows(monkeypatch, "Family")
         result, _ledger = _run(raw, mappings)
         assert result.outcomes == (
             EntityOutcome.built("Built", 3),
-            EntityOutcome.empty("NoSources", OutcomeReason.NO_SOURCE_FILES_DECLARED),
-            EntityOutcome.empty("NoFileList", OutcomeReason.NO_SOURCE_FILES_DECLARED),
-            EntityOutcome.empty("EmptyFiles", OutcomeReason.SOURCE_FILES_EMPTY),
-            EntityOutcome.empty("NoRows", OutcomeReason.NO_ROWS_AFTER_TRANSFORM),
+            EntityOutcome.empty("Family", OutcomeReason(reason)),
         )
         # BUILT rows == the rows that reached `outputs`; nothing else did.
         assert set(result.outputs) == {"Built"} and len(result.outputs["Built"]) == 3
 
+    @pytest.mark.parametrize("branch", sorted(_EMPTY_BRANCHES))
+    def test_the_same_branch_stops_the_night_for_an_entity_that_may_not_be_empty(self, monkeypatch, branch, caplog):
+        """Owner 2026-09-28 — "never send a header-only file": a CRITICAL entity (here Staff; any
+        unlisted name is CRITICAL too) that comes out EMPTY records it, marks the rest NOT_RUN and
+        raises the typed stop naming itself, with ONE grep-able ERROR line."""
+        block, frames, stub, reason = _EMPTY_BRANCHES[branch]
+        mappings = {"Staff": block, "Last": _entity("last.txt", {"Out": "in_col"})}
+        raw = {"last.txt": pd.DataFrame({"in_col": ["a"]})}
+        raw.update({name: pd.DataFrame({"other": rows}) for name, rows in frames.items()})
+        if stub:
+            _stub_no_rows(monkeypatch, "Staff")
+        ledger = OutcomeLedger(configured_entity_order(mappings, _GC))
+        with (
+            caplog.at_level(logging.ERROR, logger="src.etl.pipeline"),
+            pytest.raises(EmptyRequiredOutputError) as raised,
+        ):
+            run_transform(raw, mappings, _GC, ledger=ledger)
+        assert raised.value.entity == "Staff"
+        assert raised.value.category is RunErrorCategory.EMPTY_REQUIRED_OUTPUT
+        assert ledger.complete() == (EntityOutcome.empty("Staff", OutcomeReason(reason)), EntityOutcome.not_run("Last"))
+        assert [r.getMessage() for r in caplog.records if "REQUIRED OUTPUT EMPTY" in r.getMessage()] == [
+            f"REQUIRED OUTPUT EMPTY [Staff] reason={reason} — this output may not be empty, so the run stops; "
+            "nothing is written or sent."
+        ]
+
+    @pytest.mark.parametrize(
+        ("branch", "stops"), [("every_file_empty", False), ("no_source_files", False), ("no_rows", True)]
+    )
+    def test_attendance_with_nothing_to_send_is_a_normal_night_but_rows_filtered_to_none_stop_it(
+        self, monkeypatch, branch, stops
+    ):
+        """StudentAttendance is CRITICAL since 2026-09-28 but in `MAY_BE_EMPTY`: "nothing to send"
+        is a normal night (EMPTY, the run goes on); an export whose rows all went is not."""
+        block, frames, stub, reason = _EMPTY_BRANCHES[branch]
+        mappings = {"StudentAttendance": block, "Last": _entity("last.txt", {"Out": "in_col"})}
+        raw = {"last.txt": pd.DataFrame({"in_col": ["a"]})}
+        raw.update({name: pd.DataFrame({"other": rows}) for name, rows in frames.items()})
+        if stub:
+            _stub_no_rows(monkeypatch, "StudentAttendance")
+        ledger = OutcomeLedger(configured_entity_order(mappings, _GC))
+        if stops:
+            with pytest.raises(EmptyRequiredOutputError):
+                run_transform(raw, mappings, _GC, ledger=ledger)
+            assert ledger.complete()[1] == EntityOutcome.not_run("Last")
+        else:
+            result = run_transform(raw, mappings, _GC, ledger=ledger)
+            assert result.outcomes == (
+                EntityOutcome.empty("StudentAttendance", OutcomeReason(reason)),
+                EntityOutcome.built("Last", 1),
+            )
+
     def test_an_entity_in_entity_order_with_no_mapping_is_recorded_not_skipped_silently(self):
+        """A hand-written `entity_order` naming an entity with no mapping records it EMPTY — and,
+        since that entity is unlisted (so CRITICAL), the night stops typed rather than shipping
+        without it (owner 2026-09-28)."""
         mappings = {"Built": _entity("built.txt", {"Out": "in_col"})}
         gc = {**_GC, "entity_order": ["Ghost", "Built"]}
-        result, _ = _run({"built.txt": pd.DataFrame({"in_col": ["a"]})}, mappings, gc)
-        assert result.outcomes[0] == EntityOutcome.empty("Ghost", OutcomeReason.NO_SOURCE_FILES_DECLARED)
+        ledger = OutcomeLedger(configured_entity_order(mappings, gc))
+        with pytest.raises(EmptyRequiredOutputError) as raised:
+            run_transform({"built.txt": pd.DataFrame({"in_col": ["a"]})}, mappings, gc, ledger=ledger)
+        assert raised.value.entity == "Ghost"
+        assert ledger.complete() == (
+            EntityOutcome.empty("Ghost", OutcomeReason.NO_SOURCE_FILES_DECLARED),
+            EntityOutcome.not_run("Built"),
+        )
 
     @pytest.mark.parametrize(
         ("exc", "reason"),
@@ -522,8 +599,9 @@ class TestRunTransformRecords:
 
     def test_the_twin_the_matching_ledger_runs(self):
         mappings = {"A": _entity("a.txt", {"Out": "in_col"}), "B": _entity("b.txt", {"Out": "in_col"})}
-        result = run_transform({}, mappings, _GC, ledger=OutcomeLedger(["A", "B"]))
-        assert [o.kind for o in result.outcomes] == [OutcomeKind.EMPTY, OutcomeKind.EMPTY]
+        raw = {"a.txt": pd.DataFrame({"in_col": ["x"]}), "b.txt": pd.DataFrame({"in_col": ["y"]})}
+        result = run_transform(raw, mappings, _GC, ledger=OutcomeLedger(["A", "B"]))
+        assert [o.kind for o in result.outcomes] == [OutcomeKind.BUILT, OutcomeKind.BUILT]
 
 
 class TestConfiguredEntityOrderIsUnique:
@@ -617,6 +695,90 @@ class TestSignatures:
             is None
         )
 
+    # The input gate and the two stops it raises (owner 2026-09-28). A default here would be
+    # silent: ``absent=()`` turns a MISSING attendance file into "present with no rows", which
+    # ``MAY_BE_EMPTY`` lets through — inverting "a missing attendance file stops the night".
+    @pytest.mark.parametrize(
+        ("func_path", "name"),
+        [
+            ("check_required_inputs", "absent"),
+            ("check_required_inputs", "ledger"),
+            ("IncompleteInputError", "missing"),
+            ("IncompleteInputError", "empty"),
+            ("IncompleteInputError", "named"),
+            ("EmptyRequiredOutputError", "entity"),
+            # Owner ruling 2026-09-30 (a night with nothing to send): a default ``absent=()`` or
+            # ``configured=()`` would decide the no-absence exception for the caller, and a default
+            # ``outcomes=()`` would silently refuse (or, worse, pass) an empty output set.
+            ("has_no_usable_input", "configured"),
+            ("has_no_usable_input", "absent"),
+            ("check_delivery_integrity", "outcomes"),
+        ],
+    )
+    def test_the_input_gate_and_its_stops_require_their_keywords(self, func_path, name):
+        from src.etl.errors import IncompleteInputError
+        from src.etl.pipeline import check_delivery_integrity, check_required_inputs, has_no_usable_input
+
+        func = {
+            "has_no_usable_input": has_no_usable_input,
+            "check_delivery_integrity": check_delivery_integrity,
+            "check_required_inputs": check_required_inputs,
+            "IncompleteInputError": IncompleteInputError.__init__,
+            "EmptyRequiredOutputError": EmptyRequiredOutputError.__init__,
+        }[func_path]
+        _kw_only_required(func, name)
+
+    def test_twin_the_pin_goes_red_on_a_defaulted_keyword(self):
+        """The helper is not vacuous: a doctored gate that defaults ``absent`` fails it."""
+
+        def doctored(mappings, raw_data, *, absent=(), ledger):  # pragma: no cover - never called
+            return None
+
+        with pytest.raises(AssertionError, match="must have no default"):
+            _kw_only_required(doctored, "absent")
+        _kw_only_required(doctored, "ledger")  # the undefaulted sibling still passes
+
+
+class TestMissingFileProducerGuards:
+    """The producer side of a ``missing_source_file`` outcome (owner 2026-09-28): the file name
+    it may carry, and the ledger call that records it."""
+
+    VOCAB = LabelVocabulary(files=("ok.txt", r"sub\secret.txt", "dir/other.txt"))
+
+    @pytest.mark.parametrize("path_shaped", [r"sub\secret.txt", "dir/other.txt"])
+    def test_a_path_shaped_configured_name_is_never_the_label(self, path_shaped):
+        """``source_files`` is unvalidated: a configured name that is a PATH passes the
+        vocabulary check but is dropped by the bare-filename rule, so it never reaches the
+        record or the copy."""
+        assert derive_file_label([path_shaped], self.VOCAB) == ""
+
+    def test_twin_the_bare_configured_name_is_kept(self):
+        assert derive_file_label(["ok.txt"], self.VOCAB) == "ok.txt"
+        assert derive_file_label(["ok.txt", "ok.txt"], self.VOCAB) == "ok.txt", "one DISTINCT file"
+        assert derive_file_label(["ok.txt", "dir/other.txt"], self.VOCAB) == "", "two files name neither"
+        assert derive_file_label(["unlisted.txt"], self.VOCAB) == "", "never a name outside the config"
+
+    def test_a_bare_str_is_refused(self):
+        ledger = OutcomeLedger(["Staff"])
+        with pytest.raises(TypeError, match="not a str"):
+            ledger.record_missing_files("Staff", "ok.txt")  # type: ignore[arg-type]
+
+    def test_an_empty_sequence_is_refused(self):
+        ledger = OutcomeLedger(["Staff"])
+        with pytest.raises(ValueError, match="needs the file"):
+            ledger.record_missing_files("Staff", ())
+
+    def test_twin_one_named_file_records_failed_missing_source_file(self):
+        ledger = OutcomeLedger(["Staff"])
+        ledger.note_label_vocabulary("Staff", self.VOCAB)
+        ledger.record_missing_files("Staff", ("ok.txt",))
+        (outcome,) = ledger.complete()
+        assert (outcome.kind, outcome.reason, outcome.file_label) == (
+            OutcomeKind.FAILED,
+            OutcomeReason.MISSING_SOURCE_FILE,
+            "ok.txt",
+        )
+
 
 # --------------------------------------------------------------------------- #
 # Architecture fitness: only CRITICAL entities publish TransformContext state   #
@@ -689,10 +851,11 @@ class TestOnlyCriticalEntitiesPublishContextState:
 
     def test_the_isolatable_modules_publish_nothing(self):
         """Verify-before-implement (plan 0053): CourseInfo, StudentCourses, StudentAttendance
-        and Family publish no ``TransformContext`` state."""
+        and Family publish no ``TransformContext`` state — the four feeds D1 (c) isolated; only
+        Family still is (owner 2026-09-28), and the fact still holds for all four."""
         sources = _transformer_sources()
         owners = _module_entities()
-        isolatable_files = {f for f, ents in owners.items() if ents & _D1_ISOLATABLE}
+        isolatable_files = {f for f, ents in owners.items() if ents & _ONCE_ISOLATABLE}
         assert isolatable_files == {"family.py", "course_info.py", "student_courses.py", "student_attendance.py"}
         for filename in isolatable_files:
             assert _context_assignments(sources[filename]) == [], filename
@@ -995,18 +1158,20 @@ class TestTheContextCarriesNotes:
 
 class TestRunTransformAttachesNotes:
     def test_a_built_and_an_empty_entity_carry_the_notes_their_transform_recorded(self, monkeypatch):
+        # The EMPTY one is Family — the one entity that may be empty without stopping the night
+        # (owner 2026-09-28); any other EMPTY entity would stop it before its notes mattered.
         mappings = {
             "Built": _entity("built.txt", {"Out": "in_col"}),
             "Quiet": _entity("quiet.txt", {"Out": "in_col"}),
-            "NoRows": _entity("norows.txt", {"Out": "in_col"}),
+            "Family": _entity("norows.txt", {"Out": "in_col"}),
         }
         raw = {name: pd.DataFrame({"in_col": ["a"]}) for name in ("built.txt", "quiet.txt", "norows.txt")}
         original = DataTransformer.transform
 
         def _stub(self, df, mapping, entity, raw_data, global_config):
-            if entity in {"Built", "NoRows"}:
+            if entity in {"Built", "Family"}:
                 self._context.record_outcome_note(entity, _COTEACHER_NOTE, 2)
-            if entity == "NoRows":
+            if entity == "Family":
                 return pd.DataFrame()
             return original(self, df, mapping, entity, raw_data, global_config)
 
@@ -1015,7 +1180,7 @@ class TestRunTransformAttachesNotes:
         assert result.outcomes == (
             EntityOutcome.built("Built", 1, notes=((_COTEACHER_NOTE, 2),)),
             EntityOutcome.built("Quiet", 1),  # the twin: no note recorded, none attached
-            EntityOutcome.empty("NoRows", OutcomeReason.NO_ROWS_AFTER_TRANSFORM, notes=((_COTEACHER_NOTE, 2),)),
+            EntityOutcome.empty("Family", OutcomeReason.NO_ROWS_AFTER_TRANSFORM, notes=((_COTEACHER_NOTE, 2),)),
         )
 
     def test_an_isolated_failure_drops_its_notes_with_its_file(self, monkeypatch):
@@ -1034,3 +1199,50 @@ class TestRunTransformAttachesNotes:
         result, _ledger = _run(raw, mappings)
         family = next(o for o in result.outcomes if o.entity == "Family")
         assert family.kind is OutcomeKind.FAILED and family.notes == ()
+
+
+# --------------------------------------------------------------------------- #
+# A night with nothing to send (owner ruling 2026-09-30)                       #
+# --------------------------------------------------------------------------- #
+class TestANightWithNothingToSend:
+    """``every_entity_may_be_empty`` (the input guard's exception) and ``nothing_to_send`` (the
+    out-gate's and the surfaces'), each with the twin that proves it is not always true."""
+
+    def test_an_attendance_only_config_may_arrive_empty(self) -> None:
+        from src.etl.outcomes import every_entity_may_be_empty
+
+        assert every_entity_may_be_empty(["StudentAttendance"]) is True
+
+    @pytest.mark.parametrize(
+        "entities",
+        [[], ["Students"], ["StudentAttendance", "Students"], ["Family"], ["CourseInfo", "StudentCourses"]],
+        ids=["none", "roster", "roster_beside_attendance", "family", "course_feeds"],
+    )
+    def test_twin_anything_else_may_not(self, entities: list[str]) -> None:
+        from src.etl.outcomes import every_entity_may_be_empty
+
+        assert every_entity_may_be_empty(entities) is False
+
+    def test_every_outcome_a_normal_night_allows_is_nothing_to_send(self) -> None:
+        from src.etl.outcomes import nothing_to_send
+
+        assert nothing_to_send([EntityOutcome.empty("StudentAttendance", OutcomeReason.SOURCE_FILES_EMPTY)]) is True
+
+    @pytest.mark.parametrize(
+        "outcomes",
+        [
+            [],
+            [EntityOutcome.empty("StudentAttendance", OutcomeReason.NO_ROWS_AFTER_TRANSFORM)],
+            [EntityOutcome.empty("Family", OutcomeReason.SOURCE_FILES_EMPTY)],
+            [
+                EntityOutcome.empty("StudentAttendance", OutcomeReason.SOURCE_FILES_EMPTY),
+                EntityOutcome.built("Students", 3),
+            ],
+            [EntityOutcome.not_run("StudentAttendance")],
+        ],
+        ids=["no_outcomes", "rows_lost", "family", "something_built", "not_run"],
+    )
+    def test_twin_any_other_outcome_set_is_not(self, outcomes: list[EntityOutcome]) -> None:
+        from src.etl.outcomes import nothing_to_send
+
+        assert nothing_to_send(outcomes) is False

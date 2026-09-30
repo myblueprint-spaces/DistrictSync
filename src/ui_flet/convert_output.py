@@ -208,16 +208,20 @@ def this_run_label(selected: str | None, saved: str | None, *, config_dir: Path 
 
 
 def missing_files_copy() -> tuple[str, str]:
-    """The softened (heading, reassurance) copy over the expected-but-missing file chips.
+    """The (heading, consequence) copy over the missing file chips — calm, and true.
 
-    0035 W3b: the old "Expected files not found in this folder:" read as a fault. A missing
-    source file is legitimate (per-entity skip-on-empty is by design), so the heading is a
-    calm observation and the reassurance line states the honest consequence — the run still
-    works, and whatever a missing file feeds is skipped, never guessed.
+    0035 W3b softened the old alarm ("Expected files not found in this folder:") on the
+    premise that a missing file was legitimate. Owner decision 2026-09-28 ended that premise:
+    a file an enabled output lists is REQUIRED, so a missing one stops the run
+    (``pipeline.check_required_inputs``) — except the family contacts file, whose absence
+    only leaves family contacts out. The heading stays a calm observation; the second line
+    states that consequence BEFORE the admin presses Convert, never a reassurance the run
+    would contradict.
     """
     return (
-        "Not found yet — your district's extracts usually include:",
-        "You can still convert — anything a missing file feeds is skipped, not guessed.",
+        "Not found in this folder — this district's sync reads:",
+        "A missing file stops the conversion, except the family contacts file — without it, only "
+        "family contacts are left out.",
     )
 
 

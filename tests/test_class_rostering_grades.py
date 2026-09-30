@@ -759,8 +759,8 @@ class TestRowSetIdentityUnderBlankGrades:
 class TestCoTeacherPathsUnderTheSentinel:
     """ClassInformation co-teacher rows: path 1 survives, path 2 goes with the blend.
 
-    The 12-config contract sweep is structurally blind here — SD83's fixture
-    writes an EMPTY ClassInformation, so neither path runs at all in it.
+    The contract sweep cannot see this: SD83's fixture ClassInformation (complete since
+    2026-09-30) carries no co-teacher and forms no blend, so neither path links a row there.
     """
 
     #: The co-teacher who appears only in ClassInformation, never in the schedule.

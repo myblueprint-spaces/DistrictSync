@@ -34,6 +34,20 @@ transformer recorded through ``TransformContext.record_outcome_note`` while it r
 about a BUILT (or EMPTY) entity that its kind and reason cannot say, such as "built, but the
 co-teacher rows were left out". A code and a count only: never a column name, a value or a
 path. Whether a note makes the run PARTIAL is decided in ONE place, ``failure_copy.NOTE_TIER``.
+
+**Only Family may be left out (owner, 2026-09-28).** "We don't have optional files; maybe family
+info can be optional." :data:`ENTITY_CRITICALITY` keeps exactly one ISOLATABLE entity, and the
+SAME table decides two stops beyond a CRITICAL raise:
+
+* the way IN, ``pipeline.check_required_inputs`` (before the transform): a file a CRITICAL
+  entity lists must be present, and must have data rows unless that entity is in
+  :data:`MAY_BE_EMPTY`; a stopped entity is recorded FAILED /
+  :attr:`OutcomeReason.MISSING_SOURCE_FILE` (:meth:`OutcomeLedger.record_missing_files`),
+  naming its file when that is unambiguous;
+* the way OUT of each entity, ``pipeline.run_transform``: a CRITICAL entity that comes out
+  EMPTY stops the night (:func:`stops_when_empty`) unless the EMPTY is a normal night
+  (:func:`empty_is_expected` — StudentAttendance with nothing to send). DistrictSync never
+  sends a header-only file.
 """
 
 from __future__ import annotations
@@ -45,6 +59,7 @@ from enum import StrEnum
 from types import MappingProxyType
 from typing import Any, Final
 
+from src.etl.column_names import SCHOOL_NUMBER_LABEL, SCHOOL_YEAR_LABEL
 from src.etl.errors import SourceSchemaError
 
 
@@ -62,16 +77,24 @@ ROSTER_ANCHOR_ENTITY: Final = "Students"
 invariant (CLAUDE.md → Key Data Flow → Enrollments) is defined as "no emitted row
 references a ``User ID`` absent from ``Students.csv``", and ``Family`` /
 ``StudentCourses`` carry the same dependency (see ``quality/report.py``'s orphan
-checks). That makes it the ONE entity whose absence invalidates the whole payload —
-every other entity may be skipped on a given night without stopping the run (per-entity
-skip-on-empty; whether that skip WARNS is :data:`MAY_BE_EMPTY`'s question). Named here —
-beside the criticality it forces — rather than inlined, so the special case is explicit and
+checks). That made it the ONE entity whose absence invalidated the whole payload, which
+``pipeline.check_delivery_integrity`` enforces on the way OUT (``incomplete_roster``). Since
+2026-09-28 (owner) every CRITICAL entity is held to that bar: a missing or row-less file one
+of them lists stops the night before anything is built (``pipeline.check_required_inputs``),
+and one that comes out EMPTY stops it in ``pipeline.run_transform`` (:func:`stops_when_empty`)
+— so an empty Students stops there first, and the out-gate's roster check stays the floor
+beneath it. Only Family may be skipped (:data:`ENTITY_CRITICALITY`) and only
+StudentAttendance may arrive with no rows (:data:`MAY_BE_EMPTY`). Named here — beside the
+criticality it forces — rather than inlined, so the special case is explicit and
 single-sourced; ``pipeline.check_delivery_integrity`` imports it.
 """
 
 # The §3 table, in code. One row per registry entity; `tests/test_failure_policy_parity.py`
 # ties it to `docs/developer/failure-policy.md` §3 row for row, and `tests/test_etl_outcomes.py`
-# to `TRANSFORMER_REGISTRY` and the run record's flat count keys. D1 (owner, 2026-09-23).
+# to `TRANSFORMER_REGISTRY` and the run record's flat count keys. D1 (owner, 2026-09-23),
+# REVISED 2026-09-28 (owner): "we don't have optional files; maybe family info can be optional …
+# supporting optional is adding complexity" — Family is the ONE isolatable entity. The same table
+# decides which missing input only leaves its entity out (`pipeline.check_required_inputs`).
 ENTITY_CRITICALITY: Final[Mapping[str, EntityCriticality]] = MappingProxyType(
     {
         # The roster anchor; publishes `context.active_student_ids`; a user missing from a delivered
@@ -79,20 +102,24 @@ ENTITY_CRITICALITY: Final[Mapping[str, EntityCriticality]] = MappingProxyType(
         ROSTER_ANCHOR_ENTITY: EntityCriticality.CRITICAL,
         # What an ABSENT Staff.csv does is unknown (output-contract Q5a); a missing user may be deactivated.
         "Staff": EntityCriticality.CRITICAL,
-        # Absence already ships (SD51 builds no Family.csv); publishes no context state; nothing reads it (D1).
+        # The ONE optional feed (owner 2026-09-28): absence already ships (SD51 builds no Family.csv);
+        # publishes no context state; nothing reads it (D1). A missing or row-less contacts file
+        # leaves Family out (EMPTY, amber) instead of stopping the night.
         "Family": EntityCriticality.ISOLATABLE,
         # Publishes `context.class_artifacts`, which Enrollments requires.
         "Classes": EntityCriticality.CRITICAL,
         # A missing enrollment may remove a user from the class (faq "What happens to enrollments no longer
         # in the file?"); what an ABSENT file does is Q5a.
         "Enrollments": EntityCriticality.CRITICAL,
-        # Isolatable by owner decision D1, ahead of partner evidence (Q5c/Q5d open); a standalone feed.
-        "CourseInfo": EntityCriticality.ISOLATABLE,
-        # Isolatable by owner decision D1 (Q5c/Q5d open); reads the CourseInformation SOURCE, never CourseInfo.
-        "StudentCourses": EntityCriticality.ISOLATABLE,
-        # Absence already ships on nights without absence files; output-contract: a missing attendance
-        # drop must never stop rostering (D1; Q5c open).
-        "StudentAttendance": EntityCriticality.ISOLATABLE,
+        # CRITICAL since 2026-09-28 (owner — D1 revised; was ISOLATABLE by D1 (c) 2026-09-23): a
+        # failure stops the night and SpacesEDU keeps the last good sync. A standalone feed.
+        "CourseInfo": EntityCriticality.CRITICAL,
+        # CRITICAL since 2026-09-28 (owner — D1 revised); reads the CourseInformation SOURCE, never CourseInfo.
+        "StudentCourses": EntityCriticality.CRITICAL,
+        # CRITICAL since 2026-09-28 (owner — D1 revised): an unmapped absence code or a missing
+        # authorized column stops the night. A PRESENT absence file with no rows is still a normal
+        # night (`MAY_BE_EMPTY`); a MISSING one stops it (`pipeline.check_required_inputs`).
+        "StudentAttendance": EntityCriticality.CRITICAL,
     }
 )
 
@@ -100,7 +127,9 @@ ENTITY_CRITICALITY: Final[Mapping[str, EntityCriticality]] = MappingProxyType(
 # state (§3 `depends_on`). Whether two files must ARRIVE together is a delivery question (Q5d),
 # not a dependency: StudentCourses falls back when CourseInfo's data is absent. Every entity
 # named in a value must be CRITICAL (pinned), so a FAILED isolatable entity can never have a
-# dependent — the structural fact S4 relies on instead of a withholding branch.
+# dependent — the structural fact S4 relies on instead of a withholding branch. The FK chain the
+# owner named on 2026-09-28 (Family→Students, Classes→Students, Enrollments→Classes+Students,
+# StudentCourses→Students) is exactly these rows.
 DEPENDS_ON: Final[Mapping[str, frozenset[str]]] = MappingProxyType(
     {
         "Enrollments": frozenset({"Classes", ROSTER_ANCHOR_ENTITY}),  # class_artifacts + active_student_ids
@@ -111,20 +140,24 @@ DEPENDS_ON: Final[Mapping[str, frozenset[str]]] = MappingProxyType(
 )
 
 
-# The entities whose export may legitimately be ABSENT or EMPTY on a given night, so a skip for
-# that reason alone ("nothing to send") is not a warning — owner decision D5 (2026-09-24), plan
-# 0053 S8, `docs/developer/failure-policy.md` §7 (the `may-be-empty` table, pinned). Read by the
-# ONE tier rule, `failure_copy.OUTCOME_TIER`: for every OTHER entity an EMPTY outcome is a
-# standing WARNING, and for a member only `source_files_empty` / `no_source_files_declared` stay
-# neutral — every row filtered out, or a mapped column missing, still warns. RESTRICTIVE BY
-# DEFAULT: an entity not listed warns when it builds nothing, so a new entity can never go quiet
-# by omission. Adding one is a DECISIONS entry naming why its absence is a normal night (the
-# remedy for a district that warns is a config change, never widening this set). Every member
-# must be a registry entity (pinned in `tests/test_standing_empty_warning.py::TestMayBeEmpty`).
+# The entities whose export may legitimately be EMPTY on a given night, so a skip for that reason
+# alone ("nothing to send") is not a warning — owner decision D5 (2026-09-24), plan 0053 S8,
+# `docs/developer/failure-policy.md` §7 (the `may-be-empty` table, pinned). Read in two places:
+#   * by the input gate, `pipeline.check_required_inputs` (owner 2026-09-28): a member's listed
+#     file may be PRESENT with no data rows; a MISSING one still stops the night — "no absences
+#     today" is a file with no rows, never an absent file;
+#   * through `empty_is_expected` — the ONE "normal night" rule — by `failure_copy.OUTCOME_TIER`
+#     and by `pipeline.run_transform` (`stops_when_empty`): for a member only `source_files_empty`
+#     / `no_source_files_declared` are a normal night; every row filtered out, or a mapped column
+#     missing, is not — and for a CRITICAL member that stops the night.
+# RESTRICTIVE BY DEFAULT: an entity not listed is never quietly empty (a CRITICAL one stops the
+# night, the ISOLATABLE one warns), so a new entity can never go quiet by omission. Adding one is a DECISIONS entry naming why its absence is a normal
+# night (the remedy for a district that warns is a config change, never widening this set). Every
+# member must be a registry entity (pinned in `tests/test_standing_empty_warning.py::TestMayBeEmpty`).
 MAY_BE_EMPTY: Final[frozenset[str]] = frozenset(
     {
-        # Absence files arrive only on nights with absences; a missing attendance drop must never
-        # stop — or darken — rostering (output-contract; the same evidence as its §3 row).
+        # A night with no absences is a normal night: its absence files are present with no rows
+        # (owner 2026-09-28). A MISSING absence file is not "no absences" — it stops the night.
         "StudentAttendance",
     }
 )
@@ -156,6 +189,10 @@ class OutcomeReason(StrEnum):
     SOURCE_FILES_EMPTY = "source_files_empty"  # every source file it reads was missing or empty
     NO_ROWS_AFTER_TRANSFORM = "no_rows_after_transform"  # it had input, and its transform kept no row
     MISSING_SOURCE_COLUMN = "missing_source_column"  # a SourceSchemaError: a guarding column is absent
+    # A file the entity lists was missing from the input folder, or present with no data rows,
+    # and the entity may not be left out (owner 2026-09-28; `pipeline.check_required_inputs`,
+    # recorded through `OutcomeLedger.record_missing_files` — FAILED only: its transform never ran).
+    MISSING_SOURCE_FILE = "missing_source_file"
     TRANSFORM_ERROR = "transform_error"  # any other raise from its transform
     RUN_ABORTED = "run_aborted"  # an earlier failure stopped the run before it
 
@@ -173,10 +210,75 @@ VALID_REASONS: Final[Mapping[OutcomeKind, frozenset[OutcomeReason]]] = MappingPr
                 OutcomeReason.MISSING_SOURCE_COLUMN,
             }
         ),
-        OutcomeKind.FAILED: frozenset({OutcomeReason.MISSING_SOURCE_COLUMN, OutcomeReason.TRANSFORM_ERROR}),
+        OutcomeKind.FAILED: frozenset(
+            {OutcomeReason.MISSING_SOURCE_COLUMN, OutcomeReason.TRANSFORM_ERROR, OutcomeReason.MISSING_SOURCE_FILE}
+        ),
         OutcomeKind.NOT_RUN: frozenset({OutcomeReason.RUN_ABORTED}),
     }
 )
+
+
+#: The EMPTY reasons that mean "there was nothing to send" — no file declared, or every file the
+#: entity reads empty — as opposed to "the export had rows and none survived"
+#: (``no_rows_after_transform`` / ``missing_source_column``). The ONE spelling, read by
+#: :func:`empty_is_expected` (and so by ``failure_copy.OUTCOME_TIER`` and ``pipeline.run_transform``).
+NOTHING_TO_SEND: Final[frozenset[OutcomeReason]] = frozenset(
+    {OutcomeReason.SOURCE_FILES_EMPTY, OutcomeReason.NO_SOURCE_FILES_DECLARED}
+)
+
+
+def empty_is_expected(entity: object, reason: OutcomeReason) -> bool:
+    """Whether an EMPTY outcome of ``entity`` for ``reason`` is a NORMAL night — the ONE rule.
+
+    True only for a :data:`MAY_BE_EMPTY` entity with nothing to send (:data:`NOTHING_TO_SEND`):
+    StudentAttendance on a night without absences. Every other EMPTY outcome is not normal —
+    for an ISOLATABLE entity it is a standing warning (``failure_copy.OUTCOME_TIER``), for a
+    CRITICAL one it stops the night (:func:`stops_when_empty`). TOTAL: an unknown or non-``str``
+    entity is simply not a member.
+    """
+    return reason in NOTHING_TO_SEND and isinstance(entity, str) and entity in MAY_BE_EMPTY
+
+
+def stops_when_empty(entity: str, reason: OutcomeReason) -> bool:
+    """Whether an EMPTY outcome of ``entity`` for ``reason`` STOPS the night (owner 2026-09-28).
+
+    "DistrictSync never sends a header-only file": an entity the night cannot go without
+    (:func:`criticality_of` — CRITICAL, which is anything unlisted) that comes out with no rows
+    stops the run — unless that EMPTY is a normal night (:func:`empty_is_expected`). Only
+    Family, the ONE ISOLATABLE entity, may be EMPTY in a completed run and still ship the rest
+    (a standing WARNING). ``pipeline.run_transform`` is the one caller that acts on it.
+    """
+    return criticality_of(entity) is EntityCriticality.CRITICAL and not empty_is_expected(entity, reason)
+
+
+def every_entity_may_be_empty(entities: Iterable[str]) -> bool:
+    """Whether a run configured for ``entities`` may legitimately arrive with NO data rows at all.
+
+    True only when there is at least one entity and every one is in :data:`MAY_BE_EMPTY` — an
+    attendance-only config (``sd51attendance``), whose night without absences is a folder of
+    present, row-less absence files (owner ruling 2026-09-30). The input's "nothing usable"
+    guard (``pipeline.has_no_usable_input``) reads it, together with "no listed file is
+    missing": a MISSING absence file still stops the night, and a config with any other entity
+    (a roster) whose files are all row-less still fails ``no_input``.
+    """
+    names = list(entities)
+    return bool(names) and all(name in MAY_BE_EMPTY for name in names)
+
+
+def nothing_to_send(outcomes: Iterable[EntityOutcome]) -> bool:
+    """Whether a completed run's outcomes say the night had NOTHING TO SEND — the ONE rule.
+
+    True only when there is at least one outcome and EVERY one is EMPTY for a reason
+    :func:`empty_is_expected` calls a normal night (an attendance-only config on a night without
+    absences — owner ruling 2026-09-30). Such a run is a SUCCESS: nothing is written, archived or
+    delivered, the last output is left as it was, and Home stays green with a detail saying so.
+    Read by ``pipeline.check_delivery_integrity`` (which then does not refuse the empty set as
+    ``no_output``), by both entry points (which skip the write) and by the surfaces' copy.
+    """
+    items = list(outcomes)
+    return bool(items) and all(
+        outcome.kind is OutcomeKind.EMPTY and empty_is_expected(outcome.entity, outcome.reason) for outcome in items
+    )
 
 
 class OutcomeNote(StrEnum):
@@ -288,6 +390,36 @@ additive)."""
 MAX_LABEL_LENGTH: Final = 120
 """The longest config-declared label a record or a sentence may carry (plan 0053 S7, D4)."""
 
+#: Per entity, the column labels one of its fail-closed guards names from CODE — a
+#: ``column_names`` constant no mapping key renames — rather than from the config (owner
+#: 2026-09-28: a stopped night names "School Year", "a config/structural label, never observed
+#: text"). ``preflight.label_vocabulary_by_entity`` adds them to that entity's label vocabulary,
+#: so :func:`apply_labels` records them like any declared column, and ``failure_copy.failure_names``
+#: names ONLY these when a missing column stops the whole night — every other stop keeps its
+#: category copy. Today two guards, both on Classes: §5 #41's school-year source column
+#: ("School Year", owner 2026-09-28) and §5 #39's blended-detection school ("School Number",
+#: owner ruling 2026-09-30 — a linking column blended matching needs).
+STRUCTURAL_LABELS: Final[Mapping[str, frozenset[str]]] = MappingProxyType(
+    {
+        "Classes": frozenset({SCHOOL_YEAR_LABEL, SCHOOL_NUMBER_LABEL}),
+    }
+)
+
+
+def structural_labels(entity: object, labels: Iterable[object]) -> tuple[str, ...]:
+    """The members of ``labels`` that are :data:`STRUCTURAL_LABELS` of ``entity``, first-seen order.
+
+    TOTAL: an unknown entity, a non-``str`` or a label that fails the shape check reads as
+    nothing. Membership is exact ``str`` equality against the code's own constant.
+    """
+    allowed = STRUCTURAL_LABELS.get(entity, frozenset()) if isinstance(entity, str) else frozenset()
+    kept: list[str] = []
+    for label in labels:
+        if isinstance(label, str) and label in allowed and _label_shaped(label) and label not in kept:
+            kept.append(label)
+    return tuple(kept)
+
+
 #: One note on one outcome: the closed code and how many rows it concerns (at least one).
 Note = tuple[OutcomeNote, int]
 
@@ -309,10 +441,13 @@ class EntityOutcome:
 
     ``labels`` / ``file_label`` (plan 0053 S7, D4) are what the admin-facing copy may NAME: the
     config-declared columns (and, only when it is unambiguous, the one export file) behind a
-    ``missing_source_column`` outcome. Produced only by :func:`apply_labels`, which passes each
-    through :func:`safe_label` against the resolved config's own vocabulary; the constructor
-    re-checks their SHAPE (it cannot know the config) and refuses the states that could never
-    come from there: labels on any other reason, a file label without a column label.
+    ``missing_source_column`` outcome — or, since 2026-09-28, the one file behind a
+    ``missing_source_file`` outcome (a file label alone, never a column). Produced only by
+    :func:`apply_labels`, which passes each through :func:`safe_label` against the resolved
+    config's own vocabulary; the constructor re-checks their SHAPE (it cannot know the config)
+    and refuses the states that could never come from there: column labels on any reason but
+    ``missing_source_column``, a file label without a column label on that reason, and a file
+    label on any reason but those two.
 
     ``notes`` (plan 0053 S10) are ``(OutcomeNote, count)`` pairs the entity's transform recorded
     (``TransformContext.record_outcome_note``), in the order recorded: each note once, each count
@@ -446,7 +581,7 @@ class LabelVocabulary:
       file beside one would point at the wrong export) — except StudentAttendance, whose
       field_map holds placeholders: its columns are its configured ``global_config.attendance``
       band columns (``preflight._attendance_band_columns``, plan 0053 S13b — owner ruling
-      2026-09-26);
+      2026-09-26) — plus the entity's :data:`STRUCTURAL_LABELS` (owner 2026-09-28);
     * ``files`` — the entity's configured ``source_files`` names, config spelling;
     * ``reads_own_files`` — whether every mapped column is read from the entity's OWN files
       (``preflight.OBSERVATION_SCOPE`` is ``OWN_FILES``, or the entity is StudentAttendance,
@@ -484,6 +619,23 @@ def derive_labels(columns: Iterable[object], vocabulary: LabelVocabulary) -> tup
     return file_label, tuple(kept)
 
 
+def derive_file_label(files: Iterable[object], vocabulary: LabelVocabulary) -> str:
+    """The file a ``missing_source_file`` outcome may name, or ``""`` (owner 2026-09-28).
+
+    Unlike a missing COLUMN — which :func:`derive_labels` can pin on a file only when the
+    entity has exactly one — a missing FILE is known exactly. So the rule here is simpler: the
+    file is named when EXACTLY ONE distinct problem file was given (an entity with two problem
+    files names neither, rather than one of them), it is one of the entity's configured
+    ``source_files`` (:func:`safe_label` against ``vocabulary.files``) and it is a bare filename
+    (:func:`_file_label_shaped` — ``source_files`` itself is unvalidated).
+    """
+    distinct = list(dict.fromkeys(name for name in files if isinstance(name, str)))
+    if len(distinct) != 1:
+        return ""
+    candidate = safe_label(distinct[0], vocabulary=vocabulary.files)
+    return candidate if candidate is not None and _file_label_shaped(candidate) else ""
+
+
 def _check_labels(entity: str, reason: OutcomeReason, labels: object, file_label: object) -> None:
     """Refuse labels that are not distinct label-shaped names, or sit where no producer puts them."""
     if not isinstance(labels, tuple):
@@ -498,6 +650,11 @@ def _check_labels(entity: str, reason: OutcomeReason, labels: object, file_label
         raise ValueError(
             f"{entity}: file_label must be a bare filename — trimmed, printable, at most {MAX_LABEL_LENGTH} long"
         )
+    if reason is OutcomeReason.MISSING_SOURCE_FILE:
+        # The missing FILE is the whole fact (owner 2026-09-28): a file label alone, never a column.
+        if labels:
+            raise ValueError(f"{entity}: a missing_source_file outcome names its file, never a column")
+        return
     if file_label and not labels:
         raise ValueError(f"{entity}: a file is named only beside the column it is missing")
     if labels and reason is not OutcomeReason.MISSING_SOURCE_COLUMN:
@@ -581,20 +738,32 @@ def apply_labels(
     vocabulary: LabelVocabulary | None,
     *,
     error_columns: Sequence[str],
+    error_files: Sequence[str] = (),
 ) -> EntityOutcome:
     """``outcome`` with its config-declared labels attached — the ONE label producer (plan 0053 S7).
 
-    Only a ``missing_source_column`` outcome is labelled, and only from a config-declared source:
+    Only a ``missing_source_column`` or ``missing_source_file`` outcome is labelled, and only
+    from a config-declared source:
 
-    * FAILED → ``error_columns``, the raising :class:`~src.etl.errors.SourceSchemaError`'s own
-      ``columns`` (config spelling) — never ``str(exc)``;
-    * EMPTY → the outcome's ``missing_mapped`` (the source observation's config-spelling names).
+    * FAILED / ``missing_source_column`` → ``error_columns``, the raising
+      :class:`~src.etl.errors.SourceSchemaError`'s own ``columns`` (config spelling, or a
+      :data:`STRUCTURAL_LABELS` constant) — never ``str(exc)``;
+    * EMPTY / ``missing_source_column`` → the outcome's ``missing_mapped`` (the source
+      observation's config-spelling names);
+    * FAILED / ``missing_source_file`` (owner 2026-09-28) → ``error_files``, the input gate's
+      problem files for this entity, through :func:`derive_file_label` (a file label alone).
+      ``()`` — the default, for every other caller — names nothing.
 
-    Each goes through :func:`derive_labels` (``safe_label`` + the single-file rule). No
+    Columns go through :func:`derive_labels` (``safe_label`` + the single-file rule). No
     vocabulary, an outcome already labelled, any other reason, or nothing surviving → the
     outcome unchanged.
     """
-    if vocabulary is None or outcome.labels or outcome.reason is not OutcomeReason.MISSING_SOURCE_COLUMN:
+    if vocabulary is None or outcome.labels or outcome.file_label:
+        return outcome
+    if outcome.reason is OutcomeReason.MISSING_SOURCE_FILE:
+        named_file = derive_file_label(error_files, vocabulary)
+        return replace(outcome, file_label=named_file) if named_file else outcome
+    if outcome.reason is not OutcomeReason.MISSING_SOURCE_COLUMN:
         return outcome
     source = error_columns if outcome.kind is OutcomeKind.FAILED else outcome.missing_mapped
     file_label, labels = derive_labels(source, vocabulary)
@@ -705,14 +874,35 @@ class OutcomeLedger:
         self._record(EntityOutcome.failed(entity, reason), error_columns=error_columns)
         return reason
 
-    def _record(self, outcome: EntityOutcome, *, error_columns: Sequence[str]) -> None:
+    def record_missing_files(self, entity: str, files: Sequence[str]) -> None:
+        """Record ``entity`` FAILED / ``missing_source_file`` — the input gate's one call.
+
+        Owner decision 2026-09-28: ``pipeline.check_required_inputs`` stops the night when a
+        file a CRITICAL entity lists is missing (or has no data rows, unless the entity is in
+        :data:`MAY_BE_EMPTY`), and records every entity it stopped this way BEFORE the
+        transform runs — so the record says which entities could not be fed, and the failure
+        sink marks the rest NOT_RUN. ``files`` are that entity's problem files in config
+        spelling (at least one; a bare ``str`` is refused, as :meth:`note_missing_mapped`
+        refuses one); the file is NAMED only when there is exactly one
+        (:func:`derive_file_label`, through :func:`apply_labels`).
+        """
+        if isinstance(files, str):
+            raise TypeError(f"{entity}: files must be a sequence of filenames, not a str")
+        problem = tuple(files)
+        if not problem:
+            raise ValueError(f"{entity}: a missing_source_file outcome needs the file(s) it could not read")
+        self._record(
+            EntityOutcome.failed(entity, OutcomeReason.MISSING_SOURCE_FILE), error_columns=(), error_files=problem
+        )
+
+    def _record(self, outcome: EntityOutcome, *, error_columns: Sequence[str], error_files: Sequence[str] = ()) -> None:
         if outcome.entity not in self._configured:
             raise ValueError(f"{outcome.entity!r} is not an entity this run is configured to produce")
         if outcome.entity in self._outcomes:
             raise ValueError(f"{outcome.entity!r} already has an outcome for this run")
         observed = apply_observation(outcome, self._missing_mapped.get(outcome.entity, ()))
         self._outcomes[outcome.entity] = apply_labels(
-            observed, self._vocabularies.get(outcome.entity), error_columns=error_columns
+            observed, self._vocabularies.get(outcome.entity), error_columns=error_columns, error_files=error_files
         )
 
     def mark_not_run(self, entities: Iterable[str]) -> None:
@@ -789,9 +979,11 @@ def _labels_from(entry: Mapping[Any, Any], reason: OutcomeReason) -> tuple[tuple
     and never costs the entry its kind and reason. A file label that is unusable on its own
     is dropped and the column labels kept.
     """
-    raw_labels: Any = entry.get(LABELS_KEY)
+    raw_labels: Any = entry.get(LABELS_KEY, ())
     raw_file: Any = entry.get(FILE_LABEL_KEY, "")
     if not isinstance(raw_labels, (list, tuple)):
+        # Present but not a list: damaged — name nothing. (An ABSENT key is `()`, which is how a
+        # `missing_source_file` entry naming only its file arrives — owner 2026-09-28.)
         return (), ""
     labels = tuple(raw_labels)
     file_label = raw_file if _file_label_shaped(raw_file) else ""
@@ -867,6 +1059,39 @@ def failed_entities(outcomes: Iterable[EntityOutcome]) -> tuple[EntityOutcome, .
     the whole run (a failed record already outranks PARTIAL).
     """
     return tuple(outcome for outcome in outcomes if outcome.kind is OutcomeKind.FAILED)
+
+
+def stopped_file_labels(outcomes: Iterable[EntityOutcome]) -> tuple[str, ...]:
+    """The files a night stopped by the input gate may NAME — the ONE reduction (owner 2026-09-28).
+
+    Over the FAILED / ``missing_source_file`` outcomes (``pipeline.check_required_inputs``):
+    their file labels, distinct, first-seen order — but ONLY when every such outcome names its
+    file. One unnamed stop (an entity with two problem files, or no vocabulary) makes the answer
+    ``()``: a list that silently omits a file would tell the admin the rest of the folder is
+    fine. Also ``()`` when no outcome is a missing-file stop. Read by the gate itself (for the
+    raised error, which Convert's card words) and by ``failure_copy`` over a stored record, so
+    both surfaces name exactly the same files.
+    """
+    stops = [o for o in outcomes if o.kind is OutcomeKind.FAILED and o.reason is OutcomeReason.MISSING_SOURCE_FILE]
+    if not stops or not all(o.file_label for o in stops):
+        return ()
+    return tuple(dict.fromkeys(o.file_label for o in stops))
+
+
+def stopped_empty_entities(outcomes: Iterable[EntityOutcome]) -> tuple[str, ...]:
+    """The entities whose EMPTY outcome stopped the night — the ONE reduction (owner 2026-09-28).
+
+    Over the EMPTY outcomes :func:`stops_when_empty` rates as stopping: their entity keys,
+    distinct, in the given (configured) order. ``pipeline.run_transform`` stops at the FIRST
+    such outcome, so a record it wrote names one. Read by ``failure_copy.failure_names`` for an
+    ``empty_required_output`` record, which words each key through the authored entity phrase
+    — never the key itself.
+    """
+    return tuple(
+        dict.fromkeys(
+            o.entity for o in outcomes if o.kind is OutcomeKind.EMPTY and stops_when_empty(o.entity, o.reason)
+        )
+    )
 
 
 def outcomes_from_record(record: Any) -> tuple[EntityOutcome, ...]:

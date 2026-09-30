@@ -117,15 +117,22 @@ def gde_sources() -> dict[str, bytes]:
             "Title": ["Math 10", "English 12"],
         }
     )
+    # A COMPLETE ClassInformation — one row per schedule section (a header-only file stops
+    # the night since 2026-09-28; owner ruling 2026-09-30 filled the fixtures in). Each
+    # section has its own slot and a section letter naming no homeroom, so no blend forms
+    # and the co-teacher path adds no row the schedule has not already produced.
     class_info = pd.DataFrame(
         {
-            "School Number": [],
-            "Teacher ID": [],
-            "Master Timetable ID": [],
-            "Term": [],
-            "Semester": [],
-            "Day": [],
-            "Period": [],
+            "School Number": ["100", "200", "200"],
+            "Course Code": ["HR-3", "MAT10", "ENG12"],
+            "Teacher ID": ["T001", "T003", "T004"],
+            "Primary Teacher": ["Y", "Y", "Y"],
+            "Section Letter": ["A", "A", "B"],
+            "Master Timetable ID": ["MT001", "MT002", "MT003"],
+            "Term": ["T1", "T1", "T1"],
+            "Semester": ["S1", "S1", "S1"],
+            "Day": ["1", "1", "1"],
+            "Period": ["1", "2", "3"],
         }
     )
 

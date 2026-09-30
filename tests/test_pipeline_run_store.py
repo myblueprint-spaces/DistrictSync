@@ -16,6 +16,7 @@ from __future__ import annotations
 import ast
 import json
 import logging
+import shutil
 from collections.abc import Collection
 from pathlib import Path
 
@@ -29,10 +30,12 @@ from src.etl.pipeline import PipelineResult, run_pipeline
 from src.history.store import read_run_records
 from src.ui_flet.home_status import derive_home_status
 from src.ui_flet.run_history import to_run_rows
+from tests.test_pipeline_required_input import _write_class_info_rows
 
 
 def _write_myedbc_input(d: Path) -> None:
-    """Minimal-but-complete myedbc rostering input (mirrors test_pipeline_required_input)."""
+    """Complete myedbc rostering input — every listed file with its rows (mirrors
+    test_pipeline_required_input; the input gate requires them — owner 2026-09-28)."""
     pd.DataFrame(
         {
             "Student Number": ["S001", "S002"],
@@ -91,9 +94,7 @@ def _write_myedbc_input(d: Path) -> None:
             "Email Address": ["john@mail.com"],
         }
     ).to_csv(d / "EmergencyContactInformation.txt", index=False)
-    pd.DataFrame(
-        columns=["School Number", "Teacher ID", "Master Timetable ID", "Term", "Semester", "Day", "Period"]
-    ).to_csv(d / "ClassInformationEnh.txt", index=False)
+    _write_class_info_rows(d)
 
 
 @pytest.fixture()
@@ -1122,6 +1123,17 @@ class TestTypedCategoriesReachTheRecord:
     #: that keeps ``source_schema`` a RUN category after Family's failure became entity-scoped.
     _SD83 = "sd83myedbc"
 
+    @staticmethod
+    def _with_sd83_course_feeds(d: Path) -> Path:
+        """SD83 enables StudentCourses, whose two transcript files must now be in the folder
+        (owner 2026-09-28 — a missing one stops the night at the input gate, before the Staff
+        fault these tests are about is ever reached). The committed synthetic myBlueprint+
+        files; the run stops at Staff, so their rows are never transformed."""
+        mbp = Path(__file__).parent / "snapshots" / "mbp_input"
+        for name in ("StudentCourseHistory.txt", "StudentCourseSelection.txt"):
+            shutil.copy2(mbp / name, d / name)
+        return d
+
     def test_a_missing_row_filter_column_on_a_critical_entity_records_source_schema(
         self, gde_input: Path, gde_output: Path
     ) -> None:
@@ -1131,7 +1143,7 @@ class TestTypedCategoriesReachTheRecord:
         from src.etl.errors import GuardKind, SourceSchemaError
 
         with pytest.raises(SourceSchemaError) as exc_info:
-            run_pipeline(self._SD83, str(gde_input), str(gde_output))
+            run_pipeline(self._SD83, str(self._with_sd83_course_feeds(gde_input)), str(gde_output))
         assert exc_info.value.guard is GuardKind.PII_SCOPE
         assert exc_info.value.entity == "Staff"
         records = read_run_records()
@@ -1201,7 +1213,7 @@ class TestTypedCategoriesReachTheRecord:
             gde_input / "StaffInformationEnhanced.txt", index=False
         )
         with caplog.at_level(logging.DEBUG), pytest.raises(SourceSchemaError) as exc_info:
-            run_pipeline(self._SD83, str(gde_input), str(gde_output))
+            run_pipeline(self._SD83, str(self._with_sd83_course_feeds(gde_input)), str(gde_output))
         assert SENTINEL_PII.lower() not in str(exc_info.value).lower()
         assert SENTINEL_PII.lower() not in caplog.text.lower()
         # Non-vacuity: the failure line WAS logged, carrying the typed message.
@@ -1330,7 +1342,11 @@ class TestEntityOutcomesReachTheRecord:
         from src.etl.errors import SourceSchemaError
 
         with caplog.at_level(logging.INFO, logger="src.etl.pipeline"), pytest.raises(SourceSchemaError):
-            run_pipeline(TestTypedCategoriesReachTheRecord._SD83, str(gde_input), str(gde_output))
+            run_pipeline(
+                TestTypedCategoriesReachTheRecord._SD83,
+                str(TestTypedCategoriesReachTheRecord._with_sd83_course_feeds(gde_input)),
+                str(gde_output),
+            )
         records = read_run_records()
         assert records is not None and len(records) == 1
         stored = records[0]

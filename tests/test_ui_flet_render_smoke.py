@@ -2583,8 +2583,9 @@ class TestConvertColdStateAndInteraction:
         assert spinner.visible is True
 
     def test_missing_files_list_is_soft_and_reassuring(self, tmp_path, stub_page, monkeypatch):
-        # The expected-but-missing list leads with the softened heading and closes with the
-        # honest skip-on-empty reassurance (pure copy pinned in test_ui_flet_convert_output).
+        # The missing list leads with the calm heading and closes with the true consequence —
+        # since 2026-09-28 a missing file stops the conversion, except the family contacts file
+        # (pure copy pinned in test_ui_flet_convert_output).
         in_dir = tmp_path / "in"
         in_dir.mkdir()
         (in_dir / "StudentInformation.csv").write_text("id\n1\n")  # present → others missing
@@ -2592,8 +2593,9 @@ class TestConvertColdStateAndInteraction:
         monkeypatch.setattr(AppConfig, "load", classmethod(lambda cls: cfg))
         tree = _assert_renders(lambda: build_convert(stub_page), monkeypatch)
         assert not _has_text_containing(tree, "Expected files not found in this folder")
-        assert _has_text_containing(tree, "Not found yet")
-        assert _has_text_containing(tree, "You can still convert")
+        assert _has_text_containing(tree, "Not found in this folder")
+        assert _has_text_containing(tree, "A missing file stops the conversion")
+        assert not _has_text_containing(tree, "You can still convert")
 
 
 # 0032 W3c appends — About/support context + badge-freshness wiring            #

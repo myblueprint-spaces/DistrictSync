@@ -46,7 +46,7 @@ from src.config.authoring import (
 )
 from src.config.loader import load_config, validate_overlay
 from src.config.models import CLASS_ROSTERING_HOMEROOM_SENTINEL
-from src.etl.outcomes import EntityOutcome, OutcomeReason
+from src.etl.outcomes import EntityOutcome, OutcomeNote, OutcomeReason
 from src.etl.pipeline import PipelineResult
 from src.etl.preflight import MissingColumn, PreflightReport
 from src.etl.transformers.grades import CEDS_GRADE_CODES, CEDS_MAPPING
@@ -59,7 +59,9 @@ from src.ui_flet.config_editor import (
     CONFIG_ERROR_OTHER,
     CONFIG_ERROR_UNREADABLE,
     FILE_LABELS,
+    GATE_ENTITIES_EMPTY_NOTE,
     GATE_ENTITIES_NOT_BUILT_NOTE,
+    GATE_INPUT_INCOMPLETE_NOTE,
     GATE_NO_OUTCOMES_NOTE,
     PREFLIGHT_MISSING_LINE,
     ActivationVerdict,
@@ -91,6 +93,7 @@ from src.ui_flet.config_editor import (
     validate_domains,
     verified_is_current,
 )
+from src.ui_flet.failure_copy import entity_phrase, note_sentence
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "src" / "ui_flet" / "config_editor.py"
 
@@ -683,6 +686,10 @@ class TestGateOutcomeFor:
         }
 
 
+def _capital(text: str) -> str:
+    return text[:1].upper() + text[1:]
+
+
 def _gate(outcomes: object) -> GateOutcome:
     """The gate over a COMPLETED run carrying ``outcomes`` (every file present)."""
     return gate_outcome_for(
@@ -695,23 +702,80 @@ def _gate(outcomes: object) -> GateOutcome:
 
 
 class TestTheGateReadsEveryEntityOutcome:
-    """Plan 0053 S4 — PASSED only when every configured entity is BUILT or EMPTY.
+    """Plan 0053 S4 — PASSED only when every configured entity BUILT (or is a normal-night empty).
 
     Since the entity bulkhead a dry run can COMPLETE without an ISOLATABLE entity; before
     this rule the creator's test conversion would have PASSED a self-service mapping whose
-    Family fails every night, and ``activation_allowed`` would have switched it on.
+    Family fails every night, and ``activation_allowed`` would have switched it on. Since owner
+    decision 2026-09-28 ("block empty outputs") an EMPTY output that WARNS is refused too; a
+    StudentAttendance with nothing to send — the one normal-night empty — still passes.
     """
 
-    def test_every_entity_built_or_empty_PASSES(self):
-        outcome = _gate(
-            (
-                EntityOutcome.built("Students", 5),
-                EntityOutcome.empty("Family", OutcomeReason.SOURCE_FILES_EMPTY),
-            )
-        )
+    def test_every_entity_built_PASSES(self):
+        outcome = _gate((EntityOutcome.built("Students", 5), EntityOutcome.built("Family", 2)))
         assert outcome.state is GateState.PASSED and outcome.note == ""
         assert outcome.counts == {"Students": 5}
         assert outcome.completed is False
+
+    @pytest.mark.parametrize(
+        "empty",
+        [
+            EntityOutcome.empty("Family", OutcomeReason.SOURCE_FILES_EMPTY),
+            EntityOutcome.empty("Family", OutcomeReason.NO_ROWS_AFTER_TRANSFORM),
+            EntityOutcome.empty("Family", OutcomeReason.MISSING_SOURCE_COLUMN),
+            EntityOutcome.empty("StudentAttendance", OutcomeReason.NO_ROWS_AFTER_TRANSFORM),
+        ],
+        ids=["family-no-file", "family-no-rows", "family-missing-column", "attendance-rows-all-lost"],
+    )
+    def test_an_output_that_would_produce_nothing_is_REFUSED(self, empty):
+        """Owner 2026-09-28: the self-service test must refuse activation when an enabled output
+        would produce nothing — every EMPTY outcome whose tier is WARNING."""
+        outcome = _gate((EntityOutcome.built("Students", 5), empty))
+        assert outcome.state is GateState.FAILED
+        assert outcome.note == GATE_ENTITIES_EMPTY_NOTE.format(entities=_capital(entity_phrase(empty.entity)))
+        assert outcome.completed is True, "the test ran to the end — never 'didn't finish'"
+        assert outcome.counts == {} and outcome.warning_notes == ()
+
+    def test_twin_attendance_with_nothing_to_send_still_PASSES(self):
+        """A night without absences is a normal night (``outcomes.empty_is_expected``)."""
+        outcome = _gate(
+            (
+                EntityOutcome.built("Students", 5),
+                EntityOutcome.empty("StudentAttendance", OutcomeReason.SOURCE_FILES_EMPTY),
+            )
+        )
+        assert outcome.state is GateState.PASSED and outcome.note == ""
+
+    def test_a_left_out_and_an_empty_output_are_both_named_in_one_note(self):
+        outcome = _gate(
+            (
+                EntityOutcome.built("Students", 5),
+                EntityOutcome.failed("Staff", OutcomeReason.TRANSFORM_ERROR),
+                EntityOutcome.empty("Family", OutcomeReason.NO_ROWS_AFTER_TRANSFORM),
+            )
+        )
+        assert outcome.state is GateState.FAILED
+        assert outcome.note == " ".join(
+            (
+                GATE_ENTITIES_NOT_BUILT_NOTE.format(entities="Staff records"),
+                GATE_ENTITIES_EMPTY_NOTE.format(entities="Family contacts"),
+            )
+        )
+
+    def test_a_passed_test_carries_the_warning_notes_it_would_run_with(self):
+        """Owner 2026-09-28 — "show notes, don't block": a BUILT output's WARNING-tier note
+        (co-teachers left out) rides the PASSED outcome as its authored sentence, so the view
+        shows it before the confirm; a HEALTHY note (row detail only) is not carried."""
+        coteachers = EntityOutcome.built("Enrollments", 4, notes=((OutcomeNote.COTEACHER_SOURCE_UNUSABLE, 3),))
+        quiet = EntityOutcome.built("Staff", 2, notes=((OutcomeNote.STAFF_STATUS_COLUMN_ABSENT, 2),))
+        outcome = _gate((EntityOutcome.built("Students", 5), quiet, coteachers))
+        assert outcome.state is GateState.PASSED
+        assert outcome.warning_notes == (note_sentence(OutcomeNote.COTEACHER_SOURCE_UNUSABLE),)
+        assert "3" not in outcome.warning_notes[0], "a sentence, never the count"
+
+    def test_twin_a_clean_pass_carries_no_notes(self):
+        outcome = _gate((EntityOutcome.built("Students", 5), EntityOutcome.built("Enrollments", 4)))
+        assert outcome.state is GateState.PASSED and outcome.warning_notes == ()
 
     @pytest.mark.parametrize(
         "left_out",
@@ -987,6 +1051,46 @@ class TestHumanizeConfigError:
 
     def _planted(self, template: str) -> str:
         return template.format(domain=self.PLANTED_DOMAIN, path=self.PLANTED_PATH)
+
+    def test_the_input_and_empty_output_stops_are_decided_by_type_never_by_their_text(self):
+        """Owner 2026-09-28: a test the INPUT stopped is a folder problem, and one an EMPTY required
+        output stopped names that output by its phrase — even when the message happens to say
+        "grade" or "domain" (the text heuristics below would otherwise mislabel either)."""
+        from src.etl.errors import EmptyRequiredOutputError, IncompleteInputError, NoUsableInputError
+
+        input_stop = IncompleteInputError(
+            f"grade domain {self.PLANTED_PATH}", missing=("StudentSchedule.txt",), empty=(), named=()
+        )
+        assert humanize_config_error(input_stop) == GATE_INPUT_INCOMPLETE_NOTE
+        # Every required file unusable is the same folder problem, decided by the same type check.
+        assert humanize_config_error(NoUsableInputError(f"grade domain {self.PLANTED_PATH}")) == (
+            GATE_INPUT_INCOMPLETE_NOTE
+        )
+        empty_stop = EmptyRequiredOutputError(f"grade domain {self.PLANTED_DOMAIN}", entity="Enrollments")
+        note = humanize_config_error(empty_stop)
+        assert note == GATE_ENTITIES_EMPTY_NOTE.format(entities="Enrollments")
+        assert self.PLANTED_DOMAIN not in note and "grade" not in note.lower()
+        unknown = humanize_config_error(EmptyRequiredOutputError("x", entity="HandDroppedSecret"))
+        assert "HandDroppedSecret" not in unknown and unknown.startswith("One of your files came out empty")
+
+    def test_a_raised_test_conversion_keeps_its_file_report(self):
+        """The gate's exception branch: FAILED, the bounded note, and the missing-file list still
+        derived — the useful sentence when the input stopped the test."""
+        from src.etl.errors import IncompleteInputError
+
+        outcome = gate_outcome_for(
+            result=None,
+            error=IncompleteInputError("x", missing=("b.txt",), empty=(), named=("b.txt",)),
+            output_dir_valid=True,
+            expected_files=["a.txt", "b.txt"],
+            present_files=["a.txt"],
+        )
+        assert (outcome.state, outcome.note, outcome.missing_files) == (
+            GateState.FAILED,
+            GATE_INPUT_INCOMPLETE_NOTE,
+            ("b.txt",),
+        )
+        assert outcome.completed is False and outcome.warning_notes == ()
 
     def test_a_real_chain_violation_reads_as_a_grade_problem(self):
         overlay = {
@@ -1402,7 +1506,7 @@ class TestTheStoredFactAgainstTheRealConfig:
 #: The rows each starting point earns, in the order they must render. Hand-written on
 #: purpose: a tuple derived from the same walk the code uses would pass whatever the walk
 #: did, and this is the assertion that the ORDER is a decision (``CREATOR_ENTITIES``, then
-#: first-seen per file) rather than ``advisory_expected_files``' ``list(set)``.
+#: first-seen per file) rather than ``extract_required_files``' ``list(set)``.
 SLOT_ORDER: dict[str, tuple[str, ...]] = {
     "myedbc": (
         "StudentDemographicInformation.txt",
@@ -1446,10 +1550,10 @@ SD74_RENAMES = {
 
 
 def _slots_for(base: str):
-    from src.etl.pipeline import advisory_expected_files
+    from src.etl.pipeline import extract_required_files
 
     resolved = load_config(base)
-    return distinct_source_files(resolved, expected=advisory_expected_files(resolved))
+    return distinct_source_files(resolved, expected=extract_required_files(resolved))
 
 
 class TestDistinctSourceFiles:
@@ -1459,7 +1563,7 @@ class TestDistinctSourceFiles:
 
     @pytest.mark.parametrize("base", ALLOWED_BASES)
     def test_the_order_is_the_walk_never_the_expected_list(self, base):
-        """The twin for the order pin: ``advisory_expected_files`` returns ``list(set)``,
+        """The twin for the order pin: ``extract_required_files`` returns ``list(set)``,
         whose order moves with ``PYTHONHASHSEED``. A shuffled ``expected`` may not move a
         single row — otherwise S4 would have inherited S3's instability."""
         resolved = load_config(base)
@@ -1532,21 +1636,21 @@ class TestTheSchoolYearFileKeepsItsRow:
         return load_config("myedbc"), load_config("sd93custom")
 
     def test_a_homeroom_scoped_district_still_gets_its_schedule_row(self):
-        """``advisory_expected_files`` drops the ``student_schedule`` ROLE (it feeds no
-        surviving class), but ``extract_required_files`` still LOADS the file for the school
-        year — so the district whose schedule extract is named differently must keep the one
-        row that can say so, or its every ``append_year_to_id`` Class ID is wrong with no
-        way to fix it."""
-        from src.etl.pipeline import advisory_expected_files
+        """A homeroom-scoped district's schedule feeds no surviving class, but its mapping still
+        LISTS it — so since owner decision 2026-09-28 the input gate REQUIRES it, and the
+        district whose schedule extract is named differently must keep the row that can say so
+        (it also carries the school year, so its every ``append_year_to_id`` Class ID depends on
+        it). The retired UI-only list dropped both files here; the required list keeps both."""
+        from src.etl.pipeline import extract_required_files
 
         base, current = self._homeroom_scoped()
-        expected = advisory_expected_files(current)
-        assert "StudentSchedule.txt" not in expected, "the premise: the role really is inert"
+        expected = extract_required_files(current)
+        assert {"StudentSchedule.txt", "ClassInformationEnh.txt"} <= set(expected), "both are required now"
 
         by_name = {slot.original: slot for slot in distinct_source_files(base, expected=expected)}
 
         assert by_name["StudentSchedule.txt"].names_school_year is True
-        assert "ClassInformationEnh.txt" not in by_name, "an inert file NO list needs still gets nothing"
+        assert by_name["ClassInformationEnh.txt"].names_school_year is False, "listed, so it gets its row"
 
     def test_the_twin_a_course_only_tier_still_gets_no_schedule_row(self):
         """The union is not a blanket: ``mbponly`` names ``StudentSchedule.txt`` in
@@ -1896,8 +2000,8 @@ class TestSlotsFollowTheDistrictsEntitySelection:
 
     def test_the_twin_the_base_selection_still_asks_for_the_schedule_and_not_the_courses(self):
         resolved = load_config("myedbc")
-        from src.etl.pipeline import advisory_expected_files
+        from src.etl.pipeline import extract_required_files
 
-        names = [slot.original for slot in distinct_source_files(resolved, expected=advisory_expected_files(resolved))]
+        names = [slot.original for slot in distinct_source_files(resolved, expected=extract_required_files(resolved))]
         assert "StudentSchedule.txt" in names
         assert "StudentCourseHistory.txt" not in names

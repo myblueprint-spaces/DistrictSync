@@ -55,9 +55,15 @@ from datetime import datetime
 from enum import Enum
 
 from src.config.app_config import AppConfig
-from src.etl.outcomes import EntityOutcome, OutcomeKind, outcomes_from_record
+from src.etl.outcomes import EntityOutcome, OutcomeKind, nothing_to_send, outcomes_from_record
 from src.etl.sync_window import in_sync_window, next_resume_date
-from src.ui_flet.failure_copy import data_warnings_clause, failed_copy_for, partial_copy, warning_outcomes
+from src.ui_flet.failure_copy import (
+    data_warnings_clause,
+    failed_copy_for,
+    nothing_to_send_detail,
+    partial_copy,
+    warning_outcomes,
+)
 from src.ui_flet.humanize import (
     SIZE_NOUNS,
     AnomalyVariant,
@@ -1084,6 +1090,20 @@ def derive_home_status(
     # or no number at all, never zeros.
     counts_record = _counts_source(records, latest)
     when = friendly_timestamp(timestamp, now=now)
+    # A night with nothing to send (owner ruling 2026-09-30 — an attendance-only config whose
+    # absence files were present with no rows) wrote and delivered NOTHING: neither phrasing below
+    # would be true, and a size clause would only count the zero it already explains.
+    latest_outcomes = outcomes_from_record(latest)
+    if nothing_to_send(latest_outcomes):
+        return HomeStatus(
+            verdict=Verdict.HEALTHY,
+            headline=(
+                "Your roster is syncing" if _schedule_confirmed_live(schedule_status) else "Your roster is up to date"
+            ),
+            detail=f"Last sync completed {when}. {nothing_to_send_detail(latest_outcomes)}",
+            fix=None,
+            metrics=None,
+        )
     detail = (
         f"Last sync delivered to SpacesEDU {when}."
         if sftp_delivered(latest)
@@ -1129,7 +1149,10 @@ def failed_detail(record: dict) -> str:
     """The cause + next step for a FAILED_ETL ``record`` — shared by Home and Run History.
 
     ``failure_copy.failed_copy_for`` over the record's own ``error_category`` (TOTAL: absent,
-    unknown or ``none`` → the generic copy). Never reads the free-text ``error``.
+    unknown or ``none`` → the generic copy) and its own outcomes (``outcomes_from_record``,
+    also total), which is how a night the input gate stopped names its missing files and a
+    school-year stop names "School Year" (owner 2026-09-28 — ``failure_copy.failure_names``).
+    Never reads the free-text ``error``.
 
     The tail says "nothing was sent" ONLY when the record PROVES it: an upload was attempted
     and did not succeed. A record does not store whether delivery was requested, and
@@ -1139,7 +1162,9 @@ def failed_detail(record: dict) -> str:
     (``failure_copy.failed_copy`` states the one meaning every surface passes).
     """
     not_sent = bool(record.get("sftp_attempted")) and not bool(record.get("sftp_ok"))
-    _headline, detail = failed_copy_for(record.get("error_category"), delivery_requested=not_sent)
+    _headline, detail = failed_copy_for(
+        record.get("error_category"), delivery_requested=not_sent, outcomes=outcomes_from_record(record)
+    )
     return detail
 
 

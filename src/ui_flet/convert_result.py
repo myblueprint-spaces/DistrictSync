@@ -43,7 +43,13 @@ from enum import Enum
 
 from src.etl.errors import RunErrorCategory
 from src.etl.outcomes import EntityOutcome
-from src.ui_flet.failure_copy import data_warnings_clause, failed_copy, partial_copy, warning_outcomes
+from src.ui_flet.failure_copy import (
+    data_warnings_clause,
+    failed_copy,
+    nothing_to_send_detail,
+    partial_copy,
+    warning_outcomes,
+)
 from src.ui_flet.humanize import AnomalyVariant, friendly_anomaly_detail, pluralize
 from src.ui_flet.verdict import Verdict
 
@@ -61,6 +67,9 @@ class ConvertStatus(str, Enum):
     NO_OUTPUT = "no_output"  # transform produced no entities
     INCOMPLETE_ROSTER = "incomplete_roster"  # other entities built, the roster anchor did not — refused
     OUTPUT_FOLDER_UNUSABLE = "output_folder_unusable"  # output folder unreachable/unwritable (0050)
+    # Every configured output may be empty and has no rows (an attendance-only config without
+    # absences — owner ruling 2026-09-30): a success that wrote and delivered nothing.
+    NOTHING_TO_SEND = "nothing_to_send"
 
 
 @dataclass(frozen=True)
@@ -167,6 +176,11 @@ def summarize(result: ConvertResult) -> tuple[Verdict, str, str]:
             f"Delivered to SpacesEDU with {total} data {warning_word}",
             "A few records had field problems and were left blank. The rest of the roster was built, saved, and delivered.",
         )
+
+    if status is ConvertStatus.NOTHING_TO_SEND:
+        # Owner ruling 2026-09-30: a night without absences on an attendance-only config is a
+        # normal night — green, and the words Home and Run History give the same record.
+        return Verdict.HEALTHY, "Nothing to send", nothing_to_send_detail(result.entity_outcomes or ())
 
     if status is ConvertStatus.DELIVERED_FROM_DISK:
         # Deliver-from-disk (0034 Slice 2): nothing was rebuilt — the copy must not claim

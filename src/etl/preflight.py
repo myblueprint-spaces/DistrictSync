@@ -73,7 +73,7 @@ from src.config.models import (
     ensure_field_mapping,
 )
 from src.etl.column_names import normalize_column_name
-from src.etl.outcomes import LabelVocabulary
+from src.etl.outcomes import STRUCTURAL_LABELS, LabelVocabulary
 
 logger = logging.getLogger(__name__)
 
@@ -654,6 +654,11 @@ def label_vocabulary_by_entity(config: MappingConfig) -> dict[str, LabelVocabula
     S13b — owner ruling 2026-09-26: an absent REQUIRED band column is named), and it reads its
     own files. The single-file rule still decides whether a file can be named beside one.
 
+    **Structural labels** (owner 2026-09-28): an entity whose fail-closed guard names a column
+    from CODE rather than the config — Classes' §5 #41 school-year guard, "School Year" — gets
+    that label too (``outcomes.STRUCTURAL_LABELS``), so a stopped night can name it. It is a
+    code constant, never observed text, and it never names a file (Classes has five).
+
     Membership itself is decided in ONE place, ``outcomes.safe_label``; this only says what
     the resolved config declares. TOTAL: never raises (``{}`` at worst — no labels).
     """
@@ -678,6 +683,7 @@ def label_vocabulary_by_entity(config: MappingConfig) -> dict[str, LabelVocabula
         if entity == ATTENDANCE_ENTITY:
             columns = _attendance_band_columns(config)
             reads_own_files = True
+        columns = columns | STRUCTURAL_LABELS.get(entity, frozenset())
         vocabularies[entity] = LabelVocabulary(columns=columns, files=files, reads_own_files=reads_own_files)
     return vocabularies
 

@@ -16,6 +16,12 @@ and Convert. What it must do, each with the twin that proves the mechanism fires
   category, never the vaguer ``no_output``; the two-entity twin completes PARTIAL;
 * ``BaseException`` is never contained.
 
+Since owner decision 2026-09-28 (D1 revised) Family is the ONE isolatable entity, so the sweep's
+ISOLATABLE branch runs for Family alone and every other entity takes the CRITICAL one. The
+mechanism tests that need a SECOND isolatable entity (two roll-backs, the FIRST of two failures
+re-raised) widen the table for the test only (:func:`_also_isolatable`): the bulkhead must not
+depend on how many entities the owner lets it contain.
+
 The AST pins that used to live here — exactly one broad handler in ``run_transform`` and none
 under ``src/etl/transformers`` outside the field-map engine — moved, unchanged in strength, to
 ``tests/test_architecture_fitness.py`` rule (d) (plan 0053 S13a).
@@ -211,6 +217,19 @@ def _stub_with_data_errors(monkeypatch: pytest.MonkeyPatch, *, raising: frozense
     monkeypatch.setattr(DataTransformer, "transform", _stub)
 
 
+def _also_isolatable(monkeypatch: pytest.MonkeyPatch, *extra: str) -> None:
+    """Treat ``extra`` as ISOLATABLE beside Family at the bulkhead, for a MECHANISM test only.
+
+    Only Family is isolatable today (owner 2026-09-28); the roll-back-from-its-own-mark and the
+    first-of-two re-raise are properties of the boundary, which must hold for any number."""
+    isolatable = {"Family", *extra}
+    monkeypatch.setattr(
+        pipeline,
+        "criticality_of",
+        lambda entity: EntityCriticality.ISOLATABLE if entity in isolatable else EntityCriticality.CRITICAL,
+    )
+
+
 def _run(mappings: dict) -> tuple[pipeline.TransformOutputs, OutcomeLedger]:
     raw = {entity["source_files"]["primary"]: pd.DataFrame({"in_col": ["x"]}) for entity in mappings.values()}
     ledger = OutcomeLedger(configured_entity_order(mappings, _GC))
@@ -226,7 +245,9 @@ class TestDataErrorsRollBackWithTheEntity:
         assert [e["entity"] for e in result.data_errors] == ["Students", "Classes"]
 
     def test_TWO_isolated_entities_both_roll_back_and_a_built_ones_entry_survives(self, monkeypatch) -> None:
-        """The second isolated failure rolls back from its OWN mark, not the first one's."""
+        """The second isolated failure rolls back from its OWN mark, not the first one's (a
+        hypothetical second isolatable entity — see :func:`_also_isolatable`)."""
+        _also_isolatable(monkeypatch, "CourseInfo")
         _stub_with_data_errors(monkeypatch, raising=frozenset({"Family", "CourseInfo"}))
         result, ledger = _run(
             {"Students": _entity("s.txt"), "Family": _entity("f.txt"), "CourseInfo": _entity("c.txt")}
@@ -325,43 +346,52 @@ class TestNothingBuiltFailsTheRun:
         assert records[0]["error_category"] == "data"
         assert _kinds(records[0]) == {"StudentAttendance": ("failed", "transform_error")}
 
-    def test_the_twin_a_two_entity_config_with_one_failure_is_partial(self, tmp_path: Path, monkeypatch) -> None:
+    def test_a_course_feed_failure_now_fails_the_whole_course_only_run(self, tmp_path: Path, monkeypatch) -> None:
+        """D1 revised (owner 2026-09-28): CourseInfo is CRITICAL. On ``mbponly`` a planted
+        course-catalog fault used to leave CourseInfo out and ship StudentCourses alone (PARTIAL);
+        it now fails the run with the ORIGINAL exception and writes nothing — SpacesEDU keeps the
+        last good sync of BOTH course files."""
         input_dir, output_dir = tmp_path / "in", tmp_path / "out"
         input_dir.mkdir()
         output_dir.mkdir()
         _create_mbponly_inputs(input_dir)
-        _raise_for(monkeypatch, "CourseInfo", RuntimeError("planted course-catalog fault"))
-        result = run_pipeline("mbponly", str(input_dir), str(output_dir))
-        assert [(o.entity, o.kind) for o in result.entity_outcomes] == [
-            ("CourseInfo", OutcomeKind.FAILED),
-            ("StudentCourses", OutcomeKind.BUILT),
-        ]
-        assert sorted(p.name for p in output_dir.glob("*.csv")) == ["StudentCourses.csv"]
+        boom = RuntimeError("planted course-catalog fault")
+        _raise_for(monkeypatch, "CourseInfo", boom)
+        with pytest.raises(RuntimeError) as raised:
+            run_pipeline("mbponly", str(input_dir), str(output_dir))
+        assert raised.value is boom
+        assert list(output_dir.glob("*.csv")) == []
         records = read_run_records()
-        assert records is not None and records[0]["status"] == "success"
-        assert classify_latest_reason(records[0], prior_build=build_record_for(records, 0)) is LatestReason.PARTIAL
+        assert records is not None and records[0]["status"] == "failed"
+        assert _kinds(records[0]) == {
+            "CourseInfo": ("failed", "transform_error"),
+            "StudentCourses": ("not_run", "run_aborted"),
+        }
 
     def test_a_failure_beside_only_empty_entities_re_raises_too(self, monkeypatch) -> None:
         """Nothing BUILT is the rule, not "everything failed": with the rest EMPTY the run
-        has nothing to deliver either, and the precise failure beats ``no_output``."""
+        has nothing to deliver either, and the precise failure beats ``no_output``. The EMPTY
+        one is a StudentAttendance with nothing to send — the one EMPTY that is a normal night
+        (any other would itself stop the night, owner 2026-09-28)."""
         boom = SourceSchemaError(
             "planted", entity="Family", columns=("Parent Auth / Guardian",), guard=GuardKind.PII_SCOPE
         )
-        mappings = {"Family": _entity("f.txt"), "CourseInfo": _entity("c.txt")}
+        mappings = {"Family": _entity("f.txt"), "StudentAttendance": _entity("a.txt")}
         _raise_for(monkeypatch, "Family", boom)
-        raw = {"f.txt": pd.DataFrame({"in_col": ["x"]}), "c.txt": pd.DataFrame()}
+        raw = {"f.txt": pd.DataFrame({"in_col": ["x"]}), "a.txt": pd.DataFrame()}
         ledger = OutcomeLedger(configured_entity_order(mappings, _GC))
         with pytest.raises(SourceSchemaError) as raised:
             run_transform(raw, mappings, _GC, ledger=ledger)
         assert raised.value is boom
         assert ledger.complete() == (
             EntityOutcome.failed("Family", OutcomeReason.MISSING_SOURCE_COLUMN),
-            EntityOutcome.empty("CourseInfo", OutcomeReason.SOURCE_FILES_EMPTY),
+            EntityOutcome.empty("StudentAttendance", OutcomeReason.SOURCE_FILES_EMPTY),
         )
 
     def test_with_TWO_isolated_failures_and_nothing_built_the_FIRST_is_re_raised(self, monkeypatch) -> None:
         """The rule is the FIRST contained failure (its own category and traceback) — never
-        whichever happened to be last."""
+        whichever happened to be last (a hypothetical second isolatable entity)."""
+        _also_isolatable(monkeypatch, "CourseInfo")
         first, second = RuntimeError("Family fault"), ValueError("CourseInfo fault")
         planted = {"Family": first, "CourseInfo": second}
 

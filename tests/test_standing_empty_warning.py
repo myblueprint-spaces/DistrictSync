@@ -18,8 +18,10 @@ mechanism fires:
   delivery-only record's walk-back.
 * **Level-triggered, end to end** — an SD51-shaped drop whose contact export lacks the mapped
   ``Email Address`` column is PARTIAL on night 1 AND night 2 (the anomaly has decayed by night 2);
-  twins: the same drop WITH the column is CLEAN (its absent attendance files, a ``MAY_BE_EMPTY``
-  entity, stay neutral), and a present-but-blank column is PARTIAL for the other warning reason.
+  twins: the same drop WITH the column is CLEAN (its attendance files, present with no rows — a
+  night without absences, for a ``MAY_BE_EMPTY`` entity — stay neutral), and a present-but-blank
+  column is PARTIAL for the other warning reason. (Since owner decision 2026-09-28 a MISSING
+  absence file stops the night, so these drops carry the two files, empty — :func:`_no_absences_today`.)
   These run through a TEST-ONLY overlay (:data:`_SD51_SHAPE`) that re-enables Family on the
   bundled ``sd51myedbc``: the shipped config has had Family OFF since 2026-09-25 (owner
   decision — SD51's real contact export has no email column), so the bundled config on the
@@ -76,6 +78,8 @@ _EXPECTED_TIER: dict[tuple[OutcomeKind, OutcomeReason], tuple[Verdict, Verdict]]
     (OutcomeKind.EMPTY, OutcomeReason.MISSING_SOURCE_COLUMN): (_W, _W),
     (OutcomeKind.FAILED, OutcomeReason.MISSING_SOURCE_COLUMN): (_W, _W),
     (OutcomeKind.FAILED, OutcomeReason.TRANSFORM_ERROR): (_W, _W),
+    # The input gate's stop (owner 2026-09-28): only ever inside a FAILED run, whose status leads.
+    (OutcomeKind.FAILED, OutcomeReason.MISSING_SOURCE_FILE): (_W, _W),
     (OutcomeKind.NOT_RUN, OutcomeReason.RUN_ABORTED): (_F, _F),
 }
 _VALID_PAIRS = [(kind, reason) for kind, reasons in VALID_REASONS.items() for reason in sorted(reasons)]
@@ -367,6 +371,18 @@ def _sd51_contacts(d: Path, *, email: str) -> None:
     pd.DataFrame(frame).to_csv(d / "EmergencyContactInformation.txt", index=False)
 
 
+def _no_absences_today(d: Path) -> None:
+    """Both SD51 absence files PRESENT with no rows — a night without absences.
+
+    Overwrites the SD51 contract builder's absence files (which carry rows since 2026-09-30) with
+    row-less ones: since owner decision 2026-09-28 a MISSING absence file stops the night, while a
+    present one with no rows is a normal night (``outcomes.MAY_BE_EMPTY``) — the neutral
+    attendance these drops mean to show.
+    """
+    (d / "StudentDailyAbsences.txt").write_bytes(b"")
+    (d / "StudentPeriodAbsencesEnhanced.txt").write_bytes(b"")
+
+
 def _latest() -> tuple[dict, dict | None, list[dict]]:
     records = read_run_records()
     assert records
@@ -386,8 +402,10 @@ def test_an_sd51_shaped_drop_without_the_email_column_is_partial_two_nights_runn
     for d in (good, bad, out):
         d.mkdir()
     _create_sd51_inputs(good)
+    _no_absences_today(good)
     _sd51_contacts(good, email="present")
     _create_sd51_inputs(bad)
+    _no_absences_today(bad)
     _sd51_contacts(bad, email="absent")
 
     run_pipeline(sis, str(good), str(out))  # night 0: Family built
@@ -412,7 +430,7 @@ def test_an_sd51_shaped_drop_without_the_email_column_is_partial_two_nights_runn
     assert _family(record) == ("empty", "missing_source_column")
     assert classify_latest_reason(record, prior_build=prior) is LatestReason.PARTIAL
     assert to_run_row(record, prior_build=prior).status_label == "Completed · 1 file skipped"
-    # The attendance entity (a MAY_BE_EMPTY member) has no source files on every night — never the cause.
+    # The attendance entity (a MAY_BE_EMPTY member) has nothing to send on every night — never the cause.
     assert record["entity_outcomes"]["StudentAttendance"]["kind"] == "empty"
     assert [o.entity for o in warning_outcomes(_outcomes_of(record))] == ["Family"]
 
@@ -424,11 +442,12 @@ def test_twin_the_same_drop_with_the_email_column_is_clean(tmp_path: Path) -> No
     inp.mkdir()
     out.mkdir()
     _create_sd51_inputs(inp)
+    _no_absences_today(inp)
     _sd51_contacts(inp, email="present")
     run_pipeline(_SD51_SHAPE, str(inp), str(out))
     record, prior, _ = _latest()
     assert _family(record) == ("built", "none")
-    # The absent attendance files are EMPTY/source_files_empty — neutral for a MAY_BE_EMPTY member.
+    # The row-less attendance files are EMPTY/source_files_empty — neutral for a MAY_BE_EMPTY member.
     assert (
         record["entity_outcomes"]["StudentAttendance"]["kind"],
         record["entity_outcomes"]["StudentAttendance"]["reason"],
@@ -446,6 +465,7 @@ def test_a_present_but_blank_email_column_is_partial_for_the_other_reason(tmp_pa
     inp.mkdir()
     out.mkdir()
     _create_sd51_inputs(inp)
+    _no_absences_today(inp)
     _sd51_contacts(inp, email="blank")
     run_pipeline(_SD51_SHAPE, str(inp), str(out))
     record, prior, _ = _latest()
@@ -464,6 +484,7 @@ def test_the_bundled_sd51_config_on_the_same_drop_is_clean(tmp_path: Path) -> No
     inp.mkdir()
     out.mkdir()
     _create_sd51_inputs(inp)
+    _no_absences_today(inp)
     _sd51_contacts(inp, email="absent")
     run_pipeline("sd51myedbc", str(inp), str(out))
     record, prior, records = _latest()

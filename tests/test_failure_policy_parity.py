@@ -597,26 +597,36 @@ class TestTheFaqStatesTheCriticalityRule:
 
     def test_non_vacuity_both_bullets_parse_and_q5_is_open_today(self):
         faq = _FAQ.read_text(encoding="utf-8")
+        # D1 revised (owner 2026-09-28): family contacts are the ONE output that may be left out.
         assert _named_phrases(_faq_bullet(faq, EntityCriticality.ISOLATABLE), EntityCriticality.ISOLATABLE) == {
             "family contacts",
-            "courses",
-            "student courses",
-            "attendance rows",
         }
-        assert len(_named_phrases(_faq_bullet(faq, EntityCriticality.CRITICAL), EntityCriticality.CRITICAL)) == 4
+        assert len(_named_phrases(_faq_bullet(faq, EntityCriticality.CRITICAL), EntityCriticality.CRITICAL)) == 7
         assert _q5_status(_CONTRACT.read_text(encoding="utf-8")) == "open"
         assert FAQ_PENDING_CLAUSE in _faq_bullet(faq, EntityCriticality.ISOLATABLE)
 
-    def test_doctored_a_dropped_isolatable_entity_is_red(self):
+    def test_doctored_an_extra_isolatable_entity_is_red(self):
+        """The FAQ may not promise an output is only left out when the code stops the night for it."""
         faq = _FAQ.read_text(encoding="utf-8")
         doctored = faq.replace(
-            "family contacts, courses, student courses or attendance rows", "family contacts or courses", 1
+            "**If the output that can't be built is family contacts, only",
+            "**If the output that can't be built is family contacts or courses, only",
+            1,
         )
         assert doctored != faq
         assert _faq_mismatches(doctored, _CONTRACT.read_text(encoding="utf-8")) == [
             "faq.md: the ISOLATABLE bullet names ['courses', 'family contacts'], but outcomes.ENTITY_CRITICALITY's "
-            "ISOLATABLE set reads ['attendance rows', 'courses', 'family contacts', 'student courses']"
+            "ISOLATABLE set reads ['family contacts']"
         ]
+
+    def test_doctored_a_dropped_critical_entity_is_red(self):
+        faq = _FAQ.read_text(encoding="utf-8")
+        doctored = faq.replace(
+            "courses, student courses or attendance rows, the whole run stops", "courses, the whole run stops", 1
+        )
+        assert doctored != faq
+        problems = _faq_mismatches(doctored, _CONTRACT.read_text(encoding="utf-8"))
+        assert len(problems) == 1 and problems[0].startswith("faq.md: the CRITICAL bullet names")
 
     def test_doctored_a_missing_pending_clause_is_red_while_q5_is_open(self):
         faq = _FAQ.read_text(encoding="utf-8")

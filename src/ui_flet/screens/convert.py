@@ -123,9 +123,10 @@ from src.etl.extractor import DataExtractor
 from src.etl.loader import DataLoader, output_target_problem
 from src.etl.outcomes import EntityOutcome, OutcomeLedger
 from src.etl.pipeline import (
-    advisory_expected_files,
+    NOTHING_TO_SEND_LOG_LINE,
     build_run_record,
     check_delivery_integrity,
+    check_required_inputs,
     compute_anomalies,
     configured_entity_order,
     extract_required_files,
@@ -371,12 +372,15 @@ def convert_job(
         # succeeded. Going through `load_data` also inherits the disk path's case-insensitive
         # resolution and its case-COLLISION raise, which the bytes path never had.
         required_files = extract_required_files(config)
-        raw_data = DataExtractor(str(input_dir)).load_data(required_files, file_headers=file_headers)
+        extractor = DataExtractor(str(input_dir))
+        raw_data = extractor.load_data(required_files, file_headers=file_headers)
+        # Which listed files are not on disk — read once, for both input gates (as `run_pipeline`).
+        absent = extractor.absent_files(required_files)
 
         # NOT `not raw_data`: `load_data` inserts an EMPTY frame per file it cannot find, so a
         # folder with nothing in it yields a FULL dict and the bare truthiness test would never
         # fire again. Shared with `run_pipeline` so both paths answer this the same way.
-        if has_no_usable_input(raw_data):
+        if has_no_usable_input(raw_data, configured=ledger.configured, absent=absent):
             # Every entity NOT_RUN — what the CLI records when it raises `NoUsableInputError` here.
             return ConvertResult(
                 status=ConvertStatus.NO_INPUT,
@@ -387,6 +391,12 @@ def convert_job(
         # The source observation (plan 0053 S6) — the pipeline's own function at the pipeline's
         # own point, so a Convert records the same `missing_mapped` and refined reasons as the CLI.
         observe_source_columns(config, raw_data, ledger)
+
+        # The input gate (owner 2026-09-28) — the pipeline's own function at the pipeline's own
+        # point: a missing or row-less file a CRITICAL entity lists raises `IncompleteInputError`
+        # here, which the sink below records (`incomplete_input`, the stopped entities FAILED)
+        # and re-raises to `on_error`, whose card names the files.
+        check_required_inputs(mappings, raw_data, absent=absent, ledger=ledger)
 
         transform_outputs = run_transform(raw_data, mappings, global_config, ledger=ledger)
         outputs = transform_outputs.outputs
@@ -403,7 +413,7 @@ def convert_job(
 
         # Gate 1 — delivery integrity, BEFORE the write and before the anomaly gate. The same
         # pure check the CLI raises on; here its bounded category becomes a terminal status.
-        integrity_fault = check_delivery_integrity(outputs, expected_entities)
+        integrity_fault = check_delivery_integrity(outputs, expected_entities, outcomes=entity_outcomes)
         if integrity_fault is not None:
             refused = ConvertResult(
                 status=status_for_integrity_fault(integrity_fault.category),
@@ -421,6 +431,28 @@ def convert_job(
                 entity_outcomes=entity_outcomes,
             )
             return refused
+
+        # Past the gate, an EMPTY output set is a night with nothing to send (owner ruling
+        # 2026-09-30 — `outcomes.nothing_to_send`), exactly as `run_pipeline` treats it: nothing is
+        # written, archived or delivered (no anomaly to acknowledge either — nothing is replaced),
+        # and ONE successful record says so.
+        if not outputs:
+            logger.info(NOTHING_TO_SEND_LOG_LINE)
+            nothing_sent = ConvertResult(
+                status=ConvertStatus.NOTHING_TO_SEND,
+                data_errors_total=_data_errors_total(data_errors),
+                entity_outcomes=entity_outcomes,
+                delivery_requested=sftp_requested,
+            )
+            _record_manual_run(
+                nothing_sent,
+                sis_type=config_name,
+                elapsed=time.monotonic() - t0,
+                status="success",
+                error_category=RunErrorCategory.NONE.value,
+                entity_outcomes=entity_outcomes,
+            )
+            return nothing_sent
 
         # Gate 2 — anomalies: a >20% drop, or an entity this run was configured to produce
         # that vanished (present→absent / N→0). Withholds the write unless the pending
@@ -1702,9 +1734,9 @@ def _build_file_chips(config_name: str | None, input_dir: str) -> list[ft.Contro
     """FileChips for the GDE files found in the folder + a missing-file warning.
 
     Lists the resolved GDE files present in the picked folder and, from
-    ``advisory_expected_files``, any expected-but-absent file (a plain amber chip +
-    a one-line warning). A bad config / folder degrades to an empty list, never a
-    crash.
+    ``extract_required_files``, any file the district's sync reads that is absent (a plain
+    amber chip + a one-line warning). A bad config / folder degrades to an empty list, never
+    a crash.
     """
     present = _present_gde_files(input_dir)
     expected = _expected_files(config_name)
@@ -1722,9 +1754,9 @@ def _build_file_chips(config_name: str | None, input_dir: str) -> list[ft.Contro
     present_folded = {name.lower() for name in present}
     missing = [f for f in expected if f.lower() not in present_folded]
     if missing:
-        # Softened copy (0035 W3b): a missing source file is legitimate (per-entity
-        # skip-on-empty), so the heading observes calmly and the muted reassurance line
-        # states the honest consequence — pure `missing_files_copy` owns the words.
+        # Since owner decision 2026-09-28 a missing file stops the run (only the family
+        # contacts file may be left out), so the line says so before the admin presses
+        # Convert — pure `missing_files_copy` owns the words.
         heading, reassurance = missing_files_copy()
         controls.append(
             ft.Text(
@@ -1753,12 +1785,15 @@ def _present_gde_files(input_dir: str) -> list[str]:  # pragma: no cover - Flet 
 
 
 def _expected_files(config_name: str) -> list[str]:  # pragma: no cover - Flet view glue
-    """The config's advisory "usually include" source files (empty on any config
-    error — never crashes). Deliberately NOT ``extract_required_files`` — that one
-    is what the extractor actually loads and must stay grade-scope-agnostic; this
-    is UI-only and narrows further for a fully homeroom-scoped district."""
+    """The files this district's sync reads (empty on any config error — never crashes).
+
+    ``extract_required_files`` — what the extractor loads, and since owner decision
+    2026-09-28 what the input gate requires (every file an enabled entity lists; only the
+    family contacts file may be missing). The UI-only narrowing that hid a homeroom-scoped
+    district's schedule here was retired with it: a chip may not stay quiet about a file
+    the run then stops for."""
     try:
-        return advisory_expected_files(load_config(config_name))
+        return extract_required_files(load_config(config_name))
     except Exception:  # noqa: BLE001 - a config error degrades to "no expectation", never a crash
         logger.warning(
             "Could not read the district mapping %r; the expected-files chips are omitted.",

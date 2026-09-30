@@ -31,7 +31,13 @@ single sources the policy already has:
   check on the TABLE, not on the entity); the run record says ``source_schema`` with that
   entity FAILED/``missing_source_column``, and the last good output is byte-identical. An
   ISOLATABLE raiser may stop the run only when nothing else built — read off the run record
-  the pipeline writes (``ledger.finalize_aborted``), since a raised run returns no result;
+  the pipeline writes (``ledger.finalize_aborted``), since a raised run returns no result.
+  **The one other typed stop** (owner 2026-09-28): an entity that may not be empty
+  (``outcomes.stops_when_empty``) coming out EMPTY — an ``EmptyRequiredOutputError`` from an
+  entity that may notice, the record ``empty_required_output`` with that entity EMPTY for a
+  reason that is not "nothing to send", the last good output byte-identical. It is a stop,
+  never a guard: it discharges NO required guard (a guard that vanished and left its entity
+  empty is still ``fail_closed_guard_bypassed``);
 * **how a contained failure must look** — an ISOLATABLE entity that fails does so as
   FAILED/``missing_source_column`` (never ``transform_error``, which is what a raw
   ``KeyError`` would read as), its CSV absent from the delivery set and archived (P4);
@@ -97,9 +103,10 @@ import yaml
 from src.config.loader import available_configs, load_config
 from src.config.models import MappingConfig
 from src.etl.column_names import normalize_column_name
-from src.etl.errors import GuardKind, SourceSchemaError
+from src.etl.errors import EmptyRequiredOutputError, GuardKind, SourceSchemaError
 from src.etl.outcomes import (
     DEPENDS_ON,
+    NOTHING_TO_SEND,
     EntityCriticality,
     EntityOutcome,
     OutcomeKind,
@@ -503,6 +510,8 @@ def policy_problems(
     """
     problems: list[tuple[str, str, str]] = []
     exc = run.error
+    if isinstance(exc, EmptyRequiredOutputError):
+        return _empty_stop_problems(exc, affected=affected, base=base, run=run, required=required)
     if exc is not None:
         if not isinstance(exc, SourceSchemaError):
             return [("untyped_failure", "-", type(exc).__name__)]
@@ -565,6 +574,44 @@ def policy_problems(
             continue
         if entity not in signalled and not (_upstream(entity) & signalled):
             problems.append(("silent_change", entity, "changed with no recorded signal"))
+    return problems
+
+
+def _empty_stop_problems(
+    exc: EmptyRequiredOutputError,
+    *,
+    affected: frozenset[str],
+    base: RunFacts,
+    run: RunFacts,
+    required: frozenset[tuple[str, str]],
+) -> list[tuple[str, str, str]]:
+    """How an EMPTY-required-output stop must look (owner 2026-09-28 — ``pipeline.run_transform``).
+
+    Raised by an entity that may notice, recorded ``empty_required_output`` with that entity
+    EMPTY for a reason that is not "nothing to send" (``outcomes.NOTHING_TO_SEND`` — the drop
+    emptied an export that had rows), the last good output byte-identical. It is NOT a guard:
+    every required guard is still owed its typed raise, so each one present here is
+    ``fail_closed_guard_bypassed`` — the stop never hides a guard regressing to fail-open.
+    """
+    entity = exc.entity
+    problems: list[tuple[str, str, str]] = []
+    if entity not in affected:
+        problems.append(("raiser_not_affected", entity, f"affected = {sorted(affected)}"))
+    record = run.record or {}
+    entry = (record.get("entity_outcomes") or {}).get(entity, {})
+    reasons_that_stop = {reason.value for reason in OutcomeReason if reason not in NOTHING_TO_SEND}
+    if (record.get("status"), record.get("error_category")) != ("failed", "empty_required_output") or not (
+        entry.get("kind") == OutcomeKind.EMPTY.value and entry.get("reason") in reasons_that_stop
+    ):
+        problems.append(("record_mismatch", entity, f"{record.get('error_category')} / {entry}"))
+    if run.tree != base.tree:
+        problems.append(("output_touched", entity, "the last good output changed"))
+    for site, guarded in sorted(required):
+        outcome = run.outcomes.get(guarded)
+        got = "absent" if outcome is None else f"{outcome.kind.value}/{outcome.reason.value}"
+        problems.append(
+            ("fail_closed_guard_bypassed", guarded, f"{site} guards the column, yet it never raised ({got})")
+        )
     return problems
 
 
@@ -727,11 +774,6 @@ UNREACHED_GUARDS: Mapping[tuple[str, str], str] = {
         "structurally shadowed: the subject split's grade column is checked first by Classes' subject guard on "
         "the same schedule frame, and a CRITICAL stop there ends the run"
     ),
-    ("blended.BlendedClassDetector.detect", "join_key"): (
-        "fixture gap: every contract fixture but SD40's writes a header-only ClassInformation, so detection "
-        "stops at 'No class info data found' before #39; SD40's one row falls back to its schedule, which is "
-        "headerless and out of the matrix"
-    ),
     ("base.BaseTransformer.assign_class_ids", "join_key"): (
         "structurally shadowed: both callers check the Class ID column first in their own guard (Classes' "
         "#29 subject guard, Enrollments' #28/#36 subject guard), and a CRITICAL stop there ends the run"
@@ -816,7 +858,7 @@ def test_every_readable_headered_source_file_contributes_every_header_column() -
     got = {(c.sis, c.filename, c.column) for c in CASES}
     assert expected <= got
     assert ("myedbc", "StudentSchedule.txt", "Master Timetable ID") in got
-    assert len(CASES) >= 900, len(CASES)  # measured 2026-09-25: 1,013 — a floor, not a pin
+    assert len(CASES) >= 900, len(CASES)  # measured 2026-09-25: 1,013; 2026-09-30: 1,077 — a floor, not a pin
 
 
 def test_headerless_and_unread_files_are_out_of_the_matrix_and_their_neighbours_are_in() -> None:
@@ -974,8 +1016,9 @@ _TWINS = {
     # §5 #41 (owner ruling 2026-09-26): the school-year source column is a fail-closed guard now
     "school_year_stops": DriftCase("myedbc", "StudentSchedule.txt", "School Year"),
     "isolated": DriftCase("unitychristianmyedbc", "EmergencyContactInformation.txt", "Parent Auth / Guardian"),
-    # §5 #33 (owner ruling 2026-09-26): the daily authorized flag is named, never transform_error
-    "attendance_isolated": DriftCase("sd60myedbc", "Spaces_DailyAbs.txt", "Authorized Am"),
+    # §5 #33 (owner ruling 2026-09-26): the daily authorized flag is named, never transform_error —
+    # and since 2026-09-28 (owner, D1 revised) StudentAttendance is CRITICAL, so it stops the night
+    "attendance_stops": DriftCase("sd60myedbc", "Spaces_DailyAbs.txt", "Authorized Am"),
     "signalled": DriftCase("myedbc", "StudentDemographicInformation.txt", "Legal First Name"),
     "unchanged": DriftCase("myedbc", "StudentDemographicInformation.txt", "Previous school number"),
 }
@@ -998,19 +1041,22 @@ def test_one_real_case_per_outcome_class(name: str, baselines: BaselineCache, tm
         assert any(call.raised and call.entity == "Classes" for call in run.guard_calls)
     elif name == "school_year_stops":
         err = run.error
-        assert isinstance(err, SourceSchemaError) and (err.entity, err.columns) == ("Classes", ("school year",))
+        # the column in its STRUCTURAL spelling (owner 2026-09-28), so the copy can name it
+        assert isinstance(err, SourceSchemaError) and (err.entity, err.columns) == ("Classes", ("School Year",))
+        assert run.record["entity_outcomes"]["Classes"]["labels"] == ["School Year"]
         assert run.record is not None and run.record["error_category"] == "source_schema"
         assert run.tree == base.facts.tree
         # the guard is DERIVED from the code: the undropped run made it over the column
         assert ("classes.ClassTransformer._require_school_year_source", "Classes") in required
-    elif name == "attendance_isolated":
-        assert run.error is None and changed == {"StudentAttendance"}, "rostering ships unchanged"
-        outcome = run.outcomes["StudentAttendance"]
-        assert (outcome.kind, outcome.reason) == (OutcomeKind.FAILED, OutcomeReason.MISSING_SOURCE_COLUMN)
+    elif name == "attendance_stops":
+        err = run.error
+        assert isinstance(err, SourceSchemaError) and err.entity == "StudentAttendance"
+        assert run.record is not None and run.record["error_category"] == "source_schema"
+        entry = run.record["entity_outcomes"]["StudentAttendance"]
+        assert (entry["kind"], entry["reason"]) == ("failed", "missing_source_column")
         # S7 labels: the column in config spelling; no file — StudentAttendance declares two
-        assert (outcome.labels, outcome.file_label) == (("authorized am",), "")
-        assert outcome.notes == ()  # the note cannot survive a FAILED outcome (the WARNING is logged)
-        assert "StudentAttendance.csv" not in run.csvs
+        assert (entry.get("labels"), entry.get("file_label")) == (["authorized am"], None)
+        assert run.tree == base.facts.tree, "nothing is written: the last good output is untouched"
         assert required == {("student_attendance.StudentAttendanceTransformer._build_daily_rows", "StudentAttendance")}
     elif name == "isolated":
         assert run.error is None and changed == {"Family"}
@@ -1087,7 +1133,9 @@ _REGRESSIONS: dict[str, tuple[DriftCase, Tamper, str]] = {
         _school_year_guard_removed,
         "fail_closed_guard_bypassed",
     ),
-    "attendance_guard_deleted": (_TWINS["attendance_isolated"], _attendance_guard_removed, "isolated_reason"),
+    # StudentAttendance is CRITICAL since 2026-09-28, so the regressed category-map miss now stops the
+    # night UNTYPED (`transform_error` → `unknown`) — the matrix calls that `untyped_failure`.
+    "attendance_guard_deleted": (_TWINS["attendance_stops"], _attendance_guard_removed, "untyped_failure"),
 }
 
 
@@ -1341,6 +1389,39 @@ class TestThePolicyChecker:
         assert beside.outcomes == {}
         assert _kinds(self._check_failed(beside, affected=frozenset({"Family"}))) == {"isolatable_escaped"}
 
+    def _empty_stop(
+        self, *, entity="Classes", reason="no_rows_after_transform", category="empty_required_output", tree=None
+    ):
+        """An EMPTY-required-output stop in ``run_case``'s REAL shape (owner 2026-09-28)."""
+        record = {
+            "status": "failed",
+            "error_category": category,
+            "entity_outcomes": {entity: {"kind": "empty", "reason": reason, "rows": 0}},
+        }
+        exc = EmptyRequiredOutputError("empty", entity=entity)
+        return RunFacts({}, {}, tree if tree is not None else {"a.csv": "1"}, exc, record)
+
+    def test_an_empty_required_output_stop_with_a_matching_record_is_the_declared_outcome(self) -> None:
+        assert self._check_failed(self._empty_stop()) == []
+        assert self._check_failed(self._empty_stop(reason="missing_source_column")) == []
+
+    def test_an_empty_stop_that_misrecords_touches_the_output_or_was_not_affected_is_a_problem(self) -> None:
+        assert _kinds(self._check_failed(self._empty_stop(category="source_schema"))) == {"record_mismatch"}
+        # "nothing to send" never stops the night — a record saying so for the stop is wrong
+        assert _kinds(self._check_failed(self._empty_stop(reason="source_files_empty"))) == {"record_mismatch"}
+        assert _kinds(self._check_failed(self._empty_stop(tree={"a.csv": "2"}))) == {"output_touched"}
+        assert _kinds(self._check_failed(self._empty_stop(), affected=frozenset({"Students"}))) == {
+            "raiser_not_affected"
+        }
+
+    def test_an_empty_stop_discharges_no_required_guard(self) -> None:
+        """The stop keeps the night safe, but a guard that should have raised typed did not: a
+        fail-closed guard regressing into an empty output must still turn the matrix red."""
+        required = frozenset({("classes.f", "Classes")})
+        assert _kinds(self._check_failed(self._empty_stop(), required=required)) == {"fail_closed_guard_bypassed"}
+        # the twin: the same guard IS discharged by the typed SourceSchemaError stop
+        assert self._check_failed(self._failed_run(self._schema_error()), required=required) == []
+
     def test_the_table_reader_is_the_docs_own(self) -> None:
         doctored = "<!-- failure-policy-table: require-columns -->\n| site | entity | guard | §5 |\n|---|---|---|---|\n"
         doctored += "| `x.f` | Staff | join_key | 1 |\n"
@@ -1383,3 +1464,38 @@ def test_the_ci_parity_readers_see_a_doctored_workflow_and_addopts() -> None:
     step = f"jobs:\n  j:\n    steps:\n      - run: python -m pytest tests/test_schema_drift_matrix.py -m {_MARKER}\n"
     assert _ci_matrix_steps(step)
     assert not _ci_matrix_steps("jobs:\n  j:\n    steps:\n      - run: python -m pytest tests/\n")
+
+
+# The two stops blended matching makes on ClassInformation now that every fixture carries rows
+# (owner rulings 2026-09-30): the school it links blends by, NAMED ("School Number" — a
+# structural label the copy may print), and a lost Master Timetable ID named TOGETHER with the
+# session columns the schedule that would stand in lacks — one stop naming both files, never the
+# schedule's time columns alone, which the stop used to name (the matrix's
+# `error_misnames_column` when the fixtures were first filled in), nor ClassInformation's column
+# alone, which misnames a district whose export never carried it (SD40's).
+_BLENDED_STOPS = {
+    "blended_school": (DriftCase("myedbc", "ClassInformationEnh.txt", "School Number"), ("School Number",)),
+    "class_info_mtid": (
+        DriftCase("myedbc", "ClassInformationEnh.txt", "Master Timetable ID"),
+        ("Master Timetable ID", "term", "semester", "day", "period"),
+    ),
+}
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("name", sorted(_BLENDED_STOPS))
+def test_blended_matching_stops_on_class_information_naming_what_it_lost(
+    name: str, baselines: BaselineCache, tmp_path: Path
+) -> None:
+    case, columns = _BLENDED_STOPS[name]
+    assert case in CASES, f"{case.id} left the matrix"
+    base = baselines.get(case.sis)
+    run, problems = _problems_for(case, base, tmp_path / "case")
+    assert problems == []
+    err = run.error
+    assert isinstance(err, SourceSchemaError) and (err.entity, err.columns) == ("Classes", columns)
+    assert run.record is not None and run.record["error_category"] == "source_schema"
+    assert run.tree == base.facts.tree, "nothing is written: the last good output is untouched"
+    assert any(c.raised and c.site == "blended.BlendedClassDetector.detect" for c in run.guard_calls)
+    if name == "blended_school":
+        assert run.record["entity_outcomes"]["Classes"]["labels"] == ["School Number"]

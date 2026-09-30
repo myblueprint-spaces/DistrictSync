@@ -10,9 +10,14 @@ Two closed vocabularies are humanised here:
 
 * :data:`FAILED_CATEGORY_COPY` — one ``(headline, detail)`` per
   :class:`~src.etl.errors.RunErrorCategory` member except ``NONE`` (a completed run has no
-  failure to word; asking for it raises). Only ``NO_INPUT`` and ``INPUT_UNREADABLE`` send
-  the admin to the input folder — before this table existed, every Convert crash did,
-  whatever the cause. :func:`failed_copy` appends ONE of two fixed tails chosen by ONE bool
+  failure to word; asking for it raises). Only ``NO_INPUT``, ``INPUT_UNREADABLE`` and
+  ``INCOMPLETE_INPUT`` send the admin to the input folder — before this table existed, every
+  Convert crash did, whatever the cause. Three categories have a NAMED variant (owner
+  2026-09-28): ``INCOMPLETE_INPUT`` names the missing or row-less files,
+  ``EMPTY_REQUIRED_OUTPUT`` the output that came out empty (by its authored phrase) and
+  ``SOURCE_SCHEMA`` a STRUCTURAL column ("School Year"), each only through
+  :func:`failure_names` / :func:`failure_names_of` — every other stop keeps its category
+  copy. :func:`failed_copy` appends ONE of two fixed tails chosen by ONE bool
   with ONE meaning on every surface — *this attempt was meant to reach SpacesEDU and did
   not* — which each surface passes from what it can PROVE (see :func:`failed_copy`);
   neither tail asserts anything about what SpacesEDU holds.
@@ -34,7 +39,9 @@ counts, and, since plan 0053 S7 (owner decision D4), an outcome's config-DECLARE
 ``labels`` / ``file_label``: names that passed ``outcomes.safe_label`` (a member of the
 resolved config's own vocabulary, printable, at most ``outcomes.MAX_LABEL_LENGTH``
 characters) when the run recorded them, and whose shape the total record reader re-checks.
-No other value reaches a sentence. An outcome without labels reads exactly as before.
+Since 2026-09-28 a failed run's copy may carry the same kind of name — a stopped entity's
+file label, or a ``outcomes.STRUCTURAL_LABELS`` column — and nothing else. No other value
+reaches a sentence. An outcome without labels reads exactly as before.
 
 **Import direction.** This module imports ``humanize`` (the vocabulary), ``errors`` and
 ``outcomes``; it never imports ``home_status``, which imports it (the reason the entity
@@ -47,8 +54,24 @@ from collections.abc import Iterable, Mapping, Sequence
 from types import MappingProxyType
 from typing import Final
 
-from src.etl.errors import RunErrorCategory, classify_error_category
-from src.etl.outcomes import MAY_BE_EMPTY, VALID_REASONS, EntityOutcome, OutcomeKind, OutcomeNote, OutcomeReason
+from src.etl.errors import (
+    EmptyRequiredOutputError,
+    IncompleteInputError,
+    RunErrorCategory,
+    SourceSchemaError,
+    classify_error_category,
+)
+from src.etl.outcomes import (
+    VALID_REASONS,
+    EntityOutcome,
+    OutcomeKind,
+    OutcomeNote,
+    OutcomeReason,
+    empty_is_expected,
+    stopped_empty_entities,
+    stopped_file_labels,
+    structural_labels,
+)
 from src.ui_flet.humanize import SIZE_NOUNS, pluralize
 from src.ui_flet.verdict import Verdict
 
@@ -127,6 +150,13 @@ _OUTCOME_TEMPLATES: Final[Mapping[tuple[OutcomeKind, OutcomeReason], str]] = Map
             "{everything_else} The next sync tries again — if it keeps happening, the Help page has "
             "our support contact."
         ),
+        # Owner 2026-09-28: the input gate stopped the entity before it ran. Recorded on a CRITICAL
+        # entity, so it reaches a sentence only through a failed run's record — worded for any
+        # surface all the same (TOTAL), and never claiming what happened to the rest.
+        (OutcomeKind.FAILED, OutcomeReason.MISSING_SOURCE_FILE): (
+            "{Subject} {were} not built: a file {their} mapping lists was missing from the input folder "
+            "or had no rows. Re-export that file and the next sync picks it up automatically."
+        ),
         (OutcomeKind.NOT_RUN, OutcomeReason.RUN_ABORTED): (
             "{Subject} {were} not built: the sync stopped before reaching {them}."
         ),
@@ -135,8 +165,9 @@ _OUTCOME_TEMPLATES: Final[Mapping[tuple[OutcomeKind, OutcomeReason], str]] = Map
 
 
 # The label-aware variants (plan 0053 S7, D4): one per pair that can carry labels — exactly the
-# `missing_source_column` pairs, since `EntityOutcome` refuses labels on any other reason (pinned).
-# Each is its unlabelled twin above with the "a column" wording replaced by the NAMED column(s)
+# `missing_source_column` pairs and, since 2026-09-28, FAILED / `missing_source_file` (a file label
+# alone), since `EntityOutcome` refuses labels on any other reason (pinned). Each is its
+# unlabelled twin above with the "a column" / "a file" wording replaced by the NAMED column(s)
 # and, when the outcome names one, the export file — the only values interpolated are those
 # config-declared labels (see the module docstring's PII floor).
 _LABELLED_TEMPLATES: Final[Mapping[tuple[OutcomeKind, OutcomeReason], str]] = MappingProxyType(
@@ -151,6 +182,10 @@ _LABELLED_TEMPLATES: Final[Mapping[tuple[OutcomeKind, OutcomeReason], str]] = Ma
             "saved under the same name. {everything_else} Re-export that file and the next sync "
             "picks it up automatically."
         ),
+        (OutcomeKind.FAILED, OutcomeReason.MISSING_SOURCE_FILE): (
+            "{Subject} {were} not built: {their} export file{file_clause} was missing from the input "
+            "folder or had no rows. Re-export that file and the next sync picks it up automatically."
+        ),
     }
 )
 
@@ -160,7 +195,9 @@ def _label_clauses(outcome: EntityOutcome) -> dict[str, str]:
     quoted = [f"“{label}”" for label in outcome.labels]
     noun = "column" if len(quoted) == 1 else "columns"
     file_clause = f", {outcome.file_label}," if outcome.file_label else ""
-    return {"file_clause": file_clause, "columns_clause": f"the {noun} {_joined(quoted)}, which"}
+    # A `missing_source_file` outcome names its file alone (owner 2026-09-28): no column clause.
+    columns_clause = f"the {noun} {_joined(quoted)}, which" if quoted else ""
+    return {"file_clause": file_clause, "columns_clause": columns_clause}
 
 
 def outcome_sentence(outcome: EntityOutcome, *, delivered: bool) -> str:
@@ -174,11 +211,12 @@ def outcome_sentence(outcome: EntityOutcome, *, delivered: bool) -> str:
 
     **Label-aware (plan 0053 S7).** An outcome carrying config-declared ``labels`` reads its
     :data:`_LABELLED_TEMPLATES` variant, naming the column(s) — and the export file when the
-    outcome names one; an outcome without labels reads its unlabelled template exactly as
+    outcome names one; a ``missing_source_file`` outcome naming its file (2026-09-28) reads
+    its variant too; an outcome without labels reads its unlabelled template exactly as
     before (pinned byte-for-byte).
     """
     words = {**_grammar(outcome.entity), "everything_else": _everything_else(delivered=delivered)}
-    if outcome.labels:
+    if outcome.labels or outcome.file_label:
         return _LABELLED_TEMPLATES[(outcome.kind, outcome.reason)].format(**words, **_label_clauses(outcome))
     return _OUTCOME_TEMPLATES[(outcome.kind, outcome.reason)].format(**words)
 
@@ -186,14 +224,6 @@ def outcome_sentence(outcome: EntityOutcome, *, delivered: bool) -> str:
 # --------------------------------------------------------------------------- #
 # Which outcomes warn (plan 0053 S8, owner decision D5)                        #
 # --------------------------------------------------------------------------- #
-
-# The EMPTY reasons that mean "there was nothing to send" — the only ones a `MAY_BE_EMPTY`
-# entity may carry without a warning. The other two EMPTY reasons say the export HAD rows and
-# none survived (every row filtered out, or a mapped column missing): a standing WARNING on any
-# entity, because that is a district losing a file every night without anything having failed.
-_NOTHING_TO_SEND: Final[frozenset[OutcomeReason]] = frozenset(
-    {OutcomeReason.SOURCE_FILES_EMPTY, OutcomeReason.NO_SOURCE_FILES_DECLARED}
-)
 
 
 def OUTCOME_TIER(entity: object, kind: OutcomeKind, reason: OutcomeReason) -> Verdict:
@@ -211,7 +241,10 @@ def OUTCOME_TIER(entity: object, kind: OutcomeKind, reason: OutcomeReason) -> Ve
       ``source_files_empty`` / ``no_source_files_declared`` ("nothing to send") → HEALTHY
       ONLY for an entity in :data:`~src.etl.outcomes.MAY_BE_EMPTY`, WARNING for every other
       — an entity the district enabled whose export never arrives is a standing warning,
-      and the remedy is a config change, never a quieter tier.
+      and the remedy is a config change, never a quieter tier. "Nothing to send for a
+      member" is ONE rule, ``outcomes.empty_is_expected``, which ``pipeline.run_transform``
+      reads too: since 2026-09-28 (owner) every OTHER EMPTY outcome of a CRITICAL entity
+      stops the night there, so in a completed run a WARNING EMPTY is Family's alone.
     * **NOT_RUN** → FAILED. It is only ever recorded inside a run that failed (every entity
       after a raising CRITICAL one, or all of them on a failure before the loop), whose
       FAILED status outranks PARTIAL anyway; FAILED says what such an outcome means.
@@ -231,9 +264,7 @@ def OUTCOME_TIER(entity: object, kind: OutcomeKind, reason: OutcomeReason) -> Ve
     if kind is OutcomeKind.NOT_RUN:
         return Verdict.FAILED
     # kind is EMPTY
-    if reason in _NOTHING_TO_SEND and isinstance(entity, str) and entity in MAY_BE_EMPTY:
-        return Verdict.HEALTHY
-    return Verdict.WARNING
+    return Verdict.HEALTHY if empty_is_expected(entity, reason) else Verdict.WARNING
 
 
 # How much ONE outcome note says about the run (plan 0053 S10, owner ruling 2026-09-25) — TOTAL
@@ -308,6 +339,35 @@ def warning_outcomes(outcomes: Iterable[EntityOutcome]) -> tuple[EntityOutcome, 
     left out"). Only a success-shaped record reaches the question: a failed one is FAILED first.
     """
     return tuple(outcome for outcome in outcomes if outcome_tier(outcome) is Verdict.WARNING)
+
+
+# --------------------------------------------------------------------------- #
+# A night with nothing to send (owner ruling 2026-09-30)                       #
+# --------------------------------------------------------------------------- #
+
+#: What a night with nothing to send had none of, per ``outcomes.MAY_BE_EMPTY`` entity — TOTAL over
+#: that set (pinned), so a new member cannot reach a surface without its own words.
+NOTHING_TO_SEND_PHRASES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "StudentAttendance": "no absences were recorded",
+    }
+)
+
+
+def nothing_to_send_detail(outcomes: Iterable[EntityOutcome]) -> str:
+    """The sentence Home, Run History and Convert give a run that had nothing to send — TOTAL.
+
+    Such a run (``outcomes.nothing_to_send`` — an attendance-only config whose absence files were
+    all present with no rows) is a SUCCESS that wrote and delivered nothing, so no surface may
+    claim files were written or delivered: this names what there was none of and says nothing
+    was written or sent. An outcome whose entity has no phrase contributes none; with none at all
+    the sentence falls back to "there were no records", never a raw key.
+    """
+    phrases = list(
+        dict.fromkeys(NOTHING_TO_SEND_PHRASES[o.entity] for o in outcomes if o.entity in NOTHING_TO_SEND_PHRASES)
+    )
+    lead = " and ".join(phrases) if phrases else "there were no records"
+    return f"{lead[0].upper()}{lead[1:]}, so there was nothing to send — nothing was written or delivered."
 
 
 # The next step a PARTIAL detail gives when its ONE warning outcome is an EMPTY one (plan 0053
@@ -760,14 +820,23 @@ def data_warnings_clause(total: int) -> str:
 
 # (headline, detail) per category. Surface-neutral ("the sync", "try again") because Home,
 # Run History and Convert all render the SAME detail. Every detail names a cause and ends with
-# a next step; none carries an interpolation slot (no `{`, pinned). Only NO_INPUT and
-# INPUT_UNREADABLE mention the input folder (pinned) — that misdirection is what this replaced.
+# a next step; none carries an interpolation slot (no `{`, pinned). Only NO_INPUT,
+# INPUT_UNREADABLE and INCOMPLETE_INPUT mention the input folder (pinned) — that misdirection is
+# what this replaced; a missing or row-less file IS an input-folder fault.
 FAILED_CATEGORY_COPY: Final[Mapping[RunErrorCategory, tuple[str, str]]] = MappingProxyType(
     {
         RunErrorCategory.NO_INPUT: (
             "No files could be read",
             "We couldn't read any MyEd BC extract files from the input folder. Check that the input "
             "folder holds this district's extract files, then try again.",
+        ),
+        # Owner 2026-09-28: "we don't have optional files". Named by `_NAMED_FAILED_COPY` when the
+        # record (or the raised error) can say which files.
+        RunErrorCategory.INCOMPLETE_INPUT: (
+            "A file your sync needs is missing or empty",
+            "A MyEd BC extract file this district's sync reads is missing from the input folder, or has "
+            "no rows, so the sync stopped — only the family contacts file may be left out. Check the "
+            "export job and the input folder, then try again.",
         ),
         RunErrorCategory.INPUT_UNREADABLE: (
             "An export file couldn't be read",
@@ -804,6 +873,15 @@ FAILED_CATEGORY_COPY: Final[Mapping[RunErrorCategory, tuple[str, str]]] = Mappin
             "if it's on a network drive or a shared folder, make sure you can still open it. Then try "
             "again; if it keeps failing, the Help page has our support contact.",
         ),
+        # Owner 2026-09-28: "never send a header-only file". Named by `_NAMED_FAILED_COPY` (the
+        # output's authored phrase) when the record or the raised error says which output.
+        RunErrorCategory.EMPTY_REQUIRED_OUTPUT: (
+            "A roster file came out empty",
+            "One of the files this district's sync sends came out with no rows — often because every row "
+            "in its export was filtered out, or a different report was saved under the usual name. "
+            "DistrictSync never sends an empty file, so the sync stopped. Check that export, then try "
+            "again — if it keeps happening, the Help page has our support contact.",
+        ),
         RunErrorCategory.NO_OUTPUT: (
             "No output was produced",
             "The export files were read, but no roster files came out of them. Check that the right "
@@ -826,6 +904,153 @@ FAILED_CATEGORY_COPY: Final[Mapping[RunErrorCategory, tuple[str, str]]] = Mappin
 #: The category every unreadable, absent or impossible stored value falls back to.
 FALLBACK_CATEGORY: Final = RunErrorCategory.UNKNOWN
 
+# The NAMED variant of a category's copy (owner 2026-09-28) — used only when `failure_names` /
+# `failure_names_of` found something to name; every other failure reads FAILED_CATEGORY_COPY.
+# The one slot, `{names}`, is filled by `_rendered_names` from names that came from a recorded
+# outcome or a typed error — never text:
+#   * INCOMPLETE_INPUT — the files the input gate stopped the night for (config-declared file
+#     labels, quoted);
+#   * EMPTY_REQUIRED_OUTPUT — the output that came out empty, as its authored phrase
+#     (`entity_phrase`, unquoted; an entity the vocabulary does not know is never named);
+#   * SOURCE_SCHEMA — a STRUCTURAL column only ("School Year", §5 #41, quoted). A missing column
+#     the config declares keeps the category copy (the owner named this one; the rest is unruled).
+_NAMED_FAILED_COPY: Final[Mapping[RunErrorCategory, Mapping[bool, tuple[str, str]]]] = MappingProxyType(
+    {
+        RunErrorCategory.INCOMPLETE_INPUT: MappingProxyType(
+            {
+                False: (
+                    "A file your sync needs is missing or empty",
+                    "{names} is missing from the input folder or has no rows, and this district's sync "
+                    "needs it — only the family contacts file may be left out, so the sync stopped. Check "
+                    "the export job and the input folder, then try again.",
+                ),
+                True: (
+                    "Files your sync needs are missing or empty",
+                    "{names} are missing from the input folder or have no rows, and this district's sync "
+                    "needs them — only the family contacts file may be left out, so the sync stopped. Check "
+                    "the export job and the input folder, then try again.",
+                ),
+            }
+        ),
+        RunErrorCategory.EMPTY_REQUIRED_OUTPUT: MappingProxyType(
+            {
+                False: (
+                    "No {names} came out of your export",
+                    "This district's sync built no {names} from its export — often because every row was "
+                    "filtered out, or a different report was saved under the usual name. DistrictSync never "
+                    "sends an empty file, so the sync stopped. Check that export, then try again — if it keeps "
+                    "happening, the Help page has our support contact.",
+                ),
+                True: (
+                    "No {names} came out of your export",
+                    "This district's sync built no {names} from its export — often because every row was "
+                    "filtered out, or a different report was saved under the usual name. DistrictSync never "
+                    "sends an empty file, so the sync stopped. Check those exports, then try again — if it "
+                    "keeps happening, the Help page has our support contact.",
+                ),
+            }
+        ),
+        RunErrorCategory.SOURCE_SCHEMA: MappingProxyType(
+            {
+                False: (
+                    "An export file is missing its {names} column",
+                    "One of your MyEd BC extract files is missing the column {names}, which this district's "
+                    "sync needs — often because a different report was saved under the same name. Re-export "
+                    "that file, then try again.",
+                ),
+                True: (
+                    "An export file is missing its {names} columns",
+                    "One of your MyEd BC extract files is missing the columns {names}, which this district's "
+                    "sync needs — often because a different report was saved under the same name. Re-export "
+                    "that file, then try again.",
+                ),
+            }
+        ),
+    }
+)
+
+
+def failure_names(category: RunErrorCategory, outcomes: Iterable[EntityOutcome]) -> tuple[str, ...]:
+    """What a FAILED run's copy may name, read off its recorded outcomes (owner 2026-09-28). TOTAL.
+
+    * ``incomplete_input`` → the input gate's stopped files (``outcomes.stopped_file_labels``:
+      all of them, or none when any stopped entity could not name its file);
+    * ``empty_required_output`` → the entity keys whose EMPTY outcome stopped the night
+      (``outcomes.stopped_empty_entities``), rendered by their authored phrase — an entity the
+      vocabulary does not know is dropped, never echoed;
+    * ``source_schema`` → the STRUCTURAL column labels on the FAILED ``missing_source_column``
+      outcomes (``outcomes.structural_labels`` — "School Year"); a config-declared column is
+      deliberately NOT named here;
+    * anything else → ``()``, i.e. the category copy, unchanged.
+
+    The outcomes come from ``outcomes.outcomes_from_record``, whose reader already re-checked
+    every label's shape. Distinct, first-seen order.
+    """
+    if category is RunErrorCategory.INCOMPLETE_INPUT:
+        return stopped_file_labels(outcomes)
+    if category is RunErrorCategory.EMPTY_REQUIRED_OUTPUT:
+        return tuple(entity for entity in stopped_empty_entities(outcomes) if _is_known(entity))
+    if category is RunErrorCategory.SOURCE_SCHEMA:
+        names: list[str] = []
+        for outcome in outcomes:
+            if outcome.kind is OutcomeKind.FAILED and outcome.reason is OutcomeReason.MISSING_SOURCE_COLUMN:
+                names.extend(label for label in structural_labels(outcome.entity, outcome.labels) if label not in names)
+        return tuple(names)
+    return ()
+
+
+def failure_names_of(exc: BaseException) -> tuple[str, ...]:
+    """What Convert's card may name for a RAISED failure — the same answer as :func:`failure_names`.
+
+    By TYPE, from the error's typed attributes, never its message: an
+    :class:`~src.etl.errors.IncompleteInputError` carries ``named`` (the input gate computed it
+    from the outcomes it recorded, with ``outcomes.stopped_file_labels`` — the reduction
+    :func:`failure_names` reads a record with); an
+    :class:`~src.etl.errors.EmptyRequiredOutputError` names its ``entity`` (when the authored
+    vocabulary knows it); a :class:`~src.etl.errors.SourceSchemaError`'s own ``columns`` are
+    filtered to its entity's ``outcomes.STRUCTURAL_LABELS``. Anything else → ``()``.
+    """
+    if isinstance(exc, IncompleteInputError):
+        return tuple(dict.fromkeys(exc.named))
+    if isinstance(exc, EmptyRequiredOutputError):
+        return (exc.entity,) if _is_known(exc.entity) else ()
+    if isinstance(exc, SourceSchemaError):
+        return structural_labels(exc.entity, exc.columns)
+    return ()
+
+
+def _rendered_names(category: RunErrorCategory, names: Sequence[str]) -> list[str]:
+    """How ``category``'s names are written into its sentence, distinct and in order.
+
+    An output is its authored phrase ("classes" — never the entity key, and an entity the
+    vocabulary does not know is dropped); a file or a column is its label, quoted.
+    """
+    distinct = list(dict.fromkeys(name for name in names if isinstance(name, str) and name))
+    if category is RunErrorCategory.EMPTY_REQUIRED_OUTPUT:
+        return list(dict.fromkeys(entity_phrase(name) for name in distinct if _is_known(name)))
+    return [f"“{name}”" for name in distinct]
+
+
+def _named_copy(category: RunErrorCategory, names: Sequence[str]) -> tuple[str, str] | None:
+    """The named ``(headline, detail)`` for ``category``, or ``None`` when it has no variant or nothing to name."""
+    variants = _NAMED_FAILED_COPY.get(category)
+    rendered = _rendered_names(category, names)
+    if variants is None or not rendered:
+        return None
+    headline, detail = variants[len(rendered) > 1]
+    joined = _joined(rendered)
+    return headline.format(names=joined), detail.format(names=joined)
+
+
+def _coerced(value: object) -> RunErrorCategory:
+    """A stored or classified category → a failure category: unknown / blank / ``none`` → the fallback."""
+    try:
+        category = RunErrorCategory(value)
+    except (TypeError, ValueError):
+        return FALLBACK_CATEGORY
+    return FALLBACK_CATEGORY if category is RunErrorCategory.NONE else category
+
+
 # The two tails — ONE is appended, chosen by `failed_copy`'s `delivery_requested` (its docstring
 # says what the bool means and what each surface passes). Neither says what SpacesEDU holds. "Nothing NEW was saved" (not "your files were not changed") because
 # the write's rollback is best-effort (the ROADMAP "Three sites promise …" item; plan 0050).
@@ -833,8 +1058,12 @@ NOTHING_SENT_TAIL: Final = "Nothing was sent to SpacesEDU this time."
 NOTHING_SAVED_TAIL: Final = "Nothing new was saved to your output folder."
 
 
-def failed_copy(category: RunErrorCategory, *, delivery_requested: bool) -> tuple[str, str]:
+def failed_copy(category: RunErrorCategory, *, delivery_requested: bool, names: Sequence[str] = ()) -> tuple[str, str]:
     """``(headline, detail + tail)`` for a failure of ``category`` — the ONE composition.
+
+    ``names`` (owner 2026-09-28) selects the category's NAMED variant when it has one and
+    ``names`` is not empty — pass only :func:`failure_names` / :func:`failure_names_of`, never
+    anything else; ``()`` (the default) is the category copy, exactly as before.
 
     ``NONE`` raises: a completed run has no failure copy, and wording one would be a bug.
     ``delivery_requested`` is REQUIRED keyword-only — the tail is a claim about what did
@@ -857,24 +1086,23 @@ def failed_copy(category: RunErrorCategory, *, delivery_requested: bool) -> tupl
     """
     if category is RunErrorCategory.NONE:
         raise ValueError("a completed run (category 'none') has no failure copy")
-    headline, detail = FAILED_CATEGORY_COPY[category]
+    headline, detail = _named_copy(category, names) or FAILED_CATEGORY_COPY[category]
     tail = NOTHING_SENT_TAIL if delivery_requested else NOTHING_SAVED_TAIL
     return headline, f"{detail} {tail}"
 
 
-def failed_copy_for(value: object, *, delivery_requested: bool) -> tuple[str, str]:
+def failed_copy_for(value: object, *, delivery_requested: bool, outcomes: Iterable[EntityOutcome]) -> tuple[str, str]:
     """:func:`failed_copy` for a STORED category value — TOTAL (a run record is untrusted data).
 
     Absent, blank, unknown to this build, or ``none`` on a failed record → the
-    :data:`FALLBACK_CATEGORY` copy. Never raises, never echoes the value.
+    :data:`FALLBACK_CATEGORY` copy. Never raises, never echoes the value. ``outcomes`` — the
+    same record's (``outcomes.outcomes_from_record``), REQUIRED keyword-only so no surface can
+    forget them — are what :func:`failure_names` names the stopped files, the empty output or
+    the structural column from (owner 2026-09-28); ``()`` (a record with no outcomes) names
+    nothing.
     """
-    try:
-        category = RunErrorCategory(value)
-    except (TypeError, ValueError):
-        category = FALLBACK_CATEGORY
-    if category is RunErrorCategory.NONE:
-        category = FALLBACK_CATEGORY
-    return failed_copy(category, delivery_requested=delivery_requested)
+    category = _coerced(value)
+    return failed_copy(category, delivery_requested=delivery_requested, names=failure_names(category, outcomes))
 
 
 def error_card_copy(exc: BaseException, *, delivery_requested: bool) -> tuple[str, str]:
@@ -883,6 +1111,12 @@ def error_card_copy(exc: BaseException, *, delivery_requested: bool) -> tuple[st
     Replaces the retired ``convert_result.convert_error_copy``, which told the admin to
     check the input folder whatever went wrong. ``str(exc)`` is never read: the exception
     goes to :func:`~src.etl.errors.classify_error_category` (``isinstance`` only) and the
-    card is the category's copy — so a card and a run record for the same fault agree.
+    card is the category's copy — named, since 2026-09-28, by :func:`failure_names_of` (the
+    error's typed attributes, never its message) exactly as :func:`failure_names` names the
+    record the same attempt writes — so a card and a run record for the same fault agree.
     """
-    return failed_copy_for(classify_error_category(exc), delivery_requested=delivery_requested)
+    return failed_copy(
+        _coerced(classify_error_category(exc)),
+        delivery_requested=delivery_requested,
+        names=failure_names_of(exc),
+    )

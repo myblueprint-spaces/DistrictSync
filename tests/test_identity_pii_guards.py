@@ -56,6 +56,7 @@ import pytest
 from src.config.app_config import AppConfig
 from src.etl.pipeline import build_run_record, run_pipeline
 from src.history.store import read_run_records
+from tests.test_pipeline_required_input import _write_class_info_rows
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -289,9 +290,7 @@ def _write_minimal_input(d: Path) -> None:
             "Email Address": ["john@mail.com"],
         }
     ).to_csv(d / "EmergencyContactInformation.txt", index=False)
-    pd.DataFrame(
-        columns=["School Number", "Teacher ID", "Master Timetable ID", "Term", "Semester", "Day", "Period"]
-    ).to_csv(d / "ClassInformationEnh.txt", index=False)
+    _write_class_info_rows(d)
 
 
 def test_a_poisoned_stored_identity_reaches_neither_sink(isolated_user_profile: Path, tmp_path, caplog) -> None:

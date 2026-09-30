@@ -43,8 +43,14 @@ from datetime import datetime
 from enum import Enum
 
 from src.config.app_config import AppConfig
-from src.etl.outcomes import EntityOutcome, outcomes_from_record
-from src.ui_flet.failure_copy import data_warnings_clause, detail_note_labels, partial_copy, partial_label
+from src.etl.outcomes import EntityOutcome, nothing_to_send, outcomes_from_record
+from src.ui_flet.failure_copy import (
+    data_warnings_clause,
+    detail_note_labels,
+    nothing_to_send_detail,
+    partial_copy,
+    partial_label,
+)
 from src.ui_flet.home_status import (
     _MYBLUEPRINT_ENTITIES,
     _ROSTERING_ENTITIES,
@@ -452,14 +458,18 @@ def derive_history_banner(
     # automation) only on a CONFIRMED-LIVE schedule read-back, else the record-scoped claim; and
     # "delivered to SpacesEDU" only when the record's SFTP axis says it genuinely shipped.
     when = friendly_timestamp(timestamp, now=now)
+    latest_outcomes = outcomes_from_record(latest)
+    if nothing_to_send(latest_outcomes):
+        # Home's healthy branch says the same (owner ruling 2026-09-30): nothing was written or sent.
+        detail = f"Your last sync completed {when}. {nothing_to_send_detail(latest_outcomes)}"
+    elif sftp_delivered(latest):
+        detail = f"Your last sync delivered to SpacesEDU {when}."
+    else:
+        detail = f"Your last sync completed {when} — files were written to your output folder."
     return HistoryBanner(
         verdict=verdict_for_reason(reason),
         headline=("Your sync is running" if _schedule_confirmed_live(schedule_status) else "Your last sync worked"),
-        detail=(
-            f"Your last sync delivered to SpacesEDU {when}."
-            if sftp_delivered(latest)
-            else f"Your last sync completed {when} — files were written to your output folder."
-        ),
+        detail=detail,
     )
 
 

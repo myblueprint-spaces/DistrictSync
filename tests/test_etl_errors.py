@@ -36,8 +36,10 @@ import src.etl.extractor as extractor_module
 import src.etl.pipeline as pipeline_module
 from src.etl.errors import (
     ConfigLoadError,
+    EmptyRequiredOutputError,
     EtlError,
     GuardKind,
+    IncompleteInputError,
     NoUsableInputError,
     OutputFolderUnsetError,
     RunErrorCategory,
@@ -60,7 +62,8 @@ SENTINEL_PII = "SENTINEL_PII_Zqxv_Pupilname"
 _REPO = Path(__file__).resolve().parents[1]
 
 #: The persisted vocabulary. The first eight values ride every ``history.db`` since
-#: v3.5.0 and may NEVER change; the last two are S1's additions.
+#: v3.5.0 and may NEVER change; ``source_schema`` / ``input_unreadable`` are S1's additions and
+#: ``incomplete_input`` / ``empty_required_output`` the owner's of 2026-09-28 (S13c).
 _PERSISTED = {
     "NONE": "none",
     "NO_INPUT": "no_input",
@@ -72,6 +75,8 @@ _PERSISTED = {
     "UNKNOWN": "unknown",
     "SOURCE_SCHEMA": "source_schema",
     "INPUT_UNREADABLE": "input_unreadable",
+    "INCOMPLETE_INPUT": "incomplete_input",
+    "EMPTY_REQUIRED_OUTPUT": "empty_required_output",
 }
 
 
@@ -89,6 +94,10 @@ def _schema_error(**overrides: object) -> SourceSchemaError:
 _SAMPLES: dict[type[EtlError], Callable[[], EtlError]] = {
     SourceSchemaError: _schema_error,
     NoUsableInputError: lambda: NoUsableInputError("No usable required input was loaded"),
+    IncompleteInputError: lambda: IncompleteInputError(
+        "a required file is missing", missing=("StudentSchedule.txt",), empty=(), named=("StudentSchedule.txt",)
+    ),
+    EmptyRequiredOutputError: lambda: EmptyRequiredOutputError("Classes came out empty", entity="Classes"),
     ConfigLoadError: lambda: ConfigLoadError("bad mapping"),
     OutputFolderUnsetError: lambda: OutputFolderUnsetError("No output folder is configured"),
     ExtractionError: lambda: ExtractionError("unparseable"),
@@ -99,6 +108,8 @@ _SAMPLES: dict[type[EtlError], Callable[[], EtlError]] = {
 _EXPECTED_CATEGORY: dict[type[EtlError], RunErrorCategory] = {
     SourceSchemaError: RunErrorCategory.SOURCE_SCHEMA,
     NoUsableInputError: RunErrorCategory.NO_INPUT,
+    IncompleteInputError: RunErrorCategory.INCOMPLETE_INPUT,
+    EmptyRequiredOutputError: RunErrorCategory.EMPTY_REQUIRED_OUTPUT,
     ConfigLoadError: RunErrorCategory.CONFIG,
     OutputFolderUnsetError: RunErrorCategory.OUTPUT,
     ExtractionError: RunErrorCategory.INPUT_UNREADABLE,
@@ -177,6 +188,8 @@ class TestEveryLeafHasACategory:
         assert isinstance(_schema_error(), ValueError)
         assert isinstance(ConfigLoadError("x"), ValueError)
         assert isinstance(NoUsableInputError("x"), RuntimeError)
+        assert isinstance(_SAMPLES[IncompleteInputError](), RuntimeError)
+        assert isinstance(_SAMPLES[EmptyRequiredOutputError](), RuntimeError)
         assert isinstance(OutputWriteError("x"), RuntimeError)
         assert isinstance(DeliveryIntegrityError("x", RunErrorCategory.NO_OUTPUT), RuntimeError)
 
@@ -187,6 +200,17 @@ class TestEveryLeafHasACategory:
     def test_a_legacy_string_category_is_coerced(self):
         err = EtlError("x", category="output")
         assert err.category is RunErrorCategory.OUTPUT
+
+    def test_the_two_input_output_stops_refuse_to_name_nothing(self):
+        """Owner 2026-09-28: an input stop names at least one problem file, an output stop its
+        entity — REQUIRED keyword-only facts, refused when empty (twin: the samples construct)."""
+        with pytest.raises(ValueError, match="at least one missing or empty file"):
+            IncompleteInputError("x", missing=(), empty=(), named=())
+        with pytest.raises(ValueError, match="the entity that came out empty"):
+            EmptyRequiredOutputError("x", entity="  ")
+        stop = _SAMPLES[IncompleteInputError]()
+        assert (stop.missing, stop.empty, stop.named) == (("StudentSchedule.txt",), (), ("StudentSchedule.txt",))
+        assert _SAMPLES[EmptyRequiredOutputError]().entity == "Classes"
 
     def test_an_unknown_string_category_fails_loudly_at_construction(self):
         with pytest.raises(ValueError):

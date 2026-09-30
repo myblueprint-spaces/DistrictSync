@@ -174,20 +174,35 @@ States:
 - **Degraded** — the store couldn't be read: "Sync status unavailable" WARNING, reassuring the nightly
   sync may still be running.
 - **Stale** — a clean success that's simply too old (>~1.5 nightly cycles): "No recent sync" WARNING.
+- **Nothing to send** *(owner ruling 2026-09-30)* — an attendance-only district's night without
+  absences (every absence file present, none with rows): a HEALTHY success that wrote and sent
+  nothing, so the detail says exactly that — "No absences were recorded, so there was nothing to
+  send — nothing was written or delivered." — instead of "files were written", and carries no size
+  sentence. Run History's banner says the same; Convert shows "Nothing to send".
 - **Failed** — "Last sync failed", and the detail says WHAT KIND of problem it was, from the run's
   bounded failure category (an export file missing a column, an unreadable file, the output folder,
-  the district mapping…) — only a missing or unreadable input names the input folder. The same words
-  appear in Run History and on Convert's error card (plan 0053 S3). It closes with "nothing new was
+  the district mapping…) — only a missing, row-less or unreadable input names the input folder. The same words
+  appear in Run History and on Convert's error card (plan 0053 S3). Since the owner's decisions of
+  2026-09-28 (S13c) two more stops read here, and the DETAIL names what stopped them (the headline stays
+  "Last sync failed"; the category headlines below are Convert's error card only): a file the district's
+  mapping lists that is missing or has no rows ("“StudentSchedule.txt” is missing from the input folder or
+  has no rows…"; the card reads "A file your sync needs is missing or empty"), and an output that came out
+  empty ("This district's sync built no classes…"; the card reads "No classes came out of your export") —
+  as does a School Year column missing from its export (the detail names the column “School Year”; the card
+  reads "An export file is missing its “School Year” column"), and — owner ruling 2026-09-30 — a Class
+  Information export missing the school number that blended-class matching links by (the detail names
+  “School Number”). It closes with "nothing new was
   saved" unless the record shows an upload that failed, when it says nothing was sent — a record
   cannot tell whether delivery was requested, so it never claims more than it shows.
 - **Part of the sync was skipped** *(the reader ships in plan 0053 S3; a run can only produce this
   state from S4, when a problem with one isolatable file stops leaving the whole roster undelivered)*
   — a completed run that left one of its files out: "Your roster synced without family contacts"
-  WARNING, routed to Run History, with what to re-export. Since plan 0053 S8 (owner decision D5) a
-  file that was simply produced EMPTY reads the same way — every row filtered out, or a column the
-  mapping reads missing from its export, on any file; its export missing or empty, on any file but
-  attendance rows (absence files arrive only on nights with absences, so that night stays green) —
-  and the detail closes with what would change it. It is derived from that run's own record,
+  WARNING, routed to Run History, with what to re-export. Since the owner's decisions of 2026-09-28
+  (S13c) family contacts are the ONLY file a completed run can leave out: a problem with any other
+  file stops the night (Failed, above). Since plan 0053 S8 (owner decision D5) family contacts that
+  simply came out EMPTY read the same way — every contact filtered out, a column the mapping reads
+  missing from the export, or the export missing or empty (an attendance file present with no rows is
+  a normal night and stays green) — and the detail closes with what would change it. It is derived from that run's own record,
   so it repeats every night the file stays broken, and a later "deliver the saved files" does not
   turn it green. It outranks the smaller-than-usual anomaly and keeps any data-warning count as a
   second sentence.

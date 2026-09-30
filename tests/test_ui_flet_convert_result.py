@@ -244,8 +244,8 @@ class TestStatusForIntegrityFault:
         frame = pd.DataFrame({"User ID": ["S001"]})
         rostering = ("Students", "Staff", "Family", "Classes", "Enrollments")
         faults = [
-            pipeline.check_delivery_integrity({}, rostering),
-            pipeline.check_delivery_integrity({"Classes": frame, "Enrollments": frame}, rostering),
+            pipeline.check_delivery_integrity({}, rostering, outcomes=()),
+            pipeline.check_delivery_integrity({"Classes": frame, "Enrollments": frame}, rostering, outcomes=()),
         ]
         for fault in faults:
             assert fault is not None

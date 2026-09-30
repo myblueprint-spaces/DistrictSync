@@ -14,7 +14,7 @@ from src.etl.column_names import (
     LAST_NAME,
     MASTER_TIMETABLE_ID,
     SCHOOL_NUMBER,
-    SCHOOL_YEAR,
+    SCHOOL_YEAR_LABEL,
     SECTION_LETTER,
     TEACHER_NAME,
 )
@@ -104,7 +104,11 @@ class ClassTransformer(BaseTransformer):
         nothing on the record. So the column is a (b) JOIN_KEY here: absent, one typed
         ``SourceSchemaError`` on Classes (CRITICAL — the run fails ``source_schema`` and the
         last good output is untouched), in the ``require_columns`` shape (the column in its
-        ``column_names`` spelling, the source's column COUNT, never its headers).
+        ``column_names.SCHOOL_YEAR_LABEL`` spelling, the source's column COUNT, never its
+        headers). That spelling is a STRUCTURAL label (``outcomes.STRUCTURAL_LABELS``), so the
+        stopped night's copy on Home, Run History and Convert names "School Year" (owner
+        2026-09-28); ``require_columns`` compares trimmed and lower-cased, so the check is the
+        one it always was.
 
         The calendar fallback stays the legitimate path everywhere else, and this never
         fires there: no source configured, a source not loaded (no enabled entity reads it)
@@ -115,7 +119,7 @@ class ClassTransformer(BaseTransformer):
         sources = BaseTransformer.normalize_source_config(context.global_config.get("school_year_sources") or {})
         for _role, _filename, frame in school_year_source_frames(context.raw_data, sources):
             # failure-policy: join_key
-            require_columns(frame.columns, [SCHOOL_YEAR], entity="Classes", guard=GuardKind.JOIN_KEY)
+            require_columns(frame.columns, [SCHOOL_YEAR_LABEL], entity="Classes", guard=GuardKind.JOIN_KEY)
 
     # -------------------------------------------------------------------
     # Blended detection

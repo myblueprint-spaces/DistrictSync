@@ -27,7 +27,9 @@ from src.config.app_config import AppConfig
 from src.config.loader import load_config
 from src.config.models import MappingConfig, filter_enabled_entities
 from src.etl.errors import (
+    EmptyRequiredOutputError,
     EtlError,
+    IncompleteInputError,
     NoUsableInputError,
     RunErrorCategory,
     classify_error_category,
@@ -35,6 +37,7 @@ from src.etl.errors import (
 from src.etl.extractor import DataExtractor
 from src.etl.loader import DataLoader, output_target_problem
 from src.etl.outcomes import (
+    MAY_BE_EMPTY,
     OUTCOMES_RECORD_KEY,
     ROSTER_ANCHOR_ENTITY,
     EntityCriticality,
@@ -43,14 +46,17 @@ from src.etl.outcomes import (
     OutcomeLedger,
     OutcomeReason,
     criticality_of,
+    every_entity_may_be_empty,
     failed_entities,
+    nothing_to_send,
     outcomes_to_record,
+    stopped_file_labels,
+    stops_when_empty,
 )
 from src.etl.preflight import label_vocabulary_by_entity, missing_columns_by_entity
 from src.etl.transformer import DataTransformer
 from src.etl.transformers.columns import reset_run_notices as reset_column_notices
 from src.etl.transformers.dates import SchoolYearDetermination
-from src.etl.transformers.grades import resolve_timetable_scope
 from src.history.store import VALID_SOURCES, write_run_record
 from src.quality.report import DataQualityReport, declared_blank_fields
 from src.sftp.uploader import SFTPUploader
@@ -82,6 +88,29 @@ _SOURCE_ENV_VAR = "DSYNC_SOURCE"  # scheduled/cron/Docker set this; the register
 # page tells an admin to search `etl_tool.log` for (pinned by
 # tests/test_partner_doc_schedule_copy_parity.py). Arguments: the entity, the reason's value.
 _ENTITY_NOT_BUILT_LOG_FORMAT = "ENTITY NOT BUILT [%s] reason=%s — left out of this run; every other entity continues."
+
+# The ONE log line `run_transform` writes when an entity the night cannot go without comes out
+# EMPTY (owner 2026-09-28 — `outcomes.stops_when_empty`), at ERROR, just before it raises
+# `EmptyRequiredOutputError`. Arguments: the entity, the reason's value (both closed vocabularies).
+_REQUIRED_OUTPUT_EMPTY_LOG_FORMAT = (
+    "REQUIRED OUTPUT EMPTY [%s] reason=%s — this output may not be empty, so the run stops; nothing is written or sent."
+)
+
+# The ONE log line both entry points write, at INFO, on a night with nothing to send (owner ruling
+# 2026-09-30 — `outcomes.nothing_to_send`: an attendance-only config whose absence files are all
+# present with no rows). `NOTHING TO SEND` is the grep anchor for "why was nothing written?".
+NOTHING_TO_SEND_LOG_LINE = (
+    "NOTHING TO SEND — every configured output may be empty and has no rows tonight (no absences "
+    "recorded); nothing was written, archived or delivered, and the last output is untouched."
+)
+
+# The ONE log line the input gate writes, at ERROR, before it raises `IncompleteInputError`
+# (owner 2026-09-28 — `check_required_inputs`). Arguments: the missing files, the row-less files
+# (config spelling — the mapping's `source_files` names, never a path) and the entities stopped.
+_REQUIRED_INPUT_UNUSABLE_LOG_FORMAT = (
+    "REQUIRED INPUT UNUSABLE — missing: %s; no data rows: %s; needed by: %s. The run stops before "
+    "anything is built; only the family contacts file may be left out."
+)
 
 # The ONE line the source observation writes per entity whose mapped columns are absent from the
 # file(s) it reads (plan 0053 S6, failure-policy §10). WARNING, not ERROR: the observation never
@@ -150,9 +179,14 @@ def extract_required_files(config) -> list[str]:
     by an enabled entity — when they aren't, ``determine_school_year``
     falls back to the calendar-date heuristic in BaseTransformer.
 
-    This is the list ``extractor.load_data`` actually reads — NOT merely an
-    advisory "what does the UI expect" set (see ``advisory_expected_files``
-    for that). It must stay grade-scope-AGNOSTIC: a district whose resolved
+    This is the list ``extractor.load_data`` actually reads, and — since owner
+    decision 2026-09-28 — also the list the UI shows as what a district's sync reads
+    (Convert's missing-file chips, the self-service Files step): every file an enabled
+    entity lists is required (:func:`check_required_inputs`), so the UI-only
+    ``advisory_expected_files``, which dropped a fully homeroom-scoped district's
+    schedule and class-information roles as "feeding nothing", was retired — it would have
+    hidden the very files the input gate now stops the night for. It must stay
+    grade-scope-AGNOSTIC: a district whose resolved
     timetable scope is empty (``class_rostering_grades: "homeroom"``) still
     gets no harm from opportunistically loading a present ``StudentSchedule.txt``
     — it may still carry a usable ``school_year_sources`` value, and the
@@ -173,45 +207,11 @@ def extract_required_files(config) -> list[str]:
     return list(files)
 
 
-def advisory_expected_files(config) -> list[str]:
-    """The UI-facing "your district's extracts usually include" file list.
-
-    Same base set as :func:`extract_required_files`, MINUS the
-    ``student_schedule``/``class_info`` source-file roles when the district's
-    resolved timetable scope is EMPTY (``class_rostering_grades: "homeroom"``,
-    or an explicit list equal to ``homeroom_grades``) — for a fully
-    homeroom-scoped config those two files feed no surviving class or
-    enrollment (every blend is unconditionally suppressed and no subject
-    class is ever built), so flagging them as "usually included" is actively
-    misleading rather than merely optional.
-
-    Deliberately SEPARATE from :func:`extract_required_files`: this function
-    is advisory-only (it decides what a chip on the Convert screen says, never
-    what the extractor reads), so it is free to narrow past the safe,
-    scope-agnostic set that function must keep. Branches on ``is None`` per
-    ``grades.resolve_timetable_scope``'s own contract — never on truthiness —
-    so an unscoped config (the default) is byte-identical to
-    ``extract_required_files``.
-    """
-    active = config.active_entities()
-    raw_global_config = config.to_raw_dict().get("global_config", {})
-    homeroom_grades = raw_global_config.get("homeroom_grades", [])
-    timetable_scope = resolve_timetable_scope(raw_global_config, homeroom_grades)
-    inert_roles = {"student_schedule", "class_info"} if timetable_scope is not None and not timetable_scope else set()
-
-    files: set[str] = set()
-    for entity_name, entity_cfg in config.mappings.items():
-        if entity_name not in active:
-            continue
-        for role, filename in entity_cfg.source_files.items():
-            if role in inert_roles:
-                continue
-            files.add(filename)
-    return list(files)
-
-
-def has_no_usable_input(raw_data: Mapping[str, pd.DataFrame]) -> bool:
-    """True when a load produced NOTHING usable — no keys, or every frame empty.
+def has_no_usable_input(
+    raw_data: Mapping[str, pd.DataFrame], *, configured: Iterable[str], absent: Collection[str]
+) -> bool:
+    """True when a load produced NOTHING usable — no keys, or every frame empty — on a run that
+    needed something.
 
     The single source for "this folder gave us nothing", shared by ``run_pipeline``
     (which raises) and ``convert_job`` (which returns ``NO_INPUT``). It exists
@@ -224,11 +224,115 @@ def has_no_usable_input(raw_data: Mapping[str, pd.DataFrame]) -> bool:
     unreachable.
 
     Keys off INPUT presence, independent of ``run_transform``'s per-entity
-    skip-on-empty — so a PARTIAL load (some files present) is usable, and a
+    skip-on-empty — so a PARTIAL load (some files present) is not "nothing", and a
     period-only attendance run (period file non-empty, daily absent) does not fire
-    it.
+    it. Whether a partial load may RUN is the next gate's question,
+    :func:`check_required_inputs` (owner 2026-09-28), which both entry points call after
+    this one: a missing file a CRITICAL entity lists stops the night there instead.
+
+    **The one exception (owner ruling 2026-09-30): a night with nothing to send.** A run whose
+    every ``configured`` entity may arrive empty (``outcomes.every_entity_may_be_empty`` — an
+    attendance-only config) and whose listed files are ALL on disk (``absent`` empty — the
+    extractor's own ``absent_files`` for the same read) is a night without absences, not "the
+    wrong folder": it goes on to record StudentAttendance EMPTY / ``source_files_empty`` and to
+    end a success with nothing written or sent (``outcomes.nothing_to_send``). A MISSING absence
+    file still stops the night (:func:`check_required_inputs`), and a config with any other
+    entity whose files are all row-less still fails here. ``configured`` and ``absent`` are
+    REQUIRED keyword-only: a default would decide the exception for the caller.
     """
-    return not raw_data or all(df.empty for df in raw_data.values())
+    if raw_data and not all(df.empty for df in raw_data.values()):
+        return False
+    return not (raw_data and not absent and every_entity_may_be_empty(configured))
+
+
+def _declared_source_files(entity_cfg: Mapping[str, Any]) -> list[str]:
+    """An entity block's configured ``source_files`` names — declared order, de-duplicated, non-blank
+    strings only (the input gate's reading; ``run_transform`` derives its own list in the entity loop,
+    and the two agree on every Pydantic-validated config)."""
+    source_config = entity_cfg.get("source_files", {}) if isinstance(entity_cfg, Mapping) else {}
+    names = list(source_config.values()) if isinstance(source_config, dict) else list(source_config or [])
+    return list(dict.fromkeys(name for name in names if isinstance(name, str) and name))
+
+
+def check_required_inputs(
+    mappings: Mapping[str, Any],
+    raw_data: Mapping[str, pd.DataFrame],
+    *,
+    absent: Collection[str],
+    ledger: OutcomeLedger,
+) -> None:
+    """The INPUT gate (owner decision 2026-09-28, ``failure-policy.md`` §2 layer 3a, §7) — shared
+    by BOTH entry points, called after the read (and the source observation) and before
+    :func:`run_transform` (AST-pinned).
+
+    "We don't have optional files; maybe family info can be optional." Every file a CRITICAL
+    entity's mapping lists (``outcomes.ENTITY_CRITICALITY`` — every entity but Family) must be
+    in the input folder, and must have data rows unless that entity is in
+    ``outcomes.MAY_BE_EMPTY`` (StudentAttendance: a night with no absences is a file with no
+    rows, never an absent file). Otherwise the night STOPS here, before anything is built:
+
+    * each entity it stopped is recorded FAILED / ``missing_source_file``
+      (:meth:`~src.etl.outcomes.OutcomeLedger.record_missing_files` — the file named when it
+      is the entity's only problem), and the failure sink marks the rest NOT_RUN;
+    * :class:`~src.etl.errors.IncompleteInputError` is raised — category
+      ``incomplete_input``, exit 1, nothing written or sent, the last good output untouched —
+      naming every missing and every row-less file in the CONFIG's spelling (config
+      vocabulary, never a path) and carrying the names the copy may print
+      (``outcomes.stopped_file_labels`` over the outcomes just recorded, so Convert's card and
+      the run record name the same files).
+
+    **The exceptions come from the declarations, not a list here.** An ISOLATABLE entity's own
+    file (Family's contacts export) is never checked: a missing or row-less one reaches
+    ``run_transform``, which records Family EMPTY / ``source_files_empty`` — a standing
+    WARNING (amber), the rest delivered. A file Family shares with a CRITICAL entity is
+    required through that entity. A present, row-less file of a ``MAY_BE_EMPTY`` entity reaches
+    ``run_transform`` too (EMPTY, neutral).
+
+    **An entity whose mapping names no source file at all** has no file to judge here; it is
+    :func:`run_transform`'s EMPTY / ``no_source_files_declared``, which stops the night there
+    for a CRITICAL entity (``outcomes.stops_when_empty``) — one rule per question.
+
+    ``absent`` is ``DataExtractor.absent_files`` for the same read — REQUIRED keyword-only,
+    because ``raw_data`` answers "missing" and "present with no record" identically and the
+    rule treats them differently for StudentAttendance; ``ledger`` is the run's, built from
+    :func:`configured_entity_order`. Returns ``None`` when every requirement holds.
+    """
+    problems: dict[str, list[str]] = {}
+    missing: list[str] = []
+    empty: list[str] = []
+    for entity in ledger.configured:
+        if criticality_of(entity) is not EntityCriticality.CRITICAL:
+            continue
+        for name in _declared_source_files(mappings.get(entity, {})):
+            if name in absent:
+                problems.setdefault(entity, []).append(name)
+                if name not in missing:
+                    missing.append(name)
+            elif entity not in MAY_BE_EMPTY and raw_data.get(name, pd.DataFrame()).empty:
+                problems.setdefault(entity, []).append(name)
+                if name not in empty:
+                    empty.append(name)
+
+    if not problems:
+        return
+
+    for entity, files in problems.items():
+        ledger.record_missing_files(entity, files)
+    logger.error(_REQUIRED_INPUT_UNUSABLE_LOG_FORMAT, missing or "none", empty or "none", ", ".join(problems))
+    parts = []
+    if missing:
+        parts.append(f"missing from the input folder: {missing}")
+    if empty:
+        parts.append(f"present with no data rows: {empty}")
+    raise IncompleteInputError(
+        f"The input stopped the run — a file this district's mapping requires is not usable: {'; '.join(parts)} "
+        f"(needed by {', '.join(problems)}). "
+        "Nothing was written or sent; the last good output is untouched. Check the export job and the "
+        "input folder — only the family contacts file may be left out.",
+        missing=missing,
+        empty=empty,
+        named=stopped_file_labels(ledger.outcomes),
+    )
 
 
 def observed_input_columns(raw_data: Mapping[str, pd.DataFrame]) -> dict[str, tuple[str, ...]]:
@@ -383,6 +487,18 @@ def run_transform(
     skip branch below records EMPTY with its reason and every emitted entity BUILT
     with its row count.
 
+    **An EMPTY output the night cannot go without STOPS it (owner 2026-09-28).** Every EMPTY
+    outcome is judged, as recorded, by ``outcomes.stops_when_empty``: a CRITICAL entity that
+    comes out with no rows — every row filtered out, a mapped column missing, no source file
+    declared — records its EMPTY outcome, marks every later entity NOT_RUN and raises
+    :class:`~src.etl.errors.EmptyRequiredOutputError` (``empty_required_output``, exit 1,
+    nothing written or sent). Only Family (the ONE ISOLATABLE entity: EMPTY, a standing
+    WARNING) and a StudentAttendance with nothing to send (``outcomes.empty_is_expected``:
+    EMPTY, neutral) are recorded and passed. **Both entry points call
+    :func:`check_required_inputs` first**, so on a real run a CRITICAL entity whose files are
+    missing or row-less has already stopped the night there; a direct caller that skips that
+    gate still gets this stop for an entity whose every file is empty.
+
     **The entity bulkhead (plan 0053 S4, ``failure-policy.md`` §2/§3) — the ONE
     entity-scope boundary in the product, shared by the CLI and Convert.** A raise from
     an entity's transform is recorded FAILED (:meth:`~src.etl.outcomes.OutcomeLedger.record_failure`:
@@ -468,19 +584,45 @@ def run_transform(
     # The first exception the bulkhead contained — re-raised after the loop if NOTHING was built.
     first_isolated: Exception | None = None
 
+    def record_empty(position: int, outcome: EntityOutcome) -> None:
+        """Record an EMPTY ``outcome``, then STOP the night if its entity may not be empty.
+
+        Owner decision 2026-09-28 — "DistrictSync never sends a header-only file": the
+        recorded outcome (its reason possibly refined by the source observation) is judged by
+        ``outcomes.stops_when_empty``. A stop records every later entity NOT_RUN, logs ONE
+        ``REQUIRED OUTPUT EMPTY`` line and raises :class:`~src.etl.errors.EmptyRequiredOutputError`
+        naming the entity — the same run-scope stop a CRITICAL raise is, so nothing is written
+        or sent and the last good output is untouched. Family (ISOLATABLE) and a
+        StudentAttendance with nothing to send (``outcomes.empty_is_expected``) are recorded and
+        the loop continues, as before.
+        """
+        ledger.record(outcome)
+        recorded = next(o for o in ledger.outcomes if o.entity == outcome.entity)
+        if not stops_when_empty(recorded.entity, recorded.reason):
+            return
+        ledger.mark_not_run(configured[position + 1 :])
+        logger.error(_REQUIRED_OUTPUT_EMPTY_LOG_FORMAT, recorded.entity, recorded.reason.value)
+        raise EmptyRequiredOutputError(
+            f"{recorded.entity} came out with no rows (reason={recorded.reason.value}), and this output may not "
+            "be empty — only family contacts may be left out, and DistrictSync never sends an empty file. "
+            "Nothing was written or sent; the last good output is untouched. Check this district's export "
+            f"for {recorded.entity}.",
+            entity=recorded.entity,
+        )
+
     for position, entity_name in enumerate(configured):
         entity_cfg = mappings.get(entity_name, {})
         source_config = entity_cfg.get("source_files", {})
 
         if not source_config:
             logger.warning(f"No source_files for entity '{entity_name}' in the mapping; skipping.")
-            ledger.record(EntityOutcome.empty(entity_name, OutcomeReason.NO_SOURCE_FILES_DECLARED))
+            record_empty(position, EntityOutcome.empty(entity_name, OutcomeReason.NO_SOURCE_FILES_DECLARED))
             continue
 
         source_files = list(source_config.values()) if isinstance(source_config, dict) else source_config
         if not source_files:
             logger.warning(f"No valid source files for entity '{entity_name}'; skipping.")
-            ledger.record(EntityOutcome.empty(entity_name, OutcomeReason.NO_SOURCE_FILES_DECLARED))
+            record_empty(position, EntityOutcome.empty(entity_name, OutcomeReason.NO_SOURCE_FILES_DECLARED))
             continue
 
         # Skip only when EVERY source frame is empty. The positional-first frame
@@ -492,7 +634,7 @@ def run_transform(
         source_frames = [raw_data.get(sf, pd.DataFrame()) for sf in source_files]
         if all(df.empty for df in source_frames):
             logger.warning(f"All source files {source_files} are empty for '{entity_name}'; skipping.")
-            ledger.record(EntityOutcome.empty(entity_name, OutcomeReason.SOURCE_FILES_EMPTY))
+            record_empty(position, EntityOutcome.empty(entity_name, OutcomeReason.SOURCE_FILES_EMPTY))
             continue
         primary_df = source_frames[0]  # may be empty for a role-resolved entity (period-only attendance)
 
@@ -524,7 +666,7 @@ def run_transform(
         notes = transformer.outcome_notes_for(entity_name)
         if transformed.empty:
             logger.warning(f"No data transformed for entity '{entity_name}'; skipping.")
-            ledger.record(EntityOutcome.empty(entity_name, OutcomeReason.NO_ROWS_AFTER_TRANSFORM, notes=notes))
+            record_empty(position, EntityOutcome.empty(entity_name, OutcomeReason.NO_ROWS_AFTER_TRANSFORM, notes=notes))
             continue
 
         outputs[entity_name] = transformed
@@ -594,6 +736,8 @@ class OutputWriteError(EtlError, RuntimeError):
 def check_delivery_integrity(
     outputs: dict[str, pd.DataFrame],
     configured_entities: Iterable[str],
+    *,
+    outcomes: Sequence[EntityOutcome],
 ) -> DeliveryIntegrityError | None:
     """Pure pre-write gate: is this output set safe to commit and deliver?
 
@@ -621,24 +765,38 @@ def check_delivery_integrity(
       Exactly the orphan class the zero-orphan invariant exists to prevent, caught
       at the delivery boundary rather than inside a transformer.
 
-    What this deliberately does NOT gate (per CLAUDE.md's exit-code contract,
-    "a *partial* run with some empty sources stays exit 0 by design"):
+    What this deliberately does NOT gate:
 
-    * a NON-anchor entity that is empty or vanished (a missing Family export stays
-      an ``ANOMALY`` warning plus a stale-CSV archive, never a failure);
+    * a NON-anchor entity that is empty or vanished — since owner decision 2026-09-28 no
+      CRITICAL entity reaches here empty: :func:`check_required_inputs` stopped any whose file
+      was missing or row-less, and :func:`run_transform` any that came out EMPTY. What reaches
+      here empty is Family (its missing export an EMPTY WARNING, an ``ANOMALY`` the first
+      night and a stale-CSV archive, never a failure) or a StudentAttendance with nothing to
+      send (a normal night). That makes the roster check below a FLOOR: an empty Students
+      stops in ``run_transform`` first (``empty_required_output``), so ``incomplete_roster``
+      answers only a caller whose outputs did not come from ``run_transform``;
     * a config whose configured entity set has no anchor at all (``mbponly``,
-      ``sd51attendance``) — nothing there references an undelivered roster.
+      ``sd51attendance``) — nothing there references an undelivered roster;
+    * **a night with nothing to send** (owner ruling 2026-09-30): no output at all, and EVERY
+      outcome is an EMPTY a normal night allows (``outcomes.nothing_to_send`` — an
+      attendance-only config without absences). That is a success with nothing to write or
+      deliver, never ``no_output``; both callers then skip the write, the archive and the upload.
 
     Args:
         outputs: the entities this run actually produced (``run_transform``'s frames).
         configured_entities: the enabled-entities-derived list this run was configured
             to produce (:func:`configured_entity_order`) — NEVER raw ``mappings.keys()``,
             which ``_base`` inheritance pollutes with inherited-but-disabled entities.
+        outcomes: the run's per-entity outcomes (``TransformOutputs.outcomes``) — REQUIRED
+            keyword-only: they alone tell "nothing to send tonight" from "nothing built", and a
+            default would silently decide which.
 
     Returns:
         The fault to raise, or ``None`` when the output set is safe to deliver.
     """
     if not outputs:
+        if nothing_to_send(outcomes):
+            return None
         return DeliveryIntegrityError(
             "The run produced no output files at all — every entity was empty or skipped. "
             "Nothing was written and nothing was delivered. Check that the input folder "
@@ -1010,10 +1168,14 @@ def run_pipeline(
     move the Home verdict. Its ``__DISTRICTSYNC_RUN__`` diagnostic log line is
     unchanged (see :func:`_store_run_record`).
 
-    Two boundaries fail LOUD rather than let an unattended run report success —
-    both raise, so ``main`` exits **1** (no new exit code): no usable required
-    input on the way IN, and :func:`check_delivery_integrity` on the way OUT
-    (nothing produced, or the roster anchor missing while dependents were built).
+    Three boundaries fail LOUD rather than let an unattended run report success —
+    each raises, so ``main`` exits **1** (no new exit code): the input on the way IN
+    (no usable required input at all, then :func:`check_required_inputs` — a missing
+    or row-less file a CRITICAL entity lists, owner 2026-09-28), each entity's output in
+    :func:`run_transform` (a CRITICAL entity that came out EMPTY — ``empty_required_output``,
+    owner 2026-09-28), and :func:`check_delivery_integrity` on the way OUT (nothing produced,
+    or the roster anchor missing while dependents were built — the floor beneath the
+    previous one).
 
     The out-gate refuses BEFORE any write, so the previous output set is left
     untouched. Neither affects the exit-3 contract: a delivery failure AFTER a
@@ -1141,6 +1303,10 @@ def run_pipeline(
                 file_headers[filename] = header_list
 
         raw_data = extractor.load_data(required_files, file_headers=file_headers)
+        # Which listed files are not on disk — the extractor's own `_locate` rule, read ONCE and
+        # shared by both input gates below (the second needs it to tell "missing" from "present
+        # with no rows"; the first to tell a night without absences from the wrong folder).
+        absent = extractor.absent_files(required_files)
 
         # Fail loud on NO USABLE INPUT. A scheduled, unattended run that received
         # no usable required input (wrong folder, truncated export, locked file)
@@ -1148,7 +1314,7 @@ def run_pipeline(
         # `convert_job` (`has_no_usable_input`) so the two paths cannot answer
         # "this folder gave us nothing" differently — see its docstring for why the
         # bare truthiness test is a trap once a caller reads the CONFIG's file set.
-        if has_no_usable_input(raw_data):
+        if has_no_usable_input(raw_data, configured=ledger.configured, absent=absent):
             empty_or_missing = [name for name, df in raw_data.items() if df.empty] or list(required_files)
             raise NoUsableInputError(
                 "No usable required input was loaded — every required file is "
@@ -1159,6 +1325,11 @@ def run_pipeline(
         # The source observation (plan 0053 S6): advisory, never raises, never gates — shared
         # with `convert_job`, at the same point, so both record the same outcomes.
         observe_source_columns(config, raw_data, ledger)
+
+        # The input gate (owner 2026-09-28): a missing or row-less file a CRITICAL entity lists
+        # stops the night here, typed, before anything is built — shared with `convert_job`, at
+        # the same point. After the observation, so a stopped entity's outcome can name its file.
+        check_required_inputs(mappings, raw_data, absent=absent, ledger=ledger)
 
         # Shared transform-orchestration (school-year + per-entity loop +
         # enabled_entities filter + field-order collection).
@@ -1190,22 +1361,30 @@ def run_pipeline(
         # state: the previous `Students.csv` is neither overwritten nor archived out of
         # the SFTP glob. Applies to dry-run too — a preview that previews nothing is
         # just as misleading as a live run that delivers nothing.
-        integrity_fault = check_delivery_integrity(outputs, expected_entities)
+        integrity_fault = check_delivery_integrity(outputs, expected_entities, outcomes=transform_outputs.outcomes)
         if integrity_fault is not None:
             raise integrity_fault
+        # Past the gate, an EMPTY output set means the night had nothing to send (owner ruling
+        # 2026-09-30 — `outcomes.nothing_to_send`): nothing is written, archived or delivered, and
+        # the last output is left exactly as it was.
+        if not outputs:
+            logger.info(NOTHING_TO_SEND_LOG_LINE)
 
         # Check for anomalies before writing — including entities this run was
         # configured to produce that produced nothing while a previous non-empty CSV
-        # sits on disk (present→absent / N→0). A partial run with some empty sources
-        # stays exit 0 by design — these are warnings, not failures.
-        if not dry_run:
+        # sits on disk (present→absent / N→0). These are warnings, not failures: an
+        # entity that reaches here empty is Family (the one that may be left out) or a
+        # StudentAttendance with nothing to send — a missing input already stopped the night
+        # at `check_required_inputs`, and an empty required output in `run_transform`.
+        if not dry_run and outputs:
             anomalies = _check_anomalies(outputs, Path(output_path), expected_entities)
 
-        # Write all outputs transactionally (all-or-nothing commit).
-        # `outputs` is guaranteed non-empty here — the integrity gate above raises on
-        # an empty set, so the old `and outputs` short-circuit (which silently skipped
-        # save + archive + upload and still reported success) is gone by construction.
-        if not dry_run:
+        # Write all outputs transactionally (all-or-nothing commit). An empty `outputs` reaches
+        # here ONLY as a night with nothing to send — the integrity gate refuses every other
+        # empty set (`no_output`) — and writes, archives and delivers nothing. That skip is the
+        # owner's ruling, not the old silent `and outputs` short-circuit, which skipped save +
+        # archive + upload on ANY empty night and still reported success.
+        if not dry_run and outputs:
             # The write-time window the pre-flight structurally cannot see (a CSV locked
             # by Excel, a drive dropping mid-run, a create-files-denied ACL). `OSError`
             # ONLY — a `ValueError` here is a missing field-map column, a DATA fault that

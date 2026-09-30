@@ -88,18 +88,28 @@ def _write_emergency_contacts(path):
     ).to_csv(path / "EmergencyContactInformation.txt", index=False)
 
 
-def _write_class_info_enh(path):
+def _write_class_info_enh(path, filename="ClassInformationEnh.txt"):
+    """A COMPLETE ClassInformation: one row per schedule section, each in its own time slot.
+
+    A header-only file stops the night since 2026-09-28 (only an attendance file may be
+    present with no rows), so this carries the rows a real export does (owner ruling
+    2026-09-30) — consistent with the schedule, forming no blend and linking no row the
+    schedule has not already produced.
+    """
     pd.DataFrame(
-        columns=[
-            "School Number",
-            "Teacher ID",
-            "Master Timetable ID",
-            "Term",
-            "Semester",
-            "Day",
-            "Period",
-        ]
-    ).to_csv(path / "ClassInformationEnh.txt", index=False)
+        {
+            "School Number": ["100", "200", "200"],
+            "Course Code": ["HR-3", "MAT10", "ENG12"],
+            "Teacher ID": ["T001", "T003", "T004"],
+            "Primary Teacher": ["Y", "Y", "Y"],
+            "Section Letter": ["A", "A", "A"],
+            "Semester": ["S1", "S1", "S1"],
+            "Term": ["T1", "T1", "T1"],
+            "Day": ["1", "1", "1"],
+            "Period": ["1", "2", "3"],
+            "Master Timetable ID": ["MT001", "MT002", "MT003"],
+        }
+    ).to_csv(path / filename, index=False)
 
 
 EXPECTED_OUTPUTS = ["Students.csv", "Staff.csv", "Family.csv", "Classes.csv", "Enrollments.csv"]
@@ -204,17 +214,7 @@ class TestSD74Pipeline:
         ).to_csv(input_dir / "ParentInformation.txt", index=False)
 
         # ClassInfoEnhanced.txt (different name from base ClassInformationEnh.txt)
-        pd.DataFrame(
-            columns=[
-                "School Number",
-                "Teacher ID",
-                "Master Timetable ID",
-                "Term",
-                "Semester",
-                "Day",
-                "Period",
-            ]
-        ).to_csv(input_dir / "ClassInfoEnhanced.txt", index=False)
+        _write_class_info_enh(input_dir, "ClassInfoEnhanced.txt")
 
         return input_dir, output_dir
 

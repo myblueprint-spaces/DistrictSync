@@ -26,10 +26,11 @@ Three things are pinned here, and each is a *partner-visible* contract:
 2. **The expected-entity table** (:data:`EXPECTED_ENTITIES`) — the single source
    for "which CSVs should this config's contract run have produced". It is NOT
    derivable from config alone: it is ``active_entities ∩ entities whose sources
-   this fixture supplies``. ``sd51myedbc`` actively enables StudentAttendance yet
-   its fixture deliberately supplies no absence files (the skip-on-empty pin), so
-   its expected set is the 4 rostering entities its config enables (Family is off
-   in the config, 2026-09-25). Its VALUES are guarded against
+   this fixture supplies``. Since 2026-09-30 every fixture supplies every file its
+   config lists (a missing or row-less required file stops the night — owner
+   decisions 2026-09-28), so the two sets coincide; ``sd51myedbc``'s is its 4
+   rostering entities plus StudentAttendance (Family is off in the config,
+   2026-09-25). Its VALUES are guarded against
    erosion in both directions by
    ``test_expected_entities_track_active_entities`` + :data:`DELIBERATELY_UNCOVERED`.
 3. **The on-disk encoding** — the rostering/course CSVs carry the Excel BOM;
@@ -101,17 +102,17 @@ UTF8_BOM = b"\xef\xbb\xbf"
 
 #: The ONLY entities a config actively enables that this module's fixtures
 #: deliberately do NOT supply sources for — i.e. the only sanctioned gap between
-#: ``active_entities()`` and :data:`EXPECTED_ENTITIES`, across all 11 bundled
-#: configs. sd51myedbc's absence GDEs are withheld ON PURPOSE so the run pins
-#: skip-on-empty (a missing attendance drop must never block rostering).
+#: ``active_entities()`` and :data:`EXPECTED_ENTITIES`, across every bundled
+#: config. EMPTY since 2026-09-30: sd51myedbc's absence GDEs used to be withheld to
+#: pin "a missing attendance drop never blocks rostering", which the owner reversed
+#: on 2026-09-28 (a MISSING listed file now stops the night), so its fixture ships
+#: them and no config has a gap.
 #:
 #: Every gap must be declared HERE, not silently absorbed into a frozenset:
 #: shrinking an ``EXPECTED_ENTITIES`` value to make a red test green now fails
 #: ``test_expected_entities_track_active_entities``, and a future config that
 #: enables an entity whose sources no fixture supplies fails it too.
-DELIBERATELY_UNCOVERED: dict[str, frozenset[str]] = {
-    "sd51myedbc": frozenset({"StudentAttendance"}),
-}
+DELIBERATELY_UNCOVERED: dict[str, frozenset[str]] = {}
 
 VALID_STAFF_ROLES = {"teacher", "administrator"}
 VALID_ENROLLMENT_ROLES = {"student", "teacher"}
@@ -301,9 +302,45 @@ def _write_family(path: Path, filename: str, last_name_col: str = "Last Name") -
     ).to_csv(path / filename, index=False)
 
 
-def _write_class_info_empty(path: Path, filename: str) -> None:
+#: One ClassInformation row per section of :func:`_write_base_schedule`:
+#: (School Number, Teacher ID, Master Timetable ID, Course Code).
+_BASE_SECTIONS: tuple[tuple[str, str, str, str], ...] = (
+    ("100", "T001", "MT001", "HR-3"),
+    ("200", "T003", "MT002", "MAT10"),
+    ("200", "T004", "MT003", "ENG12"),
+)
+
+
+def _write_class_info(
+    path: Path, filename: str, sections: tuple[tuple[str, str, str, str], ...] = _BASE_SECTIONS
+) -> None:
+    """A COMPLETE ClassInformation export: one row per schedule section (owner ruling 2026-09-30).
+
+    The input gate stops a night whose ClassInformation is present with no data rows
+    (owner decision 2026-09-28), so every fixture now ships the rows a real export
+    carries, consistent with its schedule: the section's school, primary teacher (flag
+    ``Y``), Master Timetable ID, course code, section letter, and the four time-slot
+    columns the base mapping's blended detection keys on. Each section has its OWN
+    period, so no two share a teacher + time slot and no blend forms; the section letter
+    is ``A`` (as in the schedule) and names no homeroom, so the co-teacher path links no
+    row the schedule has not already produced. The outputs are therefore exactly what
+    the schedule alone decides — but blended detection and the co-teacher path now RUN
+    on every fixture (§5 #39 and #15 reachable end to end), where the header-only file
+    they replace short-circuited both.
+    """
     pd.DataFrame(
-        columns=["School Number", "Teacher ID", "Master Timetable ID", "Term", "Semester", "Day", "Period"]
+        {
+            "School Number": [school for school, _t, _m, _c in sections],
+            "Course Code": [code for _s, _t, _m, code in sections],
+            "Teacher ID": [teacher for _s, teacher, _m, _c in sections],
+            "Primary Teacher": ["Y"] * len(sections),
+            "Section Letter": ["A"] * len(sections),
+            "Semester": ["S1"] * len(sections),
+            "Term": ["T1"] * len(sections),
+            "Day": ["1"] * len(sections),
+            "Period": [str(slot) for slot in range(1, len(sections) + 1)],
+            "Master Timetable ID": [mtid for _s, _t, mtid, _c in sections],
+        }
     ).to_csv(path / filename, index=False)
 
 
@@ -457,7 +494,7 @@ def _create_myedbc_inputs(d: Path, *, course_catalog: bool = False) -> None:
     _write_base_schedule(d, "StudentSchedule.txt")
     _write_course_info(d, catalog=course_catalog)
     _write_family(d, "EmergencyContactInformation.txt")
-    _write_class_info_empty(d, "ClassInformationEnh.txt")
+    _write_class_info(d, "ClassInformationEnh.txt")
 
 
 def _create_sd48_inputs(d: Path) -> None:
@@ -466,7 +503,7 @@ def _create_sd48_inputs(d: Path) -> None:
     _write_base_schedule(d, "StudentSchedule.txt")
     _write_course_info(d)
     _write_family(d, "EmergencyContactInformation.txt")
-    _write_class_info_empty(d, "ClassInformationEnh.txt")
+    _write_class_info(d, "ClassInformationEnh.txt")
 
 
 def _create_sd74_inputs(d: Path) -> None:
@@ -475,7 +512,7 @@ def _create_sd74_inputs(d: Path) -> None:
     _write_base_schedule(d, "studentcourseselection.txt", section_col="Section")
     _write_course_info(d)
     _write_family(d, "ParentInformation.txt", last_name_col="Surname")
-    _write_class_info_empty(d, "ClassInfoEnhanced.txt")
+    _write_class_info(d, "ClassInfoEnhanced.txt")
 
 
 def _create_sd40_inputs(d: Path) -> None:
@@ -554,11 +591,13 @@ def _create_sd40_inputs(d: Path) -> None:
 def _create_sd51_inputs(d: Path) -> None:
     """SD51 (Boundary): plain base inheritance + generated {student number} emails.
 
-    StudentDailyAbsences.txt / StudentPeriodAbsencesEnhanced.txt are intentionally
-    absent: the enabled StudentAttendance entity skips on all-empty sources
-    (attendance has its own dedicated test module) while the 4 rostering CSVs SD51
-    enables still emit — this pins that a missing attendance drop never blocks
-    rostering. The contacts file is still written, as the real drop carries one,
+    SD51's drop carries BOTH absence GDEs (the headerless daily file and the headerful
+    Enhanced period file — the shapes ``_create_sd51attendance_inputs`` writes), so the
+    enabled StudentAttendance entity builds beside the 4 rostering CSVs SD51 enables.
+    Until 2026-09-30 they were withheld to pin "a missing attendance drop never blocks
+    rostering"; the owner reversed that on 2026-09-28 (a MISSING listed file stops the
+    night — only a PRESENT absence file may be row-less), so the fixture now ships the
+    complete export (owner ruling 2026-09-30). The contacts file is still written, as the real drop carries one,
     and the bundled config simply does not read it: Family is OFF for SD51
     (2026-09-25 — its real contacts export has no email column). Tests that need
     an SD51-shaped Family run (tests/test_standing_empty_warning.py) enable it
@@ -569,7 +608,9 @@ def _create_sd51_inputs(d: Path) -> None:
     _write_base_schedule(d, "StudentSchedule.txt")
     _write_course_info(d)
     _write_family(d, "EmergencyContactInformation.txt")
-    _write_class_info_empty(d, "ClassInformationEnh.txt")
+    _write_class_info(d, "ClassInformationEnh.txt")
+    _write_daily_absences(d)
+    _write_period_absences(d)
 
 
 def _create_sd54_inputs(d: Path) -> None:
@@ -629,7 +670,7 @@ def _create_sd54_inputs(d: Path) -> None:
             "Email Address": ["john@mail.com", "wanda@mail.com"],
         }
     ).to_csv(d / "EmergencyContactInformationEnhanced.txt", index=False)
-    _write_class_info_empty(d, "classinformationenhanced.txt")
+    _write_class_info(d, "classinformationenhanced.txt")
 
 
 def _create_sd60_inputs(d: Path) -> None:
@@ -696,7 +737,16 @@ def _create_sd60_inputs(d: Path) -> None:
             "Parent Auth / Guardian": ["Y", "N"],
         }
     ).to_csv(d / "Spaces_EmergencyContactENH.txt", index=False)
-    _write_class_info_empty(d, "Spaces_ClassInfo.txt")
+    _write_class_info(
+        d,
+        "Spaces_ClassInfo.txt",
+        (
+            ("100", "T001", "MT001", "HR-3"),
+            ("200", "T003", "MT002", "MAT10"),
+            ("300", "T004", "MT202", "SCI10"),
+            ("200", "T004", "MT003", "ENG12"),
+        ),
+    )
     # SD60 delivers attendance in the SAME drop as rostering, so this config
     # emits StudentAttendance too. Both bands are HEADERFUL here (contrast
     # SD51's headerless GDEs, whose column names come from the base `headers`
@@ -1296,10 +1346,9 @@ class TestOutputSchemaContract:
 # On-disk encoding contract (the per-entity BOM rule)
 #
 # Right-sized to ONE end-to-end byte assertion per encoding class rather than
-# one per config × entity: no single config emits both classes (sd51myedbc's
-# fixture deliberately supplies no absence GDEs, and that pin must survive), so
-# the two SD51 tiers cover them between them — sd51myedbc for the BOM class,
-# sd51attendance for the no-BOM class. The unit-level pins on
+# one per config × entity: the two SD51 tiers cover them between them —
+# sd51myedbc for the BOM class, sd51attendance (attendance ALONE, so no rostering
+# file can mask a BOM on its only CSV) for the no-BOM class. The unit-level pins on
 # `DataLoader.csv_encoding` live in tests/test_loader.py; the policy test below
 # ties that SSOT to this module's contract statement.
 # ---------------------------------------------------------------------------
@@ -1399,9 +1448,8 @@ def test_expected_entities_track_active_entities():
     * (iii) expected ⊆ OUTPUT_SCHEMA — an entity in the table with no schema
       would otherwise surface as a bare ``KeyError`` inside the order sweep.
 
-    This PRESERVES the sd51 skip-on-empty pin rather than eroding it: the gap
-    stays, but it is now a declared, reviewed line instead of an unexplained
-    absence.
+    A deliberate gap is therefore always a declared, reviewed line in
+    :data:`DELIBERATELY_UNCOVERED` (empty today) rather than an unexplained absence.
     """
     from src.config.loader import load_config
 

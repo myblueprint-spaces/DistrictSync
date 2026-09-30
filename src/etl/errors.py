@@ -47,6 +47,14 @@ class RunErrorCategory(StrEnum):
     UNKNOWN = "unknown"  # an unclassified failure
     SOURCE_SCHEMA = "source_schema"  # a source file lacks a column that guards WHO ships or a join (§5 (a)/(b))
     INPUT_UNREADABLE = "input_unreadable"  # a source file exists but could not be read/parsed/chosen
+    # A file an enabled entity's mapping lists is missing from the input folder, or present with no
+    # data rows (owner 2026-09-28 — "we don't have optional files"; `IncompleteInputError`). NO_INPUT
+    # stays the narrower "every required file" answer, checked first.
+    INCOMPLETE_INPUT = "incomplete_input"
+    # An output the night cannot go without — a CRITICAL entity (outcomes.ENTITY_CRITICALITY) —
+    # came out with no rows (owner 2026-09-28: "never send a header-only file";
+    # `EmptyRequiredOutputError`). NO_OUTPUT stays "nothing at all was built".
+    EMPTY_REQUIRED_OUTPUT = "empty_required_output"
 
 
 class GuardKind(StrEnum):
@@ -126,6 +134,72 @@ class NoUsableInputError(EtlError, RuntimeError):
     """
 
     default_category = RunErrorCategory.NO_INPUT
+
+
+class IncompleteInputError(EtlError, RuntimeError):
+    """A file an enabled entity's mapping lists is missing, or present with no data rows.
+
+    Owner decision 2026-09-28 (``docs/developer/failure-policy.md`` §2 layer 3a, §7): "we don't
+    have optional files". Raised by ``pipeline.check_required_inputs`` — the ONE input gate
+    both entry points call after the read and before the transform — so the night stops with
+    nothing written or sent and SpacesEDU keeps the last good sync. Its exceptions are declared
+    there, not here: an ISOLATABLE entity's own file (Family) only leaves that entity out, and a
+    ``MAY_BE_EMPTY`` entity's file (StudentAttendance) may be present with no rows.
+
+    ``missing`` / ``empty`` are the problem files in the CONFIG's spelling (the mapping's
+    ``source_files`` names — config vocabulary, never a path); ``named`` is what the admin-facing
+    copy may print: the files every stopped entity's outcome named unambiguously, decided by the
+    gate from the SAME recorded outcomes a run record carries, so Convert's card and Home name
+    the same files (``failure_copy.failure_names``). All three are REQUIRED keyword-only, and an
+    error naming no problem file is refused. A ``RuntimeError`` like :class:`NoUsableInputError`,
+    its all-files sibling, which the gate is checked after.
+    """
+
+    default_category = RunErrorCategory.INCOMPLETE_INPUT
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        missing: Sequence[str],
+        empty: Sequence[str],
+        named: Sequence[str],
+    ) -> None:
+        missing_files = tuple(str(name) for name in missing)
+        empty_files = tuple(str(name) for name in empty)
+        if not missing_files and not empty_files:
+            raise ValueError("IncompleteInputError needs at least one missing or empty file to name")
+        super().__init__(message)
+        self.missing: tuple[str, ...] = missing_files
+        self.empty: tuple[str, ...] = empty_files
+        self.named: tuple[str, ...] = tuple(str(name) for name in named)
+
+
+class EmptyRequiredOutputError(EtlError, RuntimeError):
+    """An output the night cannot go without came out with no rows — stop rather than send it.
+
+    Owner decision 2026-09-28 (``docs/developer/failure-policy.md`` §2 layer 4, §7): DistrictSync
+    never sends a header-only file, and never sends a set with a required file missing from it.
+    Raised by ``pipeline.run_transform`` — the ONE entity loop both entry points share — the
+    moment an entity that ``outcomes.stops_when_empty`` says may not be empty records an EMPTY
+    outcome: every later entity is recorded NOT_RUN and nothing is written or sent, so
+    SpacesEDU keeps the last good sync. The exceptions are declared in ``outcomes``, not here:
+    an ISOLATABLE entity (Family) is only left out, and a ``MAY_BE_EMPTY`` entity
+    (StudentAttendance) with nothing to send is a normal night.
+
+    ``entity`` — the registry key of the entity that came out empty — is REQUIRED keyword-only:
+    it is what Convert's card and the record's copy NAME, through the authored entity phrase
+    (``failure_copy.entity_phrase``), never a value. A blank one is refused. A
+    ``RuntimeError`` like :class:`NoUsableInputError`, its way-in counterpart.
+    """
+
+    default_category = RunErrorCategory.EMPTY_REQUIRED_OUTPUT
+
+    def __init__(self, message: str, *, entity: str) -> None:
+        if not isinstance(entity, str) or not entity.strip():
+            raise ValueError("EmptyRequiredOutputError needs the entity that came out empty")
+        super().__init__(message)
+        self.entity: str = entity
 
 
 class ConfigLoadError(EtlError, ValueError):

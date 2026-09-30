@@ -112,6 +112,30 @@ class DataExtractor:
             )
         return matches[0] if matches else None
 
+    def _locate(self, filename: str) -> Optional[Path]:
+        """Where ``filename`` is on disk — exactly, then case-insensitively — or ``None``.
+
+        The ONE resolution rule, shared by :meth:`load_data` (which reads what it finds) and
+        :meth:`absent_files` (which reports what it did not), so "absent" can never mean two
+        things. Raises ``ExtractionError`` on a case COLLISION (see
+        :meth:`_resolve_case_insensitively`).
+        """
+        file_path = self.input_path / filename
+        if file_path.exists():
+            return file_path
+        return self._resolve_case_insensitively(filename)
+
+    def absent_files(self, required_files: list[str]) -> tuple[str, ...]:
+        """The configured names in ``required_files`` that are NOT on disk, in the given order.
+
+        ``load_data`` answers a missing file and a file with no record the same way (an empty
+        frame), which is right for the transform and wrong for the input gate: since owner
+        decision 2026-09-28 a MISSING absence file stops the night while a PRESENT one with no
+        rows is a normal night (``pipeline.check_required_inputs``). This is that one extra
+        fact, through the same :meth:`_locate` rule, in the CONFIG's spelling.
+        """
+        return tuple(name for name in dict.fromkeys(required_files) if self._locate(name) is None)
+
     def load_data(
         self,
         required_files: list[str],
@@ -129,20 +153,19 @@ class DataExtractor:
         data: dict[str, pd.DataFrame] = {}
 
         for filename in required_files:
-            file_path = self.input_path / filename
-            logger.info(f"Attempting to load: {file_path}")
+            configured_path = self.input_path / filename
+            logger.info(f"Attempting to load: {configured_path}")
 
-            if not file_path.exists():
-                # Case-insensitive second look before declaring it absent (see
-                # `_resolve_case_insensitively`). The returned dict stays keyed by the
-                # CONFIGURED name — every downstream lookup uses the mapping's spelling.
-                resolved = self._resolve_case_insensitively(filename)
-                if resolved is None:
-                    logger.error(f"File not found: {file_path}")
-                    data[filename] = pd.DataFrame()
-                    continue
-                logger.info(f"Matched '{filename}' on disk as '{resolved.name}' (case-insensitive).")
-                file_path = resolved
+            # Exactly, then a case-insensitive second look before declaring it absent (see
+            # `_resolve_case_insensitively`). The returned dict stays keyed by the CONFIGURED
+            # name — every downstream lookup uses the mapping's spelling.
+            file_path = self._locate(filename)
+            if file_path is None:
+                logger.error(f"File not found: {configured_path}")
+                data[filename] = pd.DataFrame()
+                continue
+            if file_path != configured_path:
+                logger.info(f"Matched '{filename}' on disk as '{file_path.name}' (case-insensitive).")
 
             # Read the bytes once and dispatch to the parsing core, which owns the
             # encoding detection, delimiter detection and malformed-row repair.
@@ -166,20 +189,21 @@ class DataExtractor:
         if explicit_names:
             logger.info(f"Using explicit headers for {name} ({len(explicit_names)} columns)")
 
-        # "There is nothing here" is NOT a parse failure. An ABSENT source file already
-        # yields an empty frame and skips the entity; a PRESENT-but-empty one used to
-        # raise and fail the whole run — the same "no records" fact answered two ways.
-        # A district legitimately exports nothing (no family contacts, an attendance band
-        # with no absences on a holiday), and the genuinely catastrophic case — an empty
-        # DEMOGRAPHIC export — is still caught downstream by `check_delivery_integrity`,
-        # which refuses to deliver a roster-less output set. So this is not a swallowed
-        # error: the way-out gate still holds, and the fail-loud path below is untouched
-        # for bytes that carry content nothing can read.
+        # "There is nothing here" is NOT a parse failure: a PRESENT-but-empty file loads as
+        # zero rows, exactly as an ABSENT one does, rather than raising and failing the whole
+        # run as a garbled one would. Whether a night can go on without that file's rows is
+        # not decided here: `pipeline.check_required_inputs` judges it, using `absent_files`
+        # for the missing-vs-empty distinction (owner decision 2026-09-28 — only Family's file
+        # may be missing or empty; an attendance file may be present with no rows, never
+        # missing), and `check_delivery_integrity` stays the way-out backstop. So this is not
+        # a swallowed error, and the fail-loud path below is untouched for bytes that carry
+        # content nothing can read.
         if self._carries_no_record(raw):
             logger.warning(
                 f"{name} is present but contains no records (it is empty apart from any "
-                f"byte-order mark or line endings); loading it as zero rows. Any entity that "
-                f"reads only this file will be skipped — check the export if that is unexpected."
+                f"byte-order mark or line endings); loading it as zero rows — the input check "
+                f"decides whether the run can continue without it. Check the export if that is "
+                f"unexpected."
             )
             return pd.DataFrame()
 

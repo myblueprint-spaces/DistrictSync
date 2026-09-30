@@ -290,9 +290,10 @@ def test_twin_the_same_sd60_drop_with_the_columns_ships_the_coteacher_and_is_cle
 
 
 @pytest.mark.integration
-def test_twin_an_empty_class_information_records_no_note(tmp_path: Path) -> None:
-    """The bundled SD60 fixture's ClassInfo is EMPTY: there is no co-teacher source to have been
-    unusable, so no note and no amber."""
+def test_twin_the_bundled_sd60_fixture_records_no_note(tmp_path: Path) -> None:
+    """The bundled SD60 fixture's ClassInfo is COMPLETE (every co-teacher column, one row per
+    section — owner ruling 2026-09-30; it was header-only until then, and an empty ClassInformation
+    now stops the night at the input gate): no column is missing, so no note and no amber."""
     inp, out = tmp_path / "in", tmp_path / "out"
     inp.mkdir()
     out.mkdir()

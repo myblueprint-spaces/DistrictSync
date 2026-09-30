@@ -579,12 +579,18 @@ class TestThisRunLabel:
 
 class TestMissingFilesCopy:
     def test_heading_softened_and_reassurance_is_honest(self) -> None:
-        heading, reassurance = missing_files_copy()
-        # The old alarm phrasing is gone; the new heading observes calmly.
+        heading, consequence = missing_files_copy()
+        # The old alarm phrasing is gone; the heading observes calmly.
         assert "Expected files not found" not in heading
-        assert heading == "Not found yet — your district's extracts usually include:"
-        # The reassurance states the real consequence: skip-on-empty, never guessed data.
-        assert reassurance == "You can still convert — anything a missing file feeds is skipped, not guessed."
+        assert heading == "Not found in this folder — this district's sync reads:"
+        # Owner 2026-09-28: every file a required output lists must be there, so the line states
+        # THAT consequence before the admin presses Convert — never a reassurance the run would
+        # then contradict ("You can still convert" was true only while a missing file was skipped).
+        assert consequence == (
+            "A missing file stops the conversion, except the family contacts file — without it, only "
+            "family contacts are left out."
+        )
+        assert "You can still convert" not in consequence
 
 
 class TestInteractionState:

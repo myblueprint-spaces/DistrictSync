@@ -205,7 +205,8 @@ class StudentAttendanceTransformer(BaseTransformer):
 
         The daily band's authorized flag is the exception: since the owner ruling of 2026-09-26
         it is REQUIRED (``_build_daily_rows``' ``require_columns`` guard, §5 #33), so the entity
-        (ISOLATABLE) then fails as FAILED/``missing_source_column``. The WARNING above is still
+        fails as FAILED/``missing_source_column`` — and, CRITICAL since owner decision 2026-09-28,
+        that FAILED outcome stops the night. The WARNING above is still
         logged first — naming every absent column, the authorized one included — but the NOTE
         cannot survive: a FAILED outcome carries no notes (``outcomes.NOTE_BEARING_KINDS``), so
         the record says only what the failure says.
@@ -327,8 +328,9 @@ class StudentAttendanceTransformer(BaseTransformer):
         # The authorized flag is half of every category-map key (§5 #23): without the column,
         # every present code misses the map and the band cannot build a single row. So it is
         # REQUIRED once the band has rows (§5 #33, owner ruling 2026-09-26) — one typed
-        # `SourceSchemaError` naming it in config spelling, so the entity (ISOLATABLE) reads
-        # FAILED/`missing_source_column` with a label, never #23's `transform_error`. The other
+        # `SourceSchemaError` naming it in config spelling, so the entity reads
+        # FAILED/`missing_source_column` with a label, never #23's `transform_error` — and, CRITICAL
+        # since 2026-09-28, that FAILED outcome stops the night (run scope). The other
         # band columns keep their recorded S11 directions (`_note_absent_columns`).
         # failure-policy: join_key
         require_columns(

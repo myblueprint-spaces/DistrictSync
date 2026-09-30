@@ -707,39 +707,35 @@ class TestEndToEndAgainstSnapshotInputs:
             assert result.entity_counts[entity] > 0, entity
 
     def test_the_same_overlay_WITHOUT_renames_cannot_find_those_files(self, tmp_path, caplog):
-        """The positive twin: the renames are what made the run above work."""
+        """The positive twin: the renames are what made the run above work.
+
+        Since owner decision 2026-09-28 every file an enabled output lists is REQUIRED, so an
+        overlay whose names the folder does not carry no longer runs a shrunken night — it
+        STOPS, typed, naming every file it could not find (only the family contacts file may
+        be missing, and that one is not checked). The renamed run is the twin that builds.
+        """
+        from src.etl.errors import IncompleteInputError
+
         source = snapshot_input_with_base_student_id(tmp_path / "input")
         write_overlay(_spec(district_name="SD93 - Standard filenames"), overwrite=False)
-        with caplog.at_level(logging.WARNING):
-            result = run_pipeline(
-                "sd93custom",
-                str(source),
-                str(tmp_path / "out"),
-                dry_run=True,
-            )
+        with caplog.at_level(logging.WARNING), pytest.raises(IncompleteInputError) as raised:
+            run_pipeline("sd93custom", str(source), str(tmp_path / "out"), dry_run=True)
         complaints = _missing_file_complaints(caplog.records, set(SD74_RENAMES))
         assert complaints, "expected missing-file complaints for the un-renamed sources"
         for original in SD74_RENAMES:
             assert any(original in message for message in complaints), original
+        # Every un-renamed file a CRITICAL entity lists is named; Family's own is exempt.
+        assert set(raised.value.missing) == set(SD74_RENAMES) - {"EmergencyContactInformation.txt"}
+        assert raised.value.empty == ()
 
-        # Students reads StudentDemographicInformation.txt, which is NOT renamed —
-        # so the difference between the two runs is exactly the renamed roles.
-        assert result.entity_counts["Students"] > 0
-        # Staff and Family have no source but a renamed one, so they vanish entirely.
-        for entity in ("Staff", "Family"):
-            assert result.entity_counts.get(entity, 0) == 0, entity
-
-        # Classes/Enrollments do NOT vanish — the homeroom half is generated from the
-        # (un-renamed) demographic file — so the honest claim is that they SHRINK.
-        # Quantify it against the renamed run rather than a hard-coded number.
         assert delete_overlay("sd93custom") is True
         write_overlay(
             _spec(district_name="SD93 - Snapshot filenames", source_file_renames=SD74_RENAMES),
             overwrite=False,
         )
         renamed = run_pipeline("sd93custom", str(source), str(tmp_path / "out2"), dry_run=True)
-        for entity in ("Classes", "Enrollments"):
-            assert result.entity_counts.get(entity, 0) < renamed.entity_counts[entity], entity
+        for entity in ("Students", "Staff", "Family", "Classes", "Enrollments"):
+            assert renamed.entity_counts[entity] > 0, entity
 
     def test_an_overlay_over_a_schedule_without_the_base_student_id_stops_typed(self, tmp_path):
         """Owner ruling 2026-09-25 (plan 0053 S10, §5 #28) — the self-service stop is KEPT.
