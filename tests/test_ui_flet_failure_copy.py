@@ -54,6 +54,7 @@ from src.etl.outcomes import (
     VALID_REASONS,
     EntityOutcome,
     OutcomeKind,
+    OutcomeNote,
     OutcomeReason,
     failed_entities,
     outcomes_to_record,
@@ -388,6 +389,21 @@ class TestPartialCopy:
             "the Help page has our support contact."
         )
 
+    def test_family_with_both_exclusion_notes_names_two_distinct_reasons(self) -> None:
+        # Plan 0053 S13d: both Family notes warn, so both phrases reach the headline — and the
+        # required-value one must not read as a superset of "contacts without an email".
+        family = EntityOutcome(
+            "Family",
+            OutcomeKind.BUILT,
+            OutcomeReason.NONE,
+            5,
+            notes=((OutcomeNote.CONTACTS_EXCLUDED_NO_EMAIL, 4), (OutcomeNote.CONTACTS_EXCLUDED_REQUIRED_VALUE, 2)),
+        )
+        headline, _detail = partial_copy([family], delivered=True)
+        assert "contacts without an email" in headline
+        assert "contacts missing a name or student" in headline
+        assert "some family contacts" not in headline
+
     def test_nothing_left_out_is_a_caller_bug(self) -> None:
         with pytest.raises(ValueError, match="at least one"):
             partial_copy([], delivered=True)
@@ -665,7 +681,10 @@ class TestAStoppedNightNamesWhatStoppedIt:
             RunErrorCategory.EMPTY_REQUIRED_OUTPUT, empty, EntityOutcome.not_run("CourseInfo")
         )
         home, banner = _surfaces(record)
-        headline, card = error_card_copy(EmptyRequiredOutputError("x", entity="Enrollments"), delivery_requested=False)
+        headline, card = error_card_copy(
+            EmptyRequiredOutputError("x", entity="Enrollments", required_values_left_out=False),
+            delivery_requested=False,
+        )
         assert headline == "No enrollments came out of your export"
         for text in (home, banner, card):
             assert "This district's sync built no enrollments from its export" in text
@@ -681,7 +700,9 @@ class TestAStoppedNightNamesWhatStoppedIt:
         for outcome in (family, unknown):
             home, _banner = _surfaces(_named_failed_record(RunErrorCategory.EMPTY_REQUIRED_OUTPUT, outcome))
             assert category_detail in home and "SENTINEL" not in home
-        card = error_card_copy(EmptyRequiredOutputError("x", entity=SENTINEL), delivery_requested=False)
+        card = error_card_copy(
+            EmptyRequiredOutputError("x", entity=SENTINEL, required_values_left_out=False), delivery_requested=False
+        )
         assert card == failed_copy(RunErrorCategory.EMPTY_REQUIRED_OUTPUT, delivery_requested=False)
 
     def test_school_year_is_named_on_home_run_history_and_convert(self) -> None:

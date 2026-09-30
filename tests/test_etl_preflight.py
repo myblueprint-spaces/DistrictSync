@@ -492,13 +492,16 @@ class TestAgainstARealRun:
         shutil.copytree(SNAPSHOT_INPUT, source)
         demographic = source / "StudentDemographicInformation.txt"
         text = demographic.read_text(encoding="utf-8")
-        assert "Legal surname," in text
-        demographic.write_text(text.replace("Legal surname,", "Family name,", 1), encoding="utf-8")
+        # An OPTIONAL value's header (plan 0053 S13d): renaming a column that feeds a REQUIRED
+        # value — this test used `Legal surname` until then — now leaves every student out, so the
+        # run stops rather than succeeding, which is the rule working, not this test's subject.
+        assert "Date of birth," in text
+        demographic.write_text(text.replace("Date of birth,", "Birth date,", 1), encoding="utf-8")
 
         config = load_config("sd74myedbc")
         report = preflight_report(config, self._run(source, tmp_path))
 
-        renamed = [item for item in report.missing if normalize_column_name(item.source_column) == "legal surname"]
+        renamed = [item for item in report.missing if normalize_column_name(item.source_column) == "date of birth"]
         assert len(renamed) == 1
         assert renamed[0].entities == ("Students",)
         assert report.checked_files == 6  # every configured file contributed a header
@@ -513,7 +516,7 @@ class TestAgainstARealRun:
 
         report = preflight_report(load_config("sd74myedbc"), self._run(source, tmp_path))
 
-        assert "legal surname" not in {normalize_column_name(item.source_column) for item in report.missing}
+        assert "date of birth" not in {normalize_column_name(item.source_column) for item in report.missing}
         assert report.checked_files == 6
 
 

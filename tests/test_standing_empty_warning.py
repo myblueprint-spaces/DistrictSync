@@ -75,6 +75,8 @@ _EXPECTED_TIER: dict[tuple[OutcomeKind, OutcomeReason], tuple[Verdict, Verdict]]
     (OutcomeKind.EMPTY, OutcomeReason.NO_SOURCE_FILES_DECLARED): (_H, _W),
     (OutcomeKind.EMPTY, OutcomeReason.SOURCE_FILES_EMPTY): (_H, _W),
     (OutcomeKind.EMPTY, OutcomeReason.NO_ROWS_AFTER_TRANSFORM): (_W, _W),
+    # Plan 0053 S13d: every row left out for a missing required value — the export had rows.
+    (OutcomeKind.EMPTY, OutcomeReason.REQUIRED_VALUES_MISSING): (_W, _W),
     (OutcomeKind.EMPTY, OutcomeReason.MISSING_SOURCE_COLUMN): (_W, _W),
     (OutcomeKind.FAILED, OutcomeReason.MISSING_SOURCE_COLUMN): (_W, _W),
     (OutcomeKind.FAILED, OutcomeReason.TRANSFORM_ERROR): (_W, _W),
@@ -469,7 +471,9 @@ def test_a_present_but_blank_email_column_is_partial_for_the_other_reason(tmp_pa
     _sd51_contacts(inp, email="blank")
     run_pipeline(_SD51_SHAPE, str(inp), str(out))
     record, prior, _ = _latest()
-    assert _family(record) == ("empty", "no_rows_after_transform")
+    # Plan 0053 S13d: every contact was left out for a blank Email (a required value), so the EMPTY
+    # says so — it was `no_rows_after_transform` before the reason existed.
+    assert _family(record) == ("empty", "required_values_missing")
     assert classify_latest_reason(record, prior_build=prior) is LatestReason.PARTIAL
 
 

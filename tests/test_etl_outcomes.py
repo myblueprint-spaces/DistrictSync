@@ -102,6 +102,7 @@ class TestEntityOutcomeRefusesIllegalStates:
             (OutcomeKind.EMPTY, OutcomeReason.NO_SOURCE_FILES_DECLARED, 0),
             (OutcomeKind.EMPTY, OutcomeReason.SOURCE_FILES_EMPTY, 0),
             (OutcomeKind.EMPTY, OutcomeReason.NO_ROWS_AFTER_TRANSFORM, 0),
+            (OutcomeKind.EMPTY, OutcomeReason.REQUIRED_VALUES_MISSING, 0),  # plan 0053 S13d
             (OutcomeKind.EMPTY, OutcomeReason.MISSING_SOURCE_COLUMN, 0),  # plan 0053 S6's refinement
             (OutcomeKind.FAILED, OutcomeReason.MISSING_SOURCE_COLUMN, 0),
             (OutcomeKind.FAILED, OutcomeReason.TRANSFORM_ERROR, 0),
@@ -117,7 +118,8 @@ class TestEntityOutcomeRefusesIllegalStates:
         legal = {(k, r) for k, reasons in VALID_REASONS.items() for r in reasons}
         assert set(VALID_REASONS) == set(OutcomeKind), "every kind has its reason set"
         assert {r for _, r in legal} == set(OutcomeReason), "every reason is valid for some kind"
-        assert len(legal) == 9  # S6 added EMPTY/MISSING_SOURCE_COLUMN; S13c FAILED/MISSING_SOURCE_FILE
+        # S6 added EMPTY/MISSING_SOURCE_COLUMN; S13c FAILED/MISSING_SOURCE_FILE; S13d EMPTY/REQUIRED_VALUES_MISSING
+        assert len(legal) == 10
 
     @pytest.mark.parametrize(
         "bad",
@@ -226,8 +228,9 @@ class TestCriticality:
         assert named <= set(ENTITY_CRITICALITY)
 
     def test_depends_on_is_the_code_dependency_set_of_the_plan(self):
+        # Plan 0053 S13d: Enrollments reads Staff's `left_out_staff_ids` (the no-orphan cascade).
         assert dict(DEPENDS_ON) == {
-            "Enrollments": frozenset({"Classes", "Students"}),
+            "Enrollments": frozenset({"Classes", "Students", "Staff"}),
             "Classes": frozenset({"Students"}),
             "Family": frozenset({"Students"}),
             "StudentCourses": frozenset({"Students"}),
@@ -847,7 +850,13 @@ class TestOnlyCriticalEntitiesPublishContextState:
         found = {
             (filename, attr) for filename, source in sources.items() for attr, _line in _context_assignments(source)
         }
-        assert found == {("students.py", "active_student_ids"), ("classes.py", "class_artifacts")}
+        # Plan 0053 S13d adds the required-value cascade's two publications — both CRITICAL modules.
+        assert found == {
+            ("students.py", "active_student_ids"),
+            ("classes.py", "class_artifacts"),
+            ("classes.py", "left_out_class_ids"),
+            ("staff.py", "left_out_staff_ids"),
+        }
 
     def test_the_isolatable_modules_publish_nothing(self):
         """Verify-before-implement (plan 0053): CourseInfo, StudentCourses, StudentAttendance

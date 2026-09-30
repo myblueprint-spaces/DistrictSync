@@ -53,7 +53,7 @@ from src.utils.version import app_version
 
 # Single-sourced from the S4a sweep — a second hand-typed banned-word list is a list that
 # drifts, and the identification-is-not-authentication promise rests on it.
-from tests.test_config_authoring import snapshot_input_with_base_student_id
+from tests.test_config_authoring import snapshot_input_for_the_base_mapping
 from tests.test_ui_flet_identity_page import (
     _assert_no_banned_vocabulary,
 )
@@ -1002,7 +1002,7 @@ class TestTheGateRunIsInvisibleToRunHistory:
         _write_sd93(renames=SD74_RENAMES)
         cfg = _cfg(
             creator_pending_sis="sd93custom",
-            input_dir=str(snapshot_input_with_base_student_id(tmp_path / "input")),
+            input_dir=str(snapshot_input_for_the_base_mapping(tmp_path / "input")),
             output_dir=str(tmp_path / "out"),
         )
         _pin(monkeypatch, cfg)
@@ -1815,7 +1815,7 @@ class TestTheHeadlineFlow:
         _write_sd93()
         cfg = _cfg(
             creator_pending_sis="sd93custom",
-            input_dir=str(snapshot_input_with_base_student_id(tmp_path / "input")),
+            input_dir=str(snapshot_input_for_the_base_mapping(tmp_path / "input")),
             output_dir=str(tmp_path / "out"),
         )
         _pin(monkeypatch, cfg)
@@ -1985,22 +1985,25 @@ class TestThePreflightColumnReport:
     """
 
     #: What the STANDARD MyEd BC mapping names that the snapshot extract genuinely does
-    #: not carry. Asserted EXACTLY rather than as "nothing", because it is not nothing: two
-    #: are columns the base names for optional outputs (a pre-registration school code, a
-    #: student email address), and one is a name a transformer resolves with a fallback of
-    #: its own, which this layer deliberately does not read (plan 0044 §5.2 — no transformer
-    #: knowledge here). A change to that set is a change to what an admin is told, so it
-    #: fails HERE rather than drifting. (``Student ID`` left this set with plan 0053 S10: the
-    #: timetable enrollments now REQUIRE it, so the copy these tests run over carries it —
-    #: ``snapshot_input_with_base_student_id``; without it the gate run stops, typed.)
+    #: not carry. Asserted EXACTLY rather than as "nothing", because it is not nothing: one
+    #: is a column the base names for an optional output (a pre-registration school code),
+    #: and one is a name a transformer resolves with a fallback of its own, which this layer
+    #: deliberately does not read (plan 0044 §5.2 — no transformer knowledge here). A change
+    #: to that set is a change to what an admin is told, so it fails HERE rather than
+    #: drifting. (``Student ID`` left this set with plan 0053 S10 and ``Student email
+    #: address`` with plan 0053 S13d: the timetable enrollments REQUIRE the first and a
+    #: student missing the second is left out — every one of them over this extract, which
+    #: stops the night — so the copy these tests run over carries both,
+    #: ``snapshot_input_for_the_base_mapping``.)
     BASELINE = (
         "Next school code",
-        "Student email address",
         "Course Title",
     )
-    RENAMED_HEADER = ("Legal surname,", "Family name,")
+    #: An OPTIONAL value's header (plan 0053 S13d): until then this renamed `Legal surname`,
+    #: which now leaves every student out (a missing REQUIRED value) and stops the gate run.
+    RENAMED_HEADER = ("Date of birth,", "Birth date,")
     #: The config's own spelling of the header renamed above — what the line must quote.
-    RENAMED_COLUMN = "Legal Surname"
+    RENAMED_COLUMN = "Date of birth"
 
     def _at_the_gate(
         self,
@@ -2011,7 +2014,7 @@ class TestThePreflightColumnReport:
         drop: str | None = None,
     ) -> tuple[ft.Control, AppConfig]:
         """A resumed creator walk on its gate step, pointed at a WRITABLE copy of the extract."""
-        source = snapshot_input_with_base_student_id(tmp_path / "input")
+        source = snapshot_input_for_the_base_mapping(tmp_path / "input")
         if rename_header:
             target = source / "StudentDemographicInformation.txt"
             text = target.read_text(encoding="utf-8")
@@ -2432,13 +2435,13 @@ def _spy_reset_through(monkeypatch: pytest.MonkeyPatch) -> list[int]:
 def _configured(tmp_path: Path, **over) -> AppConfig:  # noqa: ANN003
     """A finished install with a shipped district and a registered nightly — S6's population.
 
-    Its input folder is a copy of the SD74 snapshot whose schedule also carries the base's
-    ``Student ID`` (plan 0053 S10 — ``snapshot_input_with_base_student_id``), so the creator
-    door's REAL test conversion can pass; made once per ``tmp_path``.
+    Its input folder is a copy of the SD74 snapshot that also carries the base's ``Student
+    ID`` and student email columns (plan 0053 S10/S13d — ``snapshot_input_for_the_base_mapping``),
+    so the creator door's REAL test conversion can pass; made once per ``tmp_path``.
     """
     source = tmp_path / "snapshot_input"
     if not source.exists():
-        snapshot_input_with_base_student_id(source)
+        snapshot_input_for_the_base_mapping(source)
     base = {
         "setup_completed": True,
         "sis_type": "sd48myedbc",

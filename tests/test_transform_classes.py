@@ -115,7 +115,8 @@ def _straddling_blend_with_an_inactive_senior() -> dict[str, pd.DataFrame]:
             "previous school number": ["", ""],
             "usual first name": ["", ""],
             "usual surname": ["", ""],
-            "student email address": ["", ""],
+            # An email each: a student missing one is left out since plan 0053 S13d (a required value).
+            "student email address": ["first@test.ca", "senior@test.ca"],
             "enrolment status": ["Active", "Inactive"],
             "teacher name": ["Vance", "Vance"],
             "teacher id": ["T050", "T050"],

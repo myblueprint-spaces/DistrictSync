@@ -100,16 +100,19 @@ ENTITY_CRITICALITY: Final[Mapping[str, EntityCriticality]] = MappingProxyType(
         # The roster anchor; publishes `context.active_student_ids`; a user missing from a delivered
         # Students.csv is marked Inactive (faq "What happens to students or staff no longer in the file?").
         ROSTER_ANCHOR_ENTITY: EntityCriticality.CRITICAL,
-        # What an ABSENT Staff.csv does is unknown (output-contract Q5a); a missing user may be deactivated.
+        # A set generated without Staff.csv is incomplete and overwrites what SpacesEDU holds, so it
+        # is never sent (output-contract Q5a — answered by the owner 2026-09-28). Publishes
+        # `context.left_out_staff_ids` (plan 0053 S13d), which Enrollments reads.
         "Staff": EntityCriticality.CRITICAL,
         # The ONE optional feed (owner 2026-09-28): absence already ships (SD51 builds no Family.csv);
         # publishes no context state; nothing reads it (D1). A missing or row-less contacts file
         # leaves Family out (EMPTY, amber) instead of stopping the night.
         "Family": EntityCriticality.ISOLATABLE,
-        # Publishes `context.class_artifacts`, which Enrollments requires.
+        # Publishes `context.class_artifacts`, which Enrollments requires, and (plan 0053 S13d)
+        # `context.left_out_class_ids`, which Enrollments reads.
         "Classes": EntityCriticality.CRITICAL,
         # A missing enrollment may remove a user from the class (faq "What happens to enrollments no longer
-        # in the file?"); what an ABSENT file does is Q5a.
+        # in the file?"); a set without Enrollments.csv is never sent (Q5a — answered by the owner 2026-09-28).
         "Enrollments": EntityCriticality.CRITICAL,
         # CRITICAL since 2026-09-28 (owner — D1 revised; was ISOLATABLE by D1 (c) 2026-09-23): a
         # failure stops the night and SpacesEDU keeps the last good sync. A standalone feed.
@@ -124,15 +127,20 @@ ENTITY_CRITICALITY: Final[Mapping[str, EntityCriticality]] = MappingProxyType(
 )
 
 # CODE dependencies only — an entity that READS another entity's published `TransformContext`
-# state (§3 `depends_on`). Whether two files must ARRIVE together is a delivery question (Q5d),
-# not a dependency: StudentCourses falls back when CourseInfo's data is absent. Every entity
-# named in a value must be CRITICAL (pinned), so a FAILED isolatable entity can never have a
-# dependent — the structural fact S4 relies on instead of a withholding branch. The FK chain the
+# state (§3 `depends_on`). Whether two files must ARRIVE together was a delivery question (Q5d —
+# answered by the owner 2026-09-28: it depends on the mapping, and every file a mapping lists is
+# required), not a dependency: StudentCourses falls back when CourseInfo's data is absent. Every
+# entity named in a value must be CRITICAL (pinned), so a FAILED isolatable entity can never have
+# a dependent — the structural fact S4 relies on instead of a withholding branch. The FK chain the
 # owner named on 2026-09-28 (Family→Students, Classes→Students, Enrollments→Classes+Students,
-# StudentCourses→Students) is exactly these rows.
+# StudentCourses→Students) is these rows, plus Enrollments→Staff since plan 0053 S13d: Enrollments
+# leaves out the teacher rows of a staff member Staff left out for a missing required value (the
+# no-orphan cascade), so it reads Staff's published `left_out_staff_ids` — and every bundled config
+# runs Staff before Enrollments (pinned in `tests/test_required_values.py`).
 DEPENDS_ON: Final[Mapping[str, frozenset[str]]] = MappingProxyType(
     {
-        "Enrollments": frozenset({"Classes", ROSTER_ANCHOR_ENTITY}),  # class_artifacts + active_student_ids
+        # class_artifacts + left_out_class_ids · active_student_ids · left_out_staff_ids
+        "Enrollments": frozenset({"Classes", ROSTER_ANCHOR_ENTITY, "Staff"}),
         "Classes": frozenset({ROSTER_ANCHOR_ENTITY}),  # homeroom classes → filter_to_active
         "Family": frozenset({ROSTER_ANCHOR_ENTITY}),  # filter_to_active over active_student_ids
         "StudentCourses": frozenset({ROSTER_ANCHOR_ENTITY}),  # filter_to_active over active_student_ids
@@ -188,6 +196,12 @@ class OutcomeReason(StrEnum):
     NO_SOURCE_FILES_DECLARED = "no_source_files_declared"  # the mapping declares no source file for it
     SOURCE_FILES_EMPTY = "source_files_empty"  # every source file it reads was missing or empty
     NO_ROWS_AFTER_TRANSFORM = "no_rows_after_transform"  # it had input, and its transform kept no row
+    # EMPTY only (plan 0053 S13d, owner 2026-09-28): it had input, and every row that reached its
+    # output was LEFT OUT for a blank value the SpacesEDU Advanced CSV import requires
+    # (`required_fields.REQUIRED_OUTPUT_FIELDS`) — "no rows came out" would read as "the export had
+    # none". Decided by `pipeline.run_transform` from the entity's own required-value notes
+    # (`required_fields.left_out_for_required_values`).
+    REQUIRED_VALUES_MISSING = "required_values_missing"
     MISSING_SOURCE_COLUMN = "missing_source_column"  # a SourceSchemaError: a guarding column is absent
     # A file the entity lists was missing from the input folder, or present with no data rows,
     # and the entity may not be left out (owner 2026-09-28; `pipeline.check_required_inputs`,
@@ -205,8 +219,11 @@ VALID_REASONS: Final[Mapping[OutcomeKind, frozenset[OutcomeReason]]] = MappingPr
                 OutcomeReason.NO_SOURCE_FILES_DECLARED,
                 OutcomeReason.SOURCE_FILES_EMPTY,
                 OutcomeReason.NO_ROWS_AFTER_TRANSFORM,
-                # Plan 0053 S6: NO_ROWS_AFTER_TRANSFORM refined by the source observation — the
-                # entity kept no row AND a mapped column is absent from the file(s) it reads.
+                # Plan 0053 S13d: every row left out for a blank required value.
+                OutcomeReason.REQUIRED_VALUES_MISSING,
+                # Plan 0053 S6: NO_ROWS_AFTER_TRANSFORM (or, since S13d, REQUIRED_VALUES_MISSING)
+                # refined by the source observation — the entity kept no row AND a mapped column is
+                # absent from the file(s) it reads.
                 OutcomeReason.MISSING_SOURCE_COLUMN,
             }
         ),
@@ -220,7 +237,7 @@ VALID_REASONS: Final[Mapping[OutcomeKind, frozenset[OutcomeReason]]] = MappingPr
 
 #: The EMPTY reasons that mean "there was nothing to send" — no file declared, or every file the
 #: entity reads empty — as opposed to "the export had rows and none survived"
-#: (``no_rows_after_transform`` / ``missing_source_column``). The ONE spelling, read by
+#: (``no_rows_after_transform`` / ``required_values_missing`` / ``missing_source_column``). The ONE spelling, read by
 #: :func:`empty_is_expected` (and so by ``failure_copy.OUTCOME_TIER`` and ``pipeline.run_transform``).
 NOTHING_TO_SEND: Final[frozenset[OutcomeReason]] = frozenset(
     {OutcomeReason.SOURCE_FILES_EMPTY, OutcomeReason.NO_SOURCE_FILES_DECLARED}
@@ -290,8 +307,10 @@ class OutcomeNote(StrEnum):
     Every member carries a COUNT of at least one, and each comment below says what it counts
     (``failure-policy.md`` §6). One note per entity per run: the first count recorded stands
     (``TransformContext.record_outcome_note``). Whether a note makes the run PARTIAL is decided in
-    ONE place, ``failure_copy.NOTE_TIER`` — every member below is Run-History detail only
-    (HEALTHY) except ``ALL_ACTIVE_DEFAULT`` and ``COTEACHER_SOURCE_UNUSABLE`` (WARNING).
+    ONE place, ``failure_copy.NOTE_TIER`` — most members below are Run-History detail only
+    (HEALTHY); ``ALL_ACTIVE_DEFAULT``, ``COTEACHER_SOURCE_UNUSABLE`` and — since plan 0053 S13d —
+    every row left out for a missing required value (the five ``*_EXCLUDED_REQUIRED_VALUE`` members
+    and ``CONTACTS_EXCLUDED_NO_EMAIL``) are WARNING.
     """
 
     # --- Students: which signal decided "active" (§5 #17/#18). At most ONE of the first four per
@@ -350,14 +369,31 @@ class OutcomeNote(StrEnum):
     COURSE_CODE_EXCLUSIONS_NOT_APPLIED = "course_code_exclusions_not_applied"
 
     # --- Contract fields (c). Family contacts left out for a blank Email (§5 #20); counts them.
+    # WARNING tier since plan 0053 S13d (the owner's rule: left out + counted + amber).
     CONTACTS_EXCLUDED_NO_EMAIL = "contacts_excluded_no_email"
-    # Family / Students: the mapping produces no email output column at all (§5 #20, #40); counts
-    # the rows shipped without it.
+    # Family / Students / Staff: the mapping produces no email output column at all (§5 #20, #40);
+    # counts the rows shipped without it.
     EMAIL_OUTPUT_NOT_MAPPED = "email_output_not_mapped"
+    # --- Required values (c), plan 0053 S13d (owner 2026-09-28: "leave out + count + amber"). ONE
+    # member per rostering output, because the copy is note-keyed and dedupes by note — a shared
+    # member would hide WHICH file lost rows. Each counts the rows of that output LEFT OUT for a
+    # blank value the SpacesEDU Advanced CSV import requires (`required_fields.REQUIRED_OUTPUT_FIELDS`,
+    # §5 #42); WARNING tier. Family's blank Email stays CONTACTS_EXCLUDED_NO_EMAIL (recorded first);
+    # its member below counts the contacts left out for its OTHER required values.
+    STUDENTS_EXCLUDED_REQUIRED_VALUE = "students_excluded_required_value"
+    STAFF_EXCLUDED_REQUIRED_VALUE = "staff_excluded_required_value"
+    CONTACTS_EXCLUDED_REQUIRED_VALUE = "contacts_excluded_required_value"
+    CLASSES_EXCLUDED_REQUIRED_VALUE = "classes_excluded_required_value"
+    ENROLLMENTS_EXCLUDED_REQUIRED_VALUE = "enrollments_excluded_required_value"
+    # The mapping produces no output column for a REQUIRED value other than an email (the email is
+    # EMAIL_OUTPUT_NOT_MAPPED) — a mapping fault, never a per-row one, so the rows ship without it
+    # (§5 #43); counts them. Unreachable on every bundled config (pinned).
+    REQUIRED_OUTPUT_NOT_MAPPED = "required_output_not_mapped"
 
     # --- Identity / key reads whose direction is still open (b)/(c). An identity field
     # (`User ID`, `Student User ID`, `Class ID`, `School ID`) mapped to a source column the
-    # frame lacks ships blank (§5 #19); counts the rows.
+    # frame lacks ships blank (§5 #19); counts the rows. Since plan 0053 S13d never recorded for a
+    # field its output REQUIRES (a rostering file's ID): those rows are left out instead (#42).
     IDENTITY_FIELD_BLANKED = "identity_field_blanked"
     # StudentAttendance: a band's configured column is absent (§5 #33); counts that band's rows.
     ATTENDANCE_SOURCE_COLUMN_ABSENT = "attendance_source_column_absent"
@@ -711,6 +747,13 @@ def _check_notes(entity: str, kind: OutcomeKind, notes: object) -> None:
         raise ValueError(f"{entity}: a {kind.value!r} outcome carries no notes — its transform did not complete")
 
 
+#: The EMPTY reasons "the export had rows and none survived" that the source observation may
+#: explain with a missing mapped column (:func:`apply_observation`).
+_REFINED_BY_OBSERVATION: Final[frozenset[OutcomeReason]] = frozenset(
+    {OutcomeReason.NO_ROWS_AFTER_TRANSFORM, OutcomeReason.REQUIRED_VALUES_MISSING}
+)
+
+
 def apply_observation(outcome: EntityOutcome, missing_mapped: tuple[str, ...]) -> EntityOutcome:
     """``outcome`` with the source observation attached — the ONE reason refinement (plan 0053 S6).
 
@@ -719,7 +762,11 @@ def apply_observation(outcome: EntityOutcome, missing_mapped: tuple[str, ...]) -
     * otherwise ``missing_mapped`` is attached, and an EMPTY / NO_ROWS_AFTER_TRANSFORM outcome
       becomes EMPTY / MISSING_SOURCE_COLUMN — "it kept no row" is then explained by "a column it
       maps is not in its file" (SD51's Family: the contacts export carries no email column, so
-      every contact is excluded for a blank email).
+      every contact is excluded for a blank email). Since plan 0053 S13d an EMPTY /
+      REQUIRED_VALUES_MISSING outcome is refined the same way: a required value blank on EVERY
+      row is, in practice, a column the export lost, and the column is what the admin can
+      re-export (its name reaches the copy through :func:`apply_labels`); the entity's
+      required-value note, which rides on the outcome, still says the rows were left out.
 
     Every other kind and reason is kept as it is: a FAILED outcome's reason came from the
     exception's TYPE (:func:`reason_for`) and a BUILT one built — the observation never changes
@@ -728,7 +775,7 @@ def apply_observation(outcome: EntityOutcome, missing_mapped: tuple[str, ...]) -
     if not missing_mapped or outcome.missing_mapped:
         return outcome
     reason = outcome.reason
-    if outcome.kind is OutcomeKind.EMPTY and reason is OutcomeReason.NO_ROWS_AFTER_TRANSFORM:
+    if outcome.kind is OutcomeKind.EMPTY and reason in _REFINED_BY_OBSERVATION:
         reason = OutcomeReason.MISSING_SOURCE_COLUMN
     return replace(outcome, reason=reason, missing_mapped=missing_mapped)
 

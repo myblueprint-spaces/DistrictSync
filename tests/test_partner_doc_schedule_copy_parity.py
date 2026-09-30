@@ -45,7 +45,8 @@ import pytest
 from src.config.app_config import AppConfig
 from src.etl import pipeline
 from src.etl.errors import EmptyRequiredOutputError, IncompleteInputError, RunErrorCategory
-from src.etl.outcomes import OUTCOMES_RECORD_KEY, EntityOutcome, OutcomeReason, outcomes_to_record
+from src.etl.outcomes import OUTCOMES_RECORD_KEY, EntityOutcome, OutcomeNote, OutcomeReason, outcomes_to_record
+from src.etl.transformers.required_values import REQUIRED_VALUES_LOG_ANCHOR
 from src.scheduler import windows
 from src.scheduler.task_com import (
     HR_NO_SUCH_LOGON_SESSION,
@@ -143,6 +144,14 @@ _SCHOOL_STOP_RECORD = {
 }
 
 
+#: Plan 0053 S13d — "Some students, staff, … were left out": a BUILT Staff that left out rows
+#: missing a value SpacesEDU requires (its WARNING-tier note), everything else built.
+_STAFF_LEFT_OUT = (
+    EntityOutcome.built("Students", 5),
+    EntityOutcome.built("Staff", 4, notes=((OutcomeNote.STAFF_EXCLUDED_REQUIRED_VALUE, 2),)),
+)
+
+
 def _stopped_home(record: dict):
     """Home's verdict for ``record`` — through the real derivation."""
     return derive_home_status([record], _STOP_CONFIG)
@@ -153,7 +162,7 @@ def _stopped_history(record: dict):
     return derive_history_banner([record], _STOP_CONFIG)
 
 
-def _partial_row_label(*, delivered: bool) -> str:
+def _partial_row_label(*, delivered: bool, outcomes: tuple = ()) -> str:
     """The Run History row label for that run — through the real row mapper."""
     record = {
         "status": "success",
@@ -161,7 +170,7 @@ def _partial_row_label(*, delivered: bool) -> str:
         "sftp_attempted": delivered,
         "sftp_ok": delivered,
         "entity_outcomes": outcomes_to_record(
-            (EntityOutcome.built("Students", 5), *_FAMILY_LEFT_OUT, EntityOutcome.built("Classes", 2))
+            outcomes or (EntityOutcome.built("Students", 5), *_FAMILY_LEFT_OUT, EntityOutcome.built("Classes", 2))
         ),
     }
     return to_run_row(record, prior_build=None).status_label
@@ -281,7 +290,9 @@ _PINNED: dict[str, tuple[str, str | None]] = {
     ),
     "empty_output_headline": (
         "No classes came out of your export",
-        error_card_copy(EmptyRequiredOutputError("x", entity="Classes"), delivery_requested=False)[0],
+        error_card_copy(
+            EmptyRequiredOutputError("x", entity="Classes", required_values_left_out=False), delivery_requested=False
+        )[0],
     ),
     "nothing_to_send_detail": (
         "No absences were recorded, so there was nothing to send",
@@ -295,6 +306,29 @@ _PINNED: dict[str, tuple[str, str | None]] = {
     ),
     "required_input_anchor": (_INPUT_STOP_ANCHOR, None),
     "required_output_anchor": (_OUTPUT_STOP_ANCHOR, None),
+    # Plan 0053 S13d — "Some students, staff, family contacts, classes or enrollments were left
+    # out": the amber headline and Run History label of a run that left rows out for a missing
+    # required value, the headline Convert's card shows when EVERY row was left out (a stop), and
+    # the rule's grep anchor — each proved against the renderer that paints it.
+    "required_values_headline_delivered": (
+        "Your roster synced without some staff",
+        partial_copy(_STAFF_LEFT_OUT[1:], delivered=True)[0],
+    ),
+    "required_values_headline_completed": (
+        "Your sync completed without some staff",
+        partial_copy(_STAFF_LEFT_OUT[1:], delivered=False)[0],
+    ),
+    "required_values_row_delivered": (
+        "Delivered · staff missing required values left out",
+        _partial_row_label(delivered=True, outcomes=_STAFF_LEFT_OUT),
+    ),
+    "required_values_stop_headline": (
+        "No staff records could be sent",
+        error_card_copy(
+            EmptyRequiredOutputError("x", entity="Staff", required_values_left_out=True), delivery_requested=False
+        )[0],
+    ),
+    "required_values_anchor": (REQUIRED_VALUES_LOG_ANCHOR, None),
 }
 
 #: doc -> the strings that doc is DECLARED to quote. Anything not listed must be ABSENT.
@@ -374,6 +408,7 @@ def test_the_derived_rows_are_really_derived() -> None:
     assert _NOT_BUILT_ANCHOR == "ENTITY NOT BUILT", f"the bulkhead's log line now opens {_NOT_BUILT_ANCHOR!r}"
     assert _INPUT_STOP_ANCHOR == "REQUIRED INPUT UNUSABLE", f"the input gate's line now opens {_INPUT_STOP_ANCHOR!r}"
     assert _OUTPUT_STOP_ANCHOR == "REQUIRED OUTPUT EMPTY", f"the empty-output line now opens {_OUTPUT_STOP_ANCHOR!r}"
+    assert REQUIRED_VALUES_LOG_ANCHOR == "REQUIRED VALUES MISSING", "the required-value rule's line moved"
 
 
 def test_the_stop_anchors_are_what_the_pipeline_really_logs(caplog) -> None:
@@ -398,6 +433,31 @@ def test_the_stop_anchors_are_what_the_pipeline_really_logs(caplog) -> None:
     messages = [r.getMessage() for r in caplog.records]
     assert any(m.startswith(_INPUT_STOP_ANCHOR + " —") for m in messages)
     assert any(m.startswith(f"{_OUTPUT_STOP_ANCHOR} [Students]") for m in messages)
+
+
+def test_the_required_values_anchor_is_what_the_rule_really_logs(caplog) -> None:
+    """The twin for the derived S13d anchor: the rule logs THROUGH it, so the troubleshooting
+    page's search term finds a real line (and the line opens with the file it counts)."""
+    import logging
+
+    import pandas as pd
+
+    from src.etl.transformers.context import TransformContext
+    from src.etl.transformers.required_values import leave_out_rows_missing_required_values
+
+    frame = pd.DataFrame(
+        {
+            "User ID": ["T1", "T2"],
+            "First Name": ["a", "b"],
+            "Last Name": ["a", "b"],
+            "Email": ["a@example.org", ""],
+            "Role": ["teacher", "teacher"],
+            "School ID": ["1", "1"],
+        }
+    )
+    with caplog.at_level(logging.WARNING):
+        leave_out_rows_missing_required_values(frame, "Staff", TransformContext(), id_column=None)
+    assert any(r.getMessage().startswith(f"[Staff] {REQUIRED_VALUES_LOG_ANCHOR} —") for r in caplog.records)
 
 
 def test_the_not_built_anchor_is_what_the_bulkhead_really_logs(caplog, monkeypatch) -> None:

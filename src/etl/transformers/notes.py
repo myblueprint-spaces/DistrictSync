@@ -30,13 +30,15 @@ from typing import Any, Final, Protocol
 
 from src.config.models import FieldAppendYear, FieldTransform, ensure_field_mapping
 from src.etl.outcomes import Note, OutcomeNote
+from src.etl.required_fields import is_required_field
 
 logger = logging.getLogger(__name__)
 
 #: The OUTPUT fields that are an identity or a join key (``failure-policy.md`` §5 #19). One the
 #: field-map engine can only blank — its mapped source column is absent — is recorded
 #: (``OutcomeNote.IDENTITY_FIELD_BLANKED``) rather than shipped blank in silence; whether it
-#: should fail instead is an open direction decision, not this module's.
+#: should fail instead is an open direction decision, not this module's. A field an output
+#: REQUIRES is not recorded here: its blank rows are left out instead (plan 0053 S13d, §5 #42).
 IDENTITY_OUTPUT_FIELDS: Final[frozenset[str]] = frozenset({"User ID", "Student User ID", "Class ID", "School ID"})
 
 
@@ -111,13 +113,19 @@ def note_identity_blanks(
     append-year id with append off — with it on, S10 already fails closed); a fixed
     ``value:``, an email ``format:`` or a field another step filled (``prefilled``) is not a
     blank the engine made.
+
+    **Never for a field the entity's output REQUIRES** (plan 0053 S13d): a rostering file's ID
+    (Staff's ``User ID`` / ``School ID``, Family's ``Student User ID``, …) blank on a row now
+    leaves that ROW out (``required_values``, §5 #42, with its own note) — so "that ID was sent
+    blank" would claim what the output does not do. The note stays for the feeds outside the
+    required table, whose IDs really ship blank.
     """
     if rows < 1:
         return
     present = set(columns)
     blanked: list[str] = []
     for tgt_field, raw_spec in field_map.items():
-        if tgt_field not in IDENTITY_OUTPUT_FIELDS or tgt_field in prefilled:
+        if tgt_field not in IDENTITY_OUTPUT_FIELDS or tgt_field in prefilled or is_required_field(entity, tgt_field):
             continue
         spec = ensure_field_mapping(raw_spec)
         if isinstance(spec, str):

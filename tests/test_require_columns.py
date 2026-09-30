@@ -746,8 +746,11 @@ class TestStudentsSites:
 
     def test_2a_twin_collapse_off_checks_nothing(self, run_entity, raw_data) -> None:
         # Students' own field map reads School Number too, but only as an intended blank —
-        # with the collapse off nothing requires it.
-        assert not run_entity("Students", _drop(raw_data, "StudentDemographicInformation.txt", "school number")).empty
+        # with the collapse off no GUARD requires it: nothing raises. Since plan 0053 S13d the
+        # blank `SchoolCode` is a missing REQUIRED value, so the required-value rule (a counted
+        # exclusion, not a guard) leaves every student out — and says so (was: "not empty").
+        out = run_entity("Students", _drop(raw_data, "StudentDemographicInformation.txt", "school number"))
+        assert out.empty and "SchoolCode" in out.columns
 
 
 # --------------------------------------------------------------------------- #

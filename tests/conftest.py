@@ -500,10 +500,12 @@ def student_demographic_df():
             "previous school number": ["", "99", "", "150", "", "", ""],
             "usual first name": ["Ali", "", "Chuck", "", "Evie", "", "Gracie"],
             "usual surname": ["", "", "", "", "", "", ""],
+            # Every student carries an email: since plan 0053 S13d a student missing one is left
+            # out of Students.csv (a required value) — the dedicated tests plant that case.
             "student email address": [
                 "alice@test.ca",
                 "bob@test.ca",
-                "",
+                "charlie@test.ca",
                 "diana@test.ca",
                 "eve@test.ca",
                 "frank@test.ca",
@@ -531,7 +533,8 @@ def student_demographic_with_withdraw_df():
             "previous school number": ["", "", "", "", ""],
             "usual first name": ["", "", "", "", ""],
             "usual surname": ["", "", "", "", ""],
-            "student email address": ["", "", "", "", ""],
+            # An email each (a required value since plan 0053 S13d — this fixture tests withdraw dates).
+            "student email address": ["a@test.ca", "b@test.ca", "c@test.ca", "d@test.ca", "e@test.ca"],
             "withdraw date": [
                 "",  # No date → Active
                 "15-Jan-2020",  # Past → Inactive (%d-%b-%Y)

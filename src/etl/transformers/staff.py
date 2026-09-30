@@ -41,6 +41,7 @@ from src.etl.transformers.columns import Previously, require_columns, resolve_so
 from src.etl.transformers.context import TransformContext
 from src.etl.transformers.ids import is_blank_series, normalize_id_series
 from src.etl.transformers.notes import is_code_shaped, record_note
+from src.etl.transformers.required_values import leave_out_rows_missing_required_values
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +109,14 @@ class StaffTransformer(BaseTransformer):
         # one place both role transforms have already had their say. Doing it on
         # the source frame would need a third spelling of "which column is the
         # role", one per transform.
-        return self.resolve_staff_roles(result, context)
+        result = self.resolve_staff_roles(result, context)
+        # Last (plan 0053 S13d, failure-policy §5 #42): a staff member missing a value SpacesEDU
+        # requires — most often an email — is left out and counted. An unroled one was already
+        # dropped above as out of scope, never counted here as "missing a Role". The ids left out
+        # are published for Enrollments, which leaves out their teacher rows (no orphan).
+        left_out = leave_out_rows_missing_required_values(result, "Staff", context, id_column="User ID")
+        context.left_out_staff_ids = left_out.ids
+        return left_out.kept
 
     def resolve_staff_roles(self, result: pd.DataFrame, context: TransformContext) -> pd.DataFrame:
         """Rescue unroled staff who demonstrably teach; drop the rest (plan 0052).

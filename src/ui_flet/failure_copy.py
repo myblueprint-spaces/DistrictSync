@@ -17,7 +17,10 @@ Two closed vocabularies are humanised here:
   ``EMPTY_REQUIRED_OUTPUT`` the output that came out empty (by its authored phrase) and
   ``SOURCE_SCHEMA`` a STRUCTURAL column ("School Year"), each only through
   :func:`failure_names` / :func:`failure_names_of` — every other stop keeps its category
-  copy. :func:`failed_copy` appends ONE of two fixed tails chosen by ONE bool
+  copy. Since plan 0053 S13d an ``EMPTY_REQUIRED_OUTPUT`` stop whose rows were all LEFT OUT for
+  missing required values reads its own named variant (:data:`_REQUIRED_VALUES_STOP_COPY` —
+  the export HAD rows), selected by :func:`stopped_for_required_values` /
+  :func:`stopped_for_required_values_of`. :func:`failed_copy` appends ONE of two fixed tails chosen by ONE bool
   with ONE meaning on every surface — *this attempt was meant to reach SpacesEDU and did
   not* — which each surface passes from what it can PROVE (see :func:`failed_copy`);
   neither tail asserts anything about what SpacesEDU holds.
@@ -70,8 +73,10 @@ from src.etl.outcomes import (
     empty_is_expected,
     stopped_empty_entities,
     stopped_file_labels,
+    stops_when_empty,
     structural_labels,
 )
+from src.etl.required_fields import left_out_for_required_values
 from src.ui_flet.humanize import SIZE_NOUNS, pluralize
 from src.ui_flet.verdict import Verdict
 
@@ -131,6 +136,12 @@ _OUTCOME_TEMPLATES: Final[Mapping[tuple[OutcomeKind, OutcomeReason], str]] = Map
         ),
         (OutcomeKind.EMPTY, OutcomeReason.NO_ROWS_AFTER_TRANSFORM): (
             "{Subject} {were} not built: none of the rows in {their} export file could be used."
+        ),
+        # Plan 0053 S13d: the export HAD rows, and every one that would have been sent lacked a value
+        # SpacesEDU requires — so each was left out rather than sent blank.
+        (OutcomeKind.EMPTY, OutcomeReason.REQUIRED_VALUES_MISSING): (
+            "{Subject} {were} not built: every row that would have been sent was missing a value "
+            "SpacesEDU requires, so each was left out."
         ),
         # Plan 0053 S6: the NO_ROWS case the source observation saw ALONGSIDE a mapped column absent
         # from the export. It states the two facts together, never one as the cause of the other —
@@ -236,8 +247,9 @@ def OUTCOME_TIER(entity: object, kind: OutcomeKind, reason: OutcomeReason) -> Ve
       missing from (``missing_mapped``) still built rows; that is a log + record fact, never
       an amber (SD74 and Unity measured BUILT with a mapped column absent).
     * **FAILED** → WARNING, on any entity (S3 — the bulkhead left it out of a completed run).
-    * **EMPTY** → WARNING on any entity for ``no_rows_after_transform`` and
-      ``missing_source_column`` (the export had rows; none could be used). For
+    * **EMPTY** → WARNING on any entity for ``no_rows_after_transform``,
+      ``required_values_missing`` and ``missing_source_column`` (the export had rows; none
+      could be used). For
       ``source_files_empty`` / ``no_source_files_declared`` ("nothing to send") → HEALTHY
       ONLY for an entity in :data:`~src.etl.outcomes.MAY_BE_EMPTY`, WARNING for every other
       — an entity the district enabled whose export never arrives is a standing warning,
@@ -282,6 +294,18 @@ NOTE_TIER: Final[Mapping[OutcomeNote, Verdict]] = MappingProxyType(
         # Every student shipped Active with no status and no withdraw date: the one H1 exposure
         # S11 surfaces (failure-policy §1) — amber every night it persists (plan 0053 S11).
         OutcomeNote.ALL_ACTIVE_DEFAULT: Verdict.WARNING,
+        # Rows left out for a value SpacesEDU requires (plan 0053 S13d — owner 2026-09-28: "leave out
+        # + count + amber"): one member per rostering output, so the copy names WHICH file lost rows.
+        OutcomeNote.STUDENTS_EXCLUDED_REQUIRED_VALUE: Verdict.WARNING,
+        OutcomeNote.STAFF_EXCLUDED_REQUIRED_VALUE: Verdict.WARNING,
+        OutcomeNote.CONTACTS_EXCLUDED_REQUIRED_VALUE: Verdict.WARNING,
+        OutcomeNote.CLASSES_EXCLUDED_REQUIRED_VALUE: Verdict.WARNING,
+        OutcomeNote.ENROLLMENTS_EXCLUDED_REQUIRED_VALUE: Verdict.WARNING,
+        # Family's blank Email — the same rule's first instance — WARNING since plan 0053 S13d (the
+        # owner's literal rule; row detail only since S11). The owner was asked on 2026-09-30 whether
+        # to keep it row detail instead (answer pending): reversing is THIS line, its §7 `note-tier`
+        # row and the pins of the WARNING set (`tests/test_fail_open_notes.py`).
+        OutcomeNote.CONTACTS_EXCLUDED_NO_EMAIL: Verdict.WARNING,
         # Row detail only: each is a recorded fail-open posture whose direction stays (D10 open).
         OutcomeNote.CONFIGURED_STATUS_COLUMN_ABSENT: Verdict.HEALTHY,
         OutcomeNote.STATUS_COLUMN_ABSENT_DATE_ONLY: Verdict.HEALTHY,
@@ -296,8 +320,10 @@ NOTE_TIER: Final[Mapping[OutcomeNote, Verdict]] = MappingProxyType(
         OutcomeNote.HOMEROOM_TEACHER_NAME_ABSENT: Verdict.HEALTHY,
         OutcomeNote.CLASS_NAME_COLUMN_ABSENT: Verdict.HEALTHY,
         OutcomeNote.COURSE_CODE_EXCLUSIONS_NOT_APPLIED: Verdict.HEALTHY,
-        OutcomeNote.CONTACTS_EXCLUDED_NO_EMAIL: Verdict.HEALTHY,
         OutcomeNote.EMAIL_OUTPUT_NOT_MAPPED: Verdict.HEALTHY,
+        # Its generalisation to the other required columns (plan 0053 S13d) keeps its tier: a mapping
+        # gap, unreachable on every bundled config (pinned); raising it is an owner decision.
+        OutcomeNote.REQUIRED_OUTPUT_NOT_MAPPED: Verdict.HEALTHY,
         OutcomeNote.IDENTITY_FIELD_BLANKED: Verdict.HEALTHY,
         OutcomeNote.ATTENDANCE_SOURCE_COLUMN_ABSENT: Verdict.HEALTHY,
         OutcomeNote.TRANSCRIPT_SOURCE_COLUMN_ABSENT: Verdict.HEALTHY,
@@ -386,6 +412,10 @@ _EMPTY_NEXT_STEP: Final[Mapping[OutcomeReason, str]] = MappingProxyType(
         ),
         OutcomeReason.NO_ROWS_AFTER_TRANSFORM: (
             "Check that export — if it keeps happening, the Help page has our support contact."
+        ),
+        OutcomeReason.REQUIRED_VALUES_MISSING: (
+            "Fill in the missing values in MyEd BC and the next sync includes those rows automatically — if "
+            "it keeps happening, the Help page has our support contact."
         ),
         OutcomeReason.MISSING_SOURCE_COLUMN: (
             "Re-export that file with the column, or — if your export names it differently — the Help "
@@ -628,6 +658,86 @@ _NOTE_COPY: Final[Mapping[OutcomeNote, Mapping[str, str]]] = MappingProxyType(
                 "label": "no email column",
                 "sentence": ("This district's mapping sends no email column, which SpacesEDU needs to invite people."),
                 "next_step": ("If you use email invitations, the Help page has our support contact."),
+            }
+        ),
+        # Plan 0053 S13d — rows left out for a value SpacesEDU requires. Each sentence names the
+        # values that file requires (`required_fields.REQUIRED_OUTPUT_FIELDS`, in plain words) and
+        # what went with the rows (the no-orphan cascade); each next step says what to fix in MyEd BC.
+        OutcomeNote.STUDENTS_EXCLUDED_REQUIRED_VALUE: MappingProxyType(
+            {
+                "phrase": "some students",
+                "label": "students missing required values left out",
+                "sentence": (
+                    "Some students were left out — with their enrollments and family contacts — because their "
+                    "record is missing a value SpacesEDU requires: a student number, first or last name, grade, "
+                    "school or email address."
+                ),
+                "next_step": (
+                    "Fill in those values in MyEd BC and the next sync includes those students automatically."
+                ),
+            }
+        ),
+        OutcomeNote.STAFF_EXCLUDED_REQUIRED_VALUE: MappingProxyType(
+            {
+                "phrase": "some staff",
+                "label": "staff missing required values left out",
+                "sentence": (
+                    "Some staff were left out — with their class enrollments — because their record is missing a "
+                    "value SpacesEDU requires: an ID, first or last name, email address, role or school."
+                ),
+                "next_step": ("Fill in those values in MyEd BC and the next sync includes those staff automatically."),
+            }
+        ),
+        OutcomeNote.CONTACTS_EXCLUDED_REQUIRED_VALUE: MappingProxyType(
+            {
+                "phrase": "contacts missing a name or student",
+                "label": "contacts missing required values left out",
+                "sentence": (
+                    "Some family contacts were left out because they are missing a value SpacesEDU requires: a "
+                    "first or last name, or the student they belong to."
+                ),
+                "next_step": (
+                    "Fill in those values in MyEd BC and the next sync includes those contacts automatically."
+                ),
+            }
+        ),
+        OutcomeNote.CLASSES_EXCLUDED_REQUIRED_VALUE: MappingProxyType(
+            {
+                "phrase": "some classes",
+                "label": "classes missing required values left out",
+                "sentence": (
+                    "Some classes were left out — with their enrollments — because they are missing a value "
+                    "SpacesEDU requires: a class ID, a name or a school."
+                ),
+                "next_step": (
+                    "Check those sections' course, section and school in MyEd BC — if it keeps happening, the Help "
+                    "page has our support contact."
+                ),
+            }
+        ),
+        OutcomeNote.ENROLLMENTS_EXCLUDED_REQUIRED_VALUE: MappingProxyType(
+            {
+                "phrase": "some enrollments",
+                "label": "enrollments missing required values left out",
+                "sentence": (
+                    "Some enrollments were left out because they are missing a value SpacesEDU requires: a class, "
+                    "a person, a role or a school."
+                ),
+                "next_step": (
+                    "Check the schedule and class information in MyEd BC — if it keeps happening, the Help page has "
+                    "our support contact."
+                ),
+            }
+        ),
+        OutcomeNote.REQUIRED_OUTPUT_NOT_MAPPED: MappingProxyType(
+            {
+                "phrase": "a required column",
+                "label": "a required column not sent",
+                "sentence": (
+                    "This district's mapping sends no column for a value SpacesEDU requires, so those rows were "
+                    "sent without it."
+                ),
+                "next_step": ("The Help page has our support contact."),
             }
         ),
         OutcomeNote.IDENTITY_FIELD_BLANKED: MappingProxyType(
@@ -970,6 +1080,33 @@ _NAMED_FAILED_COPY: Final[Mapping[RunErrorCategory, Mapping[bool, tuple[str, str
 )
 
 
+# The EMPTY_REQUIRED_OUTPUT named variant when the output came out empty because every row it would
+# have sent was LEFT OUT for a value SpacesEDU requires (plan 0053 S13d) — the export HAD rows, so
+# "No <output> came out of your export" would be false. Selected by `required_values_left_out` — the
+# stopped outcome's required-value note on a record, the raised error's typed attribute on Convert's
+# card — never by text. Same `{names}` slot and plural key as `_NAMED_FAILED_COPY`.
+_REQUIRED_VALUES_STOP_COPY: Final[Mapping[bool, tuple[str, str]]] = MappingProxyType(
+    {
+        False: (
+            "No {names} could be sent",
+            "Every one of the {names} this district's sync would have sent is missing a value SpacesEDU "
+            "requires — often because a column was left out of the export, or a different report was "
+            "saved under the usual name — so none could be sent. DistrictSync never sends an empty file, "
+            "so the sync stopped. Check that export in MyEd BC, then try again — if it keeps happening, "
+            "the Help page has our support contact.",
+        ),
+        True: (
+            "No {names} could be sent",
+            "Every one of the {names} this district's sync would have sent is missing a value SpacesEDU "
+            "requires — often because a column was left out of an export, or a different report was "
+            "saved under the usual name — so none could be sent. DistrictSync never sends an empty file, "
+            "so the sync stopped. Check those exports in MyEd BC, then try again — if it keeps "
+            "happening, the Help page has our support contact.",
+        ),
+    }
+)
+
+
 def failure_names(category: RunErrorCategory, outcomes: Iterable[EntityOutcome]) -> tuple[str, ...]:
     """What a FAILED run's copy may name, read off its recorded outcomes (owner 2026-09-28). TOTAL.
 
@@ -1019,6 +1156,30 @@ def failure_names_of(exc: BaseException) -> tuple[str, ...]:
     return ()
 
 
+def stopped_for_required_values(category: RunErrorCategory, outcomes: Iterable[EntityOutcome]) -> bool:
+    """Whether a FAILED record's ``empty_required_output`` stop LEFT OUT its rows for missing required
+    values (plan 0053 S13d) — read off its recorded outcomes, never text. TOTAL.
+
+    True only for that category when an EMPTY outcome that stopped the night
+    (``outcomes.stops_when_empty``) carries a required-value note
+    (``required_fields.left_out_for_required_values``) — the same fact the pipeline gave the raised
+    error (:func:`stopped_for_required_values_of`), so Home, Run History and Convert's card agree.
+    """
+    if category is not RunErrorCategory.EMPTY_REQUIRED_OUTPUT:
+        return False
+    return any(
+        outcome.kind is OutcomeKind.EMPTY
+        and stops_when_empty(outcome.entity, outcome.reason)
+        and left_out_for_required_values(outcome.notes)
+        for outcome in outcomes
+    )
+
+
+def stopped_for_required_values_of(exc: BaseException) -> bool:
+    """:func:`stopped_for_required_values` for a RAISED failure — by TYPE and typed attribute only."""
+    return isinstance(exc, EmptyRequiredOutputError) and exc.required_values_left_out is True
+
+
 def _rendered_names(category: RunErrorCategory, names: Sequence[str]) -> list[str]:
     """How ``category``'s names are written into its sentence, distinct and in order.
 
@@ -1031,9 +1192,17 @@ def _rendered_names(category: RunErrorCategory, names: Sequence[str]) -> list[st
     return [f"“{name}”" for name in distinct]
 
 
-def _named_copy(category: RunErrorCategory, names: Sequence[str]) -> tuple[str, str] | None:
-    """The named ``(headline, detail)`` for ``category``, or ``None`` when it has no variant or nothing to name."""
+def _named_copy(
+    category: RunErrorCategory, names: Sequence[str], *, required_values_left_out: bool
+) -> tuple[str, str] | None:
+    """The named ``(headline, detail)`` for ``category``, or ``None`` when it has no variant or nothing to name.
+
+    An ``empty_required_output`` stop whose rows were LEFT OUT for missing required values (plan
+    0053 S13d) reads :data:`_REQUIRED_VALUES_STOP_COPY` instead of the category's own variant.
+    """
     variants = _NAMED_FAILED_COPY.get(category)
+    if required_values_left_out and category is RunErrorCategory.EMPTY_REQUIRED_OUTPUT:
+        variants = _REQUIRED_VALUES_STOP_COPY
     rendered = _rendered_names(category, names)
     if variants is None or not rendered:
         return None
@@ -1058,12 +1227,22 @@ NOTHING_SENT_TAIL: Final = "Nothing was sent to SpacesEDU this time."
 NOTHING_SAVED_TAIL: Final = "Nothing new was saved to your output folder."
 
 
-def failed_copy(category: RunErrorCategory, *, delivery_requested: bool, names: Sequence[str] = ()) -> tuple[str, str]:
+def failed_copy(
+    category: RunErrorCategory,
+    *,
+    delivery_requested: bool,
+    names: Sequence[str] = (),
+    required_values_left_out: bool = False,
+) -> tuple[str, str]:
     """``(headline, detail + tail)`` for a failure of ``category`` — the ONE composition.
 
     ``names`` (owner 2026-09-28) selects the category's NAMED variant when it has one and
     ``names`` is not empty — pass only :func:`failure_names` / :func:`failure_names_of`, never
     anything else; ``()`` (the default) is the category copy, exactly as before.
+    ``required_values_left_out`` (plan 0053 S13d) words a NAMED ``empty_required_output`` stop
+    whose rows were left out for missing required values (:data:`_REQUIRED_VALUES_STOP_COPY`) —
+    pass only :func:`stopped_for_required_values` / :func:`stopped_for_required_values_of`; the
+    default ``False`` keeps the category's own variant, which is true on every other stop.
 
     ``NONE`` raises: a completed run has no failure copy, and wording one would be a bug.
     ``delivery_requested`` is REQUIRED keyword-only — the tail is a claim about what did
@@ -1086,7 +1265,10 @@ def failed_copy(category: RunErrorCategory, *, delivery_requested: bool, names: 
     """
     if category is RunErrorCategory.NONE:
         raise ValueError("a completed run (category 'none') has no failure copy")
-    headline, detail = _named_copy(category, names) or FAILED_CATEGORY_COPY[category]
+    headline, detail = (
+        _named_copy(category, names, required_values_left_out=required_values_left_out)
+        or FAILED_CATEGORY_COPY[category]
+    )
     tail = NOTHING_SENT_TAIL if delivery_requested else NOTHING_SAVED_TAIL
     return headline, f"{detail} {tail}"
 
@@ -1102,7 +1284,13 @@ def failed_copy_for(value: object, *, delivery_requested: bool, outcomes: Iterab
     nothing.
     """
     category = _coerced(value)
-    return failed_copy(category, delivery_requested=delivery_requested, names=failure_names(category, outcomes))
+    items = tuple(outcomes)
+    return failed_copy(
+        category,
+        delivery_requested=delivery_requested,
+        names=failure_names(category, items),
+        required_values_left_out=stopped_for_required_values(category, items),
+    )
 
 
 def error_card_copy(exc: BaseException, *, delivery_requested: bool) -> tuple[str, str]:
@@ -1119,4 +1307,5 @@ def error_card_copy(exc: BaseException, *, delivery_requested: bool) -> tuple[st
         _coerced(classify_error_category(exc)),
         delivery_requested=delivery_requested,
         names=failure_names_of(exc),
+        required_values_left_out=stopped_for_required_values_of(exc),
     )

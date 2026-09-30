@@ -1360,17 +1360,19 @@ class TestEntityOutcomesReachTheRecord:
         assert stored["Students"] == 0 and stored["entity_outcomes"]["Students"]["rows"] == 2
         assert not list(gde_output.glob("*.csv"))
 
-    def test_a_family_with_no_usable_contact_is_empty_no_rows_after_transform(
+    def test_a_family_with_no_usable_contact_is_empty_required_values_missing(
         self, gde_input: Path, gde_output: Path
     ) -> None:
-        """The SD51 shape: contacts arrive, none carries an email, Family builds nothing."""
+        """The SD51 shape: contacts arrive, none carries an email, Family builds nothing — and since
+        plan 0053 S13d the EMPTY says WHY (every contact missing a value SpacesEDU requires); it
+        read `no_rows_after_transform` before that reason existed."""
         pd.DataFrame(
             {"Student Number": ["S001"], "First Name": ["John"], "Last Name": ["Smith"], "Email Address": [""]}
         ).to_csv(gde_input / "EmergencyContactInformation.txt", index=False)
         run_pipeline("myedbc", str(gde_input), str(gde_output))
         records = read_run_records()
         assert records is not None and records[0]["status"] == "success"
-        assert _kinds(records[0])["Family"] == ("empty", "no_rows_after_transform")
+        assert _kinds(records[0])["Family"] == ("empty", "required_values_missing")
         assert records[0]["Family"] == 0
 
     def test_the_twin_a_family_with_no_file_is_empty_source_files_empty(
@@ -1679,7 +1681,8 @@ class TestSourceObservation:
         assert observed_record["entity_outcomes"]["Family"]["reason"] == "missing_source_column"
         assert broken_record["entity_outcomes"]["Family"] == {
             "kind": "empty",
-            "reason": "no_rows_after_transform",
+            # Plan 0053 S13d: every contact was left out for a blank Email (a required value).
+            "reason": "required_values_missing",
             "rows": 0,
             # Plan 0053 S11: the transform's own note — independent of the observation seam.
             "notes": {"contacts_excluded_no_email": 2},
@@ -1720,7 +1723,7 @@ class TestSourceObservation:
             assert (observed_out / name).read_bytes() == (broken_out / name).read_bytes()
         records = read_run_records()
         assert records is not None and [r["status"] for r in records] == ["success", "success"]
-        assert records[0]["entity_outcomes"]["Family"]["reason"] == "no_rows_after_transform"
+        assert records[0]["entity_outcomes"]["Family"]["reason"] == "required_values_missing"  # plan 0053 S13d
         assert records[1]["entity_outcomes"]["Family"]["reason"] == "missing_source_column"
 
     def test_convert_records_the_same_labels(self, sd67_input: Path, gde_output: Path) -> None:

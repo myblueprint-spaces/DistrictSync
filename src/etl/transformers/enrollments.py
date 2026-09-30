@@ -53,6 +53,7 @@ from src.etl.transformers.context import ClassArtifacts, TransformContext
 from src.etl.transformers.course_codes import note_unapplied_exclusions
 from src.etl.transformers.grades import resolve_timetable_scope, split_by_homeroom_grades
 from src.etl.transformers.ids import normalize_id_series
+from src.etl.transformers.required_values import leave_out_rows_missing_required_values
 
 logger = logging.getLogger(__name__)
 
@@ -135,9 +136,45 @@ class EnrollmentTransformer(BaseTransformer):
             if SCHOOL_NUMBER in result.columns:
                 result.rename(columns={SCHOOL_NUMBER: "School ID"}, inplace=True)
             logger.info(f"[Enrollments] Created {len(result)} total enrollments")
-            return result
+            # Plan 0053 S13d (failure-policy §5 #42): no row may point at someone or something its
+            # own file left out for a missing required value — then the rule itself, last.
+            result = self._leave_out_orphans_of_left_out_rows(result, context)
+            return leave_out_rows_missing_required_values(result, "Enrollments", context, id_column=None).kept
 
         return pd.DataFrame()
+
+    @staticmethod
+    def _leave_out_orphans_of_left_out_rows(result: pd.DataFrame, context: TransformContext) -> pd.DataFrame:
+        """Leave out the rows that point at a staff member or a class LEFT OUT upstream (§5 #42).
+
+        The no-orphan cascade of the required-value rule, applied once over EVERY builder's rows
+        (homeroom, subject, blended, co-teacher): a TEACHER row whose ``User ID`` is a staff member
+        Staff left out (``context.left_out_staff_ids``), and ANY row whose ``Class ID`` is a class
+        Classes left out (``context.left_out_class_ids``). A left-out STUDENT needs nothing here —
+        Students publishes its roster from the rows it kept, so the student-row filters already
+        drop them. Deliberately NARROW: a teacher row whose staff member is missing from
+        ``Staff.csv`` for any other reason (not exported, departed, unroled) is untouched — widening
+        the teacher zero-orphan rule changes delivered rows at measured districts (ROADMAP).
+
+        ONE aggregated INFO line when anything was removed (counts only, never an id). No second
+        outcome note: the upstream entity's own note already says those rows were left out, and
+        the note's copy says their enrollments went with them.
+        """
+        if result.empty or (not context.left_out_staff_ids and not context.left_out_class_ids):
+            return result
+        user_ids = normalize_id_series(result["User ID"])
+        teacher = normalize_id_series(result["Role"]).str.lower() == "teacher"
+        staff_orphans = teacher & user_ids.isin(context.left_out_staff_ids)
+        class_orphans = normalize_id_series(result["Class ID"]).isin(context.left_out_class_ids)
+        orphans = staff_orphans | class_orphans
+        if not bool(orphans.any()):
+            return result
+        logger.info(
+            f"[Enrollments] Left out {int(orphans.sum())} enrollment row(s) pointing at rows left out upstream "
+            f"for a missing required value: {int(staff_orphans.sum())} teacher row(s) of left-out staff, "
+            f"{int(class_orphans.sum())} row(s) of left-out classes."
+        )
+        return result[~orphans].copy()
 
     # -------------------------------------------------------------------
     # Helpers
@@ -375,7 +412,12 @@ class EnrollmentTransformer(BaseTransformer):
                 )
         if not rows:
             return None
-        blended_df = pd.DataFrame(rows).drop_duplicates()
+        # Invalid teacher ids ("nan", blank) dropped like the other three builders do (plan 0053
+        # S13d): a blended section with no teacher is a section without a teacher row — out of
+        # scope — never a row "missing a required value" for the required-value rule to count.
+        blended_df = BaseTransformer.clean_invalid_ids(pd.DataFrame(rows), "User ID").drop_duplicates()
+        if blended_df.empty:
+            return None
         logger.info(f"[Enrollments] Created {len(blended_df)} blended class teacher enrollments")
         return blended_df
 

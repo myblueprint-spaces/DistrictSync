@@ -38,6 +38,15 @@ single sources the policy already has:
   reason that is not "nothing to send", the last good output byte-identical. It is a stop,
   never a guard: it discharges NO required guard (a guard that vanished and left its entity
   empty is still ``fail_closed_guard_bypassed``);
+* **required values, from the code's own table** (plan 0053 S13d, owner 2026-09-28): no
+  delivered rostering CSV may carry a blank in a column ``required_fields.REQUIRED_OUTPUT_FIELDS``
+  lists, in ANY case (``required_value_shipped_blank`` — read off the files the case wrote, so a
+  dropped column that blanks a required value must leave those rows out, counted, or stop the
+  night); and an empty-output stop whose rows were left out for missing required values must
+  say so on the raised error AND on the record — ``required_values_left_out`` on the one, a
+  required-value note on the other (``stop_misreports_required_values``), for an entity the table
+  covers (``required_values_stop_outside_table``). No per-column expectation: which drops empty a
+  file follows from the table and the data;
 * **how a contained failure must look** — an ISOLATABLE entity that fails does so as
   FAILED/``missing_source_column`` (never ``transform_error``, which is what a raw
   ``KeyError`` would read as), its CSV absent from the delivery set and archived (P4);
@@ -112,9 +121,13 @@ from src.etl.outcomes import (
     OutcomeKind,
     OutcomeReason,
     criticality_of,
+    outcomes_from_record,
 )
 from src.etl.pipeline import run_pipeline
+from src.etl.required_fields import REQUIRED_OUTPUT_FIELDS, left_out_for_required_values
 from src.etl.transformers.base import BaseTransformer
+from src.etl.transformers.ids import is_blank_series
+from src.etl.transformers.required_values import LeftOut
 from src.etl.transformers.staff import TEACHING_ASSIGNMENT_SOURCE_ROLES
 from src.history.store import read_run_records
 from src.utils.paths import bundle_mappings_dir
@@ -408,6 +421,9 @@ class RunFacts:
     record: Mapping | None = None
     #: every ``require_columns`` call the run made (:func:`_spying_guards`)
     guard_calls: tuple[GuardCall, ...] = ()
+    #: per delivered rostering CSV, the REQUIRED columns (``required_fields.REQUIRED_OUTPUT_FIELDS``)
+    #: that carry a blank, with how many rows (plan 0053 S13d) — empty on a conforming run
+    blank_required: Mapping[str, Mapping[str, int]] = field(default_factory=dict)
 
 
 def _changed(entity: str, base: RunFacts, run: RunFacts) -> bool:
@@ -508,10 +524,10 @@ def policy_problems(
     output directory before and after (the run was seeded with the base's outputs);
     ``required`` is :func:`required_guards`. Empty = the declared outcome.
     """
-    problems: list[tuple[str, str, str]] = []
+    problems: list[tuple[str, str, str]] = _required_value_problems(run)
     exc = run.error
     if isinstance(exc, EmptyRequiredOutputError):
-        return _empty_stop_problems(exc, affected=affected, base=base, run=run, required=required)
+        return problems + _empty_stop_problems(exc, affected=affected, base=base, run=run, required=required)
     if exc is not None:
         if not isinstance(exc, SourceSchemaError):
             return [("untyped_failure", "-", type(exc).__name__)]
@@ -577,6 +593,18 @@ def policy_problems(
     return problems
 
 
+def _required_value_problems(run: RunFacts) -> list[tuple[str, str, str]]:
+    """A delivered rostering CSV carrying a blank REQUIRED value — never allowed (plan 0053 S13d).
+
+    Derived from the code's table (``required_fields.REQUIRED_OUTPUT_FIELDS``) over the files the
+    case wrote (:attr:`RunFacts.blank_required`), never a per-column expectation.
+    """
+    return [
+        ("required_value_shipped_blank", entity, f"blank per column: {dict(columns)}")
+        for entity, columns in sorted(run.blank_required.items())
+    ]
+
+
 def _empty_stop_problems(
     exc: EmptyRequiredOutputError,
     *,
@@ -606,6 +634,23 @@ def _empty_stop_problems(
         problems.append(("record_mismatch", entity, f"{record.get('error_category')} / {entry}"))
     if run.tree != base.tree:
         problems.append(("output_touched", entity, "the last good output changed"))
+    # Plan 0053 S13d: a stop because every row was LEFT OUT for a missing required value says so on
+    # the error and the record alike (Convert's card and Home word it from those two facts), and
+    # only an entity the code's required table covers can stop that way.
+    recorded = outcomes_from_record({"entity_outcomes": {entity: entry}})
+    record_says = (
+        bool(recorded) and recorded[0].kind is OutcomeKind.EMPTY and left_out_for_required_values(recorded[0].notes)
+    )
+    if exc.required_values_left_out is not record_says:
+        problems.append(
+            (
+                "stop_misreports_required_values",
+                entity,
+                f"error says {exc.required_values_left_out}, the record says {record_says}",
+            )
+        )
+    if exc.required_values_left_out and entity not in REQUIRED_OUTPUT_FIELDS:
+        problems.append(("required_values_stop_outside_table", entity, "not a rostering output"))
     for site, guarded in sorted(required):
         outcome = run.outcomes.get(guarded)
         got = "absent" if outcome is None else f"{outcome.kind.value}/{outcome.reason.value}"
@@ -630,6 +675,21 @@ def _tree(directory: Path) -> dict[str, str]:
     return {str(p.relative_to(directory)): _sha(p) for p in sorted(directory.rglob("*")) if p.is_file()}
 
 
+def _blank_required(directory: Path) -> dict[str, dict[str, int]]:
+    """Per top-level rostering CSV in ``directory``, the REQUIRED columns carrying a blank."""
+    found: dict[str, dict[str, int]] = {}
+    for entity, required in REQUIRED_OUTPUT_FIELDS.items():
+        path = directory / f"{entity}.csv"
+        if not path.is_file():
+            continue
+        frame = pd.read_csv(path, dtype=str, keep_default_na=False, encoding="utf-8-sig")
+        counts = {c: int(is_blank_series(frame[c]).sum()) for c in required if c in frame.columns}
+        counts = {c: n for c, n in counts.items() if n}
+        if counts:
+            found[entity] = counts
+    return found
+
+
 @dataclass(frozen=True)
 class Baseline:
     sis: str
@@ -650,6 +710,7 @@ def _build_baseline(sis: str, root: Path) -> Baseline:
         csvs=_csvs(output_dir),
         tree=_tree(output_dir),
         guard_calls=tuple(calls),
+        blank_required=_blank_required(output_dir),
     )
     return Baseline(sis, input_dir, output_dir, facts)
 
@@ -691,7 +752,12 @@ def run_case(
         mp.undo()
     records = read_run_records() or []
     record = records[0] if records else None
-    return RunFacts(outcomes, _csvs(output_dir), _tree(output_dir), error, record, tuple(calls)), header
+    return (
+        RunFacts(
+            outcomes, _csvs(output_dir), _tree(output_dir), error, record, tuple(calls), _blank_required(output_dir)
+        ),
+        header,
+    )
 
 
 def _problems_for(
@@ -765,6 +831,11 @@ def test_a_dropped_column_has_its_declared_outcome(baselines: BaselineCache, cas
 UNREACHED_GUARDS: Mapping[tuple[str, str], str] = {
     ("models.FieldAppendYear.apply", "join_key"): (
         "no bundled config maps an append-year ID through the field-map engine (§5 #29), so nothing calls it"
+    ),
+    ("classes.ClassTransformer._create_homeroom_classes", "pii_scope"): (
+        "structurally shadowed since plan 0053 S13d: the homeroom split's grade column is the Students "
+        "mapping's Grade, a value Students.csv REQUIRES — dropped, every student is left out and Students "
+        "(CRITICAL, run first) stops the night empty before Classes runs"
     ),
     ("enrollments.EnrollmentTransformer._homeroom_enrollments", "pii_scope"): (
         "structurally shadowed: the homeroom split's grade column is the Students mapping's Grade, which "
@@ -1019,7 +1090,12 @@ _TWINS = {
     # §5 #33 (owner ruling 2026-09-26): the daily authorized flag is named, never transform_error —
     # and since 2026-09-28 (owner, D1 revised) StudentAttendance is CRITICAL, so it stops the night
     "attendance_stops": DriftCase("sd60myedbc", "Spaces_DailyAbs.txt", "Authorized Am"),
-    "signalled": DriftCase("myedbc", "StudentDemographicInformation.txt", "Legal First Name"),
+    # An OPTIONAL value (plan 0053 S13d): `Legal First Name` was this case until then — every
+    # student then misses a REQUIRED value, is left out, and the night stops (`required_values_stop`).
+    "signalled": DriftCase("myedbc", "StudentDemographicInformation.txt", "Date of birth"),
+    # Plan 0053 S13d (owner 2026-09-28): every staff email blank → every staff row left out → Staff
+    # EMPTY → the night stops, saying so on the error and the record.
+    "required_values_stop": DriftCase("myedbc", "StaffInformationEnhanced.txt", "Email Address"),
     "unchanged": DriftCase("myedbc", "StudentDemographicInformation.txt", "Previous school number"),
 }
 
@@ -1067,7 +1143,17 @@ def test_one_real_case_per_outcome_class(name: str, baselines: BaselineCache, tm
         assert required == {("base.BaseTransformer.apply_row_filters", "Family")}
     elif name == "signalled":
         assert run.error is None and changed == {"Students"} and required == frozenset()
-        assert "Legal First Name" in run.outcomes["Students"].missing_mapped
+        assert "Date of birth" in run.outcomes["Students"].missing_mapped
+    elif name == "required_values_stop":
+        err = run.error
+        assert isinstance(err, EmptyRequiredOutputError) and err.entity == "Staff"
+        assert err.required_values_left_out is True
+        assert run.record is not None and run.record["error_category"] == "empty_required_output"
+        entry = run.record["entity_outcomes"]["Staff"]
+        # the observation saw the mapped column absent, so the EMPTY names it; the note says why
+        assert (entry["kind"], entry["reason"]) == ("empty", "missing_source_column")
+        assert entry["notes"]["staff_excluded_required_value"] > 0
+        assert run.tree == base.facts.tree, "nothing is written: the last good output is untouched"
     else:
         assert run.error is None and changed == set() and required == frozenset()
 
@@ -1110,6 +1196,16 @@ def _attendance_guard_removed(mp: pytest.MonkeyPatch) -> None:
     mp.setattr("src.etl.transformers.student_attendance.require_columns", lambda *args, **kwargs: None)
 
 
+def _required_value_rule_removed(mp: pytest.MonkeyPatch) -> None:
+    """Plan 0053 S13d regressed: every rostering transformer ships its rows, blanks and all."""
+
+    def ships_everything(frame, _entity, _context, *, id_column):  # noqa: ARG001 — the rule's signature
+        return LeftOut(frame, frozenset())
+
+    for module in ("students", "staff", "family", "classes", "enrollments"):
+        mp.setattr(f"src.etl.transformers.{module}.leave_out_rows_missing_required_values", ships_everything)
+
+
 def _bulkhead_removed(mp: pytest.MonkeyPatch) -> None:
     """S4's bulkhead gone: every entity treated as CRITICAL, so an isolatable failure stops the run."""
     mp.setattr("src.etl.pipeline.criticality_of", lambda _entity: EntityCriticality.CRITICAL)
@@ -1136,6 +1232,13 @@ _REGRESSIONS: dict[str, tuple[DriftCase, Tamper, str]] = {
     # StudentAttendance is CRITICAL since 2026-09-28, so the regressed category-map miss now stops the
     # night UNTYPED (`transform_error` → `unknown`) — the matrix calls that `untyped_failure`.
     "attendance_guard_deleted": (_TWINS["attendance_stops"], _attendance_guard_removed, "untyped_failure"),
+    # Plan 0053 S13d: without the rule, the staff file that lost its email column ships every row
+    # with a blank Email — read off the delivered CSV, derived from the code's table.
+    "required_value_rule_removed": (
+        _TWINS["required_values_stop"],
+        _required_value_rule_removed,
+        "required_value_shipped_blank",
+    ),
 }
 
 
@@ -1398,7 +1501,7 @@ class TestThePolicyChecker:
             "error_category": category,
             "entity_outcomes": {entity: {"kind": "empty", "reason": reason, "rows": 0}},
         }
-        exc = EmptyRequiredOutputError("empty", entity=entity)
+        exc = EmptyRequiredOutputError("empty", entity=entity, required_values_left_out=False)
         return RunFacts({}, {}, tree if tree is not None else {"a.csv": "1"}, exc, record)
 
     def test_an_empty_required_output_stop_with_a_matching_record_is_the_declared_outcome(self) -> None:
@@ -1421,6 +1524,48 @@ class TestThePolicyChecker:
         assert _kinds(self._check_failed(self._empty_stop(), required=required)) == {"fail_closed_guard_bypassed"}
         # the twin: the same guard IS discharged by the typed SourceSchemaError stop
         assert self._check_failed(self._failed_run(self._schema_error()), required=required) == []
+
+    def test_a_delivered_blank_required_value_is_red_whatever_else_happened(self) -> None:
+        """Plan 0053 S13d, derived from the code's table: a rostering CSV that shipped a blank
+        required value is red on a completed run and beside a stop alike; its twin is clean."""
+        shipped = _facts({**_BASE.outcomes}, blank_required={"Staff": {"Email": 3}})
+        assert _check(shipped) == [("required_value_shipped_blank", "Staff", "blank per column: {'Email': 3}")]
+        assert _check(_facts({**_BASE.outcomes})) == []
+        stop = self._empty_stop()
+        stop = RunFacts(
+            stop.outcomes, stop.csvs, stop.tree, stop.error, stop.record, blank_required={"Students": {"Grade": 1}}
+        )
+        assert "required_value_shipped_blank" in _kinds(self._check_failed(stop))
+
+    def _values_stop(self, *, error_says: bool, note: str | None, entity="Staff"):
+        entry = {"kind": "empty", "reason": "required_values_missing", "rows": 0}
+        if note:
+            entry["notes"] = {note: 4}
+        record = {"status": "failed", "error_category": "empty_required_output", "entity_outcomes": {entity: entry}}
+        exc = EmptyRequiredOutputError("empty", entity=entity, required_values_left_out=error_says)
+        return RunFacts({}, {}, {"a.csv": "1"}, exc, record)
+
+    def test_a_required_values_stop_says_so_on_the_error_and_the_record(self) -> None:
+        ok = self._values_stop(error_says=True, note="staff_excluded_required_value")
+        assert self._check_failed(ok, affected=frozenset({"Staff"})) == []
+        silent_error = self._values_stop(error_says=False, note="staff_excluded_required_value")
+        assert _kinds(self._check_failed(silent_error, affected=frozenset({"Staff"}))) == {
+            "stop_misreports_required_values"
+        }
+        unnoted_record = self._values_stop(error_says=True, note=None)
+        assert _kinds(self._check_failed(unnoted_record, affected=frozenset({"Staff"}))) == {
+            "stop_misreports_required_values"
+        }
+        other_note = self._values_stop(error_says=True, note="staff_status_column_absent")
+        assert _kinds(self._check_failed(other_note, affected=frozenset({"Staff"}))) == {
+            "stop_misreports_required_values"
+        }
+
+    def test_a_required_values_stop_outside_the_table_is_red(self) -> None:
+        run = self._values_stop(error_says=True, note="staff_excluded_required_value", entity="CourseInfo")
+        assert "required_values_stop_outside_table" in _kinds(
+            self._check_failed(run, affected=frozenset({"CourseInfo"}))
+        )
 
     def test_the_table_reader_is_the_docs_own(self) -> None:
         doctored = "<!-- failure-policy-table: require-columns -->\n| site | entity | guard | §5 |\n|---|---|---|---|\n"

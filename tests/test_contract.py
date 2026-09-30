@@ -84,6 +84,8 @@ import pandas as pd
 import pytest
 
 from src.etl.loader import DataLoader
+from src.etl.required_fields import REQUIRED_OUTPUT_FIELDS
+from src.etl.transformers.ids import is_blank_series
 from src.main import main
 
 # The contract's DATA lives in the neutral shared module (see its docstring for
@@ -1340,6 +1342,26 @@ class TestOutputSchemaContract:
         class_ids = enrollments["Class ID"].fillna("").astype(str).str.strip().str.lower()
         blank = enrollments[(class_ids == "") | (class_ids == "nan")]
         assert blank.empty, f"[{sis}] {len(blank)} Enrollments rows have empty/nan Class ID"
+
+    def test_every_emitted_rostering_file_carries_every_required_value(self, district_output):
+        """Plan 0053 S13d: every column SpacesEDU REQUIRES (``required_fields.REQUIRED_OUTPUT_FIELDS``)
+        is PRODUCED by every bundled config's rostering outputs, and no delivered row carries one
+        blank — a row missing one is left out and counted, never shipped. Derived from the code's
+        table, over every config's contract fixture; the configs that emit no rostering file
+        (``mbponly``, ``sd51attendance``) have nothing to check and say so."""
+        sis, out, _ = district_output
+        emitted = [entity for entity in REQUIRED_OUTPUT_FIELDS if entity in EXPECTED_ENTITIES[sis]]
+        if not emitted:
+            pytest.skip(f"[{sis}] emits no SpacesEDU rostering file")
+        for entity in emitted:
+            frame = pd.read_csv(out / f"{entity}.csv", encoding="utf-8-sig", dtype=str, keep_default_na=False)
+            required = REQUIRED_OUTPUT_FIELDS[entity]
+            assert set(required) <= set(frame.columns), (
+                f"[{sis}] {entity}.csv lacks {set(required) - set(frame.columns)}"
+            )
+            assert len(frame) > 0, f"[{sis}] {entity}.csv has no rows — the check would be vacuous"
+            blanks = {column: int(is_blank_series(frame[column]).sum()) for column in required}
+            assert not any(blanks.values()), f"[{sis}] {entity}.csv ships blank required values: {blanks}"
 
 
 # ---------------------------------------------------------------------------

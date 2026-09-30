@@ -18,10 +18,11 @@ drift from the code (or the code from the doc) without a red test that names the
   and the ``outcome-tier`` table == ``failure_copy.OUTCOME_TIER`` over every valid (kind, reason)
   for a ``MAY_BE_EMPTY`` member and for any other entity; since S10 (owner ruling 2026-09-25)
   the ``note-tier`` table == ``failure_copy.NOTE_TIER`` over every ``OutcomeNote``;
-* §3 / P13 ↔ ``docs/partner/faq.md`` (plan 0053 S4): the FAQ's two criticality bullets name
-  exactly the CRITICAL and ISOLATABLE sets (by ``failure_copy.entity_phrase``), and the
-  ISOLATABLE bullet carries the "pending confirmation" clause exactly while
-  ``output-contract.md`` says ``Q5-status: open``;
+* §3 / P13 ↔ ``docs/partner/faq.md`` (plan 0053 S4; flipped by S13d when Q5 was answered): the
+  FAQ's two criticality bullets name exactly the CRITICAL and ISOLATABLE sets (by
+  ``failure_copy.entity_phrase``), and the ISOLATABLE bullet's Q5 sentence follows
+  ``output-contract.md``'s ``Q5-status`` — the "pending confirmation" clause exactly while it is
+  ``open``, the answered sentence exactly while it is ``answered`` (today);
 * §5 (plan 0053 S10): the ``require-columns`` table == every ``columns.require_columns`` call
   under ``src/`` collected by AST as (site, entity, guard), both directions; each site's
   call carries the matching ``# failure-policy: <guard>`` tag directly above it; every ``§5`` number the
@@ -59,7 +60,7 @@ from src.etl.outcomes import (
     OutcomeReason,
 )
 from src.ui_flet.failure_copy import FAILED_CATEGORY_COPY, NOTE_TIER, OUTCOME_TIER, entity_phrase
-from tests.test_output_contract_doc import _Q5_STATUS_RE  # the ONE spelling of the status line
+from tests.test_output_contract_doc import _Q5_STATUS_RE, _Q5_STATUSES  # the ONE status line + its closed set
 
 _DOC = Path(__file__).resolve().parents[1] / "docs" / "developer" / "failure-policy.md"
 
@@ -189,11 +190,13 @@ class TestSection3Criticality:
     def test_doctored_a_changed_dependency_is_red(self):
         text = _doc_text()
         row = next(line for line in text.splitlines() if line.startswith("| Enrollments |"))
-        doctored = text.replace(row, row.replace("| Classes, Students |", "| Students |"), 1)
+        # Plan 0053 S13d added Staff (the no-orphan cascade reads `left_out_staff_ids`): dropping it
+        # from the doc row is exactly the drift this pins.
+        doctored = text.replace(row, row.replace("| Classes, Staff, Students |", "| Classes, Students |"), 1)
         assert doctored != text
         assert _criticality_mismatches(doctored) == [
-            "failure-policy.md §3: Enrollments depends_on is ['Students'] in the doc but "
-            "['Classes', 'Students'] in outcomes.DEPENDS_ON"
+            "failure-policy.md §3: Enrollments depends_on is ['Classes', 'Students'] in the doc but "
+            "['Classes', 'Staff', 'Students'] in outcomes.DEPENDS_ON"
         ]
 
     def test_doctored_a_missing_marker_is_red(self):
@@ -461,7 +464,7 @@ class TestSection7EmptyTier:
             "failure-policy.md §7: EMPTY/missing_source_column is ('WARNING', 'WARNING') in the doc but ('HEALTHY', 'HEALTHY') in failure_copy.OUTCOME_TIER"
             in problems
         )
-        assert len(problems) == 4  # every EMPTY row that warns anywhere
+        assert len(problems) == 5  # every EMPTY row that warns anywhere (S13d added required_values_missing)
 
 
 # --------------------------------------------------------------------------- #
@@ -540,11 +543,27 @@ _FAQ_LEADS: dict[EntityCriticality, tuple[str, str]] = {
     EntityCriticality.ISOLATABLE: ("**If the output that can't be built is ", ", only that output is left out.**"),
 }
 
-#: P13: while SpacesEDU has not answered Q5, the isolatable bullet must SAY the consequence
-#: for earlier-linked records is unconfirmed — and must stop saying so once it is answered.
+#: P13, two-sided. While Q5 is ``open`` the isolatable bullet must SAY the consequence for
+#: earlier-linked records is unconfirmed; once it is ``answered`` it must say the answer instead.
+#: Both sentences are held VERBATIM and each must be present exactly while its status holds, so
+#: a paraphrase in place of either one — "is not yet confirmed" for the answer, say — is red
+#: rather than silently green. The owner answered Q5 on 2026-09-28 (Q5e: import settings
+#: SpacesEDU keeps for each district decide what happens to family links, and they are usually
+#: off — ``output-contract.md``), recorded by plan 0053 S13d, so the answered sentence is due.
 FAQ_PENDING_CLAUSE = (
     "What SpacesEDU does with records linked by an earlier delivery of that file is pending confirmation."
 )
+FAQ_ANSWERED_SENTENCE = (
+    "What happens to family links from an earlier delivery depends on import settings SpacesEDU keeps for each "
+    "district: SpacesEDU sets them, they are usually off, and with them off those links stay as they were."
+)
+
+#: ``Q5-status`` -> the ONE sentence the isolatable bullet must carry under it; every other
+#: sentence here must be absent. Keyed by the contract's closed status set (asserted equal).
+_Q5_SENTENCE_BY_STATUS: dict[str, tuple[str, str]] = {
+    "open": ("pending clause", FAQ_PENDING_CLAUSE),
+    "answered": ("answered sentence", FAQ_ANSWERED_SENTENCE),
+}
 
 
 def _q5_status(contract_text: str) -> str:
@@ -581,29 +600,36 @@ def _faq_mismatches(faq_text: str, contract_text: str) -> list[str]:
             )
     status = _q5_status(contract_text)
     isolatable = _faq_bullet(faq_text, EntityCriticality.ISOLATABLE)
-    if status not in {"open", "answered"}:
+    if status not in _Q5_SENTENCE_BY_STATUS:
         problems.append(f"output-contract.md: Q5-status is {status!r}, not open/answered")
-    elif isolatable and (FAQ_PENDING_CLAUSE in isolatable) != (status == "open"):
-        problems.append(
-            f"faq.md: the ISOLATABLE bullet {'lacks' if status == 'open' else 'still carries'} the pending "
-            f"clause while Q5-status is {status!r} (P13)"
-        )
+    elif isolatable:
+        for sentence_status, (name, sentence) in _Q5_SENTENCE_BY_STATUS.items():
+            due = sentence_status == status
+            if (sentence in isolatable) != due:
+                problems.append(
+                    f"faq.md: the ISOLATABLE bullet {'lacks' if due else 'still carries'} the {name} "
+                    f"while Q5-status is {status!r} (P13)"
+                )
     return problems
 
 
 class TestTheFaqStatesTheCriticalityRule:
-    def test_the_faq_names_exactly_the_declared_sets_and_the_pending_clause(self):
+    def test_the_faq_names_exactly_the_declared_sets_and_the_q5_sentence(self):
         assert _faq_mismatches(_FAQ.read_text(encoding="utf-8"), _CONTRACT.read_text(encoding="utf-8")) == []
 
-    def test_non_vacuity_both_bullets_parse_and_q5_is_open_today(self):
+    def test_non_vacuity_both_bullets_parse_and_q5_is_answered_today(self):
         faq = _FAQ.read_text(encoding="utf-8")
+        isolatable = _faq_bullet(faq, EntityCriticality.ISOLATABLE)
         # D1 revised (owner 2026-09-28): family contacts are the ONE output that may be left out.
-        assert _named_phrases(_faq_bullet(faq, EntityCriticality.ISOLATABLE), EntityCriticality.ISOLATABLE) == {
-            "family contacts",
-        }
+        assert _named_phrases(isolatable, EntityCriticality.ISOLATABLE) == {"family contacts"}
         assert len(_named_phrases(_faq_bullet(faq, EntityCriticality.CRITICAL), EntityCriticality.CRITICAL)) == 7
-        assert _q5_status(_CONTRACT.read_text(encoding="utf-8")) == "open"
-        assert FAQ_PENDING_CLAUSE in _faq_bullet(faq, EntityCriticality.ISOLATABLE)
+        # Q5 answered by the owner 2026-09-28 (recorded by S13d): the answer is due, the clause is gone.
+        assert _q5_status(_CONTRACT.read_text(encoding="utf-8")) == "answered"
+        assert FAQ_ANSWERED_SENTENCE in isolatable
+        assert FAQ_PENDING_CLAUSE not in faq
+        # Every status the contract's closed set allows has exactly one sentence, and no other status does.
+        assert set(_Q5_SENTENCE_BY_STATUS) == _Q5_STATUSES
+        assert FAQ_PENDING_CLAUSE != FAQ_ANSWERED_SENTENCE
 
     def test_doctored_an_extra_isolatable_entity_is_red(self):
         """The FAQ may not promise an output is only left out when the code stops the night for it."""
@@ -628,20 +654,46 @@ class TestTheFaqStatesTheCriticalityRule:
         problems = _faq_mismatches(doctored, _CONTRACT.read_text(encoding="utf-8"))
         assert len(problems) == 1 and problems[0].startswith("faq.md: the CRITICAL bullet names")
 
-    def test_doctored_a_missing_pending_clause_is_red_while_q5_is_open(self):
-        faq = _FAQ.read_text(encoding="utf-8")
-        doctored = faq.replace(" " + FAQ_PENDING_CLAUSE, "", 1)
-        assert doctored != faq
-        assert _faq_mismatches(doctored, _CONTRACT.read_text(encoding="utf-8")) == [
-            "faq.md: the ISOLATABLE bullet lacks the pending clause while Q5-status is 'open' (P13)"
+    def test_doctored_a_contract_reopened_without_the_pending_clause_is_red(self):
+        """Q5 back at ``open`` while the FAQ states the answer: red twice — the clause a reopened
+        question owes the reader is missing, and the answer it no longer has is still printed."""
+        contract = _CONTRACT.read_text(encoding="utf-8")
+        reopened = contract.replace("Q5-status: answered", "Q5-status: open", 1)
+        assert reopened != contract
+        assert _faq_mismatches(_FAQ.read_text(encoding="utf-8"), reopened) == [
+            "faq.md: the ISOLATABLE bullet lacks the pending clause while Q5-status is 'open' (P13)",
+            "faq.md: the ISOLATABLE bullet still carries the answered sentence while Q5-status is 'open' (P13)",
         ]
 
-    def test_doctored_an_answered_q5_makes_the_pending_clause_red(self):
-        contract = _CONTRACT.read_text(encoding="utf-8")
-        answered = contract.replace("Q5-status: open", "Q5-status: answered", 1)
-        assert answered != contract
-        assert _faq_mismatches(_FAQ.read_text(encoding="utf-8"), answered) == [
+    def test_doctored_the_pending_clause_back_while_answered_is_red(self):
+        """The old clause restored beside the answer (a stale merge, say): the FAQ would claim an
+        answered question is pending, so it is red even though the answer is still there."""
+        faq = _FAQ.read_text(encoding="utf-8")
+        doctored = faq.replace(FAQ_ANSWERED_SENTENCE, FAQ_ANSWERED_SENTENCE + " " + FAQ_PENDING_CLAUSE, 1)
+        assert doctored != faq
+        assert _faq_mismatches(doctored, _CONTRACT.read_text(encoding="utf-8")) == [
             "faq.md: the ISOLATABLE bullet still carries the pending clause while Q5-status is 'answered' (P13)"
+        ]
+
+    @pytest.mark.parametrize(
+        "replacement",
+        [
+            pytest.param("", id="deleted"),
+            pytest.param(
+                "What SpacesEDU does with family links from an earlier delivery is not yet confirmed.",
+                id="paraphrased-as-pending",
+            ),
+        ],
+    )
+    def test_doctored_an_answered_sentence_lost_or_paraphrased_is_red(self, replacement):
+        """The answer deleted, or reworded back into a hedge the exact pending clause does not
+        match: either way the answered sentence is missing while Q5 is answered, so it is red."""
+        faq = _FAQ.read_text(encoding="utf-8")
+        doctored = faq.replace(" " + FAQ_ANSWERED_SENTENCE, f" {replacement}".rstrip(), 1)
+        assert doctored != faq
+        assert FAQ_PENDING_CLAUSE not in doctored
+        assert _faq_mismatches(doctored, _CONTRACT.read_text(encoding="utf-8")) == [
+            "faq.md: the ISOLATABLE bullet lacks the answered sentence while Q5-status is 'answered' (P13)"
         ]
 
     def test_doctored_a_missing_bullet_is_red(self):

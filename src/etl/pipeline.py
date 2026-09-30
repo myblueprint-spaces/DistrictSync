@@ -54,6 +54,7 @@ from src.etl.outcomes import (
     stops_when_empty,
 )
 from src.etl.preflight import label_vocabulary_by_entity, missing_columns_by_entity
+from src.etl.required_fields import left_out_for_required_values
 from src.etl.transformer import DataTransformer
 from src.etl.transformers.columns import reset_run_notices as reset_column_notices
 from src.etl.transformers.dates import SchoolYearDetermination
@@ -358,8 +359,8 @@ def observe_source_columns(
     (:func:`~src.etl.preflight.missing_columns_by_entity` — own files, soundness rule, config
     spelling), it logs ONE WARNING naming them and holds them on the ``ledger``
     (:meth:`~src.etl.outcomes.OutcomeLedger.note_missing_mapped`), so the entity's outcome
-    carries ``missing_mapped`` and an EMPTY / NO_ROWS_AFTER_TRANSFORM outcome is refined to
-    EMPTY / MISSING_SOURCE_COLUMN (:func:`~src.etl.outcomes.apply_observation`).
+    carries ``missing_mapped`` and an EMPTY / NO_ROWS_AFTER_TRANSFORM or REQUIRED_VALUES_MISSING
+    outcome is refined to EMPTY / MISSING_SOURCE_COLUMN (:func:`~src.etl.outcomes.apply_observation`).
 
     **It never enforces.** It raises nothing, gates nothing and changes no delivered byte: the
     derivation sits in a broad handler, and so does EACH entity's note + warning, both logging
@@ -489,8 +490,10 @@ def run_transform(
 
     **An EMPTY output the night cannot go without STOPS it (owner 2026-09-28).** Every EMPTY
     outcome is judged, as recorded, by ``outcomes.stops_when_empty``: a CRITICAL entity that
-    comes out with no rows — every row filtered out, a mapped column missing, no source file
-    declared — records its EMPTY outcome, marks every later entity NOT_RUN and raises
+    comes out with no rows — every row filtered out, every row LEFT OUT for a missing required
+    value (``required_values_missing``, plan 0053 S13d — the composition of this rule with the
+    required-value rule), a mapped column missing, no source file declared — records its EMPTY
+    outcome, marks every later entity NOT_RUN and raises
     :class:`~src.etl.errors.EmptyRequiredOutputError` (``empty_required_output``, exit 1,
     nothing written or sent). Only Family (the ONE ISOLATABLE entity: EMPTY, a standing
     WARNING) and a StudentAttendance with nothing to send (``outcomes.empty_is_expected``:
@@ -602,12 +605,18 @@ def run_transform(
             return
         ledger.mark_not_run(configured[position + 1 :])
         logger.error(_REQUIRED_OUTPUT_EMPTY_LOG_FORMAT, recorded.entity, recorded.reason.value)
+        # Plan 0053 S13d: every row left out for a missing required value is an EMPTY output too
+        # (the composition of the two owner rules), but the export HAD rows — the card and the
+        # record must say so, from the SAME fact (the entity's required-value note).
+        values_left_out = left_out_for_required_values(recorded.notes)
+        why = " — every row was missing a value SpacesEDU requires" if values_left_out else ""
         raise EmptyRequiredOutputError(
-            f"{recorded.entity} came out with no rows (reason={recorded.reason.value}), and this output may not "
+            f"{recorded.entity} came out with no rows{why} (reason={recorded.reason.value}), and this output may not "
             "be empty — only family contacts may be left out, and DistrictSync never sends an empty file. "
             "Nothing was written or sent; the last good output is untouched. Check this district's export "
             f"for {recorded.entity}.",
             entity=recorded.entity,
+            required_values_left_out=values_left_out,
         )
 
     for position, entity_name in enumerate(configured):
@@ -666,7 +675,15 @@ def run_transform(
         notes = transformer.outcome_notes_for(entity_name)
         if transformed.empty:
             logger.warning(f"No data transformed for entity '{entity_name}'; skipping.")
-            record_empty(position, EntityOutcome.empty(entity_name, OutcomeReason.NO_ROWS_AFTER_TRANSFORM, notes=notes))
+            # WHY it is empty (plan 0053 S13d): the required-value rule runs LAST on each rostering
+            # output, so an empty output carrying its note lost its final rows to it — the export
+            # had rows, every one missing a value SpacesEDU requires. Anything else kept no row.
+            reason = (
+                OutcomeReason.REQUIRED_VALUES_MISSING
+                if left_out_for_required_values(notes)
+                else OutcomeReason.NO_ROWS_AFTER_TRANSFORM
+            )
+            record_empty(position, EntityOutcome.empty(entity_name, reason, notes=notes))
             continue
 
         outputs[entity_name] = transformed

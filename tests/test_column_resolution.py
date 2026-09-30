@@ -398,6 +398,8 @@ def _demographic(student_col: str, *, grade_col: str = "grade", homeroom_col: st
                 "enrolment status": status,
                 "teacher name": tname,
                 "teacher id": tid,
+                # An email each: a student missing one is left out since plan 0053 S13d (a required value).
+                "student email address": f"{num}@example.org",
             }
             for num, grade, hr, status, tname, tid in _HOMEROOM_DEMO
         ]

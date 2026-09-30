@@ -260,7 +260,8 @@ def _corpus_demographic() -> pd.DataFrame:
             "previous school number": [""] * len(schedule),
             "usual first name": [""] * len(schedule),
             "usual surname": [""] * len(schedule),
-            "student email address": [""] * len(schedule),
+            # An email each: a student missing one is left out since plan 0053 S13d (a required value).
+            "student email address": [f"p{i}@example.org" for i in range(len(schedule))],
             "enrolment status": ["Active"] * len(schedule),
             "teacher name": schedule["teacher name"].tolist(),
             "teacher id": schedule["teacher id"].tolist(),
@@ -623,7 +624,8 @@ def _blank_grade_corpus(*, with_blank_pupil: bool) -> dict[str, pd.DataFrame]:
             "previous school number": [""] * len(pupils),
             "usual first name": [""] * len(pupils),
             "usual surname": [""] * len(pupils),
-            "student email address": [""] * len(pupils),
+            # An email each: a student missing one is left out since plan 0053 S13d (a required value).
+            "student email address": [f"p{i}@example.org" for i in range(len(pupils))],
             "enrolment status": ["Active"] * len(pupils),
             "teacher name": ["Zhang"] * len(pupils),
             "teacher id": ["T020"] * len(pupils),

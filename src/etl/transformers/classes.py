@@ -34,6 +34,7 @@ from src.etl.transformers.grades import (
 )
 from src.etl.transformers.ids import normalize_id_series
 from src.etl.transformers.notes import record_note
+from src.etl.transformers.required_values import leave_out_rows_missing_required_values
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +86,14 @@ class ClassTransformer(BaseTransformer):
         if final_classes:
             result = pd.concat(final_classes, ignore_index=True).drop_duplicates(subset=["Class ID"])
             logger.info(f"[Classes] Total classes created: {len(result)}")
-            return result
+            # Last, after the final concat + dedupe (plan 0053 S13d, failure-policy §5 #42): a class
+            # missing a value SpacesEDU requires (its Class ID, Name or School ID) is left out and
+            # counted. `class_artifacts` was published above, before the subject/blended steps, so
+            # the left-out Class IDs get their OWN publication here, for Enrollments to leave out
+            # every row of a class that is not in Classes.csv (no orphan).
+            left_out = leave_out_rows_missing_required_values(result, "Classes", context, id_column="Class ID")
+            context.left_out_class_ids = left_out.ids
+            return left_out.kept
 
         return pd.DataFrame()
 

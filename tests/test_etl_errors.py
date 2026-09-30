@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import ast
 import importlib
+import inspect
 import json
 import logging
 import pkgutil
@@ -97,7 +98,9 @@ _SAMPLES: dict[type[EtlError], Callable[[], EtlError]] = {
     IncompleteInputError: lambda: IncompleteInputError(
         "a required file is missing", missing=("StudentSchedule.txt",), empty=(), named=("StudentSchedule.txt",)
     ),
-    EmptyRequiredOutputError: lambda: EmptyRequiredOutputError("Classes came out empty", entity="Classes"),
+    EmptyRequiredOutputError: lambda: EmptyRequiredOutputError(
+        "Classes came out empty", entity="Classes", required_values_left_out=False
+    ),
     ConfigLoadError: lambda: ConfigLoadError("bad mapping"),
     OutputFolderUnsetError: lambda: OutputFolderUnsetError("No output folder is configured"),
     ExtractionError: lambda: ExtractionError("unparseable"),
@@ -207,10 +210,30 @@ class TestEveryLeafHasACategory:
         with pytest.raises(ValueError, match="at least one missing or empty file"):
             IncompleteInputError("x", missing=(), empty=(), named=())
         with pytest.raises(ValueError, match="the entity that came out empty"):
-            EmptyRequiredOutputError("x", entity="  ")
+            EmptyRequiredOutputError("x", entity="  ", required_values_left_out=False)
         stop = _SAMPLES[IncompleteInputError]()
         assert (stop.missing, stop.empty, stop.named) == (("StudentSchedule.txt",), (), ("StudentSchedule.txt",))
         assert _SAMPLES[EmptyRequiredOutputError]().entity == "Classes"
+
+    def test_required_values_left_out_is_required_keyword_only_with_no_default(self):
+        """Plan 0053 S13d: the flag picks the card's sentence, so a default could pick the wrong one."""
+        parameter = inspect.signature(EmptyRequiredOutputError.__init__).parameters["required_values_left_out"]
+        assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
+        assert parameter.default is inspect.Parameter.empty
+        with pytest.raises(TypeError):
+            EmptyRequiredOutputError("x", entity="Staff")  # type: ignore[call-arg]
+        with pytest.raises(TypeError):
+            EmptyRequiredOutputError("x", "Staff", True)  # type: ignore[misc]
+
+    @pytest.mark.parametrize("not_a_bool", [1, 0, "yes", None], ids=repr)
+    def test_required_values_left_out_must_be_a_real_bool(self, not_a_bool):
+        with pytest.raises(TypeError, match="must be a bool"):
+            EmptyRequiredOutputError("x", entity="Staff", required_values_left_out=not_a_bool)
+
+    @pytest.mark.parametrize("flag", [True, False])
+    def test_twin_a_real_bool_is_accepted_and_stored(self, flag):
+        err = EmptyRequiredOutputError("x", entity="Staff", required_values_left_out=flag)
+        assert err.required_values_left_out is flag and err.entity == "Staff"
 
     def test_an_unknown_string_category_fails_loudly_at_construction(self):
         with pytest.raises(ValueError):

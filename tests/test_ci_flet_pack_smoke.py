@@ -856,3 +856,99 @@ def test_the_overlay_input_copy_refuses_a_schedule_that_already_has_the_column(t
     first = smoke.input_with_base_student_id(smoke.DEFAULT_SMOKE_INPUT, tmp_path / "once")
     with pytest.raises(ValueError, match="already carries"):
         smoke.input_with_base_student_id(first, tmp_path / "twice")
+
+
+# --- plan 0053 S13d: the user-overlay phase's input copy gains two base columns -------
+
+
+def _base_students_and_family_columns() -> tuple[str, str]:
+    """The Students email and Family last-name SOURCE columns the base (``myedbc``) reads."""
+    from src.config.loader import load_config
+
+    mappings = load_config("myedbc").to_raw_dict()["mappings"]
+    return mappings["Students"]["field_map"]["Email Address"], mappings["Family"]["field_map"]["Last Name"]
+
+
+def test_the_s13d_overlay_input_literals_match_the_configs_and_the_pytest_copy() -> None:
+    """Every literal the copy spells is tied back: to the base config (what the overlay reads), to
+    SD74's config (what the frozen extract calls it) and to the pytest copy's own constants."""
+    from src.config.loader import load_config
+    from tests.test_config_authoring import (
+        BASE_FAMILY_LAST_NAME_COLUMN,
+        BASE_STUDENT_EMAIL_COLUMN,
+        SNAPSHOT_FAMILY_LAST_NAME_COLUMN,
+    )
+
+    email, last_name = _base_students_and_family_columns()
+    assert (email, last_name) == (smoke._BASE_STUDENT_EMAIL_COLUMN, smoke._BASE_FAMILY_LAST_NAME_COLUMN)
+    assert smoke._BASE_STUDENT_EMAIL_COLUMN == BASE_STUDENT_EMAIL_COLUMN
+    assert smoke._BASE_FAMILY_LAST_NAME_COLUMN == BASE_FAMILY_LAST_NAME_COLUMN
+    sd74 = load_config("sd74myedbc").to_raw_dict()["mappings"]
+    assert sd74["Family"]["field_map"]["Last Name"] == smoke._SNAPSHOT_FAMILY_LAST_NAME_COLUMN
+    assert smoke._SNAPSHOT_FAMILY_LAST_NAME_COLUMN == SNAPSHOT_FAMILY_LAST_NAME_COLUMN
+    assert sd74["Students"]["field_map"]["User ID"] == smoke._SNAPSHOT_DEMOGRAPHIC_STUDENT_COLUMN
+
+
+def test_the_s13d_overlay_input_copy_adds_only_the_two_base_columns(tmp_path: Path) -> None:
+    source = smoke.DEFAULT_SMOKE_INPUT
+    contacts = smoke._SD93_OVERLAY_SPEC["source_file_renames"]["EmergencyContactInformation.txt"]
+    demographic = smoke._SNAPSHOT_DEMOGRAPHIC_FILE
+    # Positive precondition: the frozen extract really lacks both base columns.
+    assert smoke._BASE_STUDENT_EMAIL_COLUMN not in (source / demographic).read_text(encoding="utf-8").splitlines()[0]
+    assert "," + smoke._BASE_FAMILY_LAST_NAME_COLUMN + "," not in (
+        "," + (source / contacts).read_text(encoding="utf-8").splitlines()[0] + ","
+    )
+
+    student_id_only = smoke.input_with_base_student_id(source, tmp_path / "student_id")
+    dest = smoke.input_for_the_base_mapping(source, tmp_path / "input")
+
+    for name, column in (
+        (demographic, smoke._BASE_STUDENT_EMAIL_COLUMN),
+        (contacts, smoke._BASE_FAMILY_LAST_NAME_COLUMN),
+    ):
+        before = (student_id_only / name).read_text(encoding="utf-8").splitlines()
+        after = (dest / name).read_text(encoding="utf-8").splitlines()
+        assert after[0] == before[0].rstrip("\r") + "," + column
+        assert len(after) == len(before)
+    email_row = (dest / demographic).read_text(encoding="utf-8").splitlines()[1]
+    assert email_row.endswith("@" + smoke._SYNTHETIC_EMAIL_DOMAIN)
+    # Every other file is byte-identical to the Student ID copy.
+    for path in student_id_only.iterdir():
+        if path.name not in (demographic, contacts) and path.is_file():
+            assert (dest / path.name).read_bytes() == path.read_bytes(), path.name
+
+
+def test_the_s13d_overlay_input_copy_refuses_a_file_that_already_has_a_column(tmp_path: Path) -> None:
+    first = smoke.input_for_the_base_mapping(smoke.DEFAULT_SMOKE_INPUT, tmp_path / "once")
+    with pytest.raises(ValueError, match="already carries"):
+        smoke.input_for_the_base_mapping(first, tmp_path / "twice")
+
+
+def test_the_user_overlay_phase_converts_its_copy_from_source(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+    """The CI-only phase reproduced FROM SOURCE: the planted overlay YAML over the phase's own copy
+    previews all five rostering entities as BUILT (``unbuilt_entities`` — the script's own check,
+    over what the dry run really prints); its twin, the Student-ID-only copy the phase fed before
+    S13d, now stops on Students (every student missing a value SpacesEDU requires — the rule
+    working, not a regression)."""
+    from src.etl.errors import EmptyRequiredOutputError
+    from src.etl.pipeline import run_pipeline
+    from src.utils import paths
+
+    overlay = paths.user_mappings_dir() / f"{smoke._SD93_OVERLAY_SIS}_mapping.yaml"
+    overlay.parent.mkdir(parents=True, exist_ok=True)
+    overlay.write_text(smoke._SD93_OVERLAY_YAML, encoding="utf-8")
+    out = tmp_path / "out"
+    out.mkdir()
+    dest = smoke.input_for_the_base_mapping(smoke.DEFAULT_SMOKE_INPUT, tmp_path / "input")
+    capsys.readouterr()
+    result = run_pipeline(smoke._SD93_OVERLAY_SIS, str(dest), str(out), dry_run=True)
+    printed = capsys.readouterr().out
+    assert "=== DRY RUN" in printed
+    assert smoke.unbuilt_entities(printed, smoke._ROSTERING_ENTITIES) == []
+    assert all(result.entity_counts[e] > 0 for e in smoke._ROSTERING_ENTITIES)
+    assert not list(out.glob("*.csv")), "no CSV written by the preview"
+
+    student_id_only = smoke.input_with_base_student_id(smoke.DEFAULT_SMOKE_INPUT, tmp_path / "student_id")
+    with pytest.raises(EmptyRequiredOutputError) as raised:
+        run_pipeline(smoke._SD93_OVERLAY_SIS, str(student_id_only), str(tmp_path / "out2"), dry_run=True)
+    assert raised.value.entity == "Students" and raised.value.required_values_left_out is True

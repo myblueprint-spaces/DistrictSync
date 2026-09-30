@@ -1066,11 +1066,15 @@ class TestHumanizeConfigError:
         assert humanize_config_error(NoUsableInputError(f"grade domain {self.PLANTED_PATH}")) == (
             GATE_INPUT_INCOMPLETE_NOTE
         )
-        empty_stop = EmptyRequiredOutputError(f"grade domain {self.PLANTED_DOMAIN}", entity="Enrollments")
+        empty_stop = EmptyRequiredOutputError(
+            f"grade domain {self.PLANTED_DOMAIN}", entity="Enrollments", required_values_left_out=False
+        )
         note = humanize_config_error(empty_stop)
         assert note == GATE_ENTITIES_EMPTY_NOTE.format(entities="Enrollments")
         assert self.PLANTED_DOMAIN not in note and "grade" not in note.lower()
-        unknown = humanize_config_error(EmptyRequiredOutputError("x", entity="HandDroppedSecret"))
+        unknown = humanize_config_error(
+            EmptyRequiredOutputError("x", entity="HandDroppedSecret", required_values_left_out=False)
+        )
         assert "HandDroppedSecret" not in unknown and unknown.startswith("One of your files came out empty")
 
     def test_a_raised_test_conversion_keeps_its_file_report(self):

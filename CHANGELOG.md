@@ -11,6 +11,26 @@ Per-release download links and auto-generated commit notes live on the
 
 ### Changed
 
+- **A student, staff member, family contact, class or enrollment missing a value SpacesEDU
+  requires is now left out — counted, with a warning — and so is everything that points at
+  it.** SpacesEDU's Advanced CSV format requires certain values on every row of the five
+  roster files: for example an email address for every student, staff member and family
+  contact, a first and last name, and a school. A row missing one used to be sent anyway — a
+  student with no email address deliberately so. Now DistrictSync leaves that row out,
+  counts it, and shows a warning on Home, in Run History and on the
+  Convert screen naming what was left out, every night until the values are filled in in
+  MyEd BC. A left-out student's enrollments and family contacts, a left-out staff member's
+  class enrollments and a left-out class's enrollments go with them, so SpacesEDU never
+  receives a link to someone or something it was not sent. Family contacts without an email
+  address, already left out, now show the same warning. A staff member the export gives no
+  role is still simply not sent, and not counted here. If EVERY row of a required file would
+  be left out — usually a column missing from the export — the night stops rather than send
+  an empty file, and the explanation says every one was missing a value SpacesEDU requires;
+  family contacts are only left out, as before. The run log carries one line per file with
+  how many rows were missing which value (never a name or an address). On the district
+  exports measured, the staff records with no email address are now left out at SD40, SD51,
+  SD60 and SD74 (63, 3, 10 and 9), and SD40 leaves out 3 family contacts with no first name
+  and the 3 class enrollments of its left-out staff; everything else is unchanged.
 - **Only family contacts can be left out of a night's sync — anything else that is missing
   or empty now stops the night.** Every export file your district's mapping lists must be in
   the input folder with its rows. When one is missing, or is present with only a header row,
@@ -178,10 +198,12 @@ Per-release download links and auto-generated commit notes live on the
   with nothing to change. Family contacts are the only file this applies to: a problem
   with any other export — student, staff, class, enrollment, course list, student courses
   or attendance — still stops the whole run. Such a run ends with exit code 0.
-  What SpacesEDU does with family links from an earlier delivery while the family
-  file is missing is not yet confirmed. The nightly sync runs the `.exe` saved when
-  the schedule was set up, so it behaves this way once that file is replaced with
-  this version (or the schedule is saved again in Settings).
+  What happens to family links from an earlier delivery while the family file is
+  missing depends on import settings SpacesEDU keeps for each district: SpacesEDU
+  sets them, they are usually off, and with them off those links stay as they were.
+  The nightly sync runs the `.exe` saved when the schedule was set up, so it behaves
+  this way once that file is replaced with this version (or the schedule is saved
+  again in Settings).
 - **A self-service mapping can no longer be switched on while it leaves a file
   out.** The test conversion on the *Your files* step now fails when any file the
   mapping produces could not be built, naming which ones, instead of passing.

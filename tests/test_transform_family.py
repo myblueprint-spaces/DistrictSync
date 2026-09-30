@@ -117,6 +117,9 @@ class TestFamilyTransform:
                 "school number": ["100", "100", "100", "200"],
                 "homeroom": ["A1", "A1", "B2", "C3"],
                 "enrolment status": ["Active", "Withdrawn", "Active", "Active"],
+                # The mapping's email column (a required value since plan 0053 S13d — without it every
+                # student would be left out and no roster published).
+                "student email address": ["a@test.ca", "b@test.ca", "c@test.ca", "d@test.ca"],
             }
         )
         self.transformer.transform(demo, students_mapping, "Students", raw_data, global_config)

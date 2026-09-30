@@ -191,15 +191,26 @@ class EmptyRequiredOutputError(EtlError, RuntimeError):
     it is what Convert's card and the record's copy NAME, through the authored entity phrase
     (``failure_copy.entity_phrase``), never a value. A blank one is refused. A
     ``RuntimeError`` like :class:`NoUsableInputError`, its way-in counterpart.
+
+    ``required_values_left_out`` (plan 0053 S13d) — REQUIRED keyword-only, a real ``bool`` — says
+    whether the entity's rows were left out because each lacked a value SpacesEDU requires (its
+    outcome carries a required-value note: ``required_fields.left_out_for_required_values``). The
+    export HAD rows then, so the card must not read "none came out of your export": Convert's card
+    words it from this attribute exactly as Home and Run History word the record the same attempt
+    writes, from that note (``failure_copy``). A default would let a raise site quietly pick the
+    wrong sentence, so there is none.
     """
 
     default_category = RunErrorCategory.EMPTY_REQUIRED_OUTPUT
 
-    def __init__(self, message: str, *, entity: str) -> None:
+    def __init__(self, message: str, *, entity: str, required_values_left_out: bool) -> None:
         if not isinstance(entity, str) or not entity.strip():
             raise ValueError("EmptyRequiredOutputError needs the entity that came out empty")
+        if not isinstance(required_values_left_out, bool):
+            raise TypeError("EmptyRequiredOutputError's required_values_left_out must be a bool")
         super().__init__(message)
         self.entity: str = entity
+        self.required_values_left_out: bool = required_values_left_out
 
 
 class ConfigLoadError(EtlError, ValueError):

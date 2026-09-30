@@ -65,7 +65,19 @@ class TransformContext:
     # by Classes (homeroom) + Enrollments (homeroom + subject) to guarantee no
     # output row references a student absent from Students.csv (zero-orphan
     # invariant). Empty until Students runs — consumers must guard for that.
+    # Since plan 0053 S13d it is published from the rows Students KEPT after leaving out those
+    # missing a required value, so every consumer drops a left-out student's rows too.
     active_student_ids: set[str] = field(default_factory=set)
+
+    # The no-orphan cascade of the required-value rule (plan 0053 S13d, failure-policy §5 #42):
+    # the normalized ids of the staff members and classes their OWN entity left out for a blank
+    # value SpacesEDU requires (an id with any kept row is not left out). Published once by
+    # StaffTransformer / ClassTransformer at the end of their transforms (both CRITICAL — P3(b));
+    # read by EnrollmentTransformer, which leaves out the teacher rows of a left-out staff member
+    # and every row of a left-out class. Deliberately NARROW: a teacher row whose staff member is
+    # absent from Staff.csv for any OTHER reason is untouched (ROADMAP). Empty until they run.
+    left_out_staff_ids: frozenset[str] = frozenset()
+    left_out_class_ids: frozenset[str] = frozenset()
 
     # Per-run data-error ledger (separate axis from ETL success/failure). Each
     # entry records a non-fatal field-transform problem surfaced loudly rather

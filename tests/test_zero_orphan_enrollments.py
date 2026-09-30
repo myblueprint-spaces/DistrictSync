@@ -100,7 +100,10 @@ def _demographic(all_active: bool = False) -> pd.DataFrame:
         rows = [
             (num, fn, ln, gr, sc, hr, "Active", "", tn, tid) for (num, fn, ln, gr, sc, hr, _st, _wd, tn, tid) in rows
         ]
-    return pd.DataFrame(rows, columns=_DEMO_COLUMNS)
+    frame = pd.DataFrame(rows, columns=_DEMO_COLUMNS)
+    # An email each: a student missing one is left out since plan 0053 S13d (a required value).
+    frame["student email address"] = frame["student number"].str.lower() + "@example.org"
+    return frame
 
 
 def _schedule() -> pd.DataFrame:
@@ -290,6 +293,8 @@ class TestHomeroomClassFiltering:
             ],
             columns=_DEMO_COLUMNS,
         )
+        # An email each: a student missing one is left out since plan 0053 S13d (a required value).
+        demographic["student email address"] = demographic["student number"].str.lower() + "@example.org"
         t = _transformer(base_mapping)
         gc = _global_config(base_mapping)
         raw = _raw_data(demographic)

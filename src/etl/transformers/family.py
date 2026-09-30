@@ -7,18 +7,21 @@ import pandas as pd
 
 from src.etl.column_names import STUDENT_NUMBER
 from src.etl.outcomes import OutcomeNote
+from src.etl.required_fields import EMAIL_OUTPUT_FIELDS
 from src.etl.transformers.base import BaseTransformer
 from src.etl.transformers.columns import Previously, resolve_source_column
 from src.etl.transformers.context import TransformContext
 from src.etl.transformers.ids import clean_invalid_ids
 from src.etl.transformers.notes import record_note
+from src.etl.transformers.required_values import leave_out_rows_missing_required_values
 
 logger = logging.getLogger(__name__)
 
 #: The OUTPUT column name from the Advanced CSV contract
 #: (``docs/developer/output-contract.md`` → ``Family.csv``). Output names ARE the
 #: contract; the SOURCE spelling stays configurable through the entity field_map.
-EMAIL_OUTPUT_COLUMN = "Email"
+#: Single-sourced in ``required_fields.EMAIL_OUTPUT_FIELDS`` (plan 0053 S13d).
+EMAIL_OUTPUT_COLUMN = EMAIL_OUTPUT_FIELDS["Family"]
 
 
 class FamilyTransformer(BaseTransformer):
@@ -40,8 +43,13 @@ class FamilyTransformer(BaseTransformer):
         working = self.filter_to_active(working, student_col, context, caller="Family")
         result = pd.DataFrame()
         result = self.apply_field_map(working, result, field_map, "Family", context)
-        # Last, on the OUTPUT frame: a contact with no email cannot be imported.
-        return self._exclude_rows_without_email(result, context)
+        # On the OUTPUT frame: a contact with no email cannot be imported (the first instance of the
+        # required-value rule, with its own note — §5 #20).
+        result = self._exclude_rows_without_email(result, context)
+        # Last (plan 0053 S13d, §5 #42): a contact missing any OTHER value SpacesEDU requires — a
+        # first or last name, or the student it belongs to — is left out and counted too. Nothing
+        # reads Family's output, so there are no ids to publish.
+        return leave_out_rows_missing_required_values(result, "Family", context, id_column=None).kept
 
     @staticmethod
     def _exclude_rows_without_email(result: pd.DataFrame, context: TransformContext) -> pd.DataFrame:

@@ -31,6 +31,7 @@ import pytest
 from src.etl.errors import SourceSchemaError
 from src.etl.outcomes import EntityOutcome, OutcomeNote, OutcomeReason, outcomes_from_record, outcomes_to_record
 from src.etl.pipeline import run_pipeline
+from src.etl.required_fields import REQUIRED_VALUE_NOTES
 from src.etl.transformers.base import BaseTransformer
 from src.etl.transformers.blended import BlendedClassDetector
 from src.etl.transformers.classes import ClassTransformer
@@ -38,6 +39,7 @@ from src.etl.transformers.context import TransformContext
 from src.etl.transformers.course_codes import note_unapplied_exclusions
 from src.etl.transformers.family import FamilyTransformer
 from src.etl.transformers.notes import record_note
+from src.etl.transformers.required_values import leave_out_rows_missing_required_values
 from src.etl.transformers.staff import StaffTransformer
 from src.etl.transformers.student_attendance import StudentAttendanceTransformer
 from src.etl.transformers.student_courses import StudentCoursesTransformer
@@ -170,17 +172,40 @@ class TestTheStudentStatusNotes:
         with caplog.at_level(logging.INFO):
             out = StudentTransformer().transform(_demo(**{"withdraw date": ["", "", ""]}), mapping, ctx)
         assert len(out) == 3
+        # Plan 0053 S13d: the minimal mapping produces few of the required columns, so the
+        # required-value rule's absent-column branch says so — once, rows untouched.
         assert dict(ctx.outcome_notes_for("Students")) == {
             _N.STATUS_COLUMN_ABSENT_DATE_ONLY: 3,
             _N.ACTIVE_WITHOUT_POSITIVE_SIGNAL: 3,
             _N.EMAIL_OUTPUT_NOT_MAPPED: 3,
+            _N.REQUIRED_OUTPUT_NOT_MAPPED: 3,
         }
         _no_sentinel(caplog, ctx)
 
     def test_twin_a_status_column_and_an_email_column_record_nothing(self):
+        # Every column the Students output REQUIRES is mapped and filled (plan 0053 S13d), so the
+        # required-value rule has nothing to say either.
         ctx = _ctx()
-        mapping = {"field_map": {"User ID": "Student Number", "Email Address": "Email"}}
-        frame = _demo(**{"enrollment status": ["Active"] * 3, "email": ["a@example.org"] * 3})
+        mapping = {
+            "field_map": {
+                "User ID": "Student Number",
+                "Student Number": "Student Number",
+                "First Name": "Legal First Name",
+                "Last Name": "Legal Surname",
+                "Grade": {"column": "Grade", "transform": "grade_to_ceds"},
+                "SchoolCode": "School Number",
+                "Email Address": "Email",
+            }
+        }
+        frame = _demo(
+            **{
+                "enrollment status": ["Active"] * 3,
+                "email": ["a@example.org"] * 3,
+                "legal surname": ["X", "Y", "Z"],
+                "grade": ["5", "6", "7"],
+                "school number": ["100"] * 3,
+            }
+        )
         StudentTransformer().transform(frame, mapping, ctx)
         assert ctx.outcome_notes_for("Students") == ()
 
@@ -322,23 +347,48 @@ class TestTheEmailNotes:
 # The field-map engine: identity fields (§5 #19)                                #
 # --------------------------------------------------------------------------- #
 class TestTheIdentityNote:
-    def _apply(self, field_map: dict, frame: pd.DataFrame) -> tuple[pd.DataFrame, TransformContext]:
+    #: A feed outside `required_fields.REQUIRED_OUTPUT_FIELDS`: its identity field really ships blank.
+    #: `CourseInfo`'s `School ID` is the one such pair a bundled config maps (review PQ6), so the
+    #: pinned producer path is one a district can actually hit.
+    _ENTITY = "CourseInfo"
+
+    def _apply(
+        self, field_map: dict, frame: pd.DataFrame, entity: str = _ENTITY
+    ) -> tuple[pd.DataFrame, TransformContext]:
         ctx = _ctx()
-        return FamilyTransformer().apply_field_map(frame, pd.DataFrame(), field_map, "Family", ctx), ctx
+        return FamilyTransformer().apply_field_map(frame, pd.DataFrame(), field_map, entity, ctx), ctx
 
     def test_an_identity_field_with_no_source_column_ships_blank_and_is_recorded(self, caplog):
-        frame = pd.DataFrame({"first name": [SENTINEL_PII, "b"]})
+        frame = pd.DataFrame({"course title": [SENTINEL_PII, "b"]})
         with caplog.at_level(logging.WARNING):
-            result, ctx = self._apply({"Student User ID": "Pupil No", "First Name": "First Name"}, frame)
-        assert result["Student User ID"].isna().all()
-        assert ctx.outcome_notes_for("Family") == ((_N.IDENTITY_FIELD_BLANKED, 2),)
-        assert any("'Pupil No'" in m for m in _messages(caplog))
+            result, ctx = self._apply({"School ID": "School No", "Course Title": "Course Title"}, frame)
+        assert result["School ID"].isna().all()
+        assert ctx.outcome_notes_for(self._ENTITY) == ((_N.IDENTITY_FIELD_BLANKED, 2),)
+        assert any("'School No'" in m for m in _messages(caplog))
         _no_sentinel(caplog, ctx)
 
+    def test_twin_a_required_rostering_id_is_left_to_the_required_value_rule(self, caplog):
+        """Plan 0053 S13d: Family's `Student User ID` is a value its output REQUIRES, so a blank one
+        leaves the ROW out (`required_values`) — "that ID was sent blank" would claim what the output
+        does not do, so the identity note is not recorded; the required-value note is."""
+        frame = pd.DataFrame({"first name": [SENTINEL_PII, "b"], "last name": ["x", "y"], "email address": ["a", "b"]})
+        field_map = {
+            "First Name": "First Name",
+            "Last Name": "Last Name",
+            "Email": "Email Address",
+            "Student User ID": "Pupil No",
+        }
+        result, ctx = self._apply(field_map, frame, "Family")
+        assert result["Student User ID"].isna().all()
+        assert ctx.outcome_notes_for("Family") == ()
+        kept = leave_out_rows_missing_required_values(result, "Family", ctx, id_column=None).kept
+        assert kept.empty
+        assert ctx.outcome_notes_for("Family") == ((_N.CONTACTS_EXCLUDED_REQUIRED_VALUE, 2),)
+
     def test_twin_present_column_fixed_value_and_non_identity_blank_record_nothing(self):
-        frame = pd.DataFrame({"pupil no": ["1"]})
+        frame = pd.DataFrame({"school no": ["1"]})
         _result, ctx = self._apply(
-            {"Student User ID": "Pupil No", "School ID": {"value": "100"}, "Phone": "Absent Column"}, frame
+            {"School ID": "School No", "Class ID": {"value": "C1"}, "Phone": "Absent Column"}, frame
         )
         assert ctx.outcome_notes == []
 
@@ -540,9 +590,24 @@ class TestTheRecordAndTheTiers:
         )
         assert outcome.notes == ()
 
-    def test_only_the_all_active_default_and_the_coteacher_note_warn(self):
+    def test_only_the_all_active_default_the_coteacher_and_the_required_value_notes_warn(self):
+        """Plan 0053 S13d (owner 2026-09-28, "leave out + count + amber"): every note that says rows
+        were left out for a missing required value warns — the five per-output members and Family's
+        email exclusion (`required_fields.REQUIRED_VALUE_NOTES`). The owner was asked on 2026-09-30
+        whether Family's email exclusion stays row detail instead; reversing it is one NOTE_TIER line,
+        its §7 row and this set."""
         warning = {note for note, tier in NOTE_TIER.items() if tier is Verdict.WARNING}
-        assert warning == {OutcomeNote.ALL_ACTIVE_DEFAULT, OutcomeNote.COTEACHER_SOURCE_UNUSABLE}
+        assert warning == {
+            OutcomeNote.ALL_ACTIVE_DEFAULT,
+            OutcomeNote.COTEACHER_SOURCE_UNUSABLE,
+            OutcomeNote.STUDENTS_EXCLUDED_REQUIRED_VALUE,
+            OutcomeNote.STAFF_EXCLUDED_REQUIRED_VALUE,
+            OutcomeNote.CONTACTS_EXCLUDED_REQUIRED_VALUE,
+            OutcomeNote.CLASSES_EXCLUDED_REQUIRED_VALUE,
+            OutcomeNote.ENROLLMENTS_EXCLUDED_REQUIRED_VALUE,
+            OutcomeNote.CONTACTS_EXCLUDED_NO_EMAIL,
+        }
+        assert warning >= REQUIRED_VALUE_NOTES
 
     def test_the_all_active_default_makes_the_run_partial_with_its_own_headline(self):
         students = EntityOutcome.built("Students", 5, notes=((OutcomeNote.ALL_ACTIVE_DEFAULT, 5),))
@@ -552,15 +617,23 @@ class TestTheRecordAndTheTiers:
         assert partial_label([students]) == "every student sent as active"
 
     def test_twin_a_healthy_note_is_row_detail_only(self):
+        # A HEALTHY note (Family's email exclusion was this example until plan 0053 S13d made it WARNING).
+        staff = EntityOutcome.built("Staff", 5, notes=((OutcomeNote.STAFF_STATUS_COLUMN_ABSENT, 5),))
+        assert outcome_tier(staff) is Verdict.HEALTHY
+        assert warning_outcomes([staff]) == ()
+        assert detail_note_labels([staff]) == ("no staff status column, all staff sent",)
+
+    def test_the_family_email_exclusion_warns_since_s13d(self):
         family = EntityOutcome.built("Family", 5, notes=((OutcomeNote.CONTACTS_EXCLUDED_NO_EMAIL, 2),))
-        assert outcome_tier(family) is Verdict.HEALTHY
-        assert warning_outcomes([family]) == ()
-        assert detail_note_labels([family]) == ("contacts without email left out",)
+        assert outcome_tier(family) is Verdict.WARNING
+        assert warning_outcomes([family]) == (family,)
+        assert detail_note_labels([family]) == ()
+        assert partial_label([family]) == "contacts without email left out"
 
     def test_the_run_history_row_shows_healthy_notes_under_an_unchanged_label(self):
         outcomes = (
             EntityOutcome.built("Students", 5, notes=((OutcomeNote.STATUS_COLUMN_ABSENT_DATE_ONLY, 5),)),
-            EntityOutcome.built("Family", 2, notes=((OutcomeNote.CONTACTS_EXCLUDED_NO_EMAIL, 1),)),
+            EntityOutcome.built("Staff", 2, notes=((OutcomeNote.STAFF_STATUS_COLUMN_ABSENT, 2),)),
         )
         record = {
             "timestamp": "2026-09-25T02:00:00",
@@ -570,7 +643,7 @@ class TestTheRecordAndTheTiers:
         }
         row = to_run_row(record, prior_build=None)
         assert row.status_label == "Completed"
-        assert row.notes == ("no status column, withdraw dates used", "contacts without email left out")
+        assert row.notes == ("no status column, withdraw dates used", "no staff status column, all staff sent")
 
     def test_twin_a_failed_row_shows_no_note_detail(self):
         outcomes = (EntityOutcome.built("Students", 5, notes=((OutcomeNote.STATUS_COLUMN_ABSENT_DATE_ONLY, 5),)),)
@@ -627,7 +700,12 @@ class TestAnEmptyFrameRecordsNothingAndNeverRaises:
     def test_family_and_students_email_output_not_mapped(self):
         ctx = _ctx()
         assert FamilyTransformer._exclude_rows_without_email(pd.DataFrame({"First Name": []}), ctx).empty
-        StudentTransformer._warn_rows_without_email(pd.DataFrame({"First Name": []}), ctx)
+        # Plan 0053 S13d: Students' no-email-column branch moved into the required-value rule.
+        for entity in ("Students", "Staff", "Family", "Classes", "Enrollments"):
+            left_out = leave_out_rows_missing_required_values(
+                pd.DataFrame({"First Name": []}), entity, ctx, id_column=None
+            )
+            assert left_out.kept.empty and left_out.ids == frozenset()
         assert ctx.outcome_notes == []
 
     def test_roster_merge_skipped_over_an_empty_working_frame(self):
@@ -684,6 +762,8 @@ class TestSafetyRelevantParametersHaveNoDefault:
         [
             (StaffTransformer.filter_departed_staff, "context"),
             (BaseTransformer.filter_to_active, "caller"),
+            # Plan 0053 S13d: forgetting the id column would silently skip the no-orphan cascade.
+            (leave_out_rows_missing_required_values, "id_column"),
         ],
     )
     def test_required_keyword_only(self, function, name):
@@ -727,9 +807,11 @@ class TestTheNoteBranchesEachFireOrStayQuiet:
 
     @staticmethod
     def _identity(spec: object, frame: pd.DataFrame, result: pd.DataFrame | None = None) -> TransformContext:
+        # A feed outside the required table (plan 0053 S13d): there the identity note still fires —
+        # on the pair a bundled config maps (CourseInfo's School ID, review PQ6).
         ctx = _ctx()
         FamilyTransformer().apply_field_map(
-            frame, pd.DataFrame() if result is None else result, {"Student User ID": spec}, "Family", ctx
+            frame, pd.DataFrame() if result is None else result, {"School ID": spec}, "CourseInfo", ctx
         )
         return ctx
 
@@ -743,7 +825,7 @@ class TestTheNoteBranchesEachFireOrStayQuiet:
     )
     def test_an_identity_field_read_through_a_column_entry_is_recorded(self, spec):
         ctx = self._identity(spec, pd.DataFrame({"first name": ["a", "b"]}))
-        assert ctx.outcome_notes_for("Family") == ((_N.IDENTITY_FIELD_BLANKED, 2),)
+        assert ctx.outcome_notes_for("CourseInfo") == ((_N.IDENTITY_FIELD_BLANKED, 2),)
 
     def test_twin_append_year_on_fails_closed_and_is_not_this_note(self):
         ctx = _ctx()
@@ -751,7 +833,7 @@ class TestTheNoteBranchesEachFireOrStayQuiet:
         spec = {"column": "Pupil No", "append_year_to_id": True}
         with pytest.raises(SourceSchemaError):
             FamilyTransformer().apply_field_map(
-                pd.DataFrame({"first name": ["a"]}), pd.DataFrame(), {"Student User ID": spec}, "Family", ctx
+                pd.DataFrame({"first name": ["a"]}), pd.DataFrame(), {"School ID": spec}, "CourseInfo", ctx
             )
         assert ctx.outcome_notes == []
 
@@ -760,7 +842,7 @@ class TestTheNoteBranchesEachFireOrStayQuiet:
 
     def test_twin_a_field_the_caller_filled_first_is_not_blanked_by_the_engine(self):
         frame = pd.DataFrame({"first name": ["a", "b"]})
-        ctx = self._identity("Pupil No", frame, result=pd.DataFrame({"Student User ID": ["1", "2"]}))
+        ctx = self._identity("Pupil No", frame, result=pd.DataFrame({"School ID": ["1", "2"]}))
         assert ctx.outcome_notes == []
 
     @staticmethod

@@ -213,7 +213,8 @@ def _demographic(grades: list[str], statuses: list[str] | None = None) -> pd.Dat
             "previous school number": [""] * size,
             "usual first name": [""] * size,
             "usual surname": [""] * size,
-            "student email address": [""] * size,
+            # An email each: a student missing one is left out since plan 0053 S13d (a required value).
+            "student email address": [f"s{i}@example.org" for i in range(size)],
             "enrolment status": statuses if statuses is not None else ["Active"] * size,
         }
     )

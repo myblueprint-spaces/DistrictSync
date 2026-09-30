@@ -1009,10 +1009,24 @@ _SD93_OVERLAY_SPEC: dict[str, Any] = {
 # rather than ship an Enrollments.csv with every timetable student left out (owner ruling
 # 2026-09-25 keeps that stop). This phase proves the overlay MECHANISM, so it feeds a copy
 # whose schedule also carries the base's column — the same copy
-# `tests/test_config_authoring.py::snapshot_input_with_base_student_id` builds, and
+# `tests/test_config_authoring.py::snapshot_input_for_the_base_mapping` builds, and
 # `tests/test_ci_flet_pack_smoke.py` ties both literals back to the base config.
 _BASE_SCHEDULE_STUDENT_COLUMN = "Student ID"
 _SNAPSHOT_SCHEDULE_STUDENT_COLUMN = "Student Number"
+# Plan 0053 S13d (owner 2026-09-28): a row missing a value SpacesEDU's import REQUIRES is left
+# out. The frozen SD74 demographic has no student email column (SD74's own mapping GENERATES the
+# address) and its contacts export calls the last name `Surname`, so through the overlay's
+# `_base: myedbc` every student and every contact would be left out — Students empty stops the
+# night (the rule working). This phase proves the overlay MECHANISM, so its copy also gives the
+# demographic the base's email column (a synthetic address per pupil number at the IANA-reserved
+# example.org) and the contacts export the base's last-name column; the same two literals as
+# the pytest copy, tied back to the base config by `tests/test_ci_flet_pack_smoke.py`.
+_BASE_STUDENT_EMAIL_COLUMN = "Student email address"
+_SNAPSHOT_DEMOGRAPHIC_FILE = "StudentDemographicInformation.txt"
+_SNAPSHOT_DEMOGRAPHIC_STUDENT_COLUMN = "Student number"
+_SYNTHETIC_EMAIL_DOMAIN = "example.org"
+_BASE_FAMILY_LAST_NAME_COLUMN = "Last Name"
+_SNAPSHOT_FAMILY_LAST_NAME_COLUMN = "Surname"
 _SD93_OVERLAY_YAML = """_base: myedbc
 district_name: SD93 - Packed exe smoke
 district_domains:
@@ -1058,6 +1072,43 @@ def input_with_base_student_id(source: Path, dest: Path) -> Path:
     return dest
 
 
+def _append_column(path: Path, source_column: str, new_column: str, value: Callable[[str], str]) -> None:
+    """Append ``new_column`` to the CSV at ``path``: each cell ``value(<that row's source_column>)``.
+
+    Refuses a file that already carries ``new_column``. Pure file I/O over synthetic fixture data.
+    """
+    with path.open(encoding="utf-8", newline="") as handle:
+        rows = list(csv.reader(handle))
+    header = rows[0]
+    if new_column in header:
+        raise ValueError(f"{path.name} already carries {new_column!r}")
+    at = header.index(source_column)
+    rows = [header + [new_column]] + [row + [value(row[at])] for row in rows[1:]]
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        csv.writer(handle, lineterminator="\n").writerows(rows)
+
+
+def input_for_the_base_mapping(source: Path, dest: Path) -> Path:
+    """:func:`input_with_base_student_id`, plus the two columns plan 0053 S13d needs the copy to carry
+    for the overlay's base mapping: the demographic's student email (``<pupil number>@example.org``)
+    and the contacts export's ``Last Name`` (``Surname`` value for value). Nothing else changes.
+    """
+    input_with_base_student_id(source, dest)
+    _append_column(
+        dest / _SNAPSHOT_DEMOGRAPHIC_FILE,
+        _SNAPSHOT_DEMOGRAPHIC_STUDENT_COLUMN,
+        _BASE_STUDENT_EMAIL_COLUMN,
+        lambda number: f"{number}@{_SYNTHETIC_EMAIL_DOMAIN}",
+    )
+    _append_column(
+        dest / _SD93_OVERLAY_SPEC["source_file_renames"]["EmergencyContactInformation.txt"],
+        _SNAPSHOT_FAMILY_LAST_NAME_COLUMN,
+        _BASE_FAMILY_LAST_NAME_COLUMN,
+        str,
+    )
+    return dest
+
+
 def _smoke_user_overlay(art: Path, ctx: CliSmokeContext) -> bool:
     """4 — a USER-DIR mapping overlay: the frozen exe reads one and converts through it.
 
@@ -1081,7 +1132,7 @@ def _smoke_user_overlay(art: Path, ctx: CliSmokeContext) -> bool:
         return False
 
     overlay = ctx.seam_dir / "mappings" / f"{_SD93_OVERLAY_SIS}_mapping.yaml"
-    overlay_input = input_with_base_student_id(ctx.input_dir, ctx.new_output("user-overlay-input") / "input")
+    overlay_input = input_for_the_base_mapping(ctx.input_dir, ctx.new_output("user-overlay-input") / "input")
     args = ["--sis", _SD93_OVERLAY_SIS, "--input", str(overlay_input)]
     try:
         control_out = ctx.new_output("user-overlay-control")

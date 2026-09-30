@@ -71,6 +71,7 @@ FLET_FREE_MODULES: tuple[str, ...] = (
     "src/etl/errors.py",
     "src/etl/outcomes.py",
     "src/etl/preflight.py",
+    "src/etl/required_fields.py",
     "src/etl/transformers/columns.py",
     "src/etl/transformers/notes.py",
     "src/ui_flet/about.py",
