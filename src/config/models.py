@@ -549,6 +549,16 @@ class GlobalConfig(BaseModel):
     # Ranges like ``2025/2026`` or ``2025-2026`` are unambiguous and ignore
     # this setting (second year always wins).
     school_year_naming: Literal["end", "start"] = "end"
+    # Which year of the academic period suffixes every GENERATED Class ID
+    # (subject `<Master Timetable ID>_<year>`, homeroom `<school>_<homeroom>_<year>`,
+    # `BLENDED_<session>_<year>`). IDENTITY, not presentation: SpacesEDU matches
+    # a class on its Class ID, so changing this on a live district re-keys every
+    # class. Default "end" (2025-2026 -> 2026, byte-identical for every config
+    # that omits it). "start" (2025-2026 -> 2025) exists for a district whose
+    # PRE-DistrictSync converter keyed classes on the start year (SD45), so the
+    # switch-over does not orphan every class a teacher has already used. Class
+    # NAMES and the Start/End dates are unaffected.
+    class_id_year: Literal["end", "start"] = "end"
     excluded_course_codes: list[str] = Field(default_factory=list)
     excluded_course_code_patterns: list[str] = Field(default_factory=list)
     excluded_course_flavors: list[str] = Field(default_factory=list)
@@ -1107,6 +1117,7 @@ class MappingConfig(BaseModel):
                 self.global_config.cross_enrollment.model_dump() if self.global_config.cross_enrollment else None
             ),
             "blended_classes": self.global_config.blended_classes,
+            "class_id_year": self.global_config.class_id_year,
             # The sentinel passes through as the string; a list is copied. None
             # (absent) must survive as None — the ETL distinguishes "not set"
             # from an empty scope, so never collapse it to [].

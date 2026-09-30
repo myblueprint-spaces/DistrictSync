@@ -106,6 +106,19 @@ class TransformContext:
         """Blended Class ID → teacher ids (empty until Classes runs)."""
         return self.class_artifacts.blended_teacher_map if self.class_artifacts else {}
 
+    @property
+    def class_id_year(self) -> int:
+        """The year suffixed onto every generated Class ID — the ONE place it is decided.
+
+        :attr:`school_year` (the END year) unless the config opts into
+        ``global_config.class_id_year: "start"``, in which case the academic
+        period's START year. Classes, Enrollments and blended detection all read
+        this, so the two output files cannot disagree on a class's identity.
+        """
+        if self.global_config.get("class_id_year") == "start":
+            return self.school_year - 1
+        return self.school_year
+
     def set_school_year(self, year: int, start_month_day: str, end_month_day: str) -> None:
         """Set school_year (MyEd BC end-year convention) and compute academic bounds.
 
