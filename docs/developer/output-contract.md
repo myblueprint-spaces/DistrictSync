@@ -258,14 +258,14 @@ A district may narrow the source rows with `row_filters` before mapping — SD60
 
 | # | Column | Source / semantics | Status | Basis | Guarantee |
 |---|---|---|---|---|---|
-| 1 | Class ID | `<Master Timetable ID>_<school year end year>` — see *Appended-year Class IDs* below. | pending owner confirmation | emitted | GUARANTEED |
+| 1 | Class ID | `<Master Timetable ID>_<school year end year>` (the START year where a config sets `class_id_year: start`) — see *Appended-year Class IDs* below. | pending owner confirmation | emitted | GUARANTEED |
 | 2 | Name | Composite display name — see *The name-config composite* below. Truncated at a word boundary to 100 characters. | pending owner confirmation | emitted | GUARANTEED |
 | 3 | Grade | Grade level of the class. | pending owner confirmation | emitted | GUARANTEED |
 | 4 | School ID | School number. | pending owner confirmation | emitted | GUARANTEED |
 | 5 | Start Date | Academic-period start, derived from `academic_start_month_day` plus the resolved school year. Every bundled config auto-derives (`use_academic_year: true`); a pinned literal date is a supported but currently unused escape hatch. | pending owner confirmation | emitted | GUARANTEED |
 | 6 | End Date | Academic-period end, derived from `academic_end_month_day`. | pending owner confirmation | emitted | GUARANTEED |
 
-**Appended-year Class IDs.** `Class ID` is `f"{master_timetable_id}_{school_year}"`, where `school_year` is the academic year's **end** year (MyEd BC convention; `school_year_naming: "end"`). The year suffix is what keeps a section reused across years from colliding. Classes and Enrollments compute the ID through the **same** `BaseTransformer.assign_class_ids`, so the two files can never disagree. A blended class overrides the ID via the blended map before that fallback applies.
+**Appended-year Class IDs.** `Class ID` is `f"{master_timetable_id}_{class_id_year}"`, where `class_id_year` is the academic year's **end** year (MyEd BC convention; `school_year_naming: "end"`) unless the config opts into `global_config.class_id_year: start` (the START year — `sd45myedbc` only, to keep the Class IDs its pre-DistrictSync converter already delivered; homeroom and blended IDs follow the same rule, via `TransformContext.class_id_year`). The year suffix is what keeps a section reused across years from colliding. Classes and Enrollments compute the ID through the **same** `BaseTransformer.assign_class_ids`, so the two files can never disagree. A blended class overrides the ID via the blended map before that fallback applies.
 
 **The name-config composite.** `Name` is built from four *configured* source columns (`primary teacher flag`, `teacher last name`, `course title`, `section letter`) as:
 
@@ -554,6 +554,7 @@ This table is **hand-written and GATED AGAINST** the enforced contract by `tests
 |---|---|---|---|
 | `myedbc` | Students, Staff, Family, Classes, Enrollments | Students, Staff, Family, Classes, Enrollments | The base config every district inherits. |
 | `sd40myedbc` | Students, Staff, Family, Classes, Enrollments | Students, Staff, Family, Classes, Enrollments | CSV extracts, headerless schedule, `ATT--*` exclusions. |
+| `sd45myedbc` | Students, Staff, Family, Classes, Enrollments | Students, Staff, Family, Classes, Enrollments | Migrated 2026-09-30 from the district's standalone gde2acsv-era mapping. Renamed `.csv` source files; `blended_classes: false` (no ClassInformation extract). Class IDs end in the school year's START year (`class_id_year: start`) to match the IDs its old converter delivered. School year from today's date (its `School Year` column's convention is unconfirmed). |
 | `sd48myedbc` | Students, Staff, Family, Classes, Enrollments | Students, Staff, Family, Classes, Enrollments | Renamed source files. |
 | `sd51myedbc` | Students, Staff, Family, Classes, Enrollments, StudentAttendance | Students, Staff, Family, Classes, Enrollments | **Enables StudentAttendance**, but the contract fixture supplies no absence GDEs on purpose — that pins skip-on-empty (a missing attendance drop must never block rostering). In production with absence GDEs present it emits six files. |
 | `sd54myedbc` | Students, Staff, Family, Classes, Enrollments | Students, Staff, Family, Classes, Enrollments | No status column: withdraw-date-only active detection. |

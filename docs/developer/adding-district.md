@@ -389,6 +389,26 @@ Range formats like ``2025/2026`` or ``2025-2026`` are unambiguous and ignore
 this setting — the second year is always taken as the end. Default is
 ``end`` (BC / MyEd BC).
 
+### Which year ends a Class ID (`class_id_year`)
+
+Every generated Class ID ends in a year — `<Master Timetable ID>_<year>`,
+`<school>_<homeroom>_<year>`, `BLENDED_<session>_<year>`. By default that is the
+**end** year (2025-2026 → `_2026`). A district migrating from a converter that
+keyed classes on the **start** year can keep its existing IDs:
+
+```yaml
+global_config:
+  class_id_year: start   # 2025-2026 -> _2025
+```
+
+This is **identity**, not presentation: SpacesEDU matches a class on its Class ID,
+so a changed suffix creates every class afresh and — with the district's
+"remove students unenrolled" import setting on — empties the old ones. Set it
+once, at onboarding, to match whatever the district's previous feed sent, and
+never change it on a live district. Class **names** and the Start/End dates are
+unaffected (they still derive from the end-year school year). Its one consumer
+today is `sd45myedbc`. Introduced in config version `1.14`.
+
 ### School year fallback rollover
 
 When no source file has a ``school year`` column, the pipeline falls back to

@@ -42,6 +42,8 @@ SHIPPED_DOMAINS: dict[str, str] = {
     "sd27.bc.ca": "sd27myedbc",
     "sd38.bc.ca": "sd38myedbc",
     "sd40.bc.ca": "sd40myedbc",
+    "wvschools.ca": "sd45myedbc",  # West Vancouver's STAFF domain (district Staff.csv, 2026-09-28)
+    "sd45.bc.ca": "sd45myedbc",  # the conventional form, held by a minority of SD45 staff
     "sd48.bc.ca": "sd48myedbc",
     "sd51.bc.ca": "sd51myedbc",
     "sd54.bc.ca": "sd54myedbc",
@@ -167,7 +169,7 @@ def test_unclaimed_configs_carry_no_domains(sis, resolved):
     """The base and the myBlueprint+ tiers stay UNCLAIMED — and the base especially.
 
     A domain on the base ``myedbc`` would deep-merge into EVERY descendant config, so one
-    district's domain would claim all twenty. The `mbp_*` tiers are cross-district
+    district's domain would claim all twenty-one. The `mbp_*` tiers are cross-district
     product tiers with no single owner, so they stay unclaimed too — which under the
     fail-open rule means "shown in every unmatched / no-identity / show-all state".
     """

@@ -141,6 +141,7 @@ EXPECTED_ENTITIES: dict[str, frozenset[str]] = {
     # SUPPLIES them, so this row is where the rostering+attendance emit path is
     # actually proven. sd51attendance emits attendance ALONE.
     "sd60myedbc": ROSTERING_ENTITIES | {"StudentAttendance"},
+    "sd45myedbc": ROSTERING_ENTITIES,
     "sd74myedbc": ROSTERING_ENTITIES,
     "sd51attendance": frozenset({"StudentAttendance"}),
     "sd83myedbc": ROSTERING_ENTITIES | {"CourseInfo", "StudentCourses"},

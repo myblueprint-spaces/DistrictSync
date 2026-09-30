@@ -4,6 +4,24 @@
 
 
 
+## 2026-09-30 — release v3.26.0: SD45 (West Vancouver) moves onto DistrictSync
+
+Supersedes: nothing — first DistrictSync config for SD45 (its gde2acsv-era standalone mapping predates `_base` inheritance).
+
+**Why a release now.** SD45 runs its own pre-DistrictSync converter. Its 2026-09-28 feed sends 356 of 787 staff as administrators and 5,472 inactive students; both stop on current DistrictSync. The district's IT lead is on leave, so the only ask this release makes of them is to swap the exe and pick the district.
+
+**The original mapping could not load**: no `academic_*_month_day`, and its `student id col`/`staff id col` enrollment keys are no longer recognised. Rewritten as a thin `_base: myedbc` overlay keeping only the filenames. Dropped the old `PreRegSchoolCode` ← `Previous school number` mapping, because PR #12 fixed exactly that (the previous school is not the pre-registration school).
+
+**`global_config.class_id_year` (config 1.14, opt-in, default `end`, byte-identical for the other 20 configs).** The old converter suffixed Class IDs with the school year's START year (2026-27 → `_2026`); DistrictSync uses the END year. Class ID is identity in SpacesEDU, and SD45's remove/unenroll import settings are ON, so switching without this would have recreated all ~2,400 classes and emptied the ones teachers have used since September. Decided in ONE place, `TransformContext.class_id_year`. Subject, homeroom and blended IDs all read it, and a source scan bans a `_{context.school_year}` ID f-string. Names and Start/End dates are unchanged. Owner chose this over accepting the re-key or holding for a term break.
+
+**The school year comes from today's date, not the file.** Whether SD45's `School Year` column holds a bare start or end year is unconfirmed; a bare start year read as an end year would stamp last year on every class. So the config leaves the inherited year source (`StudentSchedule.txt`, which SD45 does not send) in place, and the year falls back to today's date plus the 07-25 rollover. That is what its old mapping did. Revisit once a sample value is confirmed.
+
+**Blended classes are OFF** (`blended_classes: false`). SD45 sends no ClassInformation extract. Its old output shows ~408 sections written once per grade (e.g. 11/12) under one Class ID, so blends are real. Turn the setting back on when the extract arrives.
+
+**Administrators (owner, 2026-09-30): proceed as-is.** SD45's prod "remove admins absent" setting is ON, so its non-teaching administrators are removed on the first sync and are re-added by hand. This is the v3.25.0 rule, which has no district exception.
+
+**Verified on synthetic fixtures only.** SD45 sent Advanced CSV OUTPUT, not GDEs, so its column names (incl. `Next school code` and a staff-status column) are unverified against a real drop. Owner QA of the exe is post-tag per the standing position.
+
 ## 2026-09-23 — failure is scoped to the entity; criticality is declared; conservative default until Q5
 
 Supersedes: nothing — first written ETL failure policy (plan 0053, `.claude/plans/0053-etl-failure-policy.md`).

@@ -167,7 +167,7 @@ class ClassTransformer(BaseTransformer):
         # dropped both the `Series[str] + str` overload and `str.cat(list)`); dev
         # stubs are intentionally uncapped. `unique_homerooms` is the deduplicated
         # homeroom set (small), matching the row-wise `.apply` used for Name below.
-        year = context.school_year
+        year = context.class_id_year
         hc["Class ID"] = [
             f"{school}_{homeroom}_{year}"
             for school, homeroom in zip(
