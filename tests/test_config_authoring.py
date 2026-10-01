@@ -71,6 +71,109 @@ SD74_RENAMES = {
     "ClassInformationEnh.txt": "ClassInfoEnhanced.txt",
 }
 
+#: The Enrollments student column a self-service overlay inherits from ``_base: myedbc``
+#: (``User ID.student_id_col``), which the frozen SD74 schedule does not carry — it has
+#: ``Student Number`` — and which the creator cannot set (ROADMAP, owner ruling 2026-09-25).
+BASE_SCHEDULE_STUDENT_COLUMN = "Student ID"
+
+
+#: The Students email column a self-service overlay inherits from ``_base: myedbc``
+#: (``Email Address`` ← ``Student email address``). The frozen SD74 demographic has none — SD74's
+#: own mapping GENERATES the address (an email ``format:``, which the creator cannot set) — and
+#: since plan 0053 S13d a student missing an email address, a value SpacesEDU's import requires,
+#: is LEFT OUT: over the unmodified snapshot every student is, Students comes out empty and the
+#: night stops (owner ruling 2026-09-28 — the rule working; pinned by
+#: ``TestEndToEndAgainstSnapshotInputs.test_an_overlay_over_a_demographic_without_the_base_email_stops_on_students``).
+BASE_STUDENT_EMAIL_COLUMN = "Student email address"
+
+#: The Family last-name column the overlay inherits from ``_base: myedbc`` (``Last Name`` ←
+#: ``Last Name``); the frozen SD74 contacts export calls it ``Surname`` (SD74's own mapping
+#: renames it). Since plan 0053 S13d a contact missing its last name — a value SpacesEDU
+#: requires — is left out, so over the unmodified export every contact would be and
+#: ``Family.csv`` would be left out (amber; the creator's gate refuses an empty output).
+BASE_FAMILY_LAST_NAME_COLUMN = "Last Name"
+SNAPSHOT_FAMILY_LAST_NAME_COLUMN = "Surname"
+
+
+def _append_column(path: Path, source_column: str, new_column: str, value) -> None:
+    """Append ``new_column`` to the CSV at ``path``, each cell ``value(row[source_column])``."""
+    import csv
+
+    with path.open(encoding="utf-8", newline="") as handle:
+        rows = list(csv.reader(handle))
+    header = rows[0]
+    assert new_column not in header, f"the frozen {path.name} already carries {new_column!r}"
+    at = header.index(source_column)
+    rows = [header + [new_column]] + [row + [value(row[at])] for row in rows[1:]]
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        csv.writer(handle, lineterminator="\n").writerows(rows)
+
+
+def _add_base_student_id(dest: Path) -> None:
+    """Give the copy's schedule the base's ``Student ID`` — ``Student Number`` value for value."""
+    _append_column(dest / SD74_RENAMES["StudentSchedule.txt"], "Student Number", BASE_SCHEDULE_STUDENT_COLUMN, str)
+
+
+def _add_base_student_email(dest: Path) -> None:
+    """Give the copy's demographic the base's student email column — a synthetic address per
+    pupil number at the IANA-reserved ``example.org``."""
+    _append_column(
+        dest / "StudentDemographicInformation.txt",
+        "Student number",
+        BASE_STUDENT_EMAIL_COLUMN,
+        lambda number: f"{number}@example.org",
+    )
+
+
+def _add_base_family_last_name(dest: Path) -> None:
+    """Give the copy's contacts export the base's ``Last Name`` — ``Surname`` value for value."""
+    _append_column(
+        dest / SD74_RENAMES["EmergencyContactInformation.txt"],
+        SNAPSHOT_FAMILY_LAST_NAME_COLUMN,
+        BASE_FAMILY_LAST_NAME_COLUMN,
+        str,
+    )
+
+
+def snapshot_input_for_the_base_mapping(dest: Path) -> Path:
+    """A COPY of the SD74 snapshot extract carrying the two columns the BASE mapping reads that
+    the frozen extract names differently or lacks — so a self-service ``_base: myedbc`` overlay
+    converts it end to end.
+
+    * the schedule ALSO carries the base's ``Student ID`` (``Student Number`` value for value):
+      plan 0053 S10 made that column REQUIRED where the timetable enrollments read it (§5 #28) —
+      over the unmodified schedule the overlay stops with a typed ``source_schema`` error (owner
+      ruling 2026-09-25 keeps that stop —
+      ``TestEndToEndAgainstSnapshotInputs.test_an_overlay_over_a_schedule_without_the_base_student_id_stops_typed``);
+    * the demographic ALSO carries the base's ``Student email address``, and the contacts export
+      the base's ``Last Name`` (plan 0053 S13d — see :data:`BASE_STUDENT_EMAIL_COLUMN` and
+      :data:`BASE_FAMILY_LAST_NAME_COLUMN`).
+
+    Tests whose subject is the creator flow itself feed this copy. Nothing else in the extract
+    changes. Synthetic data only.
+    """
+    import shutil
+
+    shutil.copytree(SNAPSHOT_INPUT, dest)
+    _add_base_student_id(dest)
+    _add_base_student_email(dest)
+    _add_base_family_last_name(dest)
+    return dest
+
+
+def snapshot_input_with_base_student_email(dest: Path) -> Path:
+    """The snapshot copy with the base's student email and family last-name columns added but
+    NOT its ``Student ID`` (the schedule keeps ``Student Number``) — for the test that pins the
+    Student ID stop, which the email-less extract would otherwise pre-empt with the Students
+    stop (plan 0053 S13d)."""
+    import shutil
+
+    shutil.copytree(SNAPSHOT_INPUT, dest)
+    _add_base_student_email(dest)
+    _add_base_family_last_name(dest)
+    return dest
+
+
 #: The base ``myedbc`` homeroom list, restated so the chain-companion assertions
 #: read as intent rather than as "whatever the base says".
 BASE_HOMEROOM = ["IT", "PR", "PK", "TK", "KG", "01", "02", "03", "04", "05", "06", "07"]
@@ -650,6 +753,8 @@ class TestEndToEndAgainstSnapshotInputs:
     """A self-service overlay whose renames match the SD74 extract's real filenames."""
 
     def test_renamed_overlay_runs_the_pipeline_over_the_snapshot_inputs(self, tmp_path, caplog):
+        # The copy carries the base's `Student ID` and student email too (plan 0053 S10/S13d — see the helper).
+        source = snapshot_input_for_the_base_mapping(tmp_path / "input")
         write_overlay(
             _spec(district_name="SD93 - Snapshot filenames", source_file_renames=SD74_RENAMES),
             overwrite=False,
@@ -657,7 +762,7 @@ class TestEndToEndAgainstSnapshotInputs:
         with caplog.at_level(logging.WARNING):
             result = run_pipeline(
                 "sd93custom",
-                str(SNAPSHOT_INPUT),
+                str(source),
                 str(tmp_path / "out"),
                 dry_run=True,
             )
@@ -671,38 +776,75 @@ class TestEndToEndAgainstSnapshotInputs:
             assert result.entity_counts[entity] > 0, entity
 
     def test_the_same_overlay_WITHOUT_renames_cannot_find_those_files(self, tmp_path, caplog):
-        """The positive twin: the renames are what made the run above work."""
+        """The positive twin: the renames are what made the run above work.
+
+        Since owner decision 2026-09-28 every file an enabled output lists is REQUIRED, so an
+        overlay whose names the folder does not carry no longer runs a shrunken night — it
+        STOPS, typed, naming every file it could not find (only the family contacts file may
+        be missing, and that one is not checked). The renamed run is the twin that builds.
+        """
+        from src.etl.errors import IncompleteInputError
+
+        source = snapshot_input_for_the_base_mapping(tmp_path / "input")
         write_overlay(_spec(district_name="SD93 - Standard filenames"), overwrite=False)
-        with caplog.at_level(logging.WARNING):
-            result = run_pipeline(
-                "sd93custom",
-                str(SNAPSHOT_INPUT),
-                str(tmp_path / "out"),
-                dry_run=True,
-            )
+        with caplog.at_level(logging.WARNING), pytest.raises(IncompleteInputError) as raised:
+            run_pipeline("sd93custom", str(source), str(tmp_path / "out"), dry_run=True)
         complaints = _missing_file_complaints(caplog.records, set(SD74_RENAMES))
         assert complaints, "expected missing-file complaints for the un-renamed sources"
         for original in SD74_RENAMES:
             assert any(original in message for message in complaints), original
+        # Every un-renamed file a CRITICAL entity lists is named; Family's own is exempt.
+        assert set(raised.value.missing) == set(SD74_RENAMES) - {"EmergencyContactInformation.txt"}
+        assert raised.value.empty == ()
 
-        # Students reads StudentDemographicInformation.txt, which is NOT renamed —
-        # so the difference between the two runs is exactly the renamed roles.
-        assert result.entity_counts["Students"] > 0
-        # Staff and Family have no source but a renamed one, so they vanish entirely.
-        for entity in ("Staff", "Family"):
-            assert result.entity_counts.get(entity, 0) == 0, entity
-
-        # Classes/Enrollments do NOT vanish — the homeroom half is generated from the
-        # (un-renamed) demographic file — so the honest claim is that they SHRINK.
-        # Quantify it against the renamed run rather than a hard-coded number.
         assert delete_overlay("sd93custom") is True
         write_overlay(
             _spec(district_name="SD93 - Snapshot filenames", source_file_renames=SD74_RENAMES),
             overwrite=False,
         )
-        renamed = run_pipeline("sd93custom", str(SNAPSHOT_INPUT), str(tmp_path / "out2"), dry_run=True)
-        for entity in ("Classes", "Enrollments"):
-            assert result.entity_counts.get(entity, 0) < renamed.entity_counts[entity], entity
+        renamed = run_pipeline("sd93custom", str(source), str(tmp_path / "out2"), dry_run=True)
+        for entity in ("Students", "Staff", "Family", "Classes", "Enrollments"):
+            assert renamed.entity_counts[entity] > 0, entity
+
+    def test_an_overlay_over_a_schedule_without_the_base_student_id_stops_typed(self, tmp_path):
+        """Owner ruling 2026-09-25 (plan 0053 S10, §5 #28) — the self-service stop is KEPT.
+
+        The UNMODIFIED snapshot schedule calls its student column ``Student Number``; the
+        overlay inherits ``_base: myedbc``'s ``Student ID``. Before S10 this run passed while
+        shipping an ``Enrollments.csv`` with every timetable student left out; it now stops
+        with a typed ``source_schema`` error on Enrollments naming the column. The positive
+        twin is the renamed run above, over a copy whose schedule carries the column.
+        """
+        from src.etl.errors import SourceSchemaError
+
+        write_overlay(
+            _spec(district_name="SD93 - Snapshot filenames", source_file_renames=SD74_RENAMES),
+            overwrite=False,
+        )
+        # The copy carries the base's student email (plan 0053 S13d): without it every student is
+        # left out and Students stops the night first — the test below.
+        source = snapshot_input_with_base_student_email(tmp_path / "input")
+        with pytest.raises(SourceSchemaError) as exc:
+            run_pipeline("sd93custom", str(source), str(tmp_path / "out"), dry_run=True)
+        assert exc.value.entity == "Enrollments"
+        assert exc.value.columns == (BASE_SCHEDULE_STUDENT_COLUMN,)
+
+    def test_an_overlay_over_a_demographic_without_the_base_email_stops_on_students(self, tmp_path):
+        """Plan 0053 S13d (owner 2026-09-28): the UNMODIFIED snapshot demographic carries no
+        ``Student email address`` — the overlay's base reads one; SD74's own mapping generates it —
+        so every student is missing a value SpacesEDU requires, every one is left out, and the
+        night stops on Students with the required-values wording, nothing written. The positive
+        twin is the renamed run above, over the copy that carries the column."""
+        from src.etl.errors import EmptyRequiredOutputError
+
+        write_overlay(
+            _spec(district_name="SD93 - Snapshot filenames", source_file_renames=SD74_RENAMES),
+            overwrite=False,
+        )
+        out = tmp_path / "out"
+        with pytest.raises(EmptyRequiredOutputError) as exc:
+            run_pipeline("sd93custom", str(SNAPSHOT_INPUT), str(out), dry_run=True)
+        assert exc.value.entity == "Students" and exc.value.required_values_left_out is True
 
 
 # ---------------------------------------------------------------------------

@@ -27,6 +27,7 @@ import pandas as pd
 import pytest
 
 from src.etl.pipeline import PipelineResult, run_pipeline
+from tests.test_pipeline_required_input import _write_class_info_rows
 
 # ---------------------------------------------------------------------------
 # Shared GDE fixture (mirrors the minimal set in test_cli.py)
@@ -102,9 +103,7 @@ def gde_input(tmp_path: Path) -> Path:
         }
     ).to_csv(d / "EmergencyContactInformation.txt", index=False)
 
-    pd.DataFrame(
-        columns=["School Number", "Teacher ID", "Master Timetable ID", "Term", "Semester", "Day", "Period"]
-    ).to_csv(d / "ClassInformationEnh.txt", index=False)
+    _write_class_info_rows(d)
 
     return d
 

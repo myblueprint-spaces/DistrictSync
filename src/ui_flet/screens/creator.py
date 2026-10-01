@@ -174,9 +174,14 @@ FILES_INTRO_NOTE = (
     "DistrictSync looks for these files in your input folder. If your district's files are named "
     "differently, set the name yours uses beside each one."
 )
+#: It used to say a test conversion "carries on without them" — untrue since owner decision
+#: 2026-09-28, when a file the mapping lists became REQUIRED (``pipeline.check_required_inputs``:
+#: the test stops at the input gate). The few a mapping may go without (family contacts; since owner
+#: ruling 2026-09-30 the class information file where blended detection is off) are the gate's
+#: predicate's to name, not this note's, so it claims only what holds for every mapping.
 FILES_MISSING_NOTE = (
-    "We can't see these ones in your input folder. A test conversion carries on without them, and "
-    "whatever they feed comes out empty. If your district calls them something else, set that name above."
+    "We can't see these ones in your input folder, and a test conversion stops when a file this "
+    "mapping can't run without is missing. If your district calls them something else, set that name above."
 )
 #: The Files step's TWO sections (owner report, 2026-09-02). The step used to interleave
 #: them — the passed-test verdict and its counts above the filename rows, the filled
@@ -215,6 +220,10 @@ GATE_PASSED_DETAIL = (
     "converts, and after that you can continue."
 )
 GATE_FAILED_HEADLINE = "The test conversion didn't finish"
+#: A test conversion that RAN TO THE END but left an entity unbuilt (plan 0053 S4): "didn't
+#: finish" would be false above a note that names what was left out. Selected by the pure
+#: gate's bounded ``GateOutcome.completed`` flag, never by matching the note.
+GATE_NOT_BUILT_HEADLINE = "The test conversion couldn't build every file"
 #: HOST-NEUTRAL (plan 0044 S6): "the step before this one" was true only in the wizard,
 #: whose Folders step precedes this one. Mapping hosts the same surface with no step order
 #: at all, so the note names the FOLDER and where it is set — never a step. The ROUTE to
@@ -242,6 +251,16 @@ GATE_CONFIRM_LABEL = "Save district mapping"
 GATE_RERUN_LABEL = "Test it again"
 GATE_ACTIVATED_NOTE = "This computer now converts your district."
 GATE_RESAVED_NOTE = "Saved. Your district's file names changed, so please run the test conversion once more."
+
+#: The notes a PASSED test carries (owner 2026-09-28 — "show notes, don't block"): each WARNING-
+#: tier outcome note on a built output (``GateOutcome.warning_notes``, e.g. co-teachers left out),
+#: shown BEFORE the confirm as facts, never a second verdict band — the same rule as the column
+#: report below. The note says what the admin is agreeing to: Home repeats it every night.
+GATE_WARNINGS_TITLE = "Before you save: this mapping will run with a warning"
+GATE_WARNINGS_NOTE = (
+    "The test still passes and you can save this mapping, but Home and Run History will show this "
+    "warning after every sync until your export changes."
+)
 
 #: The pre-flight column report (plan 0044 S5) — a LENS on a run that PASSED, never a
 #: second verdict. A mapped column that is simply not in the file is a DELIBERATE blank
@@ -464,9 +483,9 @@ def _creator_expected_files(sis_id: str) -> tuple[str, ...]:
     if config is None:
         return ()
     try:
-        from src.etl.pipeline import advisory_expected_files
+        from src.etl.pipeline import extract_required_files
 
-        return tuple(advisory_expected_files(config))
+        return tuple(extract_required_files(config))
     except Exception:  # noqa: BLE001 - total: no list is better than a wrong list
         logger.warning("Could not resolve the expected source files for %r.", sis_id)
         return ()
@@ -522,10 +541,10 @@ def _creator_files_model(base: str, sis_id: str) -> _FilesModel:
       base's own filename (that is what ``authoring._build_renames`` propagates from), and
       because the row set must not move when a name changes;
     * ``expected`` comes from the DISTRICT's own config, so
-      ``pipeline.advisory_expected_files`` stays the single source for "which files matter"
-      WITH the narrowing this district's entity selection and grade scopes earn — then it is
-      translated back into base-name space through the renames the config on disk already
-      expresses. BOTH spellings are offered to the filter, so a hand-edited config that
+      ``pipeline.extract_required_files`` stays the single source for "which files matter"
+      WITH this district's own entity selection — every file an enabled entity lists is
+      required since owner decision 2026-09-28 — then it is translated back into base-name
+      space through the renames the config on disk already expresses. BOTH spellings are offered to the filter, so a hand-edited config that
       diverges on one file still gets its row (the row is where that gets repaired).
 
     Empty when the starting point cannot be resolved — the state in which ``write_overlay``
@@ -535,17 +554,17 @@ def _creator_files_model(base: str, sis_id: str) -> _FilesModel:
     if resolved_base is None:
         return _FilesModel()
     try:
-        from src.etl.pipeline import advisory_expected_files
+        from src.etl.pipeline import extract_required_files
 
         current = _resolved_config(sis_id) if (sis_id or "").strip() else None
         divergent: tuple[str, ...] = ()
         if current is None:
-            expected = list(advisory_expected_files(resolved_base))
+            expected = list(extract_required_files(resolved_base))
         else:
             resumed = renames_from_resolved(resolved_base, current)  # type: ignore[arg-type]
             divergent = resumed.divergent
             back = {new: original for original, new in dict(resumed.renames).items()}
-            names = list(advisory_expected_files(current))
+            names = list(extract_required_files(current))
             expected = [*names, *(back[name] for name in names if name in back)]
         # The entity filter follows the DISTRICT's own selection (the overlay on disk), never
         # the starting point's — otherwise a Students + courses district is asked for the
@@ -1580,7 +1599,11 @@ def build_creator(  # pragma: no cover - Flet view glue
             )
         elif outcome.state is GateState.FAILED:
             test_rows.append(
-                components.HealthVerdictBanner(Verdict.FAILED, headline=GATE_FAILED_HEADLINE, detail=outcome.note)
+                components.HealthVerdictBanner(
+                    Verdict.FAILED,
+                    headline=GATE_NOT_BUILT_HEADLINE if outcome.completed else GATE_FAILED_HEADLINE,
+                    detail=outcome.note,
+                )
             )
         elif outcome.state is GateState.REFUSED_NO_OUTPUT_DIR:
             test_rows.append(
@@ -1626,6 +1649,29 @@ def build_creator(  # pragma: no cover - Flet view glue
                             for line in humanize_missing_columns(outcome.missing_columns, entity_label=_entity_label)
                         ),
                         ft.Text(PREFLIGHT_MISSING_NOTE, size=tokens.type_body, color=tokens.color_muted),
+                    ],
+                )
+            )
+
+        # The WARNING-tier notes of a PASSED test (owner 2026-09-28): facts shown BEFORE the confirm,
+        # never blocking it and never a second ``HealthVerdictBanner``. Rendered on
+        # ``warning_notes`` ALONE — the gate decided what they are (only a PASSED outcome has any).
+        if outcome.warning_notes:
+            test_rows.append(
+                ft.Column(
+                    spacing=tokens.space_sm,
+                    controls=[
+                        ft.Text(
+                            GATE_WARNINGS_TITLE,
+                            size=tokens.type_body,
+                            weight=ft.FontWeight.W_600,
+                            color=tokens.color_text,
+                        ),
+                        *(
+                            ft.Text(sentence, size=tokens.type_body, color=tokens.color_status_warning)
+                            for sentence in outcome.warning_notes
+                        ),
+                        ft.Text(GATE_WARNINGS_NOTE, size=tokens.type_body, color=tokens.color_muted),
                     ],
                 )
             )

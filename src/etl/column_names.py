@@ -17,6 +17,23 @@ TEACHER_NAME = "teacher name"
 
 # Schedule / timetable
 MASTER_TIMETABLE_ID = "master timetable id"
+#: The MyEd BC "School Year" column of a ``global_config.school_year_sources`` file — read by
+#: ``dates.determine_school_year_detailed`` and REQUIRED, once such a file has rows, by
+#: ``ClassTransformer._require_school_year_source`` (failure-policy §5 #41, owner ruling
+#: 2026-09-26). Not configurable: no mapping key renames it.
+SCHOOL_YEAR = "school year"
+#: The same column in the spelling an admin reads (the MyEd BC export's own header): what the
+#: §5 #41 guard names in its ``SourceSchemaError``, so the stopped night's copy can say "School
+#: Year" (owner 2026-09-28) through the S7 label path — a STRUCTURAL label
+#: (``outcomes.STRUCTURAL_LABELS``), never observed text. ``normalize_column_name`` of it is
+#: :data:`SCHOOL_YEAR`, so the guard's comparison is unchanged.
+SCHOOL_YEAR_LABEL = "School Year"
+#: :data:`SCHOOL_NUMBER` in the spelling an admin reads — what §5 #39's blended-detection guard
+#: names when the working frame (ClassInformation) lacks it, so the stopped night's copy says
+#: "School Number" (owner ruling 2026-09-30: the stop is typed AND named). A STRUCTURAL label
+#: (``outcomes.STRUCTURAL_LABELS``) like :data:`SCHOOL_YEAR_LABEL`; the session key reads the
+#: column by :data:`SCHOOL_NUMBER`, which no mapping key renames.
+SCHOOL_NUMBER_LABEL = "School Number"
 
 # Staff roster
 STAFF_SOURCEID = "staff sourceid"
@@ -33,6 +50,17 @@ COURSE_TITLE = "title"
 
 # Commonly-joined columns
 LAST_NAME = "last name"
+
+# MyEd BC defaults of CONFIGURABLE source columns. Read ONLY as the ``default=`` of
+# ``src.etl.transformers.columns.resolve_source_column`` — the district mapping names the
+# column, and these apply when it names none (plan 0053 S9). ``STAFF_STATUS`` above is the
+# same kind of constant.
+STUDENT_NUMBER = "student number"  # demographic / contacts / course-history student id
+GRADE = "grade"  # demographic + schedule grade
+HOMEROOM = "homeroom"  # demographic homeroom
+TEACHER_ID = "teacher id"  # schedule / staff teacher id
+SECTION_LETTER = "section letter"  # schedule + ClassInformation section letter
+PRIMARY_TEACHER = "primary teacher"  # ClassInformation primary-teacher flag
 
 
 def normalize_column_name(name: str) -> str:

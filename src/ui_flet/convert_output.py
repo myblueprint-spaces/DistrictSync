@@ -74,7 +74,8 @@ from pathlib import Path
 
 from src.config.loader import load_config
 from src.etl.loader import DataLoader
-from src.etl.pipeline import configured_entity_order
+from src.etl.outcomes import CLASS_INFORMATION_ROLE, EntityCriticality, criticality_of
+from src.etl.pipeline import configured_entity_order, optional_source_files
 from src.ui_flet.humanize import friendly_district_name, friendly_timestamp
 
 logger = logging.getLogger(__name__)
@@ -207,17 +208,91 @@ def this_run_label(selected: str | None, saved: str | None, *, config_dir: Path 
     return friendly_district_name(sel, config_dir=config_dir) or sel
 
 
-def missing_files_copy() -> tuple[str, str]:
-    """The softened (heading, reassurance) copy over the expected-but-missing file chips.
+@dataclass(frozen=True)
+class OptionalInputs:
+    """Which of the files a night may go without THIS district actually has (plan 0053 S13e).
 
-    0035 W3b: the old "Expected files not found in this folder:" read as a fault. A missing
-    source file is legitimate (per-entity skip-on-empty is by design), so the heading is a
-    calm observation and the reassurance line states the honest consequence — the run still
-    works, and whatever a missing file feeds is skipped, never guessed.
+    ``family_contacts`` — an enabled ISOLATABLE entity's file is optional (§3: that is exactly
+    Family, the family contacts export; owner 2026-09-28). ``class_information`` — the Class
+    Information export is optional because the district's blended detection is off (owner ruling
+    2026-09-30). Both False is a district with no exception at all (e.g. one without Family whose
+    detection is on) — every missing file stops its night.
     """
-    return (
-        "Not found yet — your district's extracts usually include:",
-        "You can still convert — anything a missing file feeds is skipped, not guessed.",
+
+    family_contacts: bool
+    class_information: bool
+
+
+#: The stricter reading: no exception. What a district whose mapping cannot be read is shown —
+#: never wrong about a file the run would require.
+NO_OPTIONAL_INPUTS: OptionalInputs = OptionalInputs(family_contacts=False, class_information=False)
+
+_FAMILY_CONTACTS_CLAUSE = "without the family contacts file, only family contacts are left out"
+_CLASS_INFORMATION_CLAUSE = "without the class information file, only co-teachers are left out"
+
+
+def missing_files_copy(*, optional: OptionalInputs) -> tuple[str, str]:
+    """The (heading, consequence) copy over the missing file chips — calm, and true.
+
+    0035 W3b softened the old alarm ("Expected files not found in this folder:") on the
+    premise that a missing file was legitimate. Owner decision 2026-09-28 ended that premise:
+    a file an enabled output lists is REQUIRED, so a missing one stops the run
+    (``pipeline.check_required_inputs``) — except the family contacts file, whose absence
+    only leaves family contacts out. The heading stays a calm observation; the second line
+    states that consequence BEFORE the admin presses Convert, never a reassurance the run
+    would contradict.
+
+    Owner ruling 2026-09-30 (plan 0053 S13e): a district whose blended-class detection is off
+    may go without its class information file too — the co-teachers are then left out, with
+    a warning. ``optional`` is THIS district's exceptions (:func:`optional_inputs` — the input
+    gate's own predicate), and the line names each exception exactly when it holds, in four
+    forms: both, family contacts only, class information only (SD51 — Family off, detection
+    off), and none (a district without Family whose detection is on: mbp_core, sd38myedbc …).
+    REQUIRED keyword-only: a default would state one district's rule for another.
+    """
+    heading = "Not found in this folder — this district's sync reads:"
+    if optional.family_contacts and optional.class_information:
+        consequence = (
+            f"A missing file stops the conversion, except two: {_FAMILY_CONTACTS_CLAUSE}, and "
+            f"{_CLASS_INFORMATION_CLAUSE}."
+        )
+    elif optional.family_contacts:
+        consequence = (
+            "A missing file stops the conversion, except the family contacts file — without it, only "
+            "family contacts are left out."
+        )
+    elif optional.class_information:
+        consequence = (
+            "A missing file stops the conversion, except the class information file — without it, only "
+            "co-teachers are left out."
+        )
+    else:
+        consequence = "A missing file stops the conversion."
+    return heading, consequence
+
+
+def optional_inputs(config_name: str | None) -> OptionalInputs:
+    """Which exceptions ``config_name``'s night has — TOTAL.
+
+    Read off ``pipeline.optional_source_files``' ``(entity, role)`` listings, which come from the
+    ONE optional-input predicate the input gate applies (``outcomes.source_file_may_be_absent``),
+    so Convert's missing-file line and the run can never disagree: a listing of an ISOLATABLE
+    entity is the family contacts exception (keyed on the criticality the predicate keys on, never
+    on a role spelling), a listing under :data:`~src.etl.outcomes.CLASS_INFORMATION_ROLE` the class
+    information one. :data:`NO_OPTIONAL_INPUTS` for no district or any config error (logged): the
+    line then states the strictest rule, which is never wrong about a file the run would require.
+    """
+    if not config_name:
+        return NO_OPTIONAL_INPUTS
+    try:
+        files = optional_source_files(load_config(config_name))
+    except Exception:  # noqa: BLE001 - total: a config error degrades to the stricter line, never a crash
+        logger.warning("Could not read the district mapping %r; the missing-file line names no exception.", config_name)
+        return NO_OPTIONAL_INPUTS
+    listings = frozenset().union(*files.values())
+    return OptionalInputs(
+        family_contacts=any(criticality_of(entity) is EntityCriticality.ISOLATABLE for entity, _role in listings),
+        class_information=any(role == CLASS_INFORMATION_ROLE for _entity, role in listings),
     )
 
 

@@ -10,10 +10,11 @@ from typing import Any, Optional
 
 import pandas as pd
 
+from src.etl.outcomes import Note
 from src.etl.transformers import naming as _naming
 from src.etl.transformers import sources as _sources
 from src.etl.transformers.base import BaseTransformer
-from src.etl.transformers.blended import BlendedClassDetector
+from src.etl.transformers.blended import BlendedClassDetector, session_time_components, session_time_roles
 from src.etl.transformers.context import ClassArtifacts, TransformContext
 from src.etl.transformers.course_codes import resolve_course_code_column
 from src.etl.transformers.dates import SchoolYearDetermination
@@ -79,6 +80,35 @@ class DataTransformer:
     def data_errors(self) -> list[dict[str, Any]]:
         """Per-run fail-loud field-transform error ledger (see TransformContext)."""
         return self._context.data_errors
+
+    def data_errors_mark(self) -> int:
+        """A position in the data-error ledger, to roll back to with :meth:`rollback_data_errors`.
+
+        Plan 0053 S4: the entity bulkhead (``pipeline.run_transform``) takes a mark before
+        each entity's transform and rolls back to it when an ISOLATABLE entity is left out of
+        the run, so that entity does not leave its per-row entries behind to inflate the
+        run's "N data warnings".
+        """
+        return len(self._context.data_errors)
+
+    def rollback_data_errors(self, mark: int) -> None:
+        """Drop every data-error entry recorded since ``mark`` (earlier entries are untouched).
+
+        Refuses a mark that is not a position in the ledger — a negative one, or one past its
+        end (the ledger only ever grows during a run, so a larger mark is a stale or foreign
+        value, and truncating to it would silently do nothing).
+        """
+        ledger = self._context.data_errors
+        if isinstance(mark, bool) or not isinstance(mark, int) or not 0 <= mark <= len(ledger):
+            raise ValueError(f"not a data-error mark for this run: {mark!r} (ledger holds {len(ledger)})")
+        del ledger[mark:]
+
+    def outcome_notes_for(self, entity: str) -> tuple[Note, ...]:
+        """``entity``'s outcome notes for this run (plan 0053 S10) — ``TransformContext.outcome_notes_for``.
+
+        ``pipeline.run_transform`` attaches them to the entity's BUILT/EMPTY outcome.
+        """
+        return self._context.outcome_notes_for(entity)
 
     # --- Core methods ---
 
@@ -222,6 +252,11 @@ class DataTransformer:
         once per detection off a frame this shim does not hold, so the name
         falls back to the group's own teacher column — which is exactly the
         documented fallback, not a degraded path.
+
+        The time-slot columns are all four MyEd BC defaults: this shim is handed the
+        `field_map` alone, never the Classes `source_columns` block that could
+        rename them nor the `session_components` declaration that could narrow them
+        (`blended.session_time_components` / `session_time_roles`).
         """
         return self._blended_detector.create_name(
             session_group,
@@ -231,6 +266,7 @@ class DataTransformer:
             self._context,
             course_code_col=resolve_course_code_column(session_group),
             teacher_name="",
+            session_components=session_time_components({}, roles=session_time_roles(None)),
         )
 
     def _detect_blended_classes(

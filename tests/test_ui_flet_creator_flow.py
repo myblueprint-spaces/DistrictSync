@@ -20,7 +20,6 @@ a mechanism that does not work at all.
 from __future__ import annotations
 
 import logging
-import shutil
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -37,9 +36,15 @@ from src.config.authoring import (
     write_overlay,
 )
 from src.config.loader import load_config
+from src.etl.outcomes import EntityOutcome
 from src.history.store import read_run_records
 from src.ui_flet import components, tokens
-from src.ui_flet.config_editor import CEDS_GRADE_ORDER, CreatorForm
+from src.ui_flet.config_editor import (
+    CEDS_GRADE_ORDER,
+    GATE_ENTITIES_EMPTY_NOTE,
+    GATE_INPUT_INCOMPLETE_NOTE,
+    CreatorForm,
+)
 from src.ui_flet.job_runner import GateRefused, creator_gate_job
 from src.ui_flet.screens import creator as creator_screen
 from src.ui_flet.screens import setup as setup_screen
@@ -48,6 +53,7 @@ from src.utils.version import app_version
 
 # Single-sourced from the S4a sweep — a second hand-typed banned-word list is a list that
 # drifts, and the identification-is-not-authentication promise rests on it.
+from tests.test_config_authoring import snapshot_input_for_the_base_mapping
 from tests.test_ui_flet_identity_page import (
     _assert_no_banned_vocabulary,
 )
@@ -81,6 +87,11 @@ SD48_ADMIN = "roster.admin@sd48.bc.ca"
 #: ``tests/test_ui_flet_filtered_pickers.py`` so Mapping's card note and the creator's copy
 #: face ONE list.
 BANNED_COPY_WORDS = ("soon", "later", "coming")
+
+
+#: A test conversion that PASSES the creator gate carries a real outcome per entity (plan 0053
+#: S4): the gate reads them, and an empty tuple is "no outcome", never a pass.
+_PASSING_OUTCOMES = (EntityOutcome.built("Students", 3),)
 
 
 def _this_module():  # noqa: ANN202
@@ -927,7 +938,7 @@ class TestTheGateRefusesWithoutAUsableOutputFolder:
 
         def _fake(sis_type, input_path, output_path, **kwargs):  # noqa: ANN001, ANN202
             calls.append({"sis": sis_type, "input": input_path, "output": output_path, **kwargs})
-            return pipeline_mod.PipelineResult(entity_counts={"Students": 3})
+            return pipeline_mod.PipelineResult(entity_outcomes=_PASSING_OUTCOMES, entity_counts={"Students": 3})
 
         monkeypatch.setattr(pipeline_mod, "run_pipeline", _fake)
         return calls
@@ -985,12 +996,13 @@ class TestTheGateRunIsInvisibleToRunHistory:
         Drives the REAL ``run_pipeline(dry_run=True)`` over the real SD74 snapshot inputs
         through the REAL gate button, with an ``sd93custom`` overlay whose renames match those
         files. "No Run History row" on its own is satisfied by a run that never happened; the
-        ``__DISTRICTSYNC_RUN__`` line is the proof that one did.
+        ``__DISTRICTSYNC_RUN__`` line is the proof that one did. (The copy's schedule also
+        carries the base's ``Student ID`` — plan 0053 S10; see the helper.)
         """
         _write_sd93(renames=SD74_RENAMES)
         cfg = _cfg(
             creator_pending_sis="sd93custom",
-            input_dir=str(SNAPSHOT_INPUT),
+            input_dir=str(snapshot_input_for_the_base_mapping(tmp_path / "input")),
             output_dir=str(tmp_path / "out"),
         )
         _pin(monkeypatch, cfg)
@@ -1026,7 +1038,7 @@ class _PassingGate:
         from src.etl.pipeline import PipelineResult
 
         self.calls.append((sis_id, input_dir, output_dir))
-        return PipelineResult(entity_counts={"Students": 12, "Classes": 4})
+        return PipelineResult(entity_outcomes=_PASSING_OUTCOMES, entity_counts={"Students": 12, "Classes": 4})
 
 
 def _wizard_at_the_gate(monkeypatch: pytest.MonkeyPatch, cfg: AppConfig) -> tuple[ft.Control, _PassingGate]:
@@ -1037,6 +1049,48 @@ def _wizard_at_the_gate(monkeypatch: pytest.MonkeyPatch, cfg: AppConfig) -> tupl
     root = build_setup(_driving_page())
     assert setup_screen.FILES_STEP_TITLE in _texts(root)
     return root, gate
+
+
+class TestTheGateHeadlineSaysWhetherTheRunFinished:
+    """Plan 0053 S4: a test conversion can now FINISH without an entity. "didn't finish"
+    above a note naming what was left out would be false, so the headline follows the pure
+    gate's bounded ``completed`` flag — and a run that raised keeps "didn't finish"."""
+
+    def _run_with(self, monkeypatch, tmp_path, job) -> ft.Control:  # noqa: ANN001
+        _write_sd93()
+        cfg = _cfg(creator_pending_sis="sd93custom", **_valid_folders(tmp_path))
+        root, _gate = _wizard_at_the_gate(monkeypatch, cfg)
+        monkeypatch.setattr(creator_screen, "creator_gate_job", job)
+        _button(root, creator_screen.GATE_RUN_LABEL).on_click(None)
+        return root
+
+    def test_a_finished_run_that_left_family_out_is_not_headlined_didnt_finish(self, monkeypatch, tmp_path) -> None:
+        from src.etl.outcomes import OutcomeReason
+        from src.etl.pipeline import PipelineResult
+
+        outcomes = (
+            EntityOutcome.built("Students", 3),
+            EntityOutcome.failed("Family", OutcomeReason.MISSING_SOURCE_COLUMN),
+        )
+        root = self._run_with(
+            monkeypatch,
+            tmp_path,
+            lambda *_a, **_kw: PipelineResult(entity_outcomes=outcomes, entity_counts={"Students": 3}),
+        )
+        blob = _blob(root)
+        assert creator_screen.GATE_NOT_BUILT_HEADLINE in blob
+        assert creator_screen.GATE_FAILED_HEADLINE not in blob, "a finished run was headlined didn't finish"
+        assert "Family contacts couldn't be built" in blob
+        assert not _has_button(root, creator_screen.GATE_CONFIRM_LABEL), "a left-out entity must not be activatable"
+
+    def test_the_twin_a_raised_run_keeps_didnt_finish(self, monkeypatch, tmp_path) -> None:
+        def _raise(*_a, **_kw):  # noqa: ANN202
+            raise FileNotFoundError("sd93custom_mapping.yaml")
+
+        root = self._run_with(monkeypatch, tmp_path, _raise)
+        blob = _blob(root)
+        assert creator_screen.GATE_FAILED_HEADLINE in blob
+        assert creator_screen.GATE_NOT_BUILT_HEADLINE not in blob
 
 
 class TestActivation:
@@ -1250,6 +1304,55 @@ def _files_surface(
         stage="files",
     )
     return root, cfg, gate
+
+
+class TestAPassedTestShowsItsWarningNotesBeforeTheConfirm:
+    """Owner 2026-09-28 — "show notes, don't block": a test that passed but would run with a
+    WARNING-tier note (co-teachers left out) shows that note BEFORE the confirm, as facts —
+    never a second verdict band, never a second filled primary — and the confirm still works."""
+
+    @staticmethod
+    def _passing_with(monkeypatch: pytest.MonkeyPatch, outcomes: tuple) -> None:
+        from src.etl.pipeline import PipelineResult
+
+        monkeypatch.setattr(
+            creator_screen,
+            "creator_gate_job",
+            lambda *_a, **_k: PipelineResult(entity_outcomes=outcomes, entity_counts={"Students": 3}),
+        )
+
+    def test_the_note_is_on_screen_the_confirm_is_the_one_primary_and_it_still_activates(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        from src.etl.outcomes import OutcomeNote
+        from src.ui_flet.failure_copy import note_sentence
+
+        root, cfg, _gate = _files_surface(monkeypatch, tmp_path)
+        coteachers = EntityOutcome.built("Enrollments", 4, notes=((OutcomeNote.COTEACHER_SOURCE_UNUSABLE, 2),))
+        self._passing_with(monkeypatch, (EntityOutcome.built("Students", 3), coteachers))
+
+        _button(root, creator_screen.GATE_RUN_LABEL).on_click(None)
+
+        blob = _blob(root)
+        assert creator_screen.GATE_PASSED_HEADLINE in blob
+        assert creator_screen.GATE_WARNINGS_TITLE in blob
+        assert note_sentence(OutcomeNote.COTEACHER_SOURCE_UNUSABLE) in blob
+        assert creator_screen.GATE_WARNINGS_NOTE in blob
+        assert _filled(root) == [creator_screen.GATE_CONFIRM_LABEL], "the note moved the step's one filled primary"
+        tints = {tint for tint, _line, _on_tint in components._VERDICT_TINTS.values()}
+        bands = [c for c in _walk(root) if isinstance(c, ft.Container) and c.bgcolor in tints]
+        assert len(bands) == 1, "a note under the healthy band must not be a second verdict"
+        _button(root, creator_screen.GATE_CONFIRM_LABEL).on_click(None)
+        assert cfg.sis_type == "sd93custom", "the note never blocks the activation"
+
+    def test_twin_a_clean_pass_shows_no_warning_block(self, monkeypatch, tmp_path) -> None:
+        root, _cfg_, _gate = _files_surface(monkeypatch, tmp_path)
+        self._passing_with(monkeypatch, (EntityOutcome.built("Students", 3),))
+
+        _button(root, creator_screen.GATE_RUN_LABEL).on_click(None)
+
+        assert creator_screen.GATE_PASSED_HEADLINE in _blob(root)
+        assert creator_screen.GATE_WARNINGS_TITLE not in _blob(root)
 
 
 class TestTheFilenameFormRenders:
@@ -1700,30 +1803,35 @@ class TestTheHeadlineFlow:
     def test_a_district_whose_extract_is_named_differently_gets_there(self, monkeypatch, tmp_path) -> None:
         """S4 end to end, through the REAL gate over the REAL SD74-shaped snapshot inputs.
 
-        An ``sd93custom`` overlay on the STANDARD MyEd BC names is activated first (that is
-        the district S3 leaves half-served: two of its six files happen to match). Then the
-        four names its extract really uses are set and saved — and the WRITTEN overlay moves
-        Classes, Enrollments AND ``global_config.school_year_sources`` together, the recorded
-        test stops matching, the step re-closes, and a fresh test conversion re-opens it.
+        An ``sd93custom`` overlay on the STANDARD MyEd BC names is tested first (the district S3
+        leaves half-served: two of its six files happen to match). It used to PASS and activate
+        a night that skipped what the missing files fed; since owner decision 2026-09-28 every
+        file a required output lists must be there, so that test STOPS at the input gate, offers
+        no confirm, and the step stays closed. Then the four names its extract really uses are
+        set and saved — and the WRITTEN overlay moves Classes, Enrollments AND
+        ``global_config.school_year_sources`` together — and a fresh test conversion passes and
+        activates. (The copy's schedule also carries the base's ``Student ID`` — plan 0053 S10.)
         """
         _write_sd93()
         cfg = _cfg(
             creator_pending_sis="sd93custom",
-            input_dir=str(SNAPSHOT_INPUT),
+            input_dir=str(snapshot_input_for_the_base_mapping(tmp_path / "input")),
             output_dir=str(tmp_path / "out"),
         )
         _pin(monkeypatch, cfg)
         root = build_setup(_driving_page())
         assert setup_screen.FILES_STEP_TITLE in _texts(root)
 
-        # 1. The inherited names pass a test conversion and activate.
+        # 1. The inherited names: the folder lacks four of the files, so the test STOPS at the
+        #    input gate — no confirm, nothing activated, the step still closed.
         _button(root, creator_screen.GATE_RUN_LABEL).on_click(None)
-        assert creator_screen.GATE_PASSED_HEADLINE in _blob(root)
-        _button(root, creator_screen.GATE_CONFIRM_LABEL).on_click(None)
-        assert cfg.sis_type == "sd93custom"
-        _button(root, "Back").on_click(None)  # back to "Your files"
-        assert creator_screen.creator_gate_current(cfg, "sd93custom") is True, "the positive twin"
-        assert _button(root, "Continue").disabled is False
+        blob = _blob(root)
+        assert creator_screen.GATE_FAILED_HEADLINE in blob and creator_screen.GATE_PASSED_HEADLINE not in blob
+        assert GATE_INPUT_INCOMPLETE_NOTE in blob
+        assert not _has_button(root, creator_screen.GATE_CONFIRM_LABEL), "a stopped test offered a confirm"
+        assert cfg.sis_type != "sd93custom"
+        assert creator_screen.creator_gate_current(cfg, "sd93custom") is False
+        assert _button(root, "Continue").disabled is True
 
         # 2. The four names this district's extract actually uses.
         for standard, actual in SD74_RENAMES.items():
@@ -1755,10 +1863,9 @@ class TestTheHeadlineFlow:
         }, "an untouched role must stay INHERITED, not restated"
         assert load_config("sd93custom").mappings["Classes"].source_files["course_info"] == "CourseInformation.txt"
 
-        # 4. The step re-closed itself — with nothing written to settings to do it.
+        # 4. The step is still closed — with nothing written to settings.
         assert creator_screen.creator_gate_current(cfg, "sd93custom") is False
         assert _button(root, "Continue").disabled is True
-        assert creator_screen.GATE_RESAVED_NOTE in _texts(root)
 
         # 5. A fresh REAL test conversion over the same folder passes and re-activates.
         _button(root, creator_screen.GATE_RUN_LABEL).on_click(None)
@@ -1877,22 +1984,26 @@ class TestThePreflightColumnReport:
     observing nothing could satisfy the absence halves trivially.
     """
 
-    #: What the STANDARD MyEd BC mapping names that the FROZEN snapshot extract genuinely
-    #: does not carry. Asserted EXACTLY rather than as "nothing", because it is not
-    #: nothing: two are columns the base names for optional outputs (a pre-registration
-    #: school code, a student email address), and two are names the transformers resolve
-    #: with a fallback of their own, which this layer deliberately does not read (plan 0044
-    #: §5.2 — no transformer knowledge here). A change to that set is a change to what an
-    #: admin is told, so it fails HERE rather than drifting.
+    #: What the STANDARD MyEd BC mapping names that the snapshot extract genuinely does
+    #: not carry. Asserted EXACTLY rather than as "nothing", because it is not nothing: one
+    #: is a column the base names for an optional output (a pre-registration school code),
+    #: and one is a name a transformer resolves with a fallback of its own, which this layer
+    #: deliberately does not read (plan 0044 §5.2 — no transformer knowledge here). A change
+    #: to that set is a change to what an admin is told, so it fails HERE rather than
+    #: drifting. (``Student ID`` left this set with plan 0053 S10 and ``Student email
+    #: address`` with plan 0053 S13d: the timetable enrollments REQUIRE the first and a
+    #: student missing the second is left out — every one of them over this extract, which
+    #: stops the night — so the copy these tests run over carries both,
+    #: ``snapshot_input_for_the_base_mapping``.)
     BASELINE = (
         "Next school code",
-        "Student email address",
         "Course Title",
-        "Student ID",
     )
-    RENAMED_HEADER = ("Legal surname,", "Family name,")
+    #: An OPTIONAL value's header (plan 0053 S13d): until then this renamed `Legal surname`,
+    #: which now leaves every student out (a missing REQUIRED value) and stops the gate run.
+    RENAMED_HEADER = ("Date of birth,", "Birth date,")
     #: The config's own spelling of the header renamed above — what the line must quote.
-    RENAMED_COLUMN = "Legal Surname"
+    RENAMED_COLUMN = "Date of birth"
 
     def _at_the_gate(
         self,
@@ -1903,8 +2014,7 @@ class TestThePreflightColumnReport:
         drop: str | None = None,
     ) -> tuple[ft.Control, AppConfig]:
         """A resumed creator walk on its gate step, pointed at a WRITABLE copy of the extract."""
-        source = tmp_path / "input"
-        shutil.copytree(SNAPSHOT_INPUT, source)
+        source = snapshot_input_for_the_base_mapping(tmp_path / "input")
         if rename_header:
             target = source / "StudentDemographicInformation.txt"
             text = target.read_text(encoding="utf-8")
@@ -2009,7 +2119,11 @@ class TestThePreflightColumnReport:
         _button(root, creator_screen.GATE_RUN_LABEL).on_click(None)
 
         blob = _blob(root)
-        assert creator_screen.GATE_PASSED_HEADLINE in blob, "the run must still PASS — a per-entity skip is legitimate"
+        # The run completes (the family contacts file is the one that may be missing), but since
+        # owner decision 2026-09-28 a test that leaves an output EMPTY cannot be activated.
+        assert creator_screen.GATE_NOT_BUILT_HEADLINE in blob and creator_screen.GATE_PASSED_HEADLINE not in blob
+        assert GATE_ENTITIES_EMPTY_NOTE.format(entities="Family contacts") in blob
+        assert not _has_button(root, creator_screen.GATE_CONFIRM_LABEL)
         assert creator_screen.FILES_MISSING_NOTE in blob, "the file report is what owns this fact"
         assert creator_screen.PREFLIGHT_MISSING_TITLE not in blob
         assert self._lines(root) == []
@@ -2319,12 +2433,20 @@ def _spy_reset_through(monkeypatch: pytest.MonkeyPatch) -> list[int]:
 
 
 def _configured(tmp_path: Path, **over) -> AppConfig:  # noqa: ANN003
-    """A finished install with a shipped district and a registered nightly — S6's population."""
+    """A finished install with a shipped district and a registered nightly — S6's population.
+
+    Its input folder is a copy of the SD74 snapshot that also carries the base's ``Student
+    ID`` and student email columns (plan 0053 S10/S13d — ``snapshot_input_for_the_base_mapping``),
+    so the creator door's REAL test conversion can pass; made once per ``tmp_path``.
+    """
+    source = tmp_path / "snapshot_input"
+    if not source.exists():
+        snapshot_input_for_the_base_mapping(source)
     base = {
         "setup_completed": True,
         "sis_type": "sd48myedbc",
         "schedule_registered": True,
-        "input_dir": str(SNAPSHOT_INPUT),
+        "input_dir": str(source),
         "output_dir": str(tmp_path / "out"),
     }
     base.update(over)
@@ -2469,6 +2591,10 @@ class TestTheChangeDoorOnMapping:
         _button(root, creator_screen.CREATOR_CONTINUE_LABEL).on_click(None)  # the same answers, re-written
         _pick(_dropdown(root, "StudentSchedule.txt"), "")  # back to the standard name: a real change
         _button(root, creator_screen.FILES_SAVE_LABEL).on_click(None)
+        # ...and the export under that name, so the next test can pass: since owner decision
+        # 2026-09-28 a file a required output lists must be in the folder.
+        folder = Path(cfg.input_dir)
+        (folder / "StudentSchedule.txt").write_bytes((folder / "studentcourseselection.txt").read_bytes())
 
         assert creator_screen.creator_gate_current(cfg, "sd93custom") is False, "a change did not re-close the gate"
         assert not _has_button(root, creator_screen.GATE_CONFIRM_LABEL), "the confirm outlived the test it belonged to"
@@ -2495,7 +2621,9 @@ class TestTheOutputFolderPreconditionOnMapping:
         monkeypatch.setattr(
             pipeline_mod,
             "run_pipeline",
-            lambda *a, **kw: calls.append(kw) or pipeline_mod.PipelineResult(entity_counts={}),  # noqa: ARG005
+            lambda *a, **kw: (
+                calls.append(kw) or pipeline_mod.PipelineResult(entity_outcomes=_PASSING_OUTCOMES, entity_counts={})
+            ),  # noqa: ARG005
         )
         root = _mapping(monkeypatch, cfg)
 
@@ -2521,7 +2649,7 @@ class TestTheOutputFolderPreconditionOnMapping:
 
         def _fake(sis_type, input_path, output_path, **kwargs):  # noqa: ANN001, ANN202
             calls.append({"sis": sis_type, **kwargs})
-            return pipeline_mod.PipelineResult(entity_counts={"Students": 3})
+            return pipeline_mod.PipelineResult(entity_outcomes=_PASSING_OUTCOMES, entity_counts={"Students": 3})
 
         monkeypatch.setattr(pipeline_mod, "run_pipeline", _fake)
         root = _mapping(monkeypatch, cfg)
@@ -2605,8 +2733,10 @@ class TestExactlyOneFilledPrimaryInEveryMappingState:
 
         # 1. nothing tested yet, nothing pending → the run.
         assert _filled(root) == [creator_screen.GATE_RUN_LABEL]
-        # 2. a name the config on disk does not have → the save WINS.
-        _pick(_dropdown(root, "StudentSchedule.txt"), SD74_RENAMES["StudentSchedule.txt"])
+        # 2. names the config on disk does not have → the save WINS. All four, so the next test
+        #    can pass: since owner decision 2026-09-28 every listed file must be in the folder.
+        for standard, actual in SD74_RENAMES.items():
+            _pick(_dropdown(root, standard), actual)
         assert _filled(root) == [creator_screen.FILES_SAVE_LABEL]
         _button(root, creator_screen.FILES_SAVE_LABEL).on_click(None)
         # 3. a passed test, nothing confirmed → the confirm.

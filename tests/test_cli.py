@@ -8,6 +8,7 @@ import pandas as pd
 import pytest
 
 from src.main import run_pipeline
+from tests.test_pipeline_required_input import _write_class_info_rows
 
 
 @pytest.fixture
@@ -79,17 +80,7 @@ def gde_input(tmp_path):
         }
     ).to_csv(d / "EmergencyContactInformation.txt", index=False)
 
-    pd.DataFrame(
-        columns=[
-            "School Number",
-            "Teacher ID",
-            "Master Timetable ID",
-            "Term",
-            "Semester",
-            "Day",
-            "Period",
-        ]
-    ).to_csv(d / "ClassInformationEnh.txt", index=False)
+    _write_class_info_rows(d)
 
     return d
 

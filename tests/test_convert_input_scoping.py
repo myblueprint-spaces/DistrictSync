@@ -146,8 +146,9 @@ class TestNoUsableInputStaysReachable:
         assert convert_job("myedbc", str(empty_dir)).status is ConvertStatus.NO_INPUT
 
     def test_a_partial_folder_still_runs(self, gde_input: Path, gde_output: Path) -> None:
-        """The twin: only a folder with NOTHING usable is NO_INPUT. A district missing one
-        optional extract must still convert — a per-entity skip-on-empty is legitimate."""
+        """The twin: only a folder with NOTHING usable is NO_INPUT. A district missing its family
+        contacts extract still converts — the ONE file that may be missing (owner 2026-09-28;
+        any other missing file stops the run at the input gate, ``incomplete_input``)."""
         _configure(gde_input, gde_output)
         (gde_input / "EmergencyContactInformation.txt").unlink()
 
@@ -259,15 +260,23 @@ class TestAnEmptyNamedSourceFileNoLongerFailsTheRun:
         """The fail-safe, and the reason Slice 2 is not a swallowed error.
 
         The catastrophic empty file is the roster anchor. It no longer raises at the
-        extractor, so what stops it is the way-OUT gate: `check_delivery_integrity` refuses
-        an output set whose roster is missing while dependent entities were built. If that
-        gate ever moved, this test is what notices — an empty demographic export must never
-        deliver.
+        extractor; since owner decision 2026-09-28 what stops it is the INPUT gate
+        (``pipeline.check_required_inputs``): a file a required output lists is present with
+        no rows, so the conversion stops typed — ``incomplete_input``, naming the file — before
+        anything is built (it used to be the way-out ``incomplete_roster`` refusal, which stays
+        the floor). If that gate ever moved, this test is what notices — an empty demographic
+        export must never deliver.
         """
+        from src.etl.errors import IncompleteInputError
+        from src.history.store import read_run_records
+
         _configure(gde_input, gde_output)
         (gde_input / "StudentDemographicInformation.txt").write_bytes(b"")
 
-        result = convert_job("myedbc", str(gde_input))
+        with pytest.raises(IncompleteInputError) as raised:
+            convert_job("myedbc", str(gde_input))
 
-        assert result.status is ConvertStatus.INCOMPLETE_ROSTER
+        assert raised.value.empty == ("StudentDemographicInformation.txt",) and raised.value.missing == ()
         assert not (gde_output / "Students.csv").exists()
+        record = read_run_records()[0]
+        assert (record["status"], record["error_category"]) == ("failed", "incomplete_input")

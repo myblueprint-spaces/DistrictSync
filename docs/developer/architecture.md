@@ -2,6 +2,8 @@
 
 DistrictSync is a classic ETL pipeline: **Extract → Transform → Load**. All entity-specific logic lives in pluggable transformer classes; configuration drives field mappings without code changes.
 
+This page is the overview. The maintainer-level detail lives beside it, moved verbatim from `CLAUDE.md` by plan 0053 S15: [etl-internals.md](etl-internals.md) (subsystems, Key Data Flow, run store), [configuration-reference.md](configuration-reference.md) (config keys, the bundled configs), [ui-surfaces.md](ui-surfaces.md) (the desktop UI), [self-service-mappings.md](self-service-mappings.md) (the in-app mapping creator), [scheduler.md](scheduler.md) (the scheduled task) and [machine-scope.md](machine-scope.md) (the profile location and machine scope).
+
 ---
 
 ## Pipeline overview

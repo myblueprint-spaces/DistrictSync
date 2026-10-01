@@ -18,6 +18,7 @@ import pandas as pd
 import pytest
 
 from src.config.loader import load_config
+from src.etl.errors import GuardKind, SourceSchemaError
 from src.etl.transformer import DataTransformer
 from src.etl.transformers.student_attendance import StudentAttendanceTransformer
 from tests.contract_schema import OUTPUT_SCHEMA
@@ -260,8 +261,110 @@ class TestFailLoud:
                 "portion absent": [0.5],
             }
         )
-        with pytest.raises(ValueError, match="no category mapping"):
+        with pytest.raises(ValueError, match="no category mapping") as raised:
             _run(df, student_attendance_mapping, attendance_global_config)
+        # A code-shaped value IS echoed, with the key to add — that is what makes it actionable.
+        assert "Absent Code='Z'" in str(raised.value) and "Add 'Z|N'" in str(raised.value)
+
+    def test_a_value_that_is_not_code_shaped_is_never_echoed(
+        self, student_attendance_mapping, attendance_global_config
+    ):
+        """Plan 0053 S4 (§8): a daily file whose columns do not line up puts ANY cell where the
+        code belongs — a pupil's name included — and this message reaches the log (the
+        ``ENTITY NOT BUILT`` traceback). A non-code value is described by its length only."""
+        df = pd.DataFrame(
+            {
+                "school number": ["100"],
+                "student number": ["S1"],
+                "absence date": ["18-Sep-2024"],
+                "absent code am": ["Pupilsurname"],  # a shifted column: a NAME where the code belongs
+                "authorized am": ["Firstname"],
+                "portion absent": [0.5],
+            }
+        )
+        with pytest.raises(ValueError, match="no category mapping") as raised:
+            _run(df, student_attendance_mapping, attendance_global_config)
+        message = str(raised.value)
+        assert "Pupilsurname" not in message and "Firstname" not in message
+        assert "PUPILSURNAME" not in message, "nor its upper-cased category-map key"
+        assert "<a 12-character value that is not a code — not shown>" in message
+        assert "columns are not in the order" in message
+
+    @pytest.mark.parametrize(
+        ("code", "flag", "hidden"),
+        [
+            ("Li", "Kai", ("Li", "Kai", "LI", "KAI")),
+            ("Wong", "Y", ("Wong", "WONG")),
+            ("Z", "Ava", ("Ava", "AVA")),
+        ],
+        ids=["two-short-names", "short-surname-with-a-real-flag", "real-code-with-a-short-name"],
+    )
+    def test_a_SHORT_name_is_never_echoed_either(
+        self, student_attendance_mapping, attendance_global_config, code, flag, hidden
+    ):
+        """A 1-4 letter mixed-case name is as short as a code — the vocabulary is closed
+        (upper-case codes, Y/N/blank flags), so a name cannot pass as one (PRIV-1)."""
+        df = pd.DataFrame(
+            {
+                "school number": ["100"],
+                "student number": ["S1"],
+                "absence date": ["18-Sep-2024"],
+                "absent code am": [code],
+                "authorized am": [flag],
+                "portion absent": [0.5],
+            }
+        )
+        with pytest.raises(ValueError, match="no category mapping") as raised:
+            _run(df, student_attendance_mapping, attendance_global_config)
+        message = str(raised.value)
+        for value in hidden:
+            assert f"'{value}'" not in message and f"{value}|" not in message and f"|{value}" not in message
+        assert "not a code — not shown" in message
+        assert "Add '" not in message, "a pair holding a non-code must not be offered as a key to add"
+
+    @staticmethod
+    def _daily_without_authorized(code: str = "A") -> pd.DataFrame:
+        return pd.DataFrame(
+            {
+                "school number": ["100"],
+                "student number": ["S1"],
+                "absence date": ["18-Sep-2024"],
+                "absent code am": [code],
+                "portion absent": [0.5],
+            }
+        )
+
+    def test_an_absent_authorized_column_is_a_typed_join_key_error_naming_it(
+        self, student_attendance_mapping, attendance_global_config
+    ):
+        """§5 #33, owner ruling 2026-09-26 (plan 0053 S13b): the authorized flag is half of every
+        category-map key, so its COLUMN is required once the daily band has rows — a typed error
+        naming it in config spelling (the entity then reads FAILED/missing_source_column), never
+        #23's untyped category-map miss."""
+        with pytest.raises(SourceSchemaError) as raised:
+            _run(self._daily_without_authorized(), student_attendance_mapping, attendance_global_config)
+        err = raised.value
+        configured = attendance_global_config["attendance"]["daily"]["daily_authorized_col"]
+        assert (err.entity, err.columns, err.guard) == ("StudentAttendance", (configured,), GuardKind.JOIN_KEY)
+        assert "S1" not in str(err) and "the source has 5 columns" in str(err)  # a count, never a value
+
+    def test_the_error_names_the_column_in_the_configs_own_spelling(
+        self, student_attendance_mapping, attendance_global_config
+    ):
+        """Config spelling, trimmed, never lower-cased — what S7's label vocabulary declares."""
+        gc = copy.deepcopy(attendance_global_config)
+        gc["attendance"]["daily"]["daily_authorized_col"] = "  Authorized AM "
+        with pytest.raises(SourceSchemaError) as raised:
+            _run(self._daily_without_authorized(), student_attendance_mapping, gc)
+        assert raised.value.columns == ("Authorized AM",)
+
+    def test_twin_the_column_present_or_the_band_empty_requires_nothing(
+        self, student_attendance_mapping, attendance_global_config
+    ):
+        present = self._daily_without_authorized().assign(**{"authorized am": ["N"]})
+        assert len(_run(present, student_attendance_mapping, attendance_global_config)) == 1
+        empty = self._daily_without_authorized().iloc[0:0]
+        assert _run(empty, student_attendance_mapping, attendance_global_config).empty
 
     def test_missing_attendance_config_raises(self, student_attendance_mapping):
         df = pd.DataFrame(
@@ -399,11 +502,12 @@ class TestStudentAttendanceConfigIntegration:
         cfg = load_config("sd51myedbc")
         enabled = cfg.global_config.enabled_entities
         assert "StudentAttendance" in enabled
-        # Deep-merge replaces lists, so the rostering entities must all still be there.
+        # Deep-merge replaces lists, so the rostering entities SD51 emits must all still be
+        # there. Family is deliberately absent (off for SD51 since 2026-09-25 — its contacts
+        # export has no email column; pinned in test_config.py::test_sd51_does_not_enable_family).
         assert set(enabled) == {
             "Students",
             "Staff",
-            "Family",
             "Classes",
             "Enrollments",
             "StudentAttendance",

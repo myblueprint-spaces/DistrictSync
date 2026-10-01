@@ -8,6 +8,7 @@ import pandas as pd
 import pytest
 
 from src.main import main
+from tests.test_pipeline_required_input import _write_class_info_rows
 
 
 class TestEndToEndPipeline:
@@ -89,18 +90,9 @@ class TestEndToEndPipeline:
             }
         ).to_csv(input_dir / "CourseInformation.txt", index=False)
 
-        # ClassInformationEnh.txt (empty — no blended classes)
-        pd.DataFrame(
-            {
-                "School Number": [],
-                "Teacher ID": [],
-                "Master Timetable ID": [],
-                "Term": [],
-                "Semester": [],
-                "Day": [],
-                "Period": [],
-            }
-        ).to_csv(input_dir / "ClassInformationEnh.txt", index=False)
+        # ClassInformationEnh.txt — one row per schedule section, each in its own period so
+        # none blends (the input gate requires every listed file to carry rows — owner 2026-09-28)
+        _write_class_info_rows(input_dir)
 
         return input_dir, output_dir
 

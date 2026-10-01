@@ -321,11 +321,32 @@ def base_mapping():
 
 @pytest.fixture
 def global_config(base_mapping):
-    """Global config section from the real mapping."""
-    return {
-        **base_mapping.get("global_config", {}),
-        "mappings": base_mapping.get("mappings", {}),
-    }
+    """The real mapping's ``global_config`` SECTION — exactly the shape production passes.
+
+    Plan 0053 S9 deleted the nested ``mappings`` this fixture used to inject: production
+    never puts ``mappings`` inside the section (``run_transform`` publishes them through
+    ``DataTransformer.set_entity_mappings``), so the injection let the tests read a
+    config path a real run never had. A test that needs another entity's mapping
+    publishes it the production way — ``transformer.set_entity_mappings(...)``.
+    """
+    return dict(base_mapping.get("global_config", {}))
+
+
+@pytest.fixture
+def published_transformer(base_mapping):
+    """A ``DataTransformer`` with the base mapping's entity ``mappings`` PUBLISHED — production's shape.
+
+    ``run_transform`` calls ``set_entity_mappings`` once per run, before any entity, so
+    Classes/Enrollments read the Students mapping (``Grade``/``Homeroom``/``User ID``) and
+    the Classes ``Grade`` through ``context.entity_mappings``. A bare ``DataTransformer()``
+    answers every one of those reads with the resolver DEFAULT — the dead-path shape the
+    deleted ``global_config["mappings"]`` injection hid (plan 0053 S9). The mapping
+    fixtures (``students_mapping`` …) are the SAME objects published here, as in a run.
+    The school year is left to the caller.
+    """
+    transformer = DataTransformer()
+    transformer.set_entity_mappings(base_mapping["mappings"])
+    return transformer
 
 
 @pytest.fixture
@@ -479,10 +500,12 @@ def student_demographic_df():
             "previous school number": ["", "99", "", "150", "", "", ""],
             "usual first name": ["Ali", "", "Chuck", "", "Evie", "", "Gracie"],
             "usual surname": ["", "", "", "", "", "", ""],
+            # Every student carries an email: since plan 0053 S13d a student missing one is left
+            # out of Students.csv (a required value) — the dedicated tests plant that case.
             "student email address": [
                 "alice@test.ca",
                 "bob@test.ca",
-                "",
+                "charlie@test.ca",
                 "diana@test.ca",
                 "eve@test.ca",
                 "frank@test.ca",
@@ -510,7 +533,8 @@ def student_demographic_with_withdraw_df():
             "previous school number": ["", "", "", "", ""],
             "usual first name": ["", "", "", "", ""],
             "usual surname": ["", "", "", "", ""],
-            "student email address": ["", "", "", "", ""],
+            # An email each (a required value since plan 0053 S13d — this fixture tests withdraw dates).
+            "student email address": ["a@test.ca", "b@test.ca", "c@test.ca", "d@test.ca", "e@test.ca"],
             "withdraw date": [
                 "",  # No date → Active
                 "15-Jan-2020",  # Past → Inactive (%d-%b-%Y)
@@ -736,7 +760,8 @@ def sd74_frozen_corpus(tmp_path_factory):
 
     from src.config.loader import load_config
     from src.etl.extractor import DataExtractor
-    from src.etl.pipeline import extract_required_files, run_transform
+    from src.etl.outcomes import OutcomeLedger
+    from src.etl.pipeline import configured_entity_order, extract_required_files, run_transform
 
     empty_user_dir = tmp_path_factory.mktemp("sd74_frozen_empty_user_mappings")
     with (
@@ -757,6 +782,11 @@ def sd74_frozen_corpus(tmp_path_factory):
 
     def run(**overrides):
         global_config = {**raw["global_config"], **overrides}
-        return run_transform({name: frame.copy() for name, frame in extracted.items()}, mappings, global_config)
+        return run_transform(
+            {name: frame.copy() for name, frame in extracted.items()},
+            mappings,
+            global_config,
+            ledger=OutcomeLedger(configured_entity_order(mappings, global_config)),
+        )
 
     return raw["global_config"], run

@@ -435,9 +435,8 @@ Beneficiary roles: `implementer-architect`, `plan-reviewer`, `architect-reviewer
   absence already ships), no shared state published, no critical reader, and a dated decision. A
   unit something else depends on can never be isolatable — pin that structurally rather than
   writing a runtime branch that could never execute.
-- **Alarms about ABSENCE are level-triggered.** A warning derived from "last run had it, this run
-  does not" decays the moment the run archives its own baseline; the signal must come from the
-  run's own record, every run the fault persists, or it becomes a one-night blip nobody reads.
+- **Alarms about ABSENCE are level-triggered.** Staged on its own below (plan 0053 S13a), with
+  the measured evidence, so it can be promoted independently of this entry.
 - **Write the failure policy down before conforming the code to it** — one doc, every row marked
   enforced/planned truthfully, then parity tests. Five coexisting postures for "a needed column is
   missing" is what an unwritten policy looks like.
@@ -448,3 +447,41 @@ discarded and the admin was told to check an input folder that was correct. The 
 anomaly that should have flagged the omission lasts one run, because the same run archives the
 previous CSV it compares against.
 Beneficiary roles: `plan-reviewer`, `implementer-architect`, `architect-reviewer` (reliability lens).
+
+## reliability/observability — "Alarms about ABSENCE are level-triggered"  [staged 2026-09-25, plan 0053 S13a; split out of the S0 entry above]
+
+- A warning derived from "the last run had it, this run does not" is EDGE-triggered: it fires the
+  first night and decays the moment the run archives the very baseline it compared against. A
+  missing unit must be reported from the run's OWN record — one outcome per configured unit, every
+  run — so the alarm lasts exactly as long as the fault.
+- Test it across TWO runs, not one: a one-night test cannot tell a level from an edge.
+
+Incident + evidence: plan 0053 — the vanished-file anomaly that should have flagged Unity
+Christian's missing `Family.csv` (2026-09-22) lasts one night, because the same run archives the
+previous CSV. S2/S4 made every configured entity carry an outcome on every record (PARTIAL/WARNING
+from that record alone); `tests/test_pipeline_entity_isolation.py`'s two-consecutive-nights test
+MEASURES that the second night is still PARTIAL although the anomaly has decayed.
+Beneficiary roles: `plan-reviewer`, `implementer-architect`, `architect-reviewer` (reliability,
+observability lenses).
+
+## maintainability-structure/testing — "Fitness functions for layering: pin the architecture, not just the behaviour"  [staged 2026-09-25, plan 0053 S13a]
+
+- A layering rule "true by inspection" is one refactor from false. Pin it with an AST fitness
+  function over the WHOLE import graph (function-local imports and package `__init__` edges count —
+  a chain through a helper is an import), not a grep for the direct line.
+- Every rule gets three things: a DECLARED target registry that fails loudly on a missing path (a
+  rename must never empty a rule), a detector self-test on synthetic violating source, and a
+  positive twin on the real tree where one exists.
+- An explicit allow-list ("these modules are flet-free") is only honest if its complement is
+  declared too: classify EVERY module in the package, and ratchet both ways (a new module must be
+  classified; a bound module that loses the dependency must move lists).
+- A linter rule is not the fitness function: ruff's `BLE001` skips a handler that re-raises or logs
+  and never reads the reason, so "every broad except is justified" needs its own AST pin over a
+  CLOSED reason vocabulary, mirrored by a doc table with a parity test.
+- Measure the linter's scoping, too: ruff's `per-file-ignores` `*` crosses `/`, so `"src/*.py"`
+  silently exempted every in-scope layer (plan 0053 S13a, ruff 0.15.10) — probe a violating file
+  in each directory before trusting an ignore list.
+
+Incident: plan 0053 S13a — §11's layering rows sat at "true by inspection; unpinned" through twelve
+slices of ETL change, and the first `per-file-ignores` draft would have made `BLE` a no-op.
+Beneficiary roles: `implementer-architect`, `architect-reviewer` (maintainability, testing lenses).

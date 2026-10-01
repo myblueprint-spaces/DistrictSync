@@ -39,6 +39,7 @@ from pathlib import Path
 import pytest
 
 from src.config.loader import load_config
+from src.etl.required_fields import REQUIRED_OUTPUT_FIELDS
 from tests.contract_schema import EXPECTED_ENTITIES, NO_BOM_ENTITIES, ORDER_AUTHORITY, OUTPUT_SCHEMA
 
 DOC_PATH = Path(__file__).resolve().parents[1] / ORDER_AUTHORITY
@@ -129,10 +130,11 @@ Q4_TEXT = (
     "against the live importer. If it is wrong, a rename orphans the original class and its student work."
 )
 
-#: Q5 (plan 0053, 2026-09-23) is a SpacesEDU question the owner sends (D2): what the importer
+#: Q5 (plan 0053, 2026-09-23) was the SpacesEDU question the owner sent (D2): what the importer
 #: does with an ABSENT or header-only file. It is asked once, in the collected section, as a
-#: parent plus five sub-questions — each pinned verbatim so none can be softened or dropped
-#: while plan 0053's criticality table still rests on it being unanswered.
+#: parent plus five sub-questions — each pinned verbatim. The owner answered it on 2026-09-28
+#: (recorded 2026-09-30, ``Q5-status: answered``); the questions stay pinned AS ASKED, each with
+#: its dated answer beside it, so none can be reworded to fit the answer or quietly dropped.
 Q5_TEXT = (
     "**Q5 — an ABSENT or header-only CSV: what does the live importer do with records an earlier "
     "delivery created?**\n"
@@ -186,8 +188,8 @@ _EXPECTED_QUESTION_COUNTS = {
     "Q5e": (Q5E_TEXT, 1),
 }
 
-#: The machine-readable Q5 status line plan 0053 S4's FAQ parity test reads (and S14 flips to
-#: ``answered``). Exactly one, on a line of its own, with a closed value set.
+#: The machine-readable Q5 status line plan 0053 S4's FAQ parity test reads (``answered`` since
+#: 2026-09-30 — the old S14, folded into S13d). Exactly one, on a line of its own, with a closed value set.
 _Q5_STATUS_RE = re.compile(r"^Q5-status: (?P<status>\S+)$", re.MULTILINE)
 _Q5_STATUSES = frozenset({"open", "answered"})
 
@@ -357,6 +359,83 @@ def test_doc_column_tables_number_their_rows_consistently():
         assert numbers == expected, f"{ORDER_AUTHORITY} -> '{entity}' rows are numbered {numbers}, expected {expected}"
 
 
+def _required_column_mismatches(text: str) -> list[str]:
+    """Every way the per-entity tables' ``Required`` column disagrees with the code's table.
+
+    Plan 0053 S13d: ``src/etl/required_fields.REQUIRED_OUTPUT_FIELDS`` is the ONE declaration of
+    the values SpacesEDU's import requires; a rostering table must mark exactly those columns
+    ``Required`` and every other ``Optional``, and a course/attendance table (outside the spec the
+    code mirrors) must carry no ``Required`` column at all. Empty = the doc and the code agree.
+    """
+    problems: list[str] = []
+    for entity in sorted(OUTPUT_SCHEMA):
+        rows = _table_after(text, entity)
+        carries = bool(rows) and "Required" in rows[0]
+        if entity not in REQUIRED_OUTPUT_FIELDS:
+            if carries:
+                problems.append(
+                    f"{entity}: carries a Required column, but the spec's required values cover the rostering files only"
+                )
+            continue
+        if not carries:
+            problems.append(f"{entity}: no Required column")
+            continue
+        marked = [row["Column"] for row in rows if row["Required"] == "Required"]
+        if sorted(marked) != sorted(REQUIRED_OUTPUT_FIELDS[entity]):
+            problems.append(
+                f"{entity}: marks {sorted(marked)} Required, the code requires {sorted(REQUIRED_OUTPUT_FIELDS[entity])}"
+            )
+        problems += [
+            f"{entity}.{row['Column']}: Required cell is {row['Required']!r}, not 'Required' or 'Optional'"
+            for row in rows
+            if row["Required"] not in ("Required", "Optional")
+        ]
+    return problems
+
+
+class TestTheRequiredColumnIsTheCodesTable:
+    """``output-contract.md`` marks every rostering column Required / Optional (plan 0053 S13d) —
+    pinned both ways to ``required_fields.REQUIRED_OUTPUT_FIELDS``, with doctored twins."""
+
+    def test_the_doc_marks_exactly_the_codes_required_values(self):
+        assert _required_column_mismatches(_doc_text()) == []
+
+    def test_non_vacuity_every_rostering_table_carries_the_column_and_both_values(self):
+        text = _doc_text()
+        values = {row["Required"] for entity in REQUIRED_OUTPUT_FIELDS for row in _table_after(text, entity)}
+        assert values == {"Required", "Optional"}
+        assert sum(len(fields) for fields in REQUIRED_OUTPUT_FIELDS.values()) >= 20
+
+    def test_doctored_a_required_column_marked_optional_is_red(self):
+        text = _doc_text()
+        doctored = text.replace("| 4 | Email | Required |", "| 4 | Email | Optional |", 1)
+        assert doctored != text, "the doctoring must target a real row (Staff.Email)"
+        assert _required_column_mismatches(doctored) == [
+            "Staff: marks ['First Name', 'Last Name', 'Role', 'School ID', 'User ID'] Required, the code requires "
+            "['Email', 'First Name', 'Last Name', 'Role', 'School ID', 'User ID']"
+        ]
+
+    def test_doctored_an_optional_column_marked_required_is_red(self):
+        text = _doc_text()
+        doctored = text.replace("| 9 | Homeroom | Optional |", "| 9 | Homeroom | Required |", 1)
+        assert doctored != text, "the doctoring must target a real row (Students.Homeroom)"
+        (problem,) = _required_column_mismatches(doctored)
+        assert problem.startswith("Students: marks") and "'Homeroom'" in problem
+
+    def test_doctored_a_required_column_on_a_course_feed_is_red(self):
+        lines = _doc_text().splitlines()
+        first = next(i for i, line in enumerate(lines) if line == "<!-- contract-table: CourseInfo -->")
+        first = next(i for i in range(first, len(lines)) if lines[i].startswith("| #"))
+        last = next(i for i in range(first, len(lines)) if not lines[i].startswith("|"))
+        lines[first] += " Required |"
+        lines[first + 1] += "---|"
+        for i in range(first + 2, last):
+            lines[i] += " Optional |"
+        assert _required_column_mismatches("\n".join(lines)) == [
+            "CourseInfo: carries a Required column, but the spec's required values cover the rostering files only"
+        ]
+
+
 def test_every_column_row_in_the_anchored_tables_carries_a_status_and_a_basis():
     """No verdict row may ship without provenance.
 
@@ -460,8 +539,8 @@ def test_q5_carries_exactly_one_machine_readable_status_line():
         f"Plan 0053 S4's partner-FAQ parity test reads it to decide whether the FAQ's pending clause is due."
     )
     assert statuses[0] in _Q5_STATUSES, (
-        f"`Q5-status: {statuses[0]}` is not one of {sorted(_Q5_STATUSES)} — S14 flips it to `answered` "
-        f"only when SpacesEDU's answer is recorded as dated confirmation rows."
+        f"`Q5-status: {statuses[0]}` is not one of {sorted(_Q5_STATUSES)} — `answered` means SpacesEDU's "
+        f"answer is recorded, dated, beside each part of the question."
     )
 
 
@@ -559,7 +638,7 @@ def test_expected_outputs_table_enabled_column_matches_the_real_config(sis):
     """The doc's 'Entities enabled' cell equals the config's real ``active_entities()``.
 
     This is the column that makes the sd51myedbc row honest — the config enables
-    StudentAttendance while the contract sweep asserts only the five rostering
+    StudentAttendance while the contract sweep asserts only its four rostering
     CSVs (its fixture withholds the absence GDEs on purpose). Gating the two
     columns against two different sources is what keeps that distinction from
     collapsing into a comfortable half-truth.

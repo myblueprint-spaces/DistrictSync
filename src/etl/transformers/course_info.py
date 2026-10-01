@@ -13,7 +13,7 @@ import pandas as pd
 
 from src.etl.transformers.base import BaseTransformer
 from src.etl.transformers.context import TransformContext
-from src.etl.transformers.course_codes import strip_trailing_hyphens
+from src.etl.transformers.course_codes import note_unapplied_exclusions, strip_trailing_hyphens
 
 
 class CourseInfoTransformer(BaseTransformer):
@@ -21,6 +21,7 @@ class CourseInfoTransformer(BaseTransformer):
         working = self.normalize_columns(df)
 
         patterns = self.effective_course_code_patterns(context.global_config)
+        note_unapplied_exclusions(context, "CourseInfo", working, configured=bool(patterns))
         working = self.filter_excluded_course_code_patterns(working, patterns)
 
         result = pd.DataFrame()

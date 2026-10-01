@@ -15,16 +15,31 @@ district_name: SD51 - Boundary School District
 district_domains: ["sd51.bc.ca"]
 
 global_config:
-  # SD51 has no enabled_entities of its own and deep-merge REPLACES lists, so
-  # this MUST list the full set — the base 5 rostering entities PLUS the opt-in
-  # StudentAttendance — or the rostering entities would vanish. SD51 runs BOTH
-  # attendance bands; it declares both `source_files` roles under the
-  # `mappings.StudentAttendance` entry below (the base declares none, so each
-  # district selects the band(s) it runs by which roles it declares).
+  # Deep-merge REPLACES lists, so this MUST restate every entity SD51 emits —
+  # four of the base's rostering entities PLUS the opt-in StudentAttendance — or
+  # they would vanish. SD51 runs BOTH attendance bands; it declares both
+  # `source_files` roles under the `mappings.StudentAttendance` entry below (the
+  # base declares none, so each district selects the band(s) it runs by which
+  # roles it declares).
+  #
+  # Family is OFF (owner decision 2026-09-25). SD51's real contacts export,
+  # `EmergencyContactInformation.txt`, is the PLAIN 18-column report: it has no
+  # email column at all, and `Email Address` is the field SpacesEDU keys a
+  # family account on. Family could only ever be EMPTY
+  # (`missing_source_column`) — no Family.csv, every night — and since plan
+  # 0053 S8 an enabled entity that builds nothing is a standing WARNING, so Home
+  # would sit amber every night over a file this district cannot send.
+  #
+  # Re-enabling is ONE line: add `Family` back to this list (between Staff and
+  # Classes) once SD51 supplies a contact export WITH an email column. SD51
+  # declares no Family mapping of its own — the entity definition (filename,
+  # field_map) is inherited unchanged from the base, so the list line is the
+  # only REQUIRED change. If that export also carries `Parent Auth / Guardian`,
+  # add the guardian `row_filters` sd60myedbc/unitychristianmyedbc use as well:
+  # an emergency-contact list shipped unfiltered carries third parties' details.
   enabled_entities:
     - Students
     - Staff
-    - Family
     - Classes
     - Enrollments
     - StudentAttendance
@@ -47,7 +62,8 @@ global_config:
   # `ClassInformation.txt` is NOT a fix: that file has no Master Timetable ID
   # (so blended falls back to the schedule dedup, which uses the SAME
   # session_key and produces the same false merges) and no Primary Teacher
-  # column (so co-teacher enrollments would drop to zero). See
+  # column (so co-teacher enrollments would be left out, with a standing
+  # warning on Home — plan 0053 S10, owner ruling 2026-09-25). See
   # docs/claugentic-DECISIONS.md (2026-09-16) and the session_key ROADMAP item.
   blended_classes: false
 

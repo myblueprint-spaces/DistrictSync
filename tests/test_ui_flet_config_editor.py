@@ -46,6 +46,7 @@ from src.config.authoring import (
 )
 from src.config.loader import load_config, validate_overlay
 from src.config.models import CLASS_ROSTERING_HOMEROOM_SENTINEL
+from src.etl.outcomes import EntityOutcome, OutcomeNote, OutcomeReason
 from src.etl.pipeline import PipelineResult
 from src.etl.preflight import MissingColumn, PreflightReport
 from src.etl.transformers.grades import CEDS_GRADE_CODES, CEDS_MAPPING
@@ -58,6 +59,10 @@ from src.ui_flet.config_editor import (
     CONFIG_ERROR_OTHER,
     CONFIG_ERROR_UNREADABLE,
     FILE_LABELS,
+    GATE_ENTITIES_EMPTY_NOTE,
+    GATE_ENTITIES_NOT_BUILT_NOTE,
+    GATE_INPUT_INCOMPLETE_NOTE,
+    GATE_NO_OUTCOMES_NOTE,
     PREFLIGHT_MISSING_LINE,
     ActivationVerdict,
     CreatorForm,
@@ -88,6 +93,7 @@ from src.ui_flet.config_editor import (
     validate_domains,
     verified_is_current,
 )
+from src.ui_flet.failure_copy import entity_phrase, note_sentence
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "src" / "ui_flet" / "config_editor.py"
 
@@ -585,10 +591,15 @@ class TestMissingFiles:
         assert missing_files([], ["Students.txt"]) == ()
 
 
+#: A completed test conversion's outcomes: every configured entity built (plan 0053 S4 — the
+#: gate reads them, so a stub result must carry real ones; an empty tuple is never a pass).
+_BUILT: tuple[EntityOutcome, ...] = (EntityOutcome.built("Students", 5),)
+
+
 class TestGateOutcomeFor:
     def test_no_output_folder_REFUSES_whatever_else_is_true(self):
         outcome = gate_outcome_for(
-            result=PipelineResult(entity_counts={"Students": 5}),
+            result=PipelineResult(entity_outcomes=_BUILT, entity_counts={"Students": 5}),
             error=None,
             output_dir_valid=False,
             expected_files=["Students.txt"],
@@ -604,7 +615,7 @@ class TestGateOutcomeFor:
 
     def test_a_completed_run_PASSES_with_its_counts(self):
         outcome = gate_outcome_for(
-            result=PipelineResult(entity_counts={"Students": 12, "Classes": 3}),
+            result=PipelineResult(entity_outcomes=_BUILT, entity_counts={"Students": 12, "Classes": 3}),
             error=None,
             output_dir_valid=True,
             expected_files=["Students.txt"],
@@ -616,7 +627,7 @@ class TestGateOutcomeFor:
 
     def test_a_pass_still_reports_missing_files_without_downgrading_the_verdict(self):
         outcome = gate_outcome_for(
-            result=PipelineResult(entity_counts={"Students": 12}),
+            result=PipelineResult(entity_outcomes=_BUILT, entity_counts={"Students": 12}),
             error=None,
             output_dir_valid=True,
             expected_files=["Students.txt", "StaffInformation.txt"],
@@ -637,11 +648,13 @@ class TestGateOutcomeFor:
         assert outcome.note == CONFIG_ERROR_MISSING_BASE
         assert outcome.counts == {}
         assert outcome.missing_files == ("Students.txt",)
+        # A raised run did NOT finish — the view keeps its "didn't finish" headline.
+        assert outcome.completed is False
 
     def test_both_a_result_and_an_error_fails_loud(self):
         with pytest.raises(ValueError, match="exactly one outcome"):
             gate_outcome_for(
-                result=PipelineResult(),
+                result=PipelineResult(entity_outcomes=_BUILT),
                 error=RuntimeError("boom"),
                 output_dir_valid=True,
                 expected_files=[],
@@ -659,7 +672,7 @@ class TestGateOutcomeFor:
             ).state
             for result, error, valid in [
                 (None, None, True),
-                (PipelineResult(), None, True),
+                (PipelineResult(entity_outcomes=_BUILT), None, True),
                 (None, RuntimeError("x"), True),
                 (None, None, False),
             ]
@@ -671,6 +684,194 @@ class TestGateOutcomeFor:
             GateState.FAILED,
             GateState.REFUSED_NO_OUTPUT_DIR,
         }
+
+
+def _capital(text: str) -> str:
+    return text[:1].upper() + text[1:]
+
+
+def _gate(outcomes: object) -> GateOutcome:
+    """The gate over a COMPLETED run carrying ``outcomes`` (every file present)."""
+    return gate_outcome_for(
+        result=PipelineResult(entity_outcomes=outcomes, entity_counts={"Students": 5}),  # type: ignore[arg-type]
+        error=None,
+        output_dir_valid=True,
+        expected_files=["Students.txt"],
+        present_files=["Students.txt"],
+    )
+
+
+class TestTheGateReadsEveryEntityOutcome:
+    """Plan 0053 S4 — PASSED only when every configured entity BUILT (or is a normal-night empty).
+
+    Since the entity bulkhead a dry run can COMPLETE without an ISOLATABLE entity; before
+    this rule the creator's test conversion would have PASSED a self-service mapping whose
+    Family fails every night, and ``activation_allowed`` would have switched it on. Since owner
+    decision 2026-09-28 ("block empty outputs") an EMPTY output that WARNS is refused too; a
+    StudentAttendance with nothing to send — the one normal-night empty — still passes.
+    """
+
+    def test_every_entity_built_PASSES(self):
+        outcome = _gate((EntityOutcome.built("Students", 5), EntityOutcome.built("Family", 2)))
+        assert outcome.state is GateState.PASSED and outcome.note == ""
+        assert outcome.counts == {"Students": 5}
+        assert outcome.completed is False
+
+    @pytest.mark.parametrize(
+        "empty",
+        [
+            EntityOutcome.empty("Family", OutcomeReason.SOURCE_FILES_EMPTY),
+            EntityOutcome.empty("Family", OutcomeReason.NO_ROWS_AFTER_TRANSFORM),
+            EntityOutcome.empty("Family", OutcomeReason.MISSING_SOURCE_COLUMN),
+            EntityOutcome.empty("StudentAttendance", OutcomeReason.NO_ROWS_AFTER_TRANSFORM),
+        ],
+        ids=["family-no-file", "family-no-rows", "family-missing-column", "attendance-rows-all-lost"],
+    )
+    def test_an_output_that_would_produce_nothing_is_REFUSED(self, empty):
+        """Owner 2026-09-28: the self-service test must refuse activation when an enabled output
+        would produce nothing — every EMPTY outcome whose tier is WARNING."""
+        outcome = _gate((EntityOutcome.built("Students", 5), empty))
+        assert outcome.state is GateState.FAILED
+        assert outcome.note == GATE_ENTITIES_EMPTY_NOTE.format(entities=_capital(entity_phrase(empty.entity)))
+        assert outcome.completed is True, "the test ran to the end — never 'didn't finish'"
+        assert outcome.counts == {} and outcome.warning_notes == ()
+
+    def test_twin_attendance_with_nothing_to_send_still_PASSES(self):
+        """A night without absences is a normal night (``outcomes.empty_is_expected``)."""
+        outcome = _gate(
+            (
+                EntityOutcome.built("Students", 5),
+                EntityOutcome.empty("StudentAttendance", OutcomeReason.SOURCE_FILES_EMPTY),
+            )
+        )
+        assert outcome.state is GateState.PASSED and outcome.note == ""
+
+    def test_a_left_out_and_an_empty_output_are_both_named_in_one_note(self):
+        outcome = _gate(
+            (
+                EntityOutcome.built("Students", 5),
+                EntityOutcome.failed("Staff", OutcomeReason.TRANSFORM_ERROR),
+                EntityOutcome.empty("Family", OutcomeReason.NO_ROWS_AFTER_TRANSFORM),
+            )
+        )
+        assert outcome.state is GateState.FAILED
+        assert outcome.note == " ".join(
+            (
+                GATE_ENTITIES_NOT_BUILT_NOTE.format(entities="Staff records"),
+                GATE_ENTITIES_EMPTY_NOTE.format(entities="Family contacts"),
+            )
+        )
+
+    def test_a_passed_test_carries_the_warning_notes_it_would_run_with(self):
+        """Owner 2026-09-28 — "show notes, don't block": a BUILT output's WARNING-tier note
+        (co-teachers left out) rides the PASSED outcome as its authored sentence, so the view
+        shows it before the confirm; a HEALTHY note (row detail only) is not carried."""
+        coteachers = EntityOutcome.built("Enrollments", 4, notes=((OutcomeNote.COTEACHER_SOURCE_UNUSABLE, 3),))
+        quiet = EntityOutcome.built("Staff", 2, notes=((OutcomeNote.STAFF_STATUS_COLUMN_ABSENT, 2),))
+        outcome = _gate((EntityOutcome.built("Students", 5), quiet, coteachers))
+        assert outcome.state is GateState.PASSED
+        assert outcome.warning_notes == (note_sentence(OutcomeNote.COTEACHER_SOURCE_UNUSABLE),)
+        assert "3" not in outcome.warning_notes[0], "a sentence, never the count"
+
+    def test_twin_a_clean_pass_carries_no_notes(self):
+        outcome = _gate((EntityOutcome.built("Students", 5), EntityOutcome.built("Enrollments", 4)))
+        assert outcome.state is GateState.PASSED and outcome.warning_notes == ()
+
+    @pytest.mark.parametrize(
+        "left_out",
+        [
+            EntityOutcome.failed("Family", OutcomeReason.MISSING_SOURCE_COLUMN),
+            EntityOutcome.failed("Family", OutcomeReason.TRANSFORM_ERROR),
+            EntityOutcome.not_run("Family"),
+        ],
+        ids=["failed-missing-column", "failed-transform-error", "not-run"],
+    )
+    def test_a_failed_or_not_run_entity_FAILS_with_the_bounded_note(self, left_out):
+        outcome = _gate((EntityOutcome.built("Students", 5), left_out))
+        assert outcome.state is GateState.FAILED
+        assert outcome.note == GATE_ENTITIES_NOT_BUILT_NOTE.format(entities="Family contacts")
+        assert outcome.counts == {} and outcome.missing_columns == ()
+        # The run FINISHED — the view must not headline it "didn't finish".
+        assert outcome.completed is True
+
+    @pytest.mark.parametrize("outcomes", [None, ()], ids=["none", "empty"])
+    def test_a_result_with_no_outcomes_is_never_a_pass(self, outcomes):
+        """P8: "no configured entity failed" is not "every configured entity built" — a result
+        that cannot say what it built is not evidence the mapping works."""
+        outcome = _gate(outcomes)
+        assert outcome.state is GateState.FAILED
+        assert outcome.note == GATE_NO_OUTCOMES_NOTE
+        assert outcome.completed is True
+
+    def test_several_left_out_entities_are_named_once_each_in_order(self):
+        outcome = _gate(
+            (
+                EntityOutcome.built("Students", 5),
+                EntityOutcome.failed("Family", OutcomeReason.TRANSFORM_ERROR),
+                EntityOutcome.failed("CourseInfo", OutcomeReason.TRANSFORM_ERROR),
+                EntityOutcome.not_run("StudentCourses"),
+            )
+        )
+        assert outcome.note.startswith("Family contacts, courses and student courses couldn't be built")
+
+    def test_an_unknown_entity_key_is_never_echoed(self):
+        outcome = _gate((EntityOutcome.failed("HandDroppedSecret", OutcomeReason.TRANSFORM_ERROR),))
+        assert outcome.state is GateState.FAILED
+        assert "HandDroppedSecret" not in outcome.note
+        assert outcome.note.startswith("One of your files couldn't be built")
+
+    def test_two_unknown_keys_share_ONE_generic_phrase(self):
+        """The de-duplication runs on the PHRASE, so two keys that both read as the generic
+        phrase name it once — never "one of your files and one of your files"."""
+        outcome = _gate(
+            (
+                EntityOutcome.failed("HandDroppedA", OutcomeReason.TRANSFORM_ERROR),
+                EntityOutcome.not_run("HandDroppedB"),
+            )
+        )
+        assert outcome.state is GateState.FAILED
+        assert outcome.note.startswith("One of your files couldn't be built")
+        assert outcome.note.lower().count("one of your files") == 1
+        assert "HandDroppedA" not in outcome.note and "HandDroppedB" not in outcome.note
+
+    def test_the_notes_carry_no_slot_a_column_or_a_file_name(self):
+        for note in (GATE_NO_OUTCOMES_NOTE, GATE_ENTITIES_NOT_BUILT_NOTE.format(entities="Family contacts")):
+            assert "{" not in note and ".txt" not in note and "Guardian" not in note
+
+
+class TestTheCreatorTestConversionOverARealRun:
+    """End to end: ``creator_gate_job`` (the worker both creator hosts run) over the Unity
+    plain-report fixture FAILS the gate; the Enhanced twin PASSES it (plan 0053 S4)."""
+
+    @staticmethod
+    def _gate_for(input_builder, tmp_path: Path) -> GateOutcome:
+        from src.ui_flet.job_runner import creator_gate_job
+
+        input_dir = tmp_path / "in"
+        output_dir = tmp_path / "out"
+        input_dir.mkdir()
+        output_dir.mkdir()
+        input_builder(input_dir)
+        present = [p.name for p in input_dir.iterdir()]
+        result = creator_gate_job("unitychristianmyedbc", input_dir=str(input_dir), output_dir=str(output_dir))
+        assert not list(output_dir.glob("*.csv")), "a test conversion writes nothing"
+        return gate_outcome_for(
+            result=result, error=None, output_dir_valid=True, expected_files=present, present_files=present
+        )
+
+    def test_the_plain_contacts_report_fails_the_gate(self, tmp_path: Path):
+        from tests.test_contract import _create_unitychristian_plain_report_inputs
+
+        outcome = self._gate_for(_create_unitychristian_plain_report_inputs, tmp_path)
+        assert outcome.state is GateState.FAILED
+        assert outcome.note == GATE_ENTITIES_NOT_BUILT_NOTE.format(entities="Family contacts")
+
+    def test_the_twin_the_enhanced_report_passes_it(self, tmp_path: Path):
+        from tests.test_contract import _create_unitychristian_inputs
+
+        outcome = self._gate_for(_create_unitychristian_inputs, tmp_path)
+        assert outcome.state is GateState.PASSED
+        assert outcome.counts.get("Family", 0) > 0
 
 
 def _missing(column: str, *entities: str, fields: tuple[str, ...] = ("Last Name",)) -> MissingColumn:
@@ -718,20 +919,22 @@ class TestTheGateCarriesThePreflightReport:
     def test_a_call_that_passes_no_report_carries_no_columns(self):
         """Every S3/S4/S6 call site is unchanged: the parameter is additive and defaulted,
         and ``None`` means "no report" rather than "nothing missing"."""
-        outcome = self._outcome(result=PipelineResult(entity_counts={"Students": 5}))
+        outcome = self._outcome(result=PipelineResult(entity_outcomes=_BUILT, entity_counts={"Students": 5}))
 
         assert outcome.state is GateState.PASSED
         assert outcome.missing_columns == ()
 
     def test_a_passed_run_with_every_file_present_CARRIES_the_columns(self):
-        outcome = self._outcome(result=PipelineResult(entity_counts={"Students": 5}), preflight=self.REPORT)
+        outcome = self._outcome(
+            result=PipelineResult(entity_outcomes=_BUILT, entity_counts={"Students": 5}), preflight=self.REPORT
+        )
 
         assert outcome.missing_columns == (_missing("Legal Surname", "Students"),)
 
     def test_the_same_report_beside_a_MISSING_FILE_is_not_carried(self):
         """The twin of the row above, one input apart: the file report owns that fact."""
         outcome = self._outcome(
-            result=PipelineResult(entity_counts={"Students": 5}),
+            result=PipelineResult(entity_outcomes=_BUILT, entity_counts={"Students": 5}),
             expected=["Students.txt", "StaffInformation.txt"],
             present=["Students.txt"],
             preflight=self.REPORT,
@@ -746,11 +949,11 @@ class TestTheGateCarriesThePreflightReport:
         run that did not complete observed nothing worth a claim, and a refused one never
         started."""
         rows = {
-            GateState.PASSED: self._outcome(result=PipelineResult(), preflight=self.REPORT),
+            GateState.PASSED: self._outcome(result=PipelineResult(entity_outcomes=_BUILT), preflight=self.REPORT),
             GateState.FAILED: self._outcome(error=RuntimeError("boom"), preflight=self.REPORT),
             GateState.NOT_RUN: self._outcome(preflight=self.REPORT),
             GateState.REFUSED_NO_OUTPUT_DIR: self._outcome(
-                result=PipelineResult(), output_dir_valid=False, preflight=self.REPORT
+                result=PipelineResult(entity_outcomes=_BUILT), output_dir_valid=False, preflight=self.REPORT
             ),
         }
 
@@ -760,7 +963,7 @@ class TestTheGateCarriesThePreflightReport:
         assert [state for state, outcome in rows.items() if outcome.missing_columns] == [GateState.PASSED]
 
     def test_an_empty_report_on_a_passed_run_carries_nothing_to_say(self):
-        outcome = self._outcome(result=PipelineResult(), preflight=_report())
+        outcome = self._outcome(result=PipelineResult(entity_outcomes=_BUILT), preflight=_report())
 
         assert outcome.missing_columns == ()
 
@@ -848,6 +1051,50 @@ class TestHumanizeConfigError:
 
     def _planted(self, template: str) -> str:
         return template.format(domain=self.PLANTED_DOMAIN, path=self.PLANTED_PATH)
+
+    def test_the_input_and_empty_output_stops_are_decided_by_type_never_by_their_text(self):
+        """Owner 2026-09-28: a test the INPUT stopped is a folder problem, and one an EMPTY required
+        output stopped names that output by its phrase — even when the message happens to say
+        "grade" or "domain" (the text heuristics below would otherwise mislabel either)."""
+        from src.etl.errors import EmptyRequiredOutputError, IncompleteInputError, NoUsableInputError
+
+        input_stop = IncompleteInputError(
+            f"grade domain {self.PLANTED_PATH}", missing=("StudentSchedule.txt",), empty=(), named=()
+        )
+        assert humanize_config_error(input_stop) == GATE_INPUT_INCOMPLETE_NOTE
+        # Every required file unusable is the same folder problem, decided by the same type check.
+        assert humanize_config_error(NoUsableInputError(f"grade domain {self.PLANTED_PATH}")) == (
+            GATE_INPUT_INCOMPLETE_NOTE
+        )
+        empty_stop = EmptyRequiredOutputError(
+            f"grade domain {self.PLANTED_DOMAIN}", entity="Enrollments", required_values_left_out=False
+        )
+        note = humanize_config_error(empty_stop)
+        assert note == GATE_ENTITIES_EMPTY_NOTE.format(entities="Enrollments")
+        assert self.PLANTED_DOMAIN not in note and "grade" not in note.lower()
+        unknown = humanize_config_error(
+            EmptyRequiredOutputError("x", entity="HandDroppedSecret", required_values_left_out=False)
+        )
+        assert "HandDroppedSecret" not in unknown and unknown.startswith("One of your files came out empty")
+
+    def test_a_raised_test_conversion_keeps_its_file_report(self):
+        """The gate's exception branch: FAILED, the bounded note, and the missing-file list still
+        derived — the useful sentence when the input stopped the test."""
+        from src.etl.errors import IncompleteInputError
+
+        outcome = gate_outcome_for(
+            result=None,
+            error=IncompleteInputError("x", missing=("b.txt",), empty=(), named=("b.txt",)),
+            output_dir_valid=True,
+            expected_files=["a.txt", "b.txt"],
+            present_files=["a.txt"],
+        )
+        assert (outcome.state, outcome.note, outcome.missing_files) == (
+            GateState.FAILED,
+            GATE_INPUT_INCOMPLETE_NOTE,
+            ("b.txt",),
+        )
+        assert outcome.completed is False and outcome.warning_notes == ()
 
     def test_a_real_chain_violation_reads_as_a_grade_problem(self):
         overlay = {
@@ -1263,7 +1510,7 @@ class TestTheStoredFactAgainstTheRealConfig:
 #: The rows each starting point earns, in the order they must render. Hand-written on
 #: purpose: a tuple derived from the same walk the code uses would pass whatever the walk
 #: did, and this is the assertion that the ORDER is a decision (``CREATOR_ENTITIES``, then
-#: first-seen per file) rather than ``advisory_expected_files``' ``list(set)``.
+#: first-seen per file) rather than ``extract_required_files``' ``list(set)``.
 SLOT_ORDER: dict[str, tuple[str, ...]] = {
     "myedbc": (
         "StudentDemographicInformation.txt",
@@ -1307,10 +1554,10 @@ SD74_RENAMES = {
 
 
 def _slots_for(base: str):
-    from src.etl.pipeline import advisory_expected_files
+    from src.etl.pipeline import extract_required_files
 
     resolved = load_config(base)
-    return distinct_source_files(resolved, expected=advisory_expected_files(resolved))
+    return distinct_source_files(resolved, expected=extract_required_files(resolved))
 
 
 class TestDistinctSourceFiles:
@@ -1320,7 +1567,7 @@ class TestDistinctSourceFiles:
 
     @pytest.mark.parametrize("base", ALLOWED_BASES)
     def test_the_order_is_the_walk_never_the_expected_list(self, base):
-        """The twin for the order pin: ``advisory_expected_files`` returns ``list(set)``,
+        """The twin for the order pin: ``extract_required_files`` returns ``list(set)``,
         whose order moves with ``PYTHONHASHSEED``. A shuffled ``expected`` may not move a
         single row — otherwise S4 would have inherited S3's instability."""
         resolved = load_config(base)
@@ -1393,21 +1640,21 @@ class TestTheSchoolYearFileKeepsItsRow:
         return load_config("myedbc"), load_config("sd93custom")
 
     def test_a_homeroom_scoped_district_still_gets_its_schedule_row(self):
-        """``advisory_expected_files`` drops the ``student_schedule`` ROLE (it feeds no
-        surviving class), but ``extract_required_files`` still LOADS the file for the school
-        year — so the district whose schedule extract is named differently must keep the one
-        row that can say so, or its every ``append_year_to_id`` Class ID is wrong with no
-        way to fix it."""
-        from src.etl.pipeline import advisory_expected_files
+        """A homeroom-scoped district's schedule feeds no surviving class, but its mapping still
+        LISTS it — so since owner decision 2026-09-28 the input gate REQUIRES it, and the
+        district whose schedule extract is named differently must keep the row that can say so
+        (it also carries the school year, so its every ``append_year_to_id`` Class ID depends on
+        it). The retired UI-only list dropped both files here; the required list keeps both."""
+        from src.etl.pipeline import extract_required_files
 
         base, current = self._homeroom_scoped()
-        expected = advisory_expected_files(current)
-        assert "StudentSchedule.txt" not in expected, "the premise: the role really is inert"
+        expected = extract_required_files(current)
+        assert {"StudentSchedule.txt", "ClassInformationEnh.txt"} <= set(expected), "both are required now"
 
         by_name = {slot.original: slot for slot in distinct_source_files(base, expected=expected)}
 
         assert by_name["StudentSchedule.txt"].names_school_year is True
-        assert "ClassInformationEnh.txt" not in by_name, "an inert file NO list needs still gets nothing"
+        assert by_name["ClassInformationEnh.txt"].names_school_year is False, "listed, so it gets its row"
 
     def test_the_twin_a_course_only_tier_still_gets_no_schedule_row(self):
         """The union is not a blanket: ``mbponly`` names ``StudentSchedule.txt`` in
@@ -1757,8 +2004,8 @@ class TestSlotsFollowTheDistrictsEntitySelection:
 
     def test_the_twin_the_base_selection_still_asks_for_the_schedule_and_not_the_courses(self):
         resolved = load_config("myedbc")
-        from src.etl.pipeline import advisory_expected_files
+        from src.etl.pipeline import extract_required_files
 
-        names = [slot.original for slot in distinct_source_files(resolved, expected=advisory_expected_files(resolved))]
+        names = [slot.original for slot in distinct_source_files(resolved, expected=extract_required_files(resolved))]
         assert "StudentSchedule.txt" in names
         assert "StudentCourseHistory.txt" not in names

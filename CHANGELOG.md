@@ -9,6 +9,332 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+## [3.27.0] - 2026-09-30
+
+A night with a problem no longer sends half-right data. If an export your mapping needs is
+missing or empty, or a required file would come out empty, the night stops and SpacesEDU
+keeps the last good sync; if only the family contacts export has a problem, everything else
+is still delivered and Home shows amber. Rows missing a value SpacesEDU requires — most
+often a staff member's email address — are left out and counted, and Home shows amber until
+they are filled in. Home, Run History and the Convert screen now say which file or column
+caused it. A district with blended-class detection off (SD45, SD51) may go without its Class
+Information export; those nights deliver without co-teachers and show amber.
+
+### Changed
+
+- **A district with blended-class detection switched off no longer needs its Class
+  Information export.** Since the change below that stops the night for a missing file, a
+  district whose mapping lists the Class Information export but switches blended-class
+  detection off — SD45 (West Vancouver), which sends no such export, and SD51 (Boundary) —
+  would have stopped every night it went without it. Now that export is optional for such a
+  district: when it is missing, or has only a header row, the night runs and delivers as
+  normal, and only the co-teachers it would have linked to their classes (teachers who never
+  appear in the student timetable) are left out of the enrollments — and of the staff file
+  too, for one whose staff record doesn't mark them as teaching staff — with the co-teacher
+  warning on Home, in Run History and on the Convert screen every night until it is back
+  (SD45: every night). A district that detects blended classes from the export still needs
+  it, and its night still stops without it. The Convert screen's list of files not found in
+  the folder says which files a district may go without, and the explanations of a stopped
+  night no longer claim the family contacts file is the only one. On v3.26.0's own SD45 test
+  export the five files delivered are unchanged; every other district export measured is
+  unchanged.
+- **A student, staff member, family contact, class or enrollment missing a value SpacesEDU
+  requires is now left out — counted, with a warning — and so is everything that points at
+  it.** SpacesEDU's Advanced CSV format requires certain values on every row of the five
+  roster files: for example an email address for every student, staff member and family
+  contact, a first and last name, and a school. A row missing one used to be sent anyway — a
+  student with no email address deliberately so. Now DistrictSync leaves that row out,
+  counts it, and shows a warning on Home, in Run History and on the
+  Convert screen naming what was left out, every night until the values are filled in in
+  MyEd BC. A left-out student's enrollments and family contacts, a left-out staff member's
+  class enrollments and a left-out class's enrollments go with them, so SpacesEDU never
+  receives a link to someone or something it was not sent. Family contacts without an email
+  address, already left out, now show the same warning. A staff member the export gives no
+  role is still simply not sent, and not counted here. If EVERY row of a required file would
+  be left out — usually a column missing from the export — the night stops rather than send
+  an empty file, and the explanation says every one was missing a value SpacesEDU requires;
+  family contacts are only left out, as before. The run log carries one line per file with
+  how many rows were missing which value (never a name or an address). On the district
+  exports measured, the staff records with no email address are now left out at SD40, SD51,
+  SD60 and SD74 (63, 3, 10 and 9), and SD40 leaves out 3 family contacts with no first name
+  and the 3 class enrollments of its left-out staff; everything else is unchanged.
+- **Only family contacts can be left out of a night's sync — anything else that is missing
+  or empty now stops the night.** Every export file your district's mapping lists must be in
+  the input folder with its rows. When one is missing, or is present with only a header row,
+  the night stops before anything is built: nothing new is written or sent, SpacesEDU keeps
+  the last successful sync. Home and Run History report the night as failed and name the
+  file in the explanation when DistrictSync can tell which one; on the Convert screen the
+  error card's headline reads "A file your sync needs is missing or empty". The one exception
+  is the family contacts (emergency contact) export: missing or empty, only family contacts
+  are left out, with a warning, as before (and, for a district with blended-class detection
+  switched off, the Class Information export — see the entry above). An attendance file may be present with no rows —
+  a night without absences — but a missing attendance file stops the night. An output that
+  would come out with no rows — for example every student filtered out — now stops the
+  night too, and the explanation names that output (on the Convert screen, for example:
+  "No classes came out of your export"): DistrictSync never sends an empty file. And a
+  problem with the course list, student courses or attendance exports now stops the night
+  as well, instead of leaving that one file out. Such a night ends with exit code 1. The Convert screen's list of files not found in the folder now says so before you
+  convert. DistrictSync sends no email or alert when a night stops — check Home and Run
+  History after any change to your exports. Every district export measured carries all its
+  files with rows, and their output is unchanged.
+- **A schedule export missing its School Year column is now named.** Home and Run History
+  name the “School Year” column in the explanation, the Convert screen's error card reads
+  "An export file is missing its “School Year” column", and the run record names the column,
+  instead of a general "missing a column" message.
+- **Class Information's school-number column: needed for blended classes, optional for
+  co-teachers.** For a district that detects blended classes from its Class Information
+  export (every shipped district that reads one, except SD51 and SD45, which have blended
+  detection switched off, and SD40, whose export has no timetable ID), a missing school-number column stops the night — blended
+  classes are matched by school — and Home, Run History and the Convert screen now name the
+  “School Number” column instead of a general "missing a column" message. For a district
+  with blended detection off, a missing one only leaves co-teachers out of the enrollments
+  file, with the standing warning on Home and in Run History, like the other columns
+  co-teachers are linked by. And when a Class Information export without its timetable-ID or
+  teacher-ID column leaves blended detection to a schedule file that cannot stand in for it,
+  the explanation now names both: the Class Information column and the schedule columns
+  missing, rather than the schedule's columns alone.
+- **An attendance-only district's night without absences is a good night.** When every
+  absence file is in the input folder but none has any rows, the sync now ends
+  successfully with nothing to send: nothing is written or delivered, the last output
+  stays as it was, and Home and Run History stay green and say no absences were recorded
+  (the Convert screen says the same). It used to stop as if the input folder were empty. A
+  missing absence file still stops the night.
+- **A self-service mapping can't be switched on while its test conversion leaves a file
+  empty,** and a test that passes with a warning — for example co-teachers left out — now
+  shows that warning before you switch the mapping on (it does not stop you).
+- **A misspelled key in a district mapping is no longer silently ignored.** A mapping
+  file in DistrictSync's own mappings folder that carries a key DistrictSync does not
+  know — in its `global_config` section, in an entity block, or as a `source_columns`
+  column role — now logs one warning per key naming the nearest correct key (for
+  example "did you mean 'enabled_entities'?"); the sync still runs, ignoring the key,
+  as it always did. A misspelled key inside one field's mapping (for example
+  `transfrom:` for `transform:`) now stops the run, and Home, Run History and the
+  Convert screen say the district mapping couldn't be read, where it used to send that
+  field untransformed or blank with no sign anywhere — fix the spelling and the next
+  sync runs. Replacing a field the shipped mapping defines with a different kind of
+  mapping (for example a fixed value where it reads a column) is not a misspelling and
+  keeps working. A mapping set up in DistrictSync itself never carries such a key (setting
+  one up refuses it). The mappings shipped with DistrictSync carry none, so their output
+  is unchanged.
+- **Run History now says when a safety check could not run.** When an export is missing a
+  column one of DistrictSync's safety checks relies on, the sync still sends what it always
+  sent — but the run's row in Run History now carries a short note saying so: that no
+  enrollment-status column was found and withdraw dates decided who is active; that
+  students with neither a status nor a withdraw date were sent as active; that family
+  contacts without an email were left out; that departed staff could not be told apart;
+  that the configured course exclusions could not be applied; or that class names or
+  blended-class details are missing a part. These notes appear in Run History only and do
+  not change the Home screen. One is serious enough to warn: when the student export has
+  neither an enrollment-status nor a withdraw-date column, every student is sent as active,
+  and Home and Run History now show a warning every sync until the export carries one of
+  them. The run log names the missing column, and the run record counts the rows
+  concerned. Nothing that is sent has changed.
+- **A missing column that links records now stops the run instead of sending a
+  file with rows quietly missing.** When an export is missing a column DistrictSync
+  needs to link records — a student, teacher, class or school ID, the homeroom
+  column, or the term, semester, day or period column blended classes are detected
+  on — the students, staff, classes or enrollments file that needs it is no longer
+  built with those rows left out: the whole run stops, nothing new is written or
+  sent that night (SpacesEDU keeps the last successful sync), the run log names the
+  missing column, and Home, Run History and the Convert screen say an export file is
+  missing a column the district's mapping needs. It used to send, for example, an
+  enrollments file with every timetable student or every homeroom teacher left out —
+  which, depending on the district's SpacesEDU import settings, can remove those
+  people from their classes — a roster whose students had no IDs, or classes from
+  different terms merged into one blended class, and a missing homeroom or course
+  column used to fail with an unexplained error. A mapping set up in DistrictSync
+  itself over a schedule whose student column is not the standard `Student ID` now
+  stops here too, where it used to send its enrollments without any timetable
+  student.
+- **A schedule export missing its School Year column now stops the night instead of
+  silently using the calendar year.** The school year comes from the School Year
+  column of the export the district's mapping names for it (the student schedule for
+  every shipped mapping), and every class ID and every class start and end date is
+  built from it. When that export arrived without the column, DistrictSync used to
+  work the year out from today's date instead, with no warning — and when the two
+  disagreed, every class ID changed. Now the run stops, nothing new is written or
+  sent that night (SpacesEDU keeps the last successful sync), the run log names the
+  missing column, and Home, Run History and the Convert screen say an export file is
+  missing a column the district's mapping needs. Every shipped mapping's exports
+  carry the column, so their output is unchanged; today's date is still used where
+  that is the intended way to find the year — when no export is named for it, or
+  its School Year cells are blank.
+- **When the daily absences export is missing its "authorized" column, the night now
+  stops and names the column.** Attendance can no longer be left out of a night on its own
+  (see the first entry), so nothing new is sent that night, and Home, Run History and the
+  Convert screen say the export file is missing the column (for example “authorized am”)
+  and to re-export it, where they used to say only that something went wrong while
+  building attendance.
+- **Co-teachers a Class Information export cannot link are left out with a
+  warning, never in silence.** When a Class Information file is present but missing
+  a column co-teachers are linked by — the primary-teacher flag (the basic report
+  lacks it), or the Master Timetable ID when blended classes exist — the enrollments
+  file is built and delivered without those co-teachers, as before, but the run log
+  now names the missing column and Home and Run History show a warning ("Your roster
+  synced without some co-teachers", "co-teachers left out") every night until the
+  export carries the column again — except on a night that also sees an unusual drop,
+  when the drop's warning shows instead, so this one can never hide it. It used to
+  happen with no sign anywhere. The run record carries it as a `notes` entry on the
+  enrollments outcome.
+- **A missing homeroom teacher-name column no longer stops the run.** Homeroom
+  classes are named without the teacher's name, and the run log carries one warning
+  saying how many. It used to fail the whole run.
+- **A district mapping can now say which class-time columns its export has**
+  (config format 1.15): the Classes `session_components` list names the ones blended
+  classes are keyed on, when an export genuinely lacks one. The SD40 (New
+  Westminster) mapping declares its three — its schedule has no Term column — so its
+  classes and enrollments files are unchanged.
+- **Home now warns when family contacts come out empty.** When family contacts end up
+  with nothing in them — every contact had a blank email address, or the contact export
+  is missing a column the district's mapping reads, or it was missing or empty — Home,
+  Run History and the Convert screen now show the same warning as a file left out by a
+  problem, counting it as skipped in Run History, every night until the export produces
+  it again, with what to do next. It used to stay green, with the missing file visible
+  only as a smaller count and, on the first night only, a smaller-than-usual warning. Any
+  other output that would come out empty now stops the night instead (see the first
+  entry); an attendance file present with no rows is a normal night and stays green. A
+  district whose contact export has no email column will now see this warning every night
+  until its mapping or its export changes.
+- **The SD51 (Boundary) mapping no longer produces the family-contacts file,**
+  because the district's contact export has no email column, so the file could
+  never be built.
+- **A failed Convert now appears in Run History.** When a conversion started from
+  the Convert screen fails — for example because an export file is missing a column
+  the district's mapping needs, or the district's mapping cannot be read — Run History
+  now lists it as a "Manual" run reading "Failed"; it used to leave no trace there. The
+  cause is named on the Convert screen's error card as the conversion fails. **A failed
+  Convert does not change Home's verdict:** Home keeps answering from the most recent run that did
+  not fail on the Convert screen — the last nightly sync, command-line run or
+  successful Convert — because one failed hand-run attempt does not make the nightly
+  sync unhealthy, and the Convert screen already showed the failure as it happened. A
+  successful Convert still counts on Home, as before, and a failed nightly sync still
+  turns Home red. A conversion the Convert screen refuses because the student export
+  is missing is treated the same way: it is listed in Run History and no longer turns
+  Home red. If every run recorded so far is a failed Convert, Home and Run History say
+  "No completed sync recorded yet".
+- **A problem with the family-contacts export no longer stops the whole roster
+  sync.** When the emergency-contact export arrives in a shape DistrictSync cannot
+  use — for example the basic *Emergency Contact Information* report saved under the
+  Enhanced report's filename, which lacks the guardian column a district's family
+  filter reads — family contacts are now left out of that night's sync and
+  everything else (students, staff, classes and enrollments) is built and delivered
+  as normal. The whole run used to fail and deliver nothing. Contacts are never sent
+  unfiltered: the family file is left out whole, and the previous one is moved into
+  an `archive_<date>` subfolder of the output folder so it cannot be sent by
+  mistake. Home, Run History and the Convert screen show a warning every night until
+  a correct export arrives, and the next good export is picked up automatically,
+  with nothing to change. Family contacts are the only file this applies to: a problem
+  with any other export — student, staff, class, enrollment, course list, student courses
+  or attendance — still stops the whole run. Such a run ends with exit code 0.
+  What happens to family links from an earlier delivery while the family file is
+  missing depends on import settings SpacesEDU keeps for each district: SpacesEDU
+  sets them, they are usually off, and with them off those links stay as they were.
+  The nightly sync runs the `.exe` saved when the schedule was set up, so it behaves
+  this way once that file is replaced with this version (or the schedule is saved
+  again in Settings).
+- **A self-service mapping can no longer be switched on while it leaves a file
+  out.** The test conversion on the *Your files* step now fails when any file the
+  mapping produces could not be built, naming which ones, instead of passing.
+- **`--dry-run` now names a file it could not build** on a line of its own, after
+  the files it would write.
+- **Failure messages now say what kind of problem it was instead of always pointing
+  at the input folder.** When a nightly sync or a command-line run fails, Home and Run
+  History now name the cause, and when a conversion fails the Convert screen's error card
+  does — an export file missing a column the district's mapping needs, an export file
+  that could not be read, the output
+  folder, the district mapping, or no usable input at all — with a next step to
+  match, in the same words on all three. Only a missing or unreadable input tells you
+  to check the input folder. On the Convert screen the message ends by saying nothing
+  was sent to SpacesEDU when you asked for delivery, and that nothing new was saved to
+  your output folder when you did not. Home and Run History say nothing was sent only
+  when the run's record shows an upload that failed; otherwise they say nothing new was
+  saved to your output folder. Run History's row for a failed run still reads "Failed".
+- **A failed run now records its cause more precisely.** When an export
+  file is missing a column the mapping needs to decide who may be delivered or to
+  link records (for example the role column a staff filter reads), the run
+  record now says `source_schema` instead of the generic `data`; when an export
+  file exists but cannot be read, it says `input_unreadable` instead of `unknown`.
+  You see this in the `--diagnose` support report's "problem" line, and it is the
+  category the new failure messages above are worded from. These runs still fail;
+  the family-contact export is the one exception, described below. A run stopped for a
+  missing or empty export file records `incomplete_input`, and one stopped for an output
+  that came out empty `empty_required_output`.
+
+- **The "synced without family contacts" warning now names the file and the column.**
+  When family contacts are left out because the contacts export is missing a column the
+  district's mapping needs, Home, Run History and the Convert screen now say which file and
+  which column, using the names in the district's mapping — for example
+  `EmergencyContactInformation.txt` and its `Parent Auth / Guardian` column. Only names the
+  district's mapping declares are ever shown — never a column name read from the export
+  itself — and a name that looks like an email address or a folder path is not shown at all.
+  The run record's `entity_outcomes` entry carries the same names (`labels`, `file_label`),
+  also for a file that came out empty because a mapped column was missing (for example a
+  contacts export with no email column); a file type built from several exports (classes,
+  enrollments) is recorded with the column only, and attendance with neither.
+
+### Privacy
+
+- **Column names read from an export file no longer appear in error messages or
+  the log.** Four "column not found" messages used to list every column the file
+  contained. For a file without a header row, that "column list" is the first
+  pupil's data. They now name only the column the mapping expected and say how many
+  columns the file had.
+- **An attendance code the district's mapping does not list is shown in the log only
+  when it looks like a code.** When the daily absences file's columns do not line up
+  with the mapping, the value in the code's place can be anything — a pupil's name
+  included — so only an upper-case code or a Y/N flag is shown; any other value — even a short
+  name — is now described by its length only.
+
+### Added
+
+- **Each run now records what happened to every file it was set up to build.** The
+  run record (in `history.db` and the `__DISTRICTSYNC_RUN__` log line) gains an
+  `entity_outcomes` entry that says, for each of the district's files — Students,
+  Staff, Family contacts and so on — whether it was built (and how many rows), left
+  empty (and why: no source file, an empty export, or no usable rows), failed (a
+  missing column, or another error), or was not reached because the run stopped
+  first. Home, Run History and Convert read it: a run that finished with a file left
+  out shows the warning described under *Changed*. An older DistrictSync sharing the
+  same history simply ignores the new entry, and shows such a run as a plain success.
+- **The log now names a column the district's mapping reads but an export file does
+  not have.** Before building, each run checks every file type — Students, Staff,
+  Family contacts and so on — against the columns the district's mapping reads from
+  that file type's own export, and `etl_tool.log` gets one `MAPPED COLUMNS MISSING`
+  warning per file type naming the missing columns as the mapping spells them. The run
+  record's `entity_outcomes` entry carries the same names (`missing_mapped`), and when
+  family contacts come out empty because of it (for example a contacts export with no
+  email column), the record now says a mapped column was missing
+  (`missing_source_column`) instead of "no usable rows". The check itself changes
+  nothing about the run — the same files are written and sent,
+  with the same result; Home, Run History and the Convert screen look the same as
+  before. The check is skipped for a file type when one of its export files is
+  missing, and for attendance.
+- **Six more export columns can be renamed in a district's mapping,** through the
+  mapping's `source_columns` block: the four columns blended-class detection reads to
+  tell class times apart (Classes roles `session_term`, `session_semester`,
+  `session_day`, `session_period`) and the primary-teacher and section-letter columns of
+  the class-information export (Enrollments roles `class_info_primary_teacher`,
+  `class_info_section_letter`). The schedule's grade column is now read from the Classes
+  mapping's `Grade` entry everywhere it is used, not only for the class's grade. A mapping
+  that sets none of these roles and keeps the standard Classes `Grade` builds exactly what
+  it did before.
+
+### Fixed
+
+- **A district mapping that renames the student-number, grade or homeroom column is now
+  honoured everywhere.** A mapping could rename these columns for the Students file, but
+  the homeroom classes and homeroom enrollments ignored the rename and kept looking for
+  MyEd BC's standard names (`Student Number`, `Grade`, `Homeroom`) — so, depending on the
+  column, a withdrawn pupil could get a homeroom class of their own, homeroom enrollments
+  could go missing, or the run failed.
+  They now read the columns the district's mapping names. A column name written as plain
+  text in a mapping (rather than as `column: …`) is now honoured for the class ID, the
+  school ID and the student grade scope as well. No mapping that ships with DistrictSync
+  renames these columns, so their files do not change. When a district's own mapping has
+  a rename that now takes effect, `etl_tool.log` says so once per run, with a temporary
+  `[columns] '<key>' now reads source column …` warning naming the mapping key and both
+  column names.
+
 ## [3.26.0] - 2026-09-30
 
 West Vancouver (SD45) can now run DistrictSync. Their existing classes keep their

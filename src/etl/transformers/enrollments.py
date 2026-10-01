@@ -7,6 +7,24 @@ assertion for the Classes → Enrollments handoff. Each enrollment source
 (homeroom / subject+blended / ClassInformation co-teacher) is built by a
 function returning a DataFrame (or None); ``transform`` concatenates them in
 the fixed legacy order so ``Enrollments.csv`` row order is byte-identical.
+
+**Every linking column is required where it is read** (plan 0053 S10,
+``failure-policy.md`` §5 (a)/(b)): a source that is present and non-empty but lacks a
+column the homeroom or subject path joins on raises ONE typed ``SourceSchemaError``
+through ``columns.require_columns`` — never a raw ``KeyError``, never a path silently left
+out, never a partial set. ``Enrollments.csv`` is a DEACTIVATING file (a student missing
+from it may be removed from the class — ``docs/partner/faq.md``, "What happens to
+enrollments no longer in the file?"), so Enrollments is CRITICAL and such a fault fails
+the run with the last good output untouched. **The one owner-approved exception** (ruling
+2026-09-25, §5 #15, extended 2026-09-28 to its school number): ClassInformation's CO-TEACHER
+columns are optional — missing, those co-teacher rows are left out with ONE WARNING and
+``OutcomeNote.COTEACHER_SOURCE_UNUSABLE`` on the outcome (a standing warning on Home), never
+silently and never as a failure. An EMPTY source is not a missing column: that path simply
+contributes nothing. (Since 2026-09-28 a MISSING or row-less file an enabled entity lists
+stops the night before any transform runs — ``pipeline.check_required_inputs`` — except where
+``outcomes.source_file_may_be_absent`` lets the night go without it: on a config whose blended
+detection is off, a missing or row-less Class Information file leaves every co-teacher row out
+with the same note — owner ruling 2026-09-30.)
 """
 
 import logging
@@ -14,16 +32,51 @@ from typing import Any, Optional
 
 import pandas as pd
 
-from src.etl.column_names import MASTER_TIMETABLE_ID, SCHOOL_NUMBER
+from src.etl.column_names import (
+    GRADE,
+    HOMEROOM,
+    MASTER_TIMETABLE_ID,
+    PRIMARY_TEACHER,
+    SCHOOL_NUMBER,
+    SECTION_LETTER,
+    STUDENT_NUMBER,
+    TEACHER_ID,
+)
+from src.etl.errors import GuardKind
+from src.etl.outcomes import CLASS_INFORMATION_ROLE, OutcomeNote
 from src.etl.transformers.base import BaseTransformer
+from src.etl.transformers.columns import (
+    Previously,
+    absent_columns,
+    require_columns,
+    resolve_source_column,
+    source_column_label,
+)
 from src.etl.transformers.context import ClassArtifacts, TransformContext
+from src.etl.transformers.course_codes import note_unapplied_exclusions
 from src.etl.transformers.grades import resolve_timetable_scope, split_by_homeroom_grades
 from src.etl.transformers.ids import normalize_id_series
+from src.etl.transformers.required_values import leave_out_rows_missing_required_values
 
 logger = logging.getLogger(__name__)
 
+#: The Enrollments ``source_columns`` ROLES for the two ClassInformation columns the
+#: co-teacher path reads (plan 0053 S9, §5 #11) — named ONCE, read by
+#: :meth:`EnrollmentTransformer._classinfo_coteacher_enrollments` and by the config
+#: loader's unknown-key walker through ``SOURCE_COLUMN_ROLES`` (plan 0053 S12).
+CLASS_INFO_PRIMARY_TEACHER_ROLE = "class_info_primary_teacher"
+CLASS_INFO_SECTION_LETTER_ROLE = "class_info_section_letter"
+
+#: The grep anchor BOTH co-teacher warnings open with (§5 #15): a missing co-teacher column and —
+#: since plan 0053 S13e — a missing or row-less Class Information file. The partner troubleshooting
+#: page tells an admin to search ``etl_tool.log`` for it (pinned in
+#: ``tests/test_partner_doc_schedule_copy_parity.py``, with a twin proving both lines log through it).
+COTEACHERS_LEFT_OUT_LOG_ANCHOR = "CO-TEACHERS LEFT OUT"
+
 
 class EnrollmentTransformer(BaseTransformer):
+    SOURCE_COLUMN_ROLES = frozenset({CLASS_INFO_PRIMARY_TEACHER_ROLE, CLASS_INFO_SECTION_LETTER_ROLE})
+
     def transform(self, df: pd.DataFrame, mapping: dict[str, Any], context: TransformContext) -> pd.DataFrame:
         source_config = mapping.get("source_files", {})
         normalized_sources = self.normalize_source_config(source_config)
@@ -36,6 +89,7 @@ class EnrollmentTransformer(BaseTransformer):
         # UNCONDITIONALLY — not only when a schedule happens to be present.
         artifacts = context.class_artifacts
         if artifacts is None:
+            # failure-policy: join_key
             raise ValueError(
                 "[Enrollments] No class artifacts on the shared context: ClassTransformer "
                 "must run before EnrollmentTransformer (it publishes the homeroom classes "
@@ -54,18 +108,35 @@ class EnrollmentTransformer(BaseTransformer):
         schedule_df = self.normalize_columns(schedule_df)
 
         user_id_config = field_map.get("User ID", {})
-        student_id_col = user_id_config.get("student_id_col", "student number").lower()
-        staff_id_col = user_id_config.get("staff_id_col", "teacher id").lower()
+        student_id_col = resolve_source_column(
+            user_id_config, "student_id_col", default=STUDENT_NUMBER, previously=Previously.AS_CONFIGURED
+        )
+        staff_id_col = resolve_source_column(
+            user_id_config, "staff_id_col", default=TEACHER_ID, previously=Previously.AS_CONFIGURED
+        )
+        # The same two columns in CONFIG spelling — what a typed error names (S10).
+        student_id_label = source_column_label(user_id_config, "student_id_col", default=STUDENT_NUMBER)
+        staff_id_label = source_column_label(user_id_config, "staff_id_col", default=TEACHER_ID)
 
         student_demo_df = self._load_student_demo(normalized_sources, staff_id_col, context)
 
         # Fixed legacy source order — concat order IS the CSV row order.
         sources = [
-            self._homeroom_enrollments(student_demo_df, homeroom_grades, staff_id_col, artifacts, context),
-            self._subject_enrollments(
-                schedule_df, homeroom_grades, student_id_col, staff_id_col, field_map, artifacts, context
+            self._homeroom_enrollments(
+                student_demo_df, homeroom_grades, staff_id_col, staff_id_label, artifacts, context
             ),
-            self._classinfo_coteacher_enrollments(staff_id_col, artifacts, context),
+            self._subject_enrollments(
+                schedule_df,
+                homeroom_grades,
+                (student_id_col, student_id_label),
+                (staff_id_col, staff_id_label),
+                field_map,
+                artifacts,
+                context,
+            ),
+            self._classinfo_coteacher_enrollments(
+                staff_id_col, staff_id_label, mapping.get("source_columns") or {}, artifacts, context
+            ),
         ]
         final = [frame for frame in sources if frame is not None]
 
@@ -74,9 +145,45 @@ class EnrollmentTransformer(BaseTransformer):
             if SCHOOL_NUMBER in result.columns:
                 result.rename(columns={SCHOOL_NUMBER: "School ID"}, inplace=True)
             logger.info(f"[Enrollments] Created {len(result)} total enrollments")
-            return result
+            # Plan 0053 S13d (failure-policy §5 #42): no row may point at someone or something its
+            # own file left out for a missing required value — then the rule itself, last.
+            result = self._leave_out_orphans_of_left_out_rows(result, context)
+            return leave_out_rows_missing_required_values(result, "Enrollments", context, id_column=None).kept
 
         return pd.DataFrame()
+
+    @staticmethod
+    def _leave_out_orphans_of_left_out_rows(result: pd.DataFrame, context: TransformContext) -> pd.DataFrame:
+        """Leave out the rows that point at a staff member or a class LEFT OUT upstream (§5 #42).
+
+        The no-orphan cascade of the required-value rule, applied once over EVERY builder's rows
+        (homeroom, subject, blended, co-teacher): a TEACHER row whose ``User ID`` is a staff member
+        Staff left out (``context.left_out_staff_ids``), and ANY row whose ``Class ID`` is a class
+        Classes left out (``context.left_out_class_ids``). A left-out STUDENT needs nothing here —
+        Students publishes its roster from the rows it kept, so the student-row filters already
+        drop them. Deliberately NARROW: a teacher row whose staff member is missing from
+        ``Staff.csv`` for any other reason (not exported, departed, unroled) is untouched — widening
+        the teacher zero-orphan rule changes delivered rows at measured districts (ROADMAP).
+
+        ONE aggregated INFO line when anything was removed (counts only, never an id). No second
+        outcome note: the upstream entity's own note already says those rows were left out, and
+        the note's copy says their enrollments went with them.
+        """
+        if result.empty or (not context.left_out_staff_ids and not context.left_out_class_ids):
+            return result
+        user_ids = normalize_id_series(result["User ID"])
+        teacher = normalize_id_series(result["Role"]).str.lower() == "teacher"
+        staff_orphans = teacher & user_ids.isin(context.left_out_staff_ids)
+        class_orphans = normalize_id_series(result["Class ID"]).isin(context.left_out_class_ids)
+        orphans = staff_orphans | class_orphans
+        if not bool(orphans.any()):
+            return result
+        logger.info(
+            f"[Enrollments] Left out {int(orphans.sum())} enrollment row(s) pointing at rows left out upstream "
+            f"for a missing required value: {int(staff_orphans.sum())} teacher row(s) of left-out staff, "
+            f"{int(class_orphans.sum())} row(s) of left-out classes."
+        )
+        return result[~orphans].copy()
 
     # -------------------------------------------------------------------
     # Helpers
@@ -101,68 +208,102 @@ class EnrollmentTransformer(BaseTransformer):
         student_demo_df: pd.DataFrame,
         homeroom_grades: list,
         staff_id_col: str,
+        staff_id_label: str,
         artifacts: ClassArtifacts,
         context: TransformContext,
     ) -> Optional[pd.DataFrame]:
-        """Student + teacher homeroom rows (in that order), or None."""
+        """Student + teacher homeroom rows (in that order), or None.
+
+        Every column the two row sets are built from is REQUIRED once homeroom
+        students exist (§5 #5/#10/#28): the grade that picks them (``PII_SCOPE``), and
+        the school + homeroom the merge joins on, the student number the student rows
+        carry and the teacher id the teacher rows carry (``JOIN_KEY``). This replaced a
+        ``try/except (KeyError, MergeError)`` that logged and shipped whatever rows had
+        been built before the error — a partial homeroom set in a deactivating file
+        (plan 0053 S10; on pandas 2.3 the ``MergeError`` arm was unreachable anyway —
+        a merge-key dtype mismatch raises a plain ``ValueError`` — and the reachable
+        ``KeyError`` was a missing column). An SD83 export without its teacher-id column
+        once shipped every homeroom with no teacher this way (ROADMAP, 2026-09-14).
+        """
         if student_demo_df.empty or artifacts.homeroom_classes_df.empty:
             return None
 
         # Work on a copy to avoid mutating the shared raw_data DataFrame
         student_demo_df = student_demo_df.copy()
 
+        # The Students mapping names the DEMOGRAPHIC columns (plan 0053 S9: read
+        # through `context.entity_mappings`; before S9 this path never saw it).
         students_field_map = context.get_students_config().get("field_map", {})
-        grade_col = self.resolve_column(students_field_map, "Grade", "grade")
-        homeroom_col = students_field_map.get("Homeroom", "homeroom").lower()
+        grade_col = resolve_source_column(students_field_map, "Grade", default=GRADE, previously=Previously.DEFAULT)
+        homeroom_col = resolve_source_column(
+            students_field_map, "Homeroom", default=HOMEROOM, previously=Previously.DEFAULT
+        )
         # The demographic student-ID column comes from Students config (not the
         # schedule-targeted Enrollments ID config) — see get_demo_student_col.
         demo_student_col = context.get_demo_student_col()
 
+        # failure-policy: pii_scope
+        require_columns(
+            student_demo_df.columns,
+            [source_column_label(students_field_map, "Grade", default=GRADE)],
+            entity="Enrollments",
+            guard=GuardKind.PII_SCOPE,
+        )
         homeroom_students = split_by_homeroom_grades(student_demo_df, grade_col, homeroom_grades, keep="homeroom")
         if homeroom_students.empty:
             return None
 
-        parts: list[pd.DataFrame] = []
-        try:
-            hr_classes = artifacts.homeroom_classes_df.copy()
-            if staff_id_col in hr_classes.columns:
-                hr_classes[staff_id_col] = normalize_id_series(hr_classes[staff_id_col])
+        # failure-policy: join_key
+        require_columns(
+            homeroom_students.columns,
+            [
+                SCHOOL_NUMBER,
+                source_column_label(students_field_map, "Homeroom", default=HOMEROOM),
+                context.get_demo_student_label(),
+                staff_id_label,
+            ],
+            entity="Enrollments",
+            guard=GuardKind.JOIN_KEY,
+        )
+        # The homeroom lookup Classes published carries the teacher id only when ITS
+        # demographic source did — the same file in every bundled config; a mapping
+        # pointing the two entities at different files must not lose the teacher rows.
+        # failure-policy: join_key
+        require_columns(
+            artifacts.homeroom_classes_df.columns, [staff_id_label], entity="Enrollments", guard=GuardKind.JOIN_KEY
+        )
 
-            merged = homeroom_students.merge(hr_classes, on=[SCHOOL_NUMBER, homeroom_col], how="left")
-            valid = merged[merged["Class ID"].notna()]
-            if valid.empty:
-                return None
+        hr_classes = artifacts.homeroom_classes_df.copy()
+        hr_classes[staff_id_col] = normalize_id_series(hr_classes[staff_id_col])
 
-            # Student homeroom enrollments — filtered to the active roster so no
-            # row references a student absent from Students.csv (zero-orphan
-            # invariant). Teacher rows below derive from the UNfiltered `valid`
-            # and are therefore byte-identical to the pre-filter output.
-            active_students = self.filter_to_active(valid, demo_student_col, context, caller="Enrollments")
-            student_enroll = active_students[["Class ID", demo_student_col, SCHOOL_NUMBER]].copy()
-            student_enroll.rename(columns={demo_student_col: "User ID"}, inplace=True)  # type: ignore[call-overload]
-            student_enroll["Role"] = "student"
-            parts.append(student_enroll)  # type: ignore[arg-type]
-            logger.info(f"[Enrollments] Created {len(student_enroll)} student homeroom enrollments")
-
-            # Teacher homeroom enrollments (unfiltered `valid` — students-only filter)
-            teacher_id_y_col = staff_id_col + "_y"
-            if teacher_id_y_col in valid.columns:
-                teacher_enroll = valid.drop_duplicates(subset=["Class ID"])[
-                    ["Class ID", teacher_id_y_col, SCHOOL_NUMBER]
-                ].copy()
-                teacher_enroll.rename(columns={teacher_id_y_col: "User ID"}, inplace=True)
-                teacher_enroll["Role"] = "teacher"
-                teacher_enroll = self.clean_invalid_ids(teacher_enroll, "User ID")
-                parts.append(teacher_enroll)
-                logger.info(f"[Enrollments] Created {len(teacher_enroll)} teacher homeroom enrollments")
-
-        except (KeyError, pd.errors.MergeError) as e:
-            # Whatever was built before the error still ships (legacy behavior).
-            logger.error(f"[Enrollments] Error merging homeroom data: {e}")
-
-        if not parts:
+        merged = homeroom_students.merge(hr_classes, on=[SCHOOL_NUMBER, homeroom_col], how="left")
+        valid = merged[merged["Class ID"].notna()]
+        if valid.empty:
             return None
-        return pd.concat(parts, ignore_index=True)
+
+        # Student homeroom enrollments — filtered to the active roster so no
+        # row references a student absent from Students.csv (zero-orphan
+        # invariant). Teacher rows below derive from the UNfiltered `valid`
+        # and are therefore byte-identical to the pre-filter output.
+        active_students = self.filter_to_active(valid, demo_student_col, context, caller="Enrollments")
+        student_enroll = active_students[["Class ID", demo_student_col, SCHOOL_NUMBER]].copy()
+        student_enroll.rename(columns={demo_student_col: "User ID"}, inplace=True)  # type: ignore[call-overload]
+        student_enroll["Role"] = "student"
+        logger.info(f"[Enrollments] Created {len(student_enroll)} student homeroom enrollments")
+
+        # Teacher homeroom enrollments (unfiltered `valid` — students-only filter). The
+        # teacher id is on BOTH sides of the merge (required above), so the homeroom
+        # class's own teacher is the `_y` column.
+        teacher_id_y_col = staff_id_col + "_y"
+        teacher_enroll = valid.drop_duplicates(subset=["Class ID"])[
+            ["Class ID", teacher_id_y_col, SCHOOL_NUMBER]
+        ].copy()
+        teacher_enroll.rename(columns={teacher_id_y_col: "User ID"}, inplace=True)
+        teacher_enroll["Role"] = "teacher"
+        teacher_enroll = self.clean_invalid_ids(teacher_enroll, "User ID")
+        logger.info(f"[Enrollments] Created {len(teacher_enroll)} teacher homeroom enrollments")
+
+        return pd.concat([student_enroll, teacher_enroll], ignore_index=True)
 
     # -------------------------------------------------------------------
     # Subject enrollments
@@ -171,13 +312,23 @@ class EnrollmentTransformer(BaseTransformer):
         self,
         schedule_df: pd.DataFrame,
         homeroom_grades: list,
-        student_id_col: str,
-        staff_id_col: str,
+        student_id: tuple[str, str],
+        staff_id: tuple[str, str],
         field_map: dict,
         artifacts: ClassArtifacts,
         context: TransformContext,
     ) -> Optional[pd.DataFrame]:
-        """Student subject + blended teacher + non-blended teacher rows (in that order), or None."""
+        """Student subject + blended teacher + non-blended teacher rows (in that order), or None.
+
+        ``student_id`` / ``staff_id`` are ``(normalised column, config label)`` pairs. Once
+        timetable rows exist, the schedule's student id, teacher id and school number
+        are REQUIRED (§5 #28/#36, ``JOIN_KEY``) — a schedule without its student-ID
+        column used to ship every timetable class with teachers only, unenrolling every
+        timetable student — as are its grade (§5 #5, ``PII_SCOPE``) and its Class ID
+        column (§5 #29, in ``assign_class_ids``).
+        """
+        student_id_col, student_id_label = student_id
+        staff_id_col, staff_id_label = staff_id
         # Work on a copy to avoid mutating the shared raw_data DataFrame
         schedule_df = schedule_df.copy()
 
@@ -185,13 +336,20 @@ class EnrollmentTransformer(BaseTransformer):
             schedule_df[staff_id_col] = normalize_id_series(schedule_df[staff_id_col])
 
         excluded_codes = context.global_config.get("excluded_course_codes", [])
+        note_unapplied_exclusions(context, "Enrollments", schedule_df, configured=bool(excluded_codes))
         schedule_df = self.filter_excluded_course_codes(schedule_df, excluded_codes)
         if schedule_df.empty:
             return None
 
+        # The SAME schedule grade column Classes' split reads (the Classes
+        # mapping's `Grade`), so the two keep the same rows (zero-orphan).
+        # failure-policy: pii_scope
+        require_columns(
+            schedule_df.columns, [context.get_schedule_grade_label()], entity="Enrollments", guard=GuardKind.PII_SCOPE
+        )
         non_homeroom = split_by_homeroom_grades(
             schedule_df,
-            "grade",
+            context.get_schedule_grade_col(),
             homeroom_grades,
             keep="subject",
             timetable_scope=resolve_timetable_scope(context.global_config, homeroom_grades),
@@ -199,6 +357,20 @@ class EnrollmentTransformer(BaseTransformer):
         if non_homeroom.empty:
             return None
 
+        # The Class ID column is listed here too (``assign_class_ids`` checks it again as
+        # its own guard), so ONE call names every linking column the schedule lacks.
+        # failure-policy: join_key
+        require_columns(
+            non_homeroom.columns,
+            [
+                student_id_label,
+                staff_id_label,
+                SCHOOL_NUMBER,
+                source_column_label(field_map, "Class ID", default=MASTER_TIMETABLE_ID),
+            ],
+            entity="Enrollments",
+            guard=GuardKind.JOIN_KEY,
+        )
         non_homeroom = self._assign_class_ids(non_homeroom, field_map, context)  # type: ignore[assignment]
 
         parts: list[pd.DataFrame] = []
@@ -207,13 +379,12 @@ class EnrollmentTransformer(BaseTransformer):
         # `Student ID`, same pupil-number value space as the roster). Teacher
         # derivations below use the UNfiltered `non_homeroom`, so teacher rows
         # stay byte-identical to the pre-filter output (students-only filter).
-        if student_id_col in non_homeroom.columns and "Class ID" in non_homeroom.columns:
-            active_students = self.filter_to_active(non_homeroom, student_id_col, context, caller="Enrollments")
-            student_enroll = active_students[["Class ID", student_id_col, SCHOOL_NUMBER]].copy()
-            student_enroll.rename(columns={student_id_col: "User ID"}, inplace=True)  # type: ignore[call-overload]
-            student_enroll["Role"] = "student"
-            parts.append(student_enroll)  # type: ignore[arg-type]
-            logger.info(f"[Enrollments] Created {len(student_enroll)} student subject enrollments")
+        active_students = self.filter_to_active(non_homeroom, student_id_col, context, caller="Enrollments")
+        student_enroll = active_students[["Class ID", student_id_col, SCHOOL_NUMBER]].copy()
+        student_enroll.rename(columns={student_id_col: "User ID"}, inplace=True)  # type: ignore[call-overload]
+        student_enroll["Role"] = "student"
+        parts.append(student_enroll)  # type: ignore[arg-type]
+        logger.info(f"[Enrollments] Created {len(student_enroll)} student subject enrollments")
 
         # Blended teacher enrollments (artifact-derived; unaffected by the filter)
         blended_enroll = self._blended_teacher_enrollments(artifacts)
@@ -222,20 +393,17 @@ class EnrollmentTransformer(BaseTransformer):
 
         # Non-blended teacher enrollments (unfiltered `non_homeroom` — students-only filter)
         non_blended = non_homeroom[~non_homeroom["Class ID"].isin(artifacts.blended_teacher_map.keys())]
-        if staff_id_col in non_blended.columns and "Class ID" in non_blended.columns:
-            teacher_enroll = non_blended[["Class ID", staff_id_col, SCHOOL_NUMBER]].copy()
-            teacher_enroll.rename(columns={staff_id_col: "User ID"}, inplace=True)
-            teacher_enroll["Role"] = "teacher"
-            teacher_enroll = self.clean_invalid_ids(teacher_enroll, "User ID")
-            parts.append(teacher_enroll)
-            logger.info(f"[Enrollments] Created {len(teacher_enroll)} teacher subject enrollments")
+        teacher_enroll = non_blended[["Class ID", staff_id_col, SCHOOL_NUMBER]].copy()
+        teacher_enroll.rename(columns={staff_id_col: "User ID"}, inplace=True)
+        teacher_enroll["Role"] = "teacher"
+        teacher_enroll = self.clean_invalid_ids(teacher_enroll, "User ID")
+        parts.append(teacher_enroll)
+        logger.info(f"[Enrollments] Created {len(teacher_enroll)} teacher subject enrollments")
 
-        if not parts:
-            return None
         return pd.concat(parts, ignore_index=True)
 
     def _assign_class_ids(self, df: pd.DataFrame, field_map: dict, context: TransformContext) -> pd.DataFrame:
-        return self.assign_class_ids(df, field_map, context)
+        return self.assign_class_ids(df, field_map, context, entity="Enrollments")
 
     @staticmethod
     def _blended_teacher_enrollments(artifacts: ClassArtifacts) -> Optional[pd.DataFrame]:
@@ -253,7 +421,12 @@ class EnrollmentTransformer(BaseTransformer):
                 )
         if not rows:
             return None
-        blended_df = pd.DataFrame(rows).drop_duplicates()
+        # Invalid teacher ids ("nan", blank) dropped like the other three builders do (plan 0053
+        # S13d): a blended section with no teacher is a section without a teacher row — out of
+        # scope — never a row "missing a required value" for the required-value rule to count.
+        blended_df = BaseTransformer.clean_invalid_ids(pd.DataFrame(rows), "User ID").drop_duplicates()
+        if blended_df.empty:
+            return None
         logger.info(f"[Enrollments] Created {len(blended_df)} blended class teacher enrollments")
         return blended_df
 
@@ -263,6 +436,8 @@ class EnrollmentTransformer(BaseTransformer):
     def _classinfo_coteacher_enrollments(
         self,
         staff_id_col: str,
+        staff_id_label: str,
+        source_columns: dict[str, Any],
         artifacts: ClassArtifacts,
         context: TransformContext,
     ) -> Optional[pd.DataFrame]:
@@ -276,20 +451,71 @@ class EnrollmentTransformer(BaseTransformer):
         drop_duplicates(subset=["Class ID","User ID","Role"]) in transform()
         deduplicates against any teacher rows already produced by the
         student_schedule path.
+
+        The two ClassInformation columns it reads resolve from the Enrollments
+        entity's ``source_columns`` block (plan 0053 S9, §5 #11): roles
+        ``class_info_primary_teacher`` and ``class_info_section_letter``, MyEd BC
+        defaults ``primary teacher`` / ``section letter`` when unset.
+
+        **The co-teacher columns are OPTIONAL, never silent** (§5 #15 — owner ruling
+        2026-09-25, reversing Gate A answer 2 for these columns only; extended on
+        2026-09-28 to ClassInformation's ``School Number``, the one column that ruling did
+        not name). With ClassInformation present and non-empty, a missing primary-teacher
+        flag, teacher id or school number leaves every co-teacher row out (every row is
+        built from all three); with primary-teacher rows found, a missing section column
+        leaves Path 1's rows out (when homeroom classes exist) and a missing Master
+        Timetable ID Path 2's (when blended classes exist) — the other path still runs.
+        Each case logs ONE aggregated WARNING (column names + a count) and records
+        ``OutcomeNote.COTEACHER_SOURCE_UNUSABLE`` on the Enrollments outcome, which Home and
+        Run History show as a standing WARNING every night it persists
+        (``failure_copy.NOTE_TIER``) — never a run failure.
+
+        **The FILE itself missing or row-less** (owner ruling 2026-09-30, plan 0053 S13e): since
+        2026-09-28 that stops the night at the input gate (``pipeline.check_required_inputs``)
+        — except on a config whose blended detection is off, where the ONE optional-input
+        predicate (``outcomes.source_file_may_be_absent``) lets the night go without it. So
+        when the Class Information file the Classes mapping lists reached the run with no
+        rows, every co-teacher row is left out and the SAME note is recorded (count 1 — the
+        one file; there is no row to count) with ONE WARNING naming the file in the config's
+        spelling (:meth:`_note_class_information_unusable`). A ClassInformation whose rows were
+        all excluded course codes, or a mapping that lists no Class Information file at all,
+        contributes nothing and records nothing: the export was usable, or there is no
+        co-teacher source to have been unusable.
         """
         class_info_df = artifacts.class_info_df
         if class_info_df.empty:
+            unusable = self._unusable_class_information_file(context)
+            if unusable:
+                # failure-policy: optional_field
+                self._note_class_information_unusable(context, unusable)
             return None
 
         # Columns are already normalized by ClassTransformer._run_blended_detection,
         # but take a copy so we don't mutate the published artifact frame.
         class_info_df = class_info_df.copy()
 
-        primary_col = "primary teacher"
-        section_col = "section letter"
-        if primary_col not in class_info_df.columns or SCHOOL_NUMBER not in class_info_df.columns:
-            return None
-        if staff_id_col not in class_info_df.columns:
+        primary_col = resolve_source_column(
+            source_columns, CLASS_INFO_PRIMARY_TEACHER_ROLE, default=PRIMARY_TEACHER, previously=Previously.DEFAULT
+        )
+        section_col = resolve_source_column(
+            source_columns, CLASS_INFO_SECTION_LETTER_ROLE, default=SECTION_LETTER, previously=Previously.DEFAULT
+        )
+        section_label = source_column_label(source_columns, CLASS_INFO_SECTION_LETTER_ROLE, default=SECTION_LETTER)
+
+        # The three columns EVERY co-teacher row is built from: without any one, no row can be
+        # (§5 #15, owner rulings 2026-09-25 and — for the school — 2026-09-28: left out with a
+        # standing warning, never a failure).
+        # failure-policy: optional_field
+        entry_missing = absent_columns(
+            class_info_df.columns,
+            [
+                source_column_label(source_columns, CLASS_INFO_PRIMARY_TEACHER_ROLE, default=PRIMARY_TEACHER),
+                staff_id_label,
+                SCHOOL_NUMBER,
+            ],
+        )
+        if entry_missing:
+            self._note_coteachers_left_out(context, entry_missing, unused_rows=len(class_info_df))
             return None
 
         primary_rows: pd.DataFrame = class_info_df[
@@ -297,6 +523,21 @@ class EnrollmentTransformer(BaseTransformer):
         ].copy()  # type: ignore[assignment]
         if primary_rows.empty:
             return None
+
+        # Path 1 reads the section column when homeroom classes exist, Path 2 the Master
+        # Timetable ID when blended classes exist. A path whose column is missing is left
+        # out — the other still runs — and ONE note + warning names every missing column.
+        use_path_1 = not artifacts.homeroom_classes_df.empty
+        use_path_2 = bool(artifacts.blended_class_map)
+        # failure-policy: optional_field
+        path_missing = absent_columns(
+            primary_rows.columns,
+            [*([section_label] if use_path_1 else []), *([MASTER_TIMETABLE_ID] if use_path_2 else [])],
+        )
+        if path_missing:
+            self._note_coteachers_left_out(context, path_missing, unused_rows=len(primary_rows))
+            use_path_1 = use_path_1 and section_label not in path_missing
+            use_path_2 = use_path_2 and MASTER_TIMETABLE_ID not in path_missing
 
         primary_rows[staff_id_col] = normalize_id_series(primary_rows[staff_id_col])
         primary_rows[SCHOOL_NUMBER] = normalize_id_series(primary_rows[SCHOOL_NUMBER])
@@ -307,33 +548,36 @@ class EnrollmentTransformer(BaseTransformer):
 
         # Path 1: section-letter → homeroom class id
         hr_df = artifacts.homeroom_classes_df
-        if not hr_df.empty and section_col in primary_rows.columns:
+        if use_path_1:
             students_field_map = context.get_students_config().get("field_map", {})
-            homeroom_col = students_field_map.get("Homeroom", "homeroom").lower()
-            if homeroom_col in hr_df.columns and SCHOOL_NUMBER in hr_df.columns:
-                hr_lookup = hr_df[[SCHOOL_NUMBER, homeroom_col, "Class ID"]].copy()
-                hr_lookup[SCHOOL_NUMBER] = normalize_id_series(hr_lookup[SCHOOL_NUMBER])
-                hr_lookup[homeroom_col] = normalize_id_series(hr_lookup[homeroom_col])
-                hr_lookup = hr_lookup.drop_duplicates(subset=[SCHOOL_NUMBER, homeroom_col])
+            homeroom_col = resolve_source_column(
+                students_field_map, "Homeroom", default=HOMEROOM, previously=Previously.DEFAULT
+            )
+            # School + homeroom are on the lookup BY CONSTRUCTION: Classes builds it from
+            # exactly these two columns (and required both — §5 #30).
+            hr_lookup = hr_df[[SCHOOL_NUMBER, homeroom_col, "Class ID"]].copy()
+            hr_lookup[SCHOOL_NUMBER] = normalize_id_series(hr_lookup[SCHOOL_NUMBER])
+            hr_lookup[homeroom_col] = normalize_id_series(hr_lookup[homeroom_col])
+            hr_lookup = hr_lookup.drop_duplicates(subset=[SCHOOL_NUMBER, homeroom_col])
 
-                merged = primary_rows.merge(
-                    hr_lookup.rename(columns={homeroom_col: section_col}),
-                    on=[SCHOOL_NUMBER, section_col],
-                    how="left",
+            merged = primary_rows.merge(
+                hr_lookup.rename(columns={homeroom_col: section_col}),
+                on=[SCHOOL_NUMBER, section_col],
+                how="left",
+            )
+            hr_matches = merged[merged["Class ID"].notna()]
+            for _, row in hr_matches.iterrows():
+                rows.append(
+                    {
+                        "Class ID": str(row["Class ID"]),
+                        "User ID": str(row[staff_id_col]),
+                        "Role": "teacher",
+                        SCHOOL_NUMBER: str(row[SCHOOL_NUMBER]),
+                    }
                 )
-                hr_matches = merged[merged["Class ID"].notna()]
-                for _, row in hr_matches.iterrows():
-                    rows.append(
-                        {
-                            "Class ID": str(row["Class ID"]),
-                            "User ID": str(row[staff_id_col]),
-                            "Role": "teacher",
-                            SCHOOL_NUMBER: str(row[SCHOOL_NUMBER]),
-                        }
-                    )
 
         # Path 2: Master Timetable ID → blended class id
-        if MASTER_TIMETABLE_ID in primary_rows.columns and artifacts.blended_class_map:
+        if use_path_2:
             primary_rows[MASTER_TIMETABLE_ID] = normalize_id_series(primary_rows[MASTER_TIMETABLE_ID])
             for _, row in primary_rows.iterrows():
                 mt_id = row[MASTER_TIMETABLE_ID]
@@ -359,3 +603,65 @@ class EnrollmentTransformer(BaseTransformer):
 
         logger.info(f"[Enrollments] Created {len(coteacher_df)} ClassInformation co-teacher enrollments")
         return coteacher_df
+
+    @staticmethod
+    def _note_coteachers_left_out(context: TransformContext, missing: tuple[str, ...], *, unused_rows: int) -> None:
+        """ONE aggregated WARNING + the Enrollments outcome note for co-teacher rows left out (§5 #15).
+
+        ``missing`` is the absent columns in CONFIG spelling (never an observed header) and
+        ``unused_rows`` the ClassInformation rows affected — the whole file when an entry column
+        is missing, the primary-teacher rows when a path column is (DECISIONS 2026-09-25 (f)).
+        With only ONE path's column missing the other path still reads those same rows, so the
+        wording claims only that the links needing the missing column(s) were not made — never
+        that the rows went unused. Both values are bounded, so the line names no person and no
+        value. The note makes the run PARTIAL
+        on Home and Run History every night it persists (``failure_copy.NOTE_TIER``).
+        """
+        logger.warning(
+            f"[Enrollments] {COTEACHERS_LEFT_OUT_LOG_ANCHOR} — Class Information has no column(s) {list(missing)} "
+            f"for linking co-teachers, so the co-teacher links that need them were not made "
+            f"({unused_rows} Class Information row(s) affected). Everything else is built as usual; the "
+            f"run shows a warning until the export carries the column(s)."
+        )
+        context.record_outcome_note("Enrollments", OutcomeNote.COTEACHER_SOURCE_UNUSABLE, unused_rows)
+
+    def _unusable_class_information_file(self, context: TransformContext) -> str:
+        """The Class Information file the Classes mapping lists, when it reached this run with NO
+        rows — missing from the input folder or present with none (the extractor answers both with
+        an empty frame) — else ``""``.
+
+        Read off the RAW input, never ``ClassArtifacts.class_info_df``: that frame is empty too
+        when every row was an excluded course code (``excluded_course_codes``), which is a usable
+        export with nothing for co-teachers, not an unusable one. The role is Classes' — the one
+        entity that loads the file and publishes it to this path (``ClassArtifacts``) — read
+        through ``context.entity_mappings``, which ``run_transform`` publishes; a hand-built
+        context with no mappings names no file, so it records nothing.
+        """
+        classes_cfg = context.entity_mappings.get("Classes") or {}
+        source_config = classes_cfg.get("source_files", {}) if isinstance(classes_cfg, dict) else {}
+        filename = self.normalize_source_config(source_config).get(CLASS_INFORMATION_ROLE, "")
+        if not isinstance(filename, str) or not filename:
+            return ""
+        frame = context.raw_data.get(filename)
+        return filename if frame is None or frame.empty else ""
+
+    @staticmethod
+    def _note_class_information_unusable(context: TransformContext, filename: str) -> None:
+        """ONE aggregated WARNING + the Enrollments outcome note when the Class Information FILE is
+        missing or row-less (§5 #15 — owner ruling 2026-09-30, plan 0053 S13e).
+
+        Reached on a real run only where ``outcomes.source_file_may_be_absent`` lets the night go
+        without the file (blended detection off — SD45, which sends none, every night); with
+        detection on the input gate stops the night first. ``filename`` is the mapping's own
+        spelling (config vocabulary — never an observed header, never a value), and the count is 1:
+        the one file, since there is no row to count. The note is the same
+        ``COTEACHER_SOURCE_UNUSABLE`` a missing co-teacher column records — the same rows left out,
+        the same standing WARNING on Home and Run History every night it persists.
+        """
+        logger.warning(
+            f"[Enrollments] {COTEACHERS_LEFT_OUT_LOG_ANCHOR} — the Class Information file {filename!r} this "
+            f"district's mapping lists is missing from the input folder or has no rows, so no "
+            f"co-teacher links were made (1 file affected). Everything else is built as usual; the "
+            f"run shows a warning until the file arrives with its rows."
+        )
+        context.record_outcome_note("Enrollments", OutcomeNote.COTEACHER_SOURCE_UNUSABLE, 1)
