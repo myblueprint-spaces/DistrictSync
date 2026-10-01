@@ -19,7 +19,7 @@ from src.etl.column_names import (
     TEACHER_NAME,
 )
 from src.etl.errors import GuardKind
-from src.etl.outcomes import OutcomeNote
+from src.etl.outcomes import CLASS_INFORMATION_ROLE, OutcomeNote, blended_detection_off
 from src.etl.transformers.base import BaseTransformer
 from src.etl.transformers.blended import SESSION_TIME_COMPONENTS, BlendedClassDetector, BlendedDetection
 from src.etl.transformers.columns import Previously, require_columns, resolve_source_column, source_column_label
@@ -142,7 +142,7 @@ class ClassTransformer(BaseTransformer):
         the detected blended maps; ``transform`` publishes both via
         ``ClassArtifacts``.
         """
-        class_info_df = self.get_source_file(context, normalized_sources, "class_info")
+        class_info_df = self.get_source_file(context, normalized_sources, CLASS_INFORMATION_ROLE)
         if class_info_df.empty:
             logger.info("[Classes] No class info data found for blended class detection")
             return pd.DataFrame(), BlendedDetection.empty()
@@ -162,9 +162,11 @@ class ClassTransformer(BaseTransformer):
         # Opt-out (global_config.blended_classes: false): the normalized/
         # filtered class_info frame is still returned UNCHANGED — Enrollments
         # still builds ClassInformation co-teacher rows from it — only blended
-        # DETECTION is skipped. Branch on the resolved bool, never truthiness
-        # of a missing key, so a typo'd key can't silently flip the default.
-        if context.global_config.get("blended_classes", True) is False:
+        # DETECTION is skipped. `outcomes.blended_detection_off` is the ONE reading
+        # (the resolved bool, never truthiness of a missing key, so a typo'd key can't
+        # silently flip the default); the input gate reads it too, which is why this
+        # file may be missing on such a config (owner ruling 2026-09-30).
+        if blended_detection_off(context.global_config):
             logger.info(
                 "[Classes] Blended-class detection disabled by config "
                 "(global_config.blended_classes: false); ClassInformation still "

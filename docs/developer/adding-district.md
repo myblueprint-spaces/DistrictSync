@@ -352,6 +352,16 @@ Set `blended_classes: false` when a district's `Day` column doesn't rotate
 blend DETECTION is skipped, so nothing merges. Default `true` keeps every
 existing district byte-identical.
 
+**It also makes the Class Information file OPTIONAL** (plan 0053 S13e, owner
+ruling 2026-09-30). Detection no longer reads it, so on a night it is missing
+from the input folder — or present with no rows — the input gate lets the night
+run (`outcomes.source_file_may_be_absent`, the ONE predicate both the gate and
+Convert's missing-file line read; `outcomes.blended_detection_off` is the ONE
+reading of this key) and only the co-teacher enrollments are left out, with one
+`CO-TEACHERS LEFT OUT` warning naming the file and the standing amber
+`coteacher_source_unusable` note (SD45, which sends none, every night). With
+detection on, a missing or row-less Class Information still stops the night.
+
 Pointing `class_info` at the non-Enhanced `ClassInformation.txt` is **not** a
 workaround: without a Master Timetable ID, blended detection falls back to a
 deduplicated schedule using the SAME session key (same false merges), and

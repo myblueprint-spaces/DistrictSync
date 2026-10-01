@@ -21,7 +21,10 @@ columns are optional — missing, those co-teacher rows are left out with ONE WA
 ``OutcomeNote.COTEACHER_SOURCE_UNUSABLE`` on the outcome (a standing warning on Home), never
 silently and never as a failure. An EMPTY source is not a missing column: that path simply
 contributes nothing. (Since 2026-09-28 a MISSING or row-less file an enabled entity lists
-stops the night before any transform runs — ``pipeline.check_required_inputs``.)
+stops the night before any transform runs — ``pipeline.check_required_inputs`` — except where
+``outcomes.source_file_may_be_absent`` lets the night go without it: on a config whose blended
+detection is off, a missing or row-less Class Information file leaves every co-teacher row out
+with the same note — owner ruling 2026-09-30.)
 """
 
 import logging
@@ -40,7 +43,7 @@ from src.etl.column_names import (
     TEACHER_ID,
 )
 from src.etl.errors import GuardKind
-from src.etl.outcomes import OutcomeNote
+from src.etl.outcomes import CLASS_INFORMATION_ROLE, OutcomeNote
 from src.etl.transformers.base import BaseTransformer
 from src.etl.transformers.columns import (
     Previously,
@@ -63,6 +66,12 @@ logger = logging.getLogger(__name__)
 #: loader's unknown-key walker through ``SOURCE_COLUMN_ROLES`` (plan 0053 S12).
 CLASS_INFO_PRIMARY_TEACHER_ROLE = "class_info_primary_teacher"
 CLASS_INFO_SECTION_LETTER_ROLE = "class_info_section_letter"
+
+#: The grep anchor BOTH co-teacher warnings open with (§5 #15): a missing co-teacher column and —
+#: since plan 0053 S13e — a missing or row-less Class Information file. The partner troubleshooting
+#: page tells an admin to search ``etl_tool.log`` for it (pinned in
+#: ``tests/test_partner_doc_schedule_copy_parity.py``, with a twin proving both lines log through it).
+COTEACHERS_LEFT_OUT_LOG_ANCHOR = "CO-TEACHERS LEFT OUT"
 
 
 class EnrollmentTransformer(BaseTransformer):
@@ -459,13 +468,26 @@ class EnrollmentTransformer(BaseTransformer):
         Each case logs ONE aggregated WARNING (column names + a count) and records
         ``OutcomeNote.COTEACHER_SOURCE_UNUSABLE`` on the Enrollments outcome, which Home and
         Run History show as a standing WARNING every night it persists
-        (``failure_copy.NOTE_TIER``) — never a run failure. An EMPTY ClassInformation
-        contributes nothing and records nothing: there is no co-teacher source to have been
-        unusable (and since 2026-09-28 a missing or row-less one stops the night before
-        this runs — ``pipeline.check_required_inputs``).
+        (``failure_copy.NOTE_TIER``) — never a run failure.
+
+        **The FILE itself missing or row-less** (owner ruling 2026-09-30, plan 0053 S13e): since
+        2026-09-28 that stops the night at the input gate (``pipeline.check_required_inputs``)
+        — except on a config whose blended detection is off, where the ONE optional-input
+        predicate (``outcomes.source_file_may_be_absent``) lets the night go without it. So
+        when the Class Information file the Classes mapping lists reached the run with no
+        rows, every co-teacher row is left out and the SAME note is recorded (count 1 — the
+        one file; there is no row to count) with ONE WARNING naming the file in the config's
+        spelling (:meth:`_note_class_information_unusable`). A ClassInformation whose rows were
+        all excluded course codes, or a mapping that lists no Class Information file at all,
+        contributes nothing and records nothing: the export was usable, or there is no
+        co-teacher source to have been unusable.
         """
         class_info_df = artifacts.class_info_df
         if class_info_df.empty:
+            unusable = self._unusable_class_information_file(context)
+            if unusable:
+                # failure-policy: optional_field
+                self._note_class_information_unusable(context, unusable)
             return None
 
         # Columns are already normalized by ClassTransformer._run_blended_detection,
@@ -596,9 +618,50 @@ class EnrollmentTransformer(BaseTransformer):
         on Home and Run History every night it persists (``failure_copy.NOTE_TIER``).
         """
         logger.warning(
-            f"[Enrollments] CO-TEACHERS LEFT OUT — Class Information has no column(s) {list(missing)} "
+            f"[Enrollments] {COTEACHERS_LEFT_OUT_LOG_ANCHOR} — Class Information has no column(s) {list(missing)} "
             f"for linking co-teachers, so the co-teacher links that need them were not made "
             f"({unused_rows} Class Information row(s) affected). Everything else is built as usual; the "
             f"run shows a warning until the export carries the column(s)."
         )
         context.record_outcome_note("Enrollments", OutcomeNote.COTEACHER_SOURCE_UNUSABLE, unused_rows)
+
+    def _unusable_class_information_file(self, context: TransformContext) -> str:
+        """The Class Information file the Classes mapping lists, when it reached this run with NO
+        rows — missing from the input folder or present with none (the extractor answers both with
+        an empty frame) — else ``""``.
+
+        Read off the RAW input, never ``ClassArtifacts.class_info_df``: that frame is empty too
+        when every row was an excluded course code (``excluded_course_codes``), which is a usable
+        export with nothing for co-teachers, not an unusable one. The role is Classes' — the one
+        entity that loads the file and publishes it to this path (``ClassArtifacts``) — read
+        through ``context.entity_mappings``, which ``run_transform`` publishes; a hand-built
+        context with no mappings names no file, so it records nothing.
+        """
+        classes_cfg = context.entity_mappings.get("Classes") or {}
+        source_config = classes_cfg.get("source_files", {}) if isinstance(classes_cfg, dict) else {}
+        filename = self.normalize_source_config(source_config).get(CLASS_INFORMATION_ROLE, "")
+        if not isinstance(filename, str) or not filename:
+            return ""
+        frame = context.raw_data.get(filename)
+        return filename if frame is None or frame.empty else ""
+
+    @staticmethod
+    def _note_class_information_unusable(context: TransformContext, filename: str) -> None:
+        """ONE aggregated WARNING + the Enrollments outcome note when the Class Information FILE is
+        missing or row-less (§5 #15 — owner ruling 2026-09-30, plan 0053 S13e).
+
+        Reached on a real run only where ``outcomes.source_file_may_be_absent`` lets the night go
+        without the file (blended detection off — SD45, which sends none, every night); with
+        detection on the input gate stops the night first. ``filename`` is the mapping's own
+        spelling (config vocabulary — never an observed header, never a value), and the count is 1:
+        the one file, since there is no row to count. The note is the same
+        ``COTEACHER_SOURCE_UNUSABLE`` a missing co-teacher column records — the same rows left out,
+        the same standing WARNING on Home and Run History every night it persists.
+        """
+        logger.warning(
+            f"[Enrollments] {COTEACHERS_LEFT_OUT_LOG_ANCHOR} — the Class Information file {filename!r} this "
+            f"district's mapping lists is missing from the input folder or has no rows, so no "
+            f"co-teacher links were made (1 file affected). Everything else is built as usual; the "
+            f"run shows a warning until the file arrives with its rows."
+        )
+        context.record_outcome_note("Enrollments", OutcomeNote.COTEACHER_SOURCE_UNUSABLE, 1)

@@ -593,9 +593,9 @@ class TestTheRecordAndTheTiers:
     def test_only_the_all_active_default_the_coteacher_and_the_required_value_notes_warn(self):
         """Plan 0053 S13d (owner 2026-09-28, "leave out + count + amber"): every note that says rows
         were left out for a missing required value warns — the five per-output members and Family's
-        email exclusion (`required_fields.REQUIRED_VALUE_NOTES`). The owner was asked on 2026-09-30
-        whether Family's email exclusion stays row detail instead; reversing it is one NOTE_TIER line,
-        its §7 row and this set."""
+        email exclusion (`required_fields.REQUIRED_VALUE_NOTES`). Asked on 2026-09-30 whether Family's
+        email exclusion should stay row detail instead, the owner answered "Amber (as built)"
+        (DECISIONS 2026-09-30, S13e) — so it is in this set to stay."""
         warning = {note for note, tier in NOTE_TIER.items() if tier is Verdict.WARNING}
         assert warning == {
             OutcomeNote.ALL_ACTIVE_DEFAULT,

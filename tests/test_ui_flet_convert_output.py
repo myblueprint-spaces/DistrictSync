@@ -26,9 +26,12 @@ from pathlib import Path
 
 import pytest
 
+from src.etl.outcomes import ENTITY_CRITICALITY, EntityCriticality
 from src.ui_flet import convert_output
 from src.ui_flet.convert_output import (
+    NO_OPTIONAL_INPUTS,
     DeliverReadiness,
+    OptionalInputs,
     ResultDeliverReadiness,
     RunIdentity,
     ack_authorizes,
@@ -42,6 +45,7 @@ from src.ui_flet.convert_output import (
     missing_files_copy,
     nothing_to_deliver_copy,
     open_folder,
+    optional_inputs,
     output_dir_is_set,
     resolved_output_caption,
     result_deliver_state,
@@ -577,20 +581,92 @@ class TestThisRunLabel:
                 assert pill is not None, (selected, saved)
 
 
+_FAMILY_ONLY = OptionalInputs(family_contacts=True, class_information=False)
+_CLASS_INFO_ONLY = OptionalInputs(family_contacts=False, class_information=True)
+_BOTH = OptionalInputs(family_contacts=True, class_information=True)
+
+_FAMILY_ONLY_LINE = (
+    "A missing file stops the conversion, except the family contacts file — without it, only "
+    "family contacts are left out."
+)
+_CLASS_INFO_ONLY_LINE = (
+    "A missing file stops the conversion, except the class information file — without it, only "
+    "co-teachers are left out."
+)
+_BOTH_LINE = (
+    "A missing file stops the conversion, except two: without the family contacts file, only "
+    "family contacts are left out, and without the class information file, only co-teachers "
+    "are left out."
+)
+_NONE_LINE = "A missing file stops the conversion."
+
+
 class TestMissingFilesCopy:
     def test_heading_softened_and_reassurance_is_honest(self) -> None:
-        heading, consequence = missing_files_copy()
+        heading, consequence = missing_files_copy(optional=_FAMILY_ONLY)
         # The old alarm phrasing is gone; the heading observes calmly.
         assert "Expected files not found" not in heading
         assert heading == "Not found in this folder — this district's sync reads:"
         # Owner 2026-09-28: every file a required output lists must be there, so the line states
         # THAT consequence before the admin presses Convert — never a reassurance the run would
         # then contradict ("You can still convert" was true only while a missing file was skipped).
-        assert consequence == (
-            "A missing file stops the conversion, except the family contacts file — without it, only "
-            "family contacts are left out."
-        )
+        assert consequence == _FAMILY_ONLY_LINE
         assert "You can still convert" not in consequence
+
+    @pytest.mark.parametrize(
+        ("optional", "line"),
+        [
+            (_BOTH, _BOTH_LINE),
+            (_FAMILY_ONLY, _FAMILY_ONLY_LINE),
+            (_CLASS_INFO_ONLY, _CLASS_INFO_ONLY_LINE),
+            (NO_OPTIONAL_INPUTS, _NONE_LINE),
+        ],
+    )
+    def test_each_exception_is_named_exactly_when_it_holds(self, optional: OptionalInputs, line: str) -> None:
+        """Owner ruling 2026-09-30 (S13e): with blended detection off the class information file is
+        optional too. The four forms name an exception only where the district HAS it — a line naming
+        the family contacts file to SD51 (Family off) would describe a file it never reads."""
+        heading, consequence = missing_files_copy(optional=optional)
+        assert heading == "Not found in this folder — this district's sync reads:"
+        assert consequence == line
+
+    @pytest.mark.parametrize(
+        ("config_name", "expected"),
+        [
+            ("sd45myedbc", _BOTH),  # Family on, detection off
+            ("sd51myedbc", _CLASS_INFO_ONLY),  # Family off since 2026-09-25, detection off
+            ("sd74myedbc", _FAMILY_ONLY),
+            ("myedbc", _FAMILY_ONLY),
+            ("mbp_core", NO_OPTIONAL_INPUTS),  # no Family, detection on
+            ("sd38myedbc", NO_OPTIONAL_INPUTS),
+        ],
+    )
+    def test_the_exceptions_come_from_the_gates_own_predicate(self, config_name: str, expected: OptionalInputs) -> None:
+        """``optional_inputs`` reads ``pipeline.optional_source_files`` — the input gate's own
+        predicate — so the line follows the config, including SD51's class-information-only form
+        and a no-exception district."""
+        assert optional_inputs(config_name) == expected
+
+    def test_the_family_clause_premise_isolatable_is_exactly_family(self) -> None:
+        """``optional_inputs`` keys the family contacts clause on ISOLATABLE (the predicate's own
+        branch); were another entity ever made isolatable, the clause would name the wrong file —
+        so this goes red first."""
+        isolatable = {entity for entity, tier in ENTITY_CRITICALITY.items() if tier is EntityCriticality.ISOLATABLE}
+        assert isolatable == {"Family"}
+
+    def test_optional_inputs_are_total(self) -> None:
+        """No district, or one whose mapping cannot be read: the strictest line."""
+        assert optional_inputs(None) == NO_OPTIONAL_INPUTS
+        assert optional_inputs("") == NO_OPTIONAL_INPUTS
+        assert optional_inputs("no_such_district_config") == NO_OPTIONAL_INPUTS
+
+    def test_the_optional_parameter_is_required_keyword_only(self) -> None:
+        """A default would state one district's rule for another."""
+        import inspect
+
+        parameter = inspect.signature(missing_files_copy).parameters["optional"]
+        assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
+        assert parameter.default is inspect.Parameter.empty
 
 
 class TestInteractionState:
@@ -889,7 +965,7 @@ class TestFileChipsIgnoreFilenameCase:
 
         text = self._chip_text(convert_screen._build_file_chips("myedbc", folder))
 
-        heading, _reassurance = missing_files_copy()
+        heading, _reassurance = missing_files_copy(optional=NO_OPTIONAL_INPUTS)
         assert heading not in text, "a present file was reported missing purely because of its casing"
 
     def test_a_genuinely_absent_file_IS_still_reported(self, tmp_path, monkeypatch) -> None:
@@ -901,6 +977,24 @@ class TestFileChipsIgnoreFilenameCase:
 
         text = self._chip_text(convert_screen._build_file_chips("myedbc", folder))
 
-        heading, _reassurance = missing_files_copy()
+        heading, _reassurance = missing_files_copy(optional=NO_OPTIONAL_INPUTS)
         assert heading in text
         assert "Schedule.txt" in text, "the MAPPING's spelling is what an admin needs to see"
+
+    @pytest.mark.parametrize(
+        ("config_name", "line"),
+        [("sd45myedbc", _BOTH_LINE), ("sd51myedbc", _CLASS_INFO_ONLY_LINE), ("sd74myedbc", _FAMILY_ONLY_LINE)],
+    )
+    def test_the_chips_paint_the_district_own_exceptions(self, tmp_path, monkeypatch, config_name, line) -> None:  # noqa: ANN001
+        """The wiring the pure tests cannot see: ``_build_file_chips`` must hand THIS district's
+        ``optional_inputs`` to ``missing_files_copy`` — were it to pass a constant, SD45/SD51 would
+        be told the family-only rule and every pure test would stay green."""
+        from src.ui_flet.screens import convert as convert_screen
+
+        monkeypatch.setattr(convert_screen, "_expected_files", lambda _c: ["Students.txt", "ClassInformationEnh.txt"])
+        folder = self._folder_with(tmp_path, ["Students.txt"])
+
+        text = self._chip_text(convert_screen._build_file_chips(config_name, folder))
+
+        assert line in text
+        assert "ClassInformationEnh.txt" in text

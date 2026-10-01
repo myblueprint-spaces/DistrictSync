@@ -46,6 +46,7 @@ from src.config.app_config import AppConfig
 from src.etl import pipeline
 from src.etl.errors import EmptyRequiredOutputError, IncompleteInputError, RunErrorCategory
 from src.etl.outcomes import OUTCOMES_RECORD_KEY, EntityOutcome, OutcomeNote, OutcomeReason, outcomes_to_record
+from src.etl.transformers.enrollments import COTEACHERS_LEFT_OUT_LOG_ANCHOR
 from src.etl.transformers.required_values import REQUIRED_VALUES_LOG_ANCHOR
 from src.scheduler import windows
 from src.scheduler.task_com import (
@@ -149,6 +150,15 @@ _SCHOOL_STOP_RECORD = {
 _STAFF_LEFT_OUT = (
     EntityOutcome.built("Students", 5),
     EntityOutcome.built("Staff", 4, notes=((OutcomeNote.STAFF_EXCLUDED_REQUIRED_VALUE, 2),)),
+)
+
+
+#: Plan 0053 S13e — "Some co-teachers were left out": a BUILT Enrollments carrying the co-teacher
+#: note (a missing co-teacher column, or — owner ruling 2026-09-30 — a missing Class Information file
+#: on a config whose blended detection is off), everything else built.
+_COTEACHERS_LEFT_OUT = (
+    EntityOutcome.built("Students", 5),
+    EntityOutcome.built("Enrollments", 7, notes=((OutcomeNote.COTEACHER_SOURCE_UNUSABLE, 1),)),
 )
 
 
@@ -329,6 +339,19 @@ _PINNED: dict[str, tuple[str, str | None]] = {
         )[0],
     ),
     "required_values_anchor": (REQUIRED_VALUES_LOG_ANCHOR, None),
+    # Plan 0053 S13e — "Some co-teachers were left out": the amber headline and Run History label of
+    # a run whose Enrollments left co-teachers out (the column case, and since owner ruling 2026-09-30
+    # the missing-file case on a blended-off config — SD45 every night), and the log anchor both
+    # co-teacher warnings open with — each proved against what paints or logs it.
+    "coteacher_headline_delivered": (
+        "Your roster synced without some co-teachers",
+        partial_copy(_COTEACHERS_LEFT_OUT[1:], delivered=True)[0],
+    ),
+    "coteacher_row_delivered": (
+        "Delivered · co-teachers left out",
+        _partial_row_label(delivered=True, outcomes=_COTEACHERS_LEFT_OUT),
+    ),
+    "coteacher_anchor": (COTEACHERS_LEFT_OUT_LOG_ANCHOR, None),
 }
 
 #: doc -> the strings that doc is DECLARED to quote. Anything not listed must be ABSENT.
@@ -419,6 +442,7 @@ def test_the_derived_rows_are_really_derived() -> None:
     assert _INPUT_STOP_ANCHOR == "REQUIRED INPUT UNUSABLE", f"the input gate's line now opens {_INPUT_STOP_ANCHOR!r}"
     assert _OUTPUT_STOP_ANCHOR == "REQUIRED OUTPUT EMPTY", f"the empty-output line now opens {_OUTPUT_STOP_ANCHOR!r}"
     assert REQUIRED_VALUES_LOG_ANCHOR == "REQUIRED VALUES MISSING", "the required-value rule's line moved"
+    assert COTEACHERS_LEFT_OUT_LOG_ANCHOR == "CO-TEACHERS LEFT OUT", "the co-teacher warnings' anchor moved"
 
 
 def test_the_stop_anchors_are_what_the_pipeline_really_logs(caplog) -> None:
@@ -436,7 +460,11 @@ def test_the_stop_anchors_are_what_the_pipeline_really_logs(caplog) -> None:
     with caplog.at_level(logging.ERROR, logger="src.etl.pipeline"):
         with pytest.raises(IncompleteInputError):
             pipeline.check_required_inputs(
-                mappings, {"Students.txt": pd.DataFrame()}, absent={"Students.txt"}, ledger=OutcomeLedger(["Students"])
+                mappings,
+                {"Students.txt": pd.DataFrame()},
+                absent={"Students.txt"},
+                ledger=OutcomeLedger(["Students"]),
+                global_config=gc,
             )
         with pytest.raises(EmptyRequiredOutputError):
             pipeline.run_transform({"Students.txt": pd.DataFrame()}, mappings, gc, ledger=OutcomeLedger(["Students"]))
@@ -468,6 +496,40 @@ def test_the_required_values_anchor_is_what_the_rule_really_logs(caplog) -> None
     with caplog.at_level(logging.WARNING):
         leave_out_rows_missing_required_values(frame, "Staff", TransformContext(), id_column=None)
     assert any(r.getMessage().startswith(f"[Staff] {REQUIRED_VALUES_LOG_ANCHOR} —") for r in caplog.records)
+
+
+def test_the_coteacher_anchor_is_what_both_coteacher_warnings_really_log(caplog) -> None:
+    """The twin for the S13e anchor: BOTH co-teacher warnings — a missing co-teacher column, and a
+    missing or row-less Class Information file on a config whose blended detection is off — log
+    THROUGH it, so the troubleshooting page's search term finds either line."""
+    import logging
+
+    import pandas as pd
+
+    from src.etl.transformers.context import ClassArtifacts, TransformContext
+    from src.etl.transformers.enrollments import EnrollmentTransformer
+
+    def _context(class_info: pd.DataFrame, raw: dict, mappings: dict) -> TransformContext:
+        ctx = TransformContext(school_year=2026, raw_data=raw, entity_mappings=mappings)
+        ctx.class_artifacts = ClassArtifacts(
+            homeroom_classes_df=pd.DataFrame(),
+            class_info_df=class_info,
+            blended_class_map={},
+            blended_class_metadata={},
+            blended_teacher_map={},
+        )
+        return ctx
+
+    no_flag = pd.DataFrame({"teacher id": ["T1"], "school number": ["1"]})  # no primary-teacher column
+    missing_file = {"Classes": {"source_files": {"class_info": "ClassInfo.txt"}}}
+    with caplog.at_level(logging.WARNING):
+        for ctx in (_context(no_flag, {}, {}), _context(pd.DataFrame(), {}, missing_file)):
+            EnrollmentTransformer()._classinfo_coteacher_enrollments(
+                "teacher id", "Teacher ID", {}, ctx.class_artifacts, ctx
+            )
+    lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("[Enrollments] ")]
+    assert len(lines) == 2, lines
+    assert all(line.startswith(f"[Enrollments] {COTEACHERS_LEFT_OUT_LOG_ANCHOR} —") for line in lines)
 
 
 def test_the_not_built_anchor_is_what_the_bulkhead_really_logs(caplog, monkeypatch) -> None:

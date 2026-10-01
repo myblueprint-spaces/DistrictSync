@@ -302,9 +302,8 @@ NOTE_TIER: Final[Mapping[OutcomeNote, Verdict]] = MappingProxyType(
         OutcomeNote.CLASSES_EXCLUDED_REQUIRED_VALUE: Verdict.WARNING,
         OutcomeNote.ENROLLMENTS_EXCLUDED_REQUIRED_VALUE: Verdict.WARNING,
         # Family's blank Email — the same rule's first instance — WARNING since plan 0053 S13d (the
-        # owner's literal rule; row detail only since S11). The owner was asked on 2026-09-30 whether
-        # to keep it row detail instead (answer pending): reversing is THIS line, its §7 `note-tier`
-        # row and the pins of the WARNING set (`tests/test_fail_open_notes.py`).
+        # owner's literal rule; row detail only since S11). Asked on 2026-09-30 whether to keep it row
+        # detail instead, the owner answered "Amber (as built)" (DECISIONS 2026-09-30, S13e): it stays.
         OutcomeNote.CONTACTS_EXCLUDED_NO_EMAIL: Verdict.WARNING,
         # Row detail only: each is a recorded fail-open posture whose direction stays (D10 open).
         OutcomeNote.CONFIGURED_STATUS_COLUMN_ABSENT: Verdict.HEALTHY,
@@ -467,11 +466,15 @@ _NOTE_COPY: Final[Mapping[OutcomeNote, Mapping[str, str]]] = MappingProxyType(
                 "label": "co-teachers left out",
                 "sentence": (
                     "Enrollments were built without some co-teachers: the Class Information export is "
-                    "missing a column this district's mapping uses to link co-teachers to their classes."
+                    "missing, has no rows, or lacks a column this district's mapping uses to link "
+                    "co-teachers to their classes. When it is missing or has no rows, a co-teacher whose "
+                    "staff record doesn't mark them as teaching staff, and who teaches only in that export, "
+                    "is left out of the staff file too."
                 ),
                 "next_step": (
-                    "Re-export Class Information with its co-teacher columns and the next sync adds them "
-                    "automatically — if your export doesn't include them, the Help page has our support contact."
+                    "Export Class Information with its co-teacher columns into the input folder and the next "
+                    "sync adds them automatically — if your district doesn't send it, or its export doesn't "
+                    "include those columns, the Help page has our support contact."
                 ),
             }
         ),
@@ -941,12 +944,16 @@ FAILED_CATEGORY_COPY: Final[Mapping[RunErrorCategory, tuple[str, str]]] = Mappin
             "folder holds this district's extract files, then try again.",
         ),
         # Owner 2026-09-28: "we don't have optional files". Named by `_NAMED_FAILED_COPY` when the
-        # record (or the raised error) can say which files.
+        # record (or the raised error) can say which files. The copy says only what holds for every
+        # config — a file the sync "can't run without" — and no longer that the family contacts file
+        # is the ONLY one a night may go without: since owner ruling 2026-09-30 a config whose
+        # blended detection is off may go without its class information file too
+        # (`outcomes.source_file_may_be_absent`), and this table is the same for every config.
         RunErrorCategory.INCOMPLETE_INPUT: (
             "A file your sync needs is missing or empty",
-            "A MyEd BC extract file this district's sync reads is missing from the input folder, or has "
-            "no rows, so the sync stopped — only the family contacts file may be left out. Check the "
-            "export job and the input folder, then try again.",
+            "A MyEd BC extract file this district's sync can't run without is missing from the input "
+            "folder, or has no rows, so the sync stopped. Check the export job and the input folder, then "
+            "try again.",
         ),
         RunErrorCategory.INPUT_UNREADABLE: (
             "An export file couldn't be read",
@@ -1031,14 +1038,14 @@ _NAMED_FAILED_COPY: Final[Mapping[RunErrorCategory, Mapping[bool, tuple[str, str
                 False: (
                     "A file your sync needs is missing or empty",
                     "{names} is missing from the input folder or has no rows, and this district's sync "
-                    "needs it — only the family contacts file may be left out, so the sync stopped. Check "
-                    "the export job and the input folder, then try again.",
+                    "can't run without it, so the sync stopped. Check the export job and the input folder, "
+                    "then try again.",
                 ),
                 True: (
                     "Files your sync needs are missing or empty",
                     "{names} are missing from the input folder or have no rows, and this district's sync "
-                    "needs them — only the family contacts file may be left out, so the sync stopped. Check "
-                    "the export job and the input folder, then try again.",
+                    "can't run without them, so the sync stopped. Check the export job and the input folder, "
+                    "then try again.",
                 ),
             }
         ),

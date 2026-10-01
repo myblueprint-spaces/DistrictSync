@@ -50,6 +50,7 @@ from src.etl.outcomes import (
     failed_entities,
     nothing_to_send,
     outcomes_to_record,
+    source_file_may_be_absent,
     stopped_file_labels,
     stops_when_empty,
 )
@@ -108,9 +109,13 @@ NOTHING_TO_SEND_LOG_LINE = (
 # The ONE log line the input gate writes, at ERROR, before it raises `IncompleteInputError`
 # (owner 2026-09-28 — `check_required_inputs`). Arguments: the missing files, the row-less files
 # (config spelling — the mapping's `source_files` names, never a path) and the entities stopped.
+# The closing clause names every file a night may go without (`outcomes.source_file_may_be_absent`
+# — the family contacts file; since owner ruling 2026-09-30 also the class information file where
+# blended-class detection is off), so it is true for every config.
 _REQUIRED_INPUT_UNUSABLE_LOG_FORMAT = (
     "REQUIRED INPUT UNUSABLE — missing: %s; no data rows: %s; needed by: %s. The run stops before "
-    "anything is built; only the family contacts file may be left out."
+    "anything is built; only the family contacts file, and the class information file where "
+    "blended-class detection is off, may be left out."
 )
 
 # The ONE line the source observation writes per entity whose mapped columns are absent from the
@@ -183,7 +188,8 @@ def extract_required_files(config) -> list[str]:
     This is the list ``extractor.load_data`` actually reads, and — since owner
     decision 2026-09-28 — also the list the UI shows as what a district's sync reads
     (Convert's missing-file chips, the self-service Files step): every file an enabled
-    entity lists is required (:func:`check_required_inputs`), so the UI-only
+    entity lists is required (:func:`check_required_inputs`) — but for the few a night may go
+    without, which :func:`optional_source_files` names — so the UI-only
     ``advisory_expected_files``, which dropped a fully homeroom-scoped district's
     schedule and class-information roles as "feeding nothing", was retired — it would have
     hidden the very files the input gate now stops the night for. It must stay
@@ -206,6 +212,36 @@ def extract_required_files(config) -> list[str]:
             continue
         files.update(entity_cfg.source_files.values())
     return list(files)
+
+
+def optional_source_files(config: MappingConfig) -> dict[str, frozenset[tuple[str, str]]]:
+    """The files ``config``'s night may go without, each with the ``(entity, role)`` listings it is
+    optional under: ``{filename: listings}``.
+
+    Read through the ONE optional-input predicate the input gate applies,
+    ``outcomes.source_file_may_be_absent``, over the same ENABLED entities and the same
+    ``global_config`` dict :func:`check_required_inputs` is handed (``config.to_raw_dict()``), so a
+    screen that says which missing file stops the night (Convert's missing-file line) can never
+    disagree with the run. A file is optional only when EVERY enabled listing of it is: a file
+    Family shares with a CRITICAL entity is required through that entity. Family's own files
+    (owner 2026-09-28) and — owner ruling 2026-09-30 — the Class Information export of a config
+    whose blended detection is off are today's members. The ENTITY rides each listing so a screen
+    can say which exception holds without spelling an entity's role (Family's file is optional
+    through Family's criticality, whatever role its mapping names it under).
+    """
+    global_config = config.to_raw_dict().get("global_config", {})
+    active = config.active_entities()
+    optional: dict[str, set[tuple[str, str]]] = {}
+    required: set[str] = set()
+    for entity_name, entity_cfg in config.mappings.items():
+        if entity_name not in active:
+            continue
+        for role, filename in entity_cfg.source_files.items():
+            if source_file_may_be_absent(entity_name, role, global_config=global_config):
+                optional.setdefault(filename, set()).add((entity_name, role))
+            else:
+                required.add(filename)
+    return {filename: frozenset(listings) for filename, listings in optional.items() if filename not in required}
 
 
 def has_no_usable_input(
@@ -246,13 +282,18 @@ def has_no_usable_input(
     return not (raw_data and not absent and every_entity_may_be_empty(configured))
 
 
-def _declared_source_files(entity_cfg: Mapping[str, Any]) -> list[str]:
-    """An entity block's configured ``source_files`` names — declared order, de-duplicated, non-blank
-    strings only (the input gate's reading; ``run_transform`` derives its own list in the entity loop,
-    and the two agree on every Pydantic-validated config)."""
+def _declared_source_listings(entity_cfg: Mapping[str, Any]) -> list[tuple[str, str]]:
+    """An entity block's configured ``source_files`` as ``(role, filename)`` listings — declared
+    order, non-blank string filenames only (the input gate's reading; ``run_transform`` derives its
+    own list in the entity loop, and the two agree on every Pydantic-validated config). A legacy
+    list carries no role, so each of its names is listed under ``""`` — a role no exception names.
+    """
     source_config = entity_cfg.get("source_files", {}) if isinstance(entity_cfg, Mapping) else {}
-    names = list(source_config.values()) if isinstance(source_config, dict) else list(source_config or [])
-    return list(dict.fromkeys(name for name in names if isinstance(name, str) and name))
+    if isinstance(source_config, dict):
+        listings = [(str(role), name) for role, name in source_config.items()]
+    else:
+        listings = [("", name) for name in (source_config or [])]
+    return [(role, name) for role, name in listings if isinstance(name, str) and name]
 
 
 def check_required_inputs(
@@ -261,6 +302,7 @@ def check_required_inputs(
     *,
     absent: Collection[str],
     ledger: OutcomeLedger,
+    global_config: Mapping[str, Any],
 ) -> None:
     """The INPUT gate (owner decision 2026-09-28, ``failure-policy.md`` §2 layer 3a, §7) — shared
     by BOTH entry points, called after the read (and the source observation) and before
@@ -282,11 +324,21 @@ def check_required_inputs(
       (``outcomes.stopped_file_labels`` over the outcomes just recorded, so Convert's card and
       the run record name the same files).
 
-    **The exceptions come from the declarations, not a list here.** An ISOLATABLE entity's own
-    file (Family's contacts export) is never checked: a missing or row-less one reaches
-    ``run_transform``, which records Family EMPTY / ``source_files_empty`` — a standing
-    WARNING (amber), the rest delivered. A file Family shares with a CRITICAL entity is
-    required through that entity. A present, row-less file of a ``MAY_BE_EMPTY`` entity reaches
+    **The exceptions come from the declarations, not a list here** — ONE predicate,
+    ``outcomes.source_file_may_be_absent``, judged per listing (entity, role), which Convert's
+    missing-file line reads too (:func:`optional_source_files`):
+
+    * an ISOLATABLE entity's own file (Family's contacts export) is never checked: a missing or
+      row-less one reaches ``run_transform``, which records Family EMPTY /
+      ``source_files_empty`` — a standing WARNING (amber), the rest delivered;
+    * the Class Information export of a config whose blended-class detection is OFF (owner
+      ruling 2026-09-30) is never checked either: detection does not read it, so a missing or
+      row-less one only leaves Enrollments' co-teacher rows out, with the standing
+      ``coteacher_source_unusable`` warning (``EnrollmentTransformer._classinfo_coteacher_enrollments``).
+      With detection ON it is the blended working frame and stays required.
+
+    A file another listing requires is required through it (a file Family shares with a CRITICAL
+    entity, for one). A present, row-less file of a ``MAY_BE_EMPTY`` entity reaches
     ``run_transform`` too (EMPTY, neutral).
 
     **An entity whose mapping names no source file at all** has no file to judge here; it is
@@ -296,23 +348,28 @@ def check_required_inputs(
     ``absent`` is ``DataExtractor.absent_files`` for the same read — REQUIRED keyword-only,
     because ``raw_data`` answers "missing" and "present with no record" identically and the
     rule treats them differently for StudentAttendance; ``ledger`` is the run's, built from
-    :func:`configured_entity_order`. Returns ``None`` when every requirement holds.
+    :func:`configured_entity_order`; ``global_config`` is the config's ``global_config`` section
+    (the dict ``run_transform`` is handed) — REQUIRED keyword-only, because it decides the Class
+    Information exception and a default would decide it for the caller. Returns ``None`` when
+    every requirement holds.
     """
     problems: dict[str, list[str]] = {}
     missing: list[str] = []
     empty: list[str] = []
     for entity in ledger.configured:
-        if criticality_of(entity) is not EntityCriticality.CRITICAL:
-            continue
-        for name in _declared_source_files(mappings.get(entity, {})):
+        for role, name in _declared_source_listings(mappings.get(entity, {})):
+            if source_file_may_be_absent(entity, role, global_config=global_config):
+                continue
             if name in absent:
-                problems.setdefault(entity, []).append(name)
-                if name not in missing:
-                    missing.append(name)
+                stopped = missing
             elif entity not in MAY_BE_EMPTY and raw_data.get(name, pd.DataFrame()).empty:
-                problems.setdefault(entity, []).append(name)
-                if name not in empty:
-                    empty.append(name)
+                stopped = empty
+            else:
+                continue
+            if name not in problems.setdefault(entity, []):
+                problems[entity].append(name)
+            if name not in stopped:
+                stopped.append(name)
 
     if not problems:
         return
@@ -329,7 +386,8 @@ def check_required_inputs(
         f"The input stopped the run — a file this district's mapping requires is not usable: {'; '.join(parts)} "
         f"(needed by {', '.join(problems)}). "
         "Nothing was written or sent; the last good output is untouched. Check the export job and the "
-        "input folder — only the family contacts file may be left out.",
+        "input folder — only the family contacts file, and the class information file where blended-class "
+        "detection is off, may be left out.",
         missing=missing,
         empty=empty,
         named=stopped_file_labels(ledger.outcomes),
@@ -1346,7 +1404,7 @@ def run_pipeline(
         # The input gate (owner 2026-09-28): a missing or row-less file a CRITICAL entity lists
         # stops the night here, typed, before anything is built — shared with `convert_job`, at
         # the same point. After the observation, so a stopped entity's outcome can name its file.
-        check_required_inputs(mappings, raw_data, absent=absent, ledger=ledger)
+        check_required_inputs(mappings, raw_data, absent=absent, ledger=ledger, global_config=global_config)
 
         # Shared transform-orchestration (school-year + per-entity loop +
         # enabled_entities filter + field-order collection).

@@ -174,9 +174,14 @@ FILES_INTRO_NOTE = (
     "DistrictSync looks for these files in your input folder. If your district's files are named "
     "differently, set the name yours uses beside each one."
 )
+#: It used to say a test conversion "carries on without them" — untrue since owner decision
+#: 2026-09-28, when a file the mapping lists became REQUIRED (``pipeline.check_required_inputs``:
+#: the test stops at the input gate). The few a mapping may go without (family contacts; since owner
+#: ruling 2026-09-30 the class information file where blended detection is off) are the gate's
+#: predicate's to name, not this note's, so it claims only what holds for every mapping.
 FILES_MISSING_NOTE = (
-    "We can't see these ones in your input folder. A test conversion carries on without them, and "
-    "whatever they feed comes out empty. If your district calls them something else, set that name above."
+    "We can't see these ones in your input folder, and a test conversion stops when a file this "
+    "mapping can't run without is missing. If your district calls them something else, set that name above."
 )
 #: The Files step's TWO sections (owner report, 2026-09-02). The step used to interleave
 #: them — the passed-test verdict and its counts above the filename rows, the filled

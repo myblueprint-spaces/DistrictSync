@@ -153,11 +153,13 @@ CONFIG_ERROR_OTHER = "This district's mapping can't be used as it stands."
 #: mapping reads is missing from the folder or has no rows (``IncompleteInputError``), or none
 #: could be read (``NoUsableInputError``). Decided by TYPE, before the text-keyed categories,
 #: so a folder problem is never reported as a mapping problem. The missing files themselves are
-#: the gate's own ``missing_files`` list, shown beside it.
+#: the gate's own ``missing_files`` list, shown beside it. It says the file is one the mapping
+#: "can't run without" rather than that only the family contacts file may be missing: since owner
+#: ruling 2026-09-30 a mapping whose blended detection is off may go without its class information
+#: file too (``outcomes.source_file_may_be_absent``), so the sentence holds for every mapping.
 GATE_INPUT_INCOMPLETE_NOTE = (
-    "A file this mapping reads is missing from the input folder or has no rows, so the test stopped "
-    "— every file must be there with its rows, except the family contacts file. Add the file, then "
-    "test again."
+    "A file this mapping can't run without is missing from the input folder or has no rows, so the "
+    "test stopped. Add the file, then test again."
 )
 
 #: The gate's note when the test conversion COMPLETED but left entities out (plan 0053 S4 —
@@ -1133,8 +1135,9 @@ def gate_outcome_for(
        sentences of every WARNING-tier note a BUILT output recorded (``warning_notes`` —
        "show notes, don't block": e.g. co-teachers left out), which the view shows before
        the confirm. Missing files are reported alongside rather than downgrading the
-       verdict (only Family's may be missing and still complete — every other one stops
-       the test at the input gate, which is branch 2).
+       verdict (only a file ``outcomes.source_file_may_be_absent`` excuses — Family's, and a
+       blended-off mapping's class information file — may be missing and still complete;
+       every other one stops the test at the input gate, which is branch 2).
     5. **Neither ⇒ ``NOT_RUN``.** ``RUNNING`` is the view's own transient state (it
        cannot be derived from a result that does not exist yet), so it is never
        returned here.

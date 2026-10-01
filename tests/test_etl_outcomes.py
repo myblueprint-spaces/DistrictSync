@@ -706,6 +706,9 @@ class TestSignatures:
         [
             ("check_required_inputs", "absent"),
             ("check_required_inputs", "ledger"),
+            # Owner ruling 2026-09-30 (S13e): the gate reads the Class Information exception off the
+            # config; a default ``global_config={}`` would quietly make that file required again.
+            ("check_required_inputs", "global_config"),
             ("IncompleteInputError", "missing"),
             ("IncompleteInputError", "empty"),
             ("IncompleteInputError", "named"),

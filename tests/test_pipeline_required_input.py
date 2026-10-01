@@ -432,19 +432,19 @@ class TestTheInputGate:
         rows = pd.DataFrame({"x": [1]})
         ok = {"demo.txt": rows, "contacts.txt": pd.DataFrame(), "daily.txt": pd.DataFrame(), "period.txt": rows}
         ledger = OutcomeLedger(["Students", "Family", "StudentAttendance"])
-        assert check_required_inputs(mappings, ok, absent={"contacts.txt"}, ledger=ledger) is None
+        assert check_required_inputs(mappings, ok, absent={"contacts.txt"}, ledger=ledger, global_config={}) is None
         assert ledger.outcomes == (), "a passing gate records nothing"
 
         ledger = OutcomeLedger(["Students", "Family", "StudentAttendance"])
         with pytest.raises(IncompleteInputError) as raised:
-            check_required_inputs(mappings, ok, absent={"contacts.txt", "daily.txt"}, ledger=ledger)
+            check_required_inputs(mappings, ok, absent={"contacts.txt", "daily.txt"}, ledger=ledger, global_config={})
         assert (raised.value.missing, raised.value.empty) == (("daily.txt",), ())
         assert ledger.outcomes == (EntityOutcome.failed("StudentAttendance", OutcomeReason.MISSING_SOURCE_FILE),)
 
         shared = {**mappings, "Students": {"source_files": {"demo": "demo.txt", "contacts": "contacts.txt"}}}
         ledger = OutcomeLedger(["Students", "Family", "StudentAttendance"])
         with pytest.raises(IncompleteInputError) as raised:
-            check_required_inputs(shared, ok, absent=set(), ledger=ledger)
+            check_required_inputs(shared, ok, absent=set(), ledger=ledger, global_config={})
         assert raised.value.empty == ("contacts.txt",), "a file Family shares is required through Students"
 
     def test_the_log_carries_one_grep_able_line(self, tmp_path: Path, gde_output: Path, caplog) -> None:
@@ -457,7 +457,8 @@ class TestTheInputGate:
         lines = [r.getMessage() for r in caplog.records if "REQUIRED INPUT UNUSABLE" in r.getMessage()]
         assert lines == [
             "REQUIRED INPUT UNUSABLE — missing: ['CourseInformation.txt']; no data rows: none; needed by: Classes. "
-            "The run stops before anything is built; only the family contacts file may be left out."
+            "The run stops before anything is built; only the family contacts file, and the class information file "
+            "where blended-class detection is off, may be left out."
         ]
 
     def test_no_usable_input_at_all_is_still_its_own_narrower_answer(self, tmp_path: Path, gde_output: Path) -> None:
@@ -728,7 +729,7 @@ class TestBothEntryPointsCallTheInputGate:
         from tests.test_pipeline_run_store import _PIPELINE_SRC
 
         source = _PIPELINE_SRC.read_text(encoding="utf-8")
-        call = "        check_required_inputs(mappings, raw_data, absent=absent, ledger=ledger)\n"
+        call = "        check_required_inputs(mappings, raw_data, absent=absent, ledger=ledger, global_config=global_config)\n"
         assert call in source
         moved = source.replace(call, "", 1).replace(
             "        outputs = transform_outputs.outputs\n", "        outputs = transform_outputs.outputs\n" + call, 1

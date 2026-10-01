@@ -35,7 +35,7 @@ import pandas as pd
 
 from src.etl.column_names import STAFF_SOURCEID, STAFF_STATUS
 from src.etl.errors import GuardKind
-from src.etl.outcomes import OutcomeNote
+from src.etl.outcomes import CLASS_INFORMATION_ROLE, OutcomeNote
 from src.etl.transformers.base import BaseTransformer
 from src.etl.transformers.columns import Previously, require_columns, resolve_source_column
 from src.etl.transformers.context import TransformContext
@@ -64,7 +64,7 @@ ACTIVE_STATUS_VALUE = "active"
 #: a real export.
 TEACHING_ASSIGNMENT_SOURCE_ROLES: tuple[str, ...] = (
     "student_schedule",
-    "class_info",
+    CLASS_INFORMATION_ROLE,
     "student_demographic",
 )
 
@@ -242,7 +242,13 @@ class StaffTransformer(BaseTransformer):
         Safe before Classes runs: ``raw_data`` is filled by the extractor ahead
         of every transformer. An empty set is a legitimate answer (a config
         declaring none of these roles rescues nobody, and an ABSENT or EMPTY file
-        is simply not evidence) and never an error.
+        is simply not evidence) and never an error. Since plan 0053 S13e that
+        reaches one more night: a blended-off config's Class Information export may
+        be missing or row-less (``outcomes.source_file_may_be_absent``), and then an
+        un-roled staff member whose ONLY teaching evidence is a co-teacher row there
+        is not rescued — part of "co-teachers are left out" (owner ruling
+        2026-09-30), said by the ``coteacher_source_unusable`` copy and pinned by
+        ``tests/test_optional_class_information.py``.
 
         **Fail-closed on a present file** (§5 #22a, plan 0053 S10 — owner Gate A,
         2026-09-24): a file that IS present and non-empty but lacks the teacher-id

@@ -154,6 +154,7 @@ from src.ui_flet.convert_output import (
     missing_files_copy,
     nothing_to_deliver_copy,
     open_folder,
+    optional_inputs,
     output_dir_is_set,
     resolved_output_caption,
     result_deliver_state,
@@ -396,7 +397,7 @@ def convert_job(
         # point: a missing or row-less file a CRITICAL entity lists raises `IncompleteInputError`
         # here, which the sink below records (`incomplete_input`, the stopped entities FAILED)
         # and re-raises to `on_error`, whose card names the files.
-        check_required_inputs(mappings, raw_data, absent=absent, ledger=ledger)
+        check_required_inputs(mappings, raw_data, absent=absent, ledger=ledger, global_config=global_config)
 
         transform_outputs = run_transform(raw_data, mappings, global_config, ledger=ledger)
         outputs = transform_outputs.outputs
@@ -1754,10 +1755,12 @@ def _build_file_chips(config_name: str | None, input_dir: str) -> list[ft.Contro
     present_folded = {name.lower() for name in present}
     missing = [f for f in expected if f.lower() not in present_folded]
     if missing:
-        # Since owner decision 2026-09-28 a missing file stops the run (only the family
-        # contacts file may be left out), so the line says so before the admin presses
-        # Convert — pure `missing_files_copy` owns the words.
-        heading, reassurance = missing_files_copy()
+        # Since owner decision 2026-09-28 a missing file stops the run (except a file the
+        # district's night may go without — the family contacts file, and since owner ruling
+        # 2026-09-30 the class information file where blended detection is off), so the line
+        # says so before the admin presses Convert — pure `missing_files_copy` owns the words,
+        # `optional_inputs` (the input gate's own predicate) decides which exceptions hold.
+        heading, reassurance = missing_files_copy(optional=optional_inputs(config_name))
         controls.append(
             ft.Text(
                 heading,

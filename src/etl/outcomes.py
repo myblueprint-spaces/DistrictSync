@@ -41,7 +41,10 @@ SAME table decides two stops beyond a CRITICAL raise:
 
 * the way IN, ``pipeline.check_required_inputs`` (before the transform): a file a CRITICAL
   entity lists must be present, and must have data rows unless that entity is in
-  :data:`MAY_BE_EMPTY`; a stopped entity is recorded FAILED /
+  :data:`MAY_BE_EMPTY` — except a listing the ONE optional-input predicate,
+  :func:`source_file_may_be_absent`, lets go without (Family's files, and — owner ruling
+  2026-09-30 — the Class Information export of a config whose blended detection is off); a
+  stopped entity is recorded FAILED /
   :attr:`OutcomeReason.MISSING_SOURCE_FILE` (:meth:`OutcomeLedger.record_missing_files`),
   naming its file when that is unambiguous;
 * the way OUT of each entity, ``pipeline.run_transform``: a CRITICAL entity that comes out
@@ -178,6 +181,54 @@ def criticality_of(entity: str) -> EntityCriticality:
     registry without a §3 row, can never be isolated by omission.
     """
     return ENTITY_CRITICALITY.get(entity, EntityCriticality.CRITICAL)
+
+
+#: The ``source_files`` ROLE of MyEd BC's Class Information (Enhanced) export. Classes' blended-class
+#: detection reads it as its working frame, Enrollments' co-teacher rows read it through the class
+#: artifacts Classes publishes, and Staff's teacher-of-record rescue reads it as evidence of teaching.
+#: Named once, here, because the ONE optional-input predicate below keys on it.
+CLASS_INFORMATION_ROLE: Final = "class_info"
+
+
+def blended_detection_off(global_config: Mapping[str, object]) -> bool:
+    """Whether ``global_config`` switches blended-class detection OFF — the ONE reading of
+    ``global_config.blended_classes``.
+
+    The resolved bool, never truthiness: a missing key is ON (every district but the opt-outs), and
+    only an explicit ``False`` is off, so a ``None`` or a typo'd value can never flip it. Read by
+    Classes (which then skips detection) and by :func:`source_file_may_be_absent` (which then lets
+    the Class Information export be missing or row-less) — so "detection is off" and "the file is
+    optional" can never disagree.
+    """
+    return global_config.get("blended_classes", True) is False
+
+
+def source_file_may_be_absent(entity: str, role: str, *, global_config: Mapping[str, object]) -> bool:
+    """Whether the file ``entity`` lists under ``role`` may be MISSING from the input folder, or
+    PRESENT with no data rows, without stopping the night — the ONE optional-input predicate.
+
+    Every file a CRITICAL entity lists is required (owner 2026-09-28: "we don't have optional
+    files"; ``pipeline.check_required_inputs``). The exceptions are DERIVED from the config's own
+    declarations, never from a per-district list:
+
+    * every file an ISOLATABLE entity lists — Family's contacts export (owner 2026-09-28): missing
+      or empty, Family is only left out, amber;
+    * the Class Information export (:data:`CLASS_INFORMATION_ROLE`) of a config whose blended-class
+      detection is OFF (:func:`blended_detection_off` — owner ruling 2026-09-30: "Optional if
+      blended off: ClassInformation becomes optional for any config with blended detection off").
+      Detection then never reads it, so only Enrollments' co-teacher rows depend on it, and they are
+      left out with the standing ``coteacher_source_unusable`` warning instead of the night stopping.
+      With detection ON the file is the blended working frame and stays required (§5 #39 strict).
+
+    Judged per LISTING (entity, role): a file another listing requires stays required through it — a
+    file Family shares with a CRITICAL entity, or a Class Information file some other role names
+    too. ``global_config`` is REQUIRED keyword-only: a default would decide the Class Information
+    exception for the caller. :data:`MAY_BE_EMPTY` is a different, narrower rule — row-less allowed,
+    missing NOT — and is not answered here.
+    """
+    if criticality_of(entity) is EntityCriticality.ISOLATABLE:
+        return True
+    return role == CLASS_INFORMATION_ROLE and blended_detection_off(global_config)
 
 
 class OutcomeKind(StrEnum):
@@ -344,12 +395,16 @@ class OutcomeNote(StrEnum):
     # No roster was published this run (Students not enabled, not run first, or no `User ID`).
     ACTIVE_ROSTER_UNAVAILABLE = "active_roster_unavailable"
 
-    # Enrollments: a present, non-empty ClassInformation lacked a column the co-teacher rows are
-    # linked by (primary-teacher flag, its teacher id, Path 1's section column, Path 2's Master
-    # Timetable ID), so those co-teacher rows were left out and the rest was built (§5 #15). The
-    # count is the ClassInformation rows AFFECTED: the whole file when an entry column is missing,
-    # the primary-teacher rows when a path column is — with one path missing, the other path may
-    # still have linked some of those same rows, so it is never a count of rows "not used".
+    # Enrollments: the co-teacher rows could not all be linked, so they were left out and the rest
+    # was built (§5 #15). Two causes. (i) A present, non-empty ClassInformation lacked a column the
+    # co-teacher rows are linked by (primary-teacher flag, its teacher id, school, Path 1's section
+    # column, Path 2's Master Timetable ID): the count is the ClassInformation rows AFFECTED — the
+    # whole file when an entry column is missing, the primary-teacher rows when a path column is
+    # (with one path missing, the other may still have linked some of those same rows, so it is
+    # never a count of rows "not used"). (ii) Since plan 0053 S13e (owner ruling 2026-09-30) the
+    # ClassInformation file the Classes mapping lists was MISSING or had NO rows — reachable only
+    # where `source_file_may_be_absent` lets the night go without it (blended detection off): there
+    # is no row to count, so the count is 1, the one file.
     COTEACHER_SOURCE_UNUSABLE = "coteacher_source_unusable"
 
     # --- Classes: display-name and lookup columns (d). Blended detection read a lookup without a

@@ -370,7 +370,7 @@ The number of output files depends on which config you're using — see the [Out
 |----------|-------------|-------|
 | Default (MyEdBC) | `myedbc` | Standard filenames |
 | SD40 – New Westminster | `sd40myedbc` | CSV files with SD-40_/SD40- prefix. StudentSchedule has no headers (auto-injected via config). |
-| SD45 – West Vancouver | `sd45myedbc` | Uses `.csv` Enhanced extracts: `StudentDemographicEnhanced.csv`, `StaffInformationEnhanced.csv`, `EmergencyContactInfoEnhanced.csv`, `StudentScheduleDrops.csv`, `CourseInformationEnhanced.csv`. No ClassInformation file is needed (blended classes are off). |
+| SD45 – West Vancouver | `sd45myedbc` | Uses `.csv` Enhanced extracts: `StudentDemographicEnhanced.csv`, `StaffInformationEnhanced.csv`, `EmergencyContactInfoEnhanced.csv`, `StudentScheduleDrops.csv`, `CourseInformationEnhanced.csv`. No ClassInformation file is needed (blended classes are off) — without one, co-teachers who appear only in that export are left out of the enrollments (and, where their staff record doesn't mark them as teaching staff, of the staff file), so Home and Run History show a co-teacher warning every night (see *Some co-teachers were left out* in the troubleshooting guide). |
 | SD48 – Sea to Sky | `sd48myedbc` | Uses `StudentDemographicEnhanced.txt`, `StaffInformation.txt` |
 | SD51 – Boundary | `sd51myedbc` | Contact SpacesEDU for file naming |
 | SD60 – Peace River North | `sd60myedbc` | Guardians-only family import; dual-school students rostered under home school; student emails generated as `firstname+lastname+admission-year@learn60.ca`; `Active No Primary` excluded |

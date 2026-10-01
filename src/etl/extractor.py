@@ -193,11 +193,13 @@ class DataExtractor:
         # zero rows, exactly as an ABSENT one does, rather than raising and failing the whole
         # run as a garbled one would. Whether a night can go on without that file's rows is
         # not decided here: `pipeline.check_required_inputs` judges it, using `absent_files`
-        # for the missing-vs-empty distinction (owner decision 2026-09-28 — only Family's file
-        # may be missing or empty; an attendance file may be present with no rows, never
-        # missing), and `check_delivery_integrity` stays the way-out backstop. So this is not
-        # a swallowed error, and the fail-loud path below is untouched for bytes that carry
-        # content nothing can read.
+        # for the missing-vs-empty distinction (owner decisions 2026-09-28 / 2026-09-30 — only
+        # Family's file, and the class information file of a config whose blended detection is
+        # off, may be missing or empty, as `outcomes.source_file_may_be_absent` decides; an
+        # attendance file may be present with no rows, never missing), and
+        # `check_delivery_integrity` stays the way-out backstop. So this is not a swallowed
+        # error, and the fail-loud path below is untouched for bytes that carry content
+        # nothing can read.
         if self._carries_no_record(raw):
             logger.warning(
                 f"{name} is present but contains no records (it is empty apart from any "

@@ -11,6 +11,22 @@ Per-release download links and auto-generated commit notes live on the
 
 ### Changed
 
+- **A district with blended-class detection switched off no longer needs its Class
+  Information export.** Since the change below that stops the night for a missing file, a
+  district whose mapping lists the Class Information export but switches blended-class
+  detection off — SD45 (West Vancouver), which sends no such export, and SD51 (Boundary) —
+  would have stopped every night it went without it. Now that export is optional for such a
+  district: when it is missing, or has only a header row, the night runs and delivers as
+  normal, and only the co-teachers it would have linked to their classes (teachers who never
+  appear in the student timetable) are left out of the enrollments — and of the staff file
+  too, for one whose staff record doesn't mark them as teaching staff — with the co-teacher
+  warning on Home, in Run History and on the Convert screen every night until it is back
+  (SD45: every night). A district that detects blended classes from the export still needs
+  it, and its night still stops without it. The Convert screen's list of files not found in
+  the folder says which files a district may go without, and the explanations of a stopped
+  night no longer claim the family contacts file is the only one. On v3.26.0's own SD45 test
+  export the five files delivered are unchanged; every other district export measured is
+  unchanged.
 - **A student, staff member, family contact, class or enrollment missing a value SpacesEDU
   requires is now left out — counted, with a warning — and so is everything that points at
   it.** SpacesEDU's Advanced CSV format requires certain values on every row of the five
@@ -39,7 +55,8 @@ Per-release download links and auto-generated commit notes live on the
   file in the explanation when DistrictSync can tell which one; on the Convert screen the
   error card's headline reads "A file your sync needs is missing or empty". The one exception
   is the family contacts (emergency contact) export: missing or empty, only family contacts
-  are left out, with a warning, as before. An attendance file may be present with no rows —
+  are left out, with a warning, as before (and, for a district with blended-class detection
+  switched off, the Class Information export — see the entry above). An attendance file may be present with no rows —
   a night without absences — but a missing attendance file stops the night. An output that
   would come out with no rows — for example every student filtered out — now stops the
   night too, and the explanation names that output (on the Convert screen, for example:
