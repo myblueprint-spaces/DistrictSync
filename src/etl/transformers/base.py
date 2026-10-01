@@ -694,7 +694,7 @@ class BaseTransformer(ABC):
     def generate_class_id(self, row: pd.Series, mt_id_col: str, append_year: bool, context: TransformContext) -> str:
         mt_id = row.get(mt_id_col, "")
         if mt_id and append_year:
-            return f"{mt_id}_{context.school_year}"
+            return f"{mt_id}_{context.class_id_year}"
         return mt_id
 
     def assign_class_ids(

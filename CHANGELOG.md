@@ -55,8 +55,8 @@ Per-release download links and auto-generated commit notes live on the
   instead of a general "missing a column" message.
 - **Class Information's school-number column: needed for blended classes, optional for
   co-teachers.** For a district that detects blended classes from its Class Information
-  export (every shipped district that reads one, except SD51, which has blended detection
-  switched off, and SD40, whose export has no timetable ID), a missing school-number column stops the night — blended
+  export (every shipped district that reads one, except SD51 and SD45, which have blended
+  detection switched off, and SD40, whose export has no timetable ID), a missing school-number column stops the night — blended
   classes are matched by school — and Home, Run History and the Convert screen now name the
   “School Number” column instead of a general "missing a column" message. For a district
   with blended detection off, a missing one only leaves co-teachers out of the enrollments
@@ -152,7 +152,7 @@ Per-release download links and auto-generated commit notes live on the
   classes are named without the teacher's name, and the run log carries one warning
   saying how many. It used to fail the whole run.
 - **A district mapping can now say which class-time columns its export has**
-  (config format 1.14): the Classes `session_components` list names the ones blended
+  (config format 1.15): the Classes `session_components` list names the ones blended
   classes are keyed on, when an export genuinely lacks one. The SD40 (New
   Westminster) mapping declares its three — its schedule has no Term column — so its
   classes and enrollments files are unchanged.
@@ -306,6 +306,27 @@ Per-release download links and auto-generated commit notes live on the
   a rename that now takes effect, `etl_tool.log` says so once per run, with a temporary
   `[columns] '<key>' now reads source column …` warning naming the mapping key and both
   column names.
+
+## [3.26.0] - 2026-09-30
+
+West Vancouver (SD45) can now run DistrictSync. Their existing classes keep their
+IDs, so teachers see no change in the classes they have been using since September.
+No other district's output changes.
+
+### Added
+
+- **SD45 – West Vancouver** mapping (`sd45myedbc`). It reads the district's own
+  `.csv` Enhanced extracts (`StudentDemographicEnhanced.csv`,
+  `StaffInformationEnhanced.csv`, `EmergencyContactInfoEnhanced.csv`,
+  `StudentScheduleDrops.csv`, `CourseInformationEnhanced.csv`). No
+  ClassInformation file is needed yet; blended classes stay off until one is
+  sent. Compared with the district's previous converter: inactive students no
+  longer reach SpacesEDU, and staff who do not teach are no longer sent as
+  administrators.
+- **A setting to keep a district's existing Class IDs** (`class_id_year`, config
+  version 1.14). A district whose previous feed ended Class IDs with the
+  school year's *start* year (2026-27 → `_2026`) keeps them, so switching to
+  DistrictSync does not recreate every class. Off by default; only SD45 uses it.
 
 ## [3.25.0] - 2026-09-23
 

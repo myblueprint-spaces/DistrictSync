@@ -201,7 +201,7 @@ class DataTransformer:
     def generate_class_id(self, row: pd.Series, mt_id_col: str, append_year: bool = False) -> str:
         mt_id = row.get(mt_id_col, "")
         if mt_id and append_year:
-            return f"{mt_id}_{self._context.school_year}"
+            return f"{mt_id}_{self._context.class_id_year}"
         return mt_id
 
     def generate_class_name(

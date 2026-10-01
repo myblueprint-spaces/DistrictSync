@@ -933,6 +933,9 @@ _NEXT_SCHOOL_AND_TITLE = {"Students": ("Next school code",), "Classes": ("Course
 _FIXTURE_FINDINGS: dict[str, dict[str, tuple[str, ...]]] = {
     "myedbc": _NEXT_SCHOOL_AND_TITLE,
     "sd40myedbc": {},
+    # No ClassInformation in its fixture (v3.26.0's `_create_sd45_inputs`), so Classes' class-name
+    # `Course Title` has no file to be judged against.
+    "sd45myedbc": _NEXT_SCHOOL,
     "sd48myedbc": _NEXT_SCHOOL_AND_TITLE,
     "sd51myedbc": _NEXT_SCHOOL_AND_TITLE,
     "sd54myedbc": _NEXT_SCHOOL,

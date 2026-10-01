@@ -552,7 +552,7 @@ class BlendedClassDetector:
                     )
                 continue
 
-            blended_id = f"BLENDED_{session_key}_{context.school_year}"
+            blended_id = f"BLENDED_{session_key}_{context.class_id_year}"
             all_mt_ids = sorted(set(group[MASTER_TIMETABLE_ID].tolist()))
 
             for mt_id in all_mt_ids:

@@ -865,7 +865,7 @@ class TestBlendedSessionColumns:
 class TestDeclaredSessionComponents:
     """Owner ruling 2026-09-25 (plan 0053 S10): §5 #39 stays STRICT on the EFFECTIVE component set,
     and a district whose export lacks a component DECLARES the ones it has (Classes
-    ``session_components`` — config format 1.14). ``sd40myedbc`` is the first to."""
+    ``session_components`` — config format 1.15). ``sd40myedbc`` is the first to."""
 
     _WITHOUT_TERM = ["session_semester", "session_day", "session_period"]
 

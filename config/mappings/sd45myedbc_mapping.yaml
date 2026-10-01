@@ -1,0 +1,65 @@
+# SD45 - Inherits from standard MyEducation BC mapping
+# Migrated 2026-09-30 from the district's own gde2acsv-era standalone mapping
+# (v1.9, no `_base`). Every column name in that file matched the base, so only
+# the differences below survive; everything else is inherited.
+# Differences: `.csv` Enhanced extracts with district-specific filenames
+#              (StudentScheduleDrops.csv, EmergencyContactInfoEnhanced.csv,
+#              CourseInformationEnhanced.csv).
+# NOT carried over: the old file read PreRegSchoolCode from "Previous school
+# number" — the bug the base fixed in PR #12 (a pre-registered student's NEXT
+# school is what SpacesEDU wants). The base's "Next school code" is inherited.
+# No ClassInformation extract is sent, so blended-class detection is off.
+# Class IDs keep the START year, as the district's old converter wrote them.
+_base: myedbc
+version: '1.14'
+sis: MyEducationBC
+district_name: SD45 - West Vancouver School District
+# The district's PUBLIC staff email domains (read off the district's own
+# 2026-09-28 Staff.csv: wvschools.ca for almost all staff, sd45.bc.ca for the
+# rest). Presentation metadata for the pickers, not access control and not
+# personal data; structurally invisible to the ETL. The STUDENT domain
+# (edu.sd45.bc.ca) is deliberately not listed.
+district_domains: ["wvschools.ca", "sd45.bc.ca"]
+
+global_config:
+  # School year: deliberately NOT read from StudentScheduleDrops.csv yet. Whether
+  # SD45's `School Year` column holds a bare START or END year is unconfirmed (a
+  # bare start year read as the end year would stamp LAST year on every class),
+  # so the inherited source (StudentSchedule.txt, which SD45 does not send) is
+  # left in place and the year comes from today's date + the 07-25 rollover —
+  # exactly what the district's own mapping did. Point this at
+  # StudentScheduleDrops.csv once a sample value is confirmed.
+  # The base names ClassInformationEnh.txt for blended detection; SD45 sends no
+  # such file (its old mapping never produced blended classes), so opt out
+  # rather than read a file that is not there.
+  blended_classes: false
+  # SD45's pre-DistrictSync converter suffixed every Class ID with the START
+  # year of the school year (2026-27 -> <MTID>_2026, <school>_<homeroom>_2026).
+  # Keep that, or the switch-over re-keys all ~2,400 classes and empties the
+  # ones teachers have used since September. Never change this on a live district.
+  class_id_year: start
+
+mappings:
+  Students:
+    source_files:
+      student_demographic: "StudentDemographicEnhanced.csv"
+
+  Staff:
+    source_files:
+      staff_info: "StaffInformationEnhanced.csv"
+
+  Family:
+    source_files:
+      emergency_contacts: "EmergencyContactInfoEnhanced.csv"
+
+  Classes:
+    source_files:
+      student_schedule: "StudentScheduleDrops.csv"
+      course_info: "CourseInformationEnhanced.csv"
+      staff_info: "StaffInformationEnhanced.csv"
+      student_demographic: "StudentDemographicEnhanced.csv"
+
+  Enrollments:
+    source_files:
+      student_schedule: "StudentScheduleDrops.csv"
+      student_demographic: "StudentDemographicEnhanced.csv"

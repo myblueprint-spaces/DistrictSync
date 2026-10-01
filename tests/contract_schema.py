@@ -144,6 +144,7 @@ EXPECTED_ENTITIES: dict[str, frozenset[str]] = {
     # sd51myedbc — SD60's absence GDEs are HEADERFUL, SD51's daily file headerless.
     # sd51attendance emits attendance ALONE.
     "sd60myedbc": ROSTERING_ENTITIES | {"StudentAttendance"},
+    "sd45myedbc": ROSTERING_ENTITIES,
     "sd74myedbc": ROSTERING_ENTITIES,
     "sd51attendance": frozenset({"StudentAttendance"}),
     "sd83myedbc": ROSTERING_ENTITIES | {"CourseInfo", "StudentCourses"},

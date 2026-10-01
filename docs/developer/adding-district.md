@@ -379,8 +379,8 @@ Absent = all four (every other district, byte-identical). The list decides
 membership only — the key and the class name keep the fixed term → semester →
 day → period order — and it is validated at load: known roles only, each once,
 never empty, on Classes only, and never leaving out a role the same entity's
-`source_columns` configures. It is config format 1.14 (the config declares
-`version: '1.14'`); `sd40myedbc` is the first to use it (its schedule has no
+`source_columns` configures. It is config format 1.15 (the config declares
+`version: '1.15'`); `sd40myedbc` is the first to use it (its schedule has no
 Term column), and declaring the components an export really has keeps its
 blends byte-identical to the key it used before S10.
 
@@ -414,6 +414,26 @@ remains consistent.
 Range formats like ``2025/2026`` or ``2025-2026`` are unambiguous and ignore
 this setting — the second year is always taken as the end. Default is
 ``end`` (BC / MyEd BC).
+
+### Which year ends a Class ID (`class_id_year`)
+
+Every generated Class ID ends in a year — `<Master Timetable ID>_<year>`,
+`<school>_<homeroom>_<year>`, `BLENDED_<session>_<year>`. By default that is the
+**end** year (2025-2026 → `_2026`). A district migrating from a converter that
+keyed classes on the **start** year can keep its existing IDs:
+
+```yaml
+global_config:
+  class_id_year: start   # 2025-2026 -> _2025
+```
+
+This is **identity**, not presentation: SpacesEDU matches a class on its Class ID,
+so a changed suffix creates every class afresh and — with the district's
+"remove students unenrolled" import setting on — empties the old ones. Set it
+once, at onboarding, to match whatever the district's previous feed sent, and
+never change it on a live district. Class **names** and the Start/End dates are
+unaffected (they still derive from the end-year school year). Its one consumer
+today is `sd45myedbc`. Introduced in config version `1.14`.
 
 ### School year fallback rollover
 
@@ -782,7 +802,7 @@ extract whose schedule also carries a `Student ID` column —
 | Config name | `_base` | Purpose |
 |-------------|---------|---------|
 | `myedbc` | (none — base) | Standard MyEdBC filenames; defines all 7 entity templates; enables the 5 rostering entities by default |
-| `sd40myedbc` | `myedbc` | CSV files with SD-40_/SD40- prefix; Student Schedule is headerless (`file_headers:` used); declares Classes `session_components` (its schedule has no Term column — config format 1.14) |
+| `sd40myedbc` | `myedbc` | CSV files with SD-40_/SD40- prefix; Student Schedule is headerless (`file_headers:` used); declares Classes `session_components` (its schedule has no Term column — config format 1.15) |
 | `sd48myedbc` | `myedbc` | Student Demographic Enhanced, Staff Information (non-enhanced) |
 | `sd51myedbc` | `myedbc` | Boundary — Student Demographic Enhanced, Class Info Enhanced (10-row early-year extract expected); `blended_classes: false` (2026-09-16) — the export's `Day` column never rotates, so the session key can't disambiguate secondary sections |
 | `sd54myedbc` | `myedbc` | Bulkley Valley — lowercase filenames; Staff non-Enhanced; Emergency Contact + Class Info Enhanced; ATT--AM/PM/Daily excluded |

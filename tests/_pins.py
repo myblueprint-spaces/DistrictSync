@@ -24,4 +24,4 @@ from __future__ import annotations
 from typing import Final
 
 #: The number of bundled mapping configs (``config/mappings/*_mapping.yaml``).
-BUNDLED_CONFIG_COUNT: Final = 20
+BUNDLED_CONFIG_COUNT: Final = 21

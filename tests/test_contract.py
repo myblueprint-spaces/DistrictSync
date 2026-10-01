@@ -508,6 +508,16 @@ def _create_sd48_inputs(d: Path) -> None:
     _write_class_info(d, "ClassInformationEnh.txt")
 
 
+def _create_sd45_inputs(d: Path) -> None:
+    """sd45myedbc: the district's own `.csv` Enhanced extract names, and NO
+    ClassInformation file (the config opts out of blended detection)."""
+    _write_student_demographic(d, "StudentDemographicEnhanced.csv")
+    _write_staff(d, "StaffInformationEnhanced.csv")
+    _write_base_schedule(d, "StudentScheduleDrops.csv")
+    _write_course_info(d, "CourseInformationEnhanced.csv")
+    _write_family(d, "EmergencyContactInfoEnhanced.csv")
+
+
 def _create_sd74_inputs(d: Path) -> None:
     _write_student_demographic(d, "StudentDemographicInformation.txt")
     _write_staff(d, "StaffInformation.txt")
@@ -994,6 +1004,7 @@ def _create_mbponly_inputs(d: Path) -> None:
 _DISTRICT_SETUP = {
     "myedbc": _create_myedbc_inputs,
     "sd40myedbc": _create_sd40_inputs,
+    "sd45myedbc": _create_sd45_inputs,
     "sd48myedbc": _create_sd48_inputs,
     "sd51myedbc": _create_sd51_inputs,
     "sd54myedbc": _create_sd54_inputs,
@@ -1691,6 +1702,25 @@ class TestDistrictQuirks:
         classes = _read_output(out, "Classes")
         name = classes[classes["Class ID"].astype(str).str.startswith("MT002_")]["Name"].iloc[0]
         assert name == "Liu Math 10 (A) 2026", name
+
+    # ---- SD45: Class IDs keep the START year of the school year ----
+
+    @pytest.mark.parametrize("district_output", ["sd45myedbc", "sd48myedbc"], indirect=True)
+    def test_class_id_year_suffix_follows_the_config(self, district_output):
+        """sd45myedbc sets `class_id_year: start`, so every Class ID ends in the
+        year its Start Date falls in (2026-27 -> _2026); sd48myedbc, on the
+        default, ends in the End Date's year. Relational rather than a literal
+        year: SD45's school year comes from today's date, so a pinned value
+        would rot. Enrollments must agree with Classes on every ID."""
+        sis, out, _ = district_output
+        classes = _read_output(out, "Classes")
+        column = "Start Date" if sis == "sd45myedbc" else "End Date"
+        expected = classes[column].astype(str).str[:4]
+        suffix = classes["Class ID"].astype(str).str.rsplit("_", n=1).str[-1]
+        assert not classes.empty
+        assert (suffix == expected).all(), classes[["Class ID", column]].to_string()
+        enrolled = set(_read_output(out, "Enrollments")["Class ID"].astype(str))
+        assert enrolled <= set(classes["Class ID"].astype(str))
 
     # ---- SD75: generated learn75.ca emails REPLACING the demographic column ----
 

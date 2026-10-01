@@ -996,16 +996,17 @@ class TestBlendedClassesConfig:
         )
         assert cfg.to_raw_dict()["global_config"]["blended_classes"] is True
 
-    def test_exactly_the_two_sd51_tiers_set_it_false(self):
+    def test_exactly_the_sd51_tiers_and_sd45_set_it_false(self):
         """The key's shipped consumers, stated as a config fact (2026-09-16):
         sd51myedbc sets it directly; sd51attendance inherits it via `_base:
         sd51myedbc` (it declares no `blended_classes` of its own — a scalar
         key is not replaced by deep-merge the way a list would be, so the
-        inherited False survives). Every other bundled config must still
+        inherited False survives). sd45myedbc sets it directly (2026-09-30):
+        the district sends no ClassInformation extract at all. Every other bundled config must still
         resolve to True — a loop, so a future district that flips it must
         edit this test deliberately rather than widen the set by accident."""
         setters = {name for name in available_configs() if load_config(name).global_config.blended_classes is False}
-        assert setters == {"sd51myedbc", "sd51attendance"}
+        assert setters == {"sd45myedbc", "sd51myedbc", "sd51attendance"}
         for name in available_configs():
             if name in setters:
                 continue
