@@ -397,8 +397,9 @@ def test_the_forbid_and_ignore_models_are_exactly_as_documented():
     The S2b panel corrected a doc that claimed nested models reject unknown keys; S3 then
     named five forbidders from memory and got three of them wrong (two of the names did
     not even exist). Prose about a mechanism is not a mechanism — this asserts BOTH
-    directions against the real `model_config`, so `models.py`'s comment, CLAUDE.md and
-    the contract doc can be checked against one place instead of against recollection.
+    directions against the real `model_config`, so `models.py`'s comment,
+    `docs/developer/configuration-reference.md` (moved there from CLAUDE.md by plan 0053 S15)
+    and the contract doc can be checked against one place instead of against recollection.
 
     Since plan 0053 S12 every field-mapping variant forbids (D11 — a `transfrom:` typo is
     wrong output, for every origin). The negatives are still the consequential half:

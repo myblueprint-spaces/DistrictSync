@@ -6,7 +6,9 @@ the ONE spelling:
 * **the lockstep copies outside ``tests/``** — ``.github/workflows/ci.yml``'s
   ``EXPECTED_CONFIGS`` (read from the parsed YAML, never grepped from the raw text), the
   Makefile's ``validate-config`` list (its length AND its set, against discovery) and
-  CLAUDE.md's count sentences — each with a doctored-copy twin;
+  the four prose count sentences — two in CLAUDE.md, two in
+  ``docs/developer/configuration-reference.md`` since plan 0053 S15 moved the roster and
+  ``district_domains`` paragraphs there — each with a doctored-copy twin;
 * **a scan of ``tests/``** for a numeric config-count literal anywhere but ``_pins.py``
   (``len(...) == 20``, ``EXPECTED_CONFIGS = 20``), with a reasoned allowlist for the
   look-alikes that count something else. Every allowlist entry must still be FOUND in the
@@ -32,19 +34,25 @@ _TESTS = _REPO / "tests"
 _CI = _REPO / ".github" / "workflows" / "ci.yml"
 _MAKEFILE = _REPO / "Makefile"
 _CLAUDE_MD = _REPO / "CLAUDE.md"
+#: Plan 0053 S15 moved CLAUDE.md's bundled-config roster and ``district_domains`` paragraphs
+#: here VERBATIM, and two of the four count sentences moved with them.
+_CONFIG_REFERENCE = _REPO / "docs" / "developer" / "configuration-reference.md"
 _BUNDLED = _REPO / "config" / "mappings"
 
 _CI_STEP = "Validate all mapping configs"
 _CI_LITERAL = re.compile(r"^\s*EXPECTED_CONFIGS\s*=\s*(\d+)\s*$", re.MULTILINE)
 _MAKE_LIST = re.compile(r"^validate-config:\n\t.*?for n in \[([^\]]*)\]", re.MULTILINE)
 
-#: CLAUDE.md's sentences that state the count. Each must be present exactly once.
-_CLAUDE_SENTENCES = (
-    re.compile(r"validates all (\d+) configs"),
-    re.compile(r"Total: (\d+) bundled configs"),
-    re.compile(r"pinned (\d+)-config count"),
-    re.compile(r"pinned at (\d+)"),
+#: The prose sentences that state the count, each with the ONE doc it lives in. Each must be
+#: present exactly once in its home and ABSENT from the other doc here: a copy left behind in
+#: CLAUDE.md (or pasted back into it) would be a second spelling no row reads.
+_COUNT_SENTENCES: tuple[tuple[Path, re.Pattern[str]], ...] = (
+    (_CLAUDE_MD, re.compile(r"validates all (\d+) configs")),
+    (_CONFIG_REFERENCE, re.compile(r"Total: (\d+) bundled configs")),
+    (_CONFIG_REFERENCE, re.compile(r"pinned (\d+)-config count")),
+    (_CLAUDE_MD, re.compile(r"pinned at (\d+)")),
 )
+_COUNT_DOCS: tuple[Path, ...] = (_CLAUDE_MD, _CONFIG_REFERENCE)
 
 
 # --------------------------------------------------------------------------- #
@@ -68,11 +76,18 @@ def _make_names(text: str) -> list[str] | None:
     return [name.strip().strip("'\"") for name in match.group(1).split(",") if name.strip()]
 
 
-def _claude_counts(text: str) -> list[int | None]:
+def _count_doc_texts() -> dict[Path, str]:
+    return {doc: doc.read_text(encoding="utf-8") for doc in _COUNT_DOCS}
+
+
+def _sentence_counts(texts: dict[Path, str]) -> list[int | None]:
+    """The count each sentence states in its home doc: ``None`` unless the sentence appears
+    exactly once there AND nowhere else among ``texts``."""
     counts: list[int | None] = []
-    for pattern in _CLAUDE_SENTENCES:
-        found = pattern.findall(text.replace("**", ""))
-        counts.append(int(found[0]) if len(found) == 1 else None)
+    for home, pattern in _COUNT_SENTENCES:
+        found = {doc: pattern.findall(text.replace("**", "")) for doc, text in texts.items()}
+        elsewhere = any(found[doc] for doc in texts if doc != home)
+        counts.append(int(found[home][0]) if len(found[home]) == 1 and not elsewhere else None)
     return counts
 
 
@@ -103,16 +118,31 @@ class TestTheLockstepCopies:
         names = _make_names(doctored)
         assert names is not None and len(names) == BUNDLED_CONFIG_COUNT - 1
 
-    def test_claude_md_states_the_pinned_count(self) -> None:
-        counts = _claude_counts(_CLAUDE_MD.read_text(encoding="utf-8"))
-        assert counts == [BUNDLED_CONFIG_COUNT] * len(_CLAUDE_SENTENCES), counts
+    def test_each_count_sentence_states_the_pin_in_its_one_home(self) -> None:
+        counts = _sentence_counts(_count_doc_texts())
+        assert counts == [BUNDLED_CONFIG_COUNT] * len(_COUNT_SENTENCES), counts
 
-    def test_twin_a_stale_claude_md_count_is_red(self) -> None:
-        """The shape this slice fixed in place: the picker-order note said "19-config"."""
-        text = _CLAUDE_MD.read_text(encoding="utf-8")
+    def test_twin_a_stale_count_sentence_is_red(self) -> None:
+        """The shape S13a fixed in place: the picker-order note said "19-config" (now in the
+        configuration reference, where S15 moved it)."""
+        texts = _count_doc_texts()
+        text = texts[_CONFIG_REFERENCE]
         doctored = text.replace(f"pinned {BUNDLED_CONFIG_COUNT}-config count", "pinned 19-config count", 1)
         assert doctored != text
-        assert 19 in _claude_counts(doctored)
+        assert 19 in _sentence_counts({**texts, _CONFIG_REFERENCE: doctored})
+
+    def test_twin_a_stale_claude_md_count_is_red(self) -> None:
+        texts = _count_doc_texts()
+        text = texts[_CLAUDE_MD]
+        doctored = text.replace(f"pinned at {BUNDLED_CONFIG_COUNT}", "pinned at 19", 1)
+        assert doctored != text
+        assert 19 in _sentence_counts({**texts, _CLAUDE_MD: doctored})
+
+    def test_twin_a_moved_sentence_copied_back_into_claude_md_is_red(self) -> None:
+        """S15's own failure mode: a sentence that moved out, pasted back, is a second spelling."""
+        texts = _count_doc_texts()
+        doctored = texts[_CLAUDE_MD] + f"\nTotal: {BUNDLED_CONFIG_COUNT} bundled configs.\n"
+        assert _sentence_counts({**texts, _CLAUDE_MD: doctored})[1] is None
 
 
 # --------------------------------------------------------------------------- #

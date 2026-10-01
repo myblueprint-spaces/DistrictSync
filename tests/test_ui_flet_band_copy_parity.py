@@ -107,6 +107,13 @@ _DOC_QUOTES: dict[str, frozenset[str]] = {
     | _D14_HEADLINE
     | _QUICK_ALL
     | frozenset({"SIZE_CLAUSE_LEAD"}),
+    # Plan 0053 S15 moved CLAUDE.md's Desktop UI narrative here VERBATIM. It quotes the shared
+    # empty-store headline and the size clause's opening in its Run History / Home notes, and
+    # names the two ordinary-word destinations — so it declares exactly those, and a WELCOME_*
+    # value (it names the constants, never their text) quoted into it arrives red.
+    "docs/developer/ui-surfaces.md": frozenset(
+        {"EMPTY_NO_RUNS_HEADLINE", "SIZE_CLAUSE_LEAD", "QUICK_RUN_HISTORY_LABEL", "QUICK_SETTINGS_LABEL"}
+    ),
 }
 
 

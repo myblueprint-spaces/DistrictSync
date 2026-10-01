@@ -608,7 +608,7 @@ print('OK:', cfg.sis, cfg.version)
 
 ## Step 5 — Add to the CI validation list and bump the config count
 
-CI **discovers** configs (`available_configs()` over `config/mappings/`), so there is no per-config line to add to `.github/workflows/ci.yml`. What is hand-kept is the COUNT, spelled once for the tests and copied to three places the tests cannot import it into. Update all four in the same change:
+CI **discovers** configs (`available_configs()` over `config/mappings/`), so there is no per-config line to add to `.github/workflows/ci.yml`. What is hand-kept is the COUNT, spelled once for the tests and copied to four places the tests cannot import it into. Update all five in the same change:
 
 1. **The Makefile.** Add the name to the list in the `validate-config` recipe — one `python -c` line holding a single list comprehension:
 
@@ -619,9 +619,10 @@ CI **discovers** configs (`available_configs()` over `config/mappings/`), so the
 
 2. **`tests/_pins.py`.** Bump `BUNDLED_CONFIG_COUNT` by one. It is the ONE spelling of the count under `tests/`; no other test may carry a numeric config-count literal.
 3. **`.github/workflows/ci.yml`.** Bump `EXPECTED_CONFIGS` in the "Validate all mapping configs" step.
-4. **`CLAUDE.md`.** Update the count in its "validates all N configs", "Total: N bundled configs", "pinned N-config count" and "pinned at N" sentences.
+4. **`CLAUDE.md`.** Update the count in its "validates all N configs" and "pinned at N" sentences.
+5. **[`configuration-reference.md`](configuration-reference.md).** Update the count in its "Total: N bundled configs" and "pinned N-config count" sentences (plan 0053 S15 moved them there from `CLAUDE.md` with the bundled-config roster and the `district_domains` paragraph) — and add the new config to that roster.
 
-`tests/test_config_count_pin.py` (the Makefile list's length and set against discovery, the `ci.yml` literal read from the parsed YAML, the four `CLAUDE.md` sentences, and a scan of `tests/` for a stray count literal) and `tests/test_config_version_gate.py` (discovery against the pin) enforce all of them — a missed copy is a red test, not a silent drift.
+`tests/test_config_count_pin.py` (the Makefile list's length and set against discovery, the `ci.yml` literal read from the parsed YAML, the four count sentences — each in exactly one of `CLAUDE.md` and `configuration-reference.md` — and a scan of `tests/` for a stray count literal) and `tests/test_config_version_gate.py` (discovery against the pin) enforce all of them — a missed copy is a red test, not a silent drift.
 
 ---
 
@@ -801,7 +802,7 @@ extract whose schedule also carries a `Student ID` column —
 
 | Config name | `_base` | Purpose |
 |-------------|---------|---------|
-| `myedbc` | (none — base) | Standard MyEdBC filenames; defines all 7 entity templates; enables the 5 rostering entities by default |
+| `myedbc` | (none — base) | Standard MyEdBC filenames; defines all 8 entity templates (incl. `StudentAttendance`); enables the 5 rostering entities by default |
 | `sd40myedbc` | `myedbc` | CSV files with SD-40_/SD40- prefix; Student Schedule is headerless (`file_headers:` used); declares Classes `session_components` (its schedule has no Term column — config format 1.15) |
 | `sd48myedbc` | `myedbc` | Student Demographic Enhanced, Staff Information (non-enhanced) |
 | `sd51myedbc` | `myedbc` | Boundary — Student Demographic Enhanced, Class Info Enhanced (10-row early-year extract expected); `blended_classes: false` (2026-09-16) — the export's `Day` column never rotates, so the session key can't disambiguate secondary sections |
