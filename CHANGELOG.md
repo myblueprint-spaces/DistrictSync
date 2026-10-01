@@ -9,6 +9,17 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+## [3.27.0] - 2026-09-30
+
+A night with a problem no longer sends half-right data. If an export your mapping needs is
+missing or empty, or a required file would come out empty, the night stops and SpacesEDU
+keeps the last good sync; if only the family contacts export has a problem, everything else
+is still delivered and Home shows amber. Rows missing a value SpacesEDU requires — most
+often a staff member's email address — are left out and counted, and Home shows amber until
+they are filled in. Home, Run History and the Convert screen now say which file or column
+caused it. A district with blended-class detection off (SD45, SD51) may go without its Class
+Information export; those nights deliver without co-teachers and show amber.
+
 ### Changed
 
 - **A district with blended-class detection switched off no longer needs its Class
