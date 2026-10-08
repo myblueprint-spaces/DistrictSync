@@ -660,6 +660,47 @@ def test_run_record_marker_is_emitted_by_log_run_record(caplog: pytest.LogCaptur
     assert any(smoke._RUN_RECORD_MARKER in r.message for r in caplog.records)
 
 
+def _dry_run_stdout(*, left_out: tuple[str, ...]) -> str:
+    """What ``run_pipeline --dry-run`` prints for the five rostering entities, via the REAL
+    line builder (``pipeline.dry_run_entity_lines``), with ``left_out`` entities FAILED."""
+    import pandas as pd
+
+    from src.etl import pipeline
+    from src.etl.outcomes import EntityOutcome, OutcomeReason
+
+    frame = pd.DataFrame({"User ID": ["S1", "S2"]})
+    built = [name for name in smoke._ROSTERING_ENTITIES if name not in left_out]
+    outcomes = [
+        EntityOutcome.failed(name, OutcomeReason.MISSING_SOURCE_COLUMN)
+        if name in left_out
+        else EntityOutcome.built(name, len(frame))
+        for name in smoke._ROSTERING_ENTITIES
+    ]
+    lines = pipeline.dry_run_entity_lines(dict.fromkeys(built, frame), outcomes)
+    return "\n".join(["", "=== DRY RUN (no files written) ===", *lines, ""])
+
+
+def test_the_built_line_pattern_matches_what_the_pipeline_prints() -> None:
+    """Plan 0053 S4: the smoke's per-entity check reads the BUILT line's SHAPE, pinned to the
+    pipeline's own line builder (the script never imports src)."""
+    assert smoke.unbuilt_entities(_dry_run_stdout(left_out=()), smoke._ROSTERING_ENTITIES) == []
+
+
+def test_negative_twin_a_not_built_entity_fails_the_per_entity_check() -> None:
+    """The line saying Family was NOT built names Family — the old name-only check passed on
+    it. The shape check does not."""
+    stdout = _dry_run_stdout(left_out=("Family",))
+    assert "  ! not built: Family (missing_source_column)" in stdout.splitlines()
+    assert "Family" in stdout, "the retired name-only check would have passed here"
+    assert smoke.unbuilt_entities(stdout, smoke._ROSTERING_ENTITIES) == ["Family"]
+
+
+def test_negative_twin_any_other_family_line_is_not_a_built_line() -> None:
+    for impostor in ("  Family: NOT BUILT", "Family: 3 rows", "  ! not built: Family (transform_error)"):
+        assert smoke.unbuilt_entities(impostor, ("Family",)) == ["Family"], impostor
+    assert smoke.unbuilt_entities("  Family: 3 rows, columns: ['Email']", ("Family",)) == []
+
+
 def test_paused_marker_is_emitted_by_the_sync_window_gate(caplog: pytest.LogCaptureFixture) -> None:
     from datetime import date
 
@@ -763,3 +804,151 @@ def test_main_cli_smoke_dispatches_without_launching(tmp_path: Path) -> None:
 
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+# --- plan 0053 S10: the user-overlay phase's input copy ------------------------------
+
+
+def _base_enrollments_student_column() -> str:
+    """The ``student_id_col`` the self-service base (``myedbc``) reads from the schedule."""
+    from src.config.loader import load_config
+
+    field_map = load_config("myedbc").to_raw_dict()["mappings"]["Enrollments"]["field_map"]
+    cols = {v["student_id_col"] for v in field_map.values() if isinstance(v, dict) and "student_id_col" in v}
+    assert len(cols) == 1, cols
+    return cols.pop()
+
+
+def test_the_overlay_input_literals_match_the_base_config_and_the_pytest_copy() -> None:
+    """Both literals the phase copies out of ``src`` are tied back (no vacuous greens)."""
+    from tests.test_config_authoring import BASE_SCHEDULE_STUDENT_COLUMN
+
+    assert _base_enrollments_student_column() == smoke._BASE_SCHEDULE_STUDENT_COLUMN
+    assert smoke._BASE_SCHEDULE_STUDENT_COLUMN == BASE_SCHEDULE_STUDENT_COLUMN
+
+
+def test_the_overlay_input_copy_adds_only_the_base_student_column(tmp_path: Path) -> None:
+    source = smoke.DEFAULT_SMOKE_INPUT
+    schedule_name = smoke._SD93_OVERLAY_SPEC["source_file_renames"]["StudentSchedule.txt"]
+    # Positive precondition: the frozen extract really lacks the base's column (else the
+    # copy would be pointless and the phase would be testing nothing new).
+    original = (source / schedule_name).read_text(encoding="utf-8").splitlines()
+    assert smoke._BASE_SCHEDULE_STUDENT_COLUMN not in original[0].split(",")
+    assert smoke._SNAPSHOT_SCHEDULE_STUDENT_COLUMN in original[0].split(",")
+
+    dest = smoke.input_with_base_student_id(source, tmp_path / "input")
+
+    copied = (dest / schedule_name).read_text(encoding="utf-8").splitlines()
+    assert copied[0] == original[0].rstrip("\r") + "," + smoke._BASE_SCHEDULE_STUDENT_COLUMN
+    assert len(copied) == len(original)
+    header = copied[0].split(",")
+    at_old = header.index(smoke._SNAPSHOT_SCHEDULE_STUDENT_COLUMN)
+    for line in copied[1:6]:
+        cells = line.split(",")
+        assert cells[-1] == cells[at_old]
+    # Every other file is byte-identical to the frozen extract.
+    for path in source.iterdir():
+        if path.name != schedule_name and path.is_file():
+            assert (dest / path.name).read_bytes() == path.read_bytes(), path.name
+
+
+def test_the_overlay_input_copy_refuses_a_schedule_that_already_has_the_column(tmp_path: Path) -> None:
+    first = smoke.input_with_base_student_id(smoke.DEFAULT_SMOKE_INPUT, tmp_path / "once")
+    with pytest.raises(ValueError, match="already carries"):
+        smoke.input_with_base_student_id(first, tmp_path / "twice")
+
+
+# --- plan 0053 S13d: the user-overlay phase's input copy gains two base columns -------
+
+
+def _base_students_and_family_columns() -> tuple[str, str]:
+    """The Students email and Family last-name SOURCE columns the base (``myedbc``) reads."""
+    from src.config.loader import load_config
+
+    mappings = load_config("myedbc").to_raw_dict()["mappings"]
+    return mappings["Students"]["field_map"]["Email Address"], mappings["Family"]["field_map"]["Last Name"]
+
+
+def test_the_s13d_overlay_input_literals_match_the_configs_and_the_pytest_copy() -> None:
+    """Every literal the copy spells is tied back: to the base config (what the overlay reads), to
+    SD74's config (what the frozen extract calls it) and to the pytest copy's own constants."""
+    from src.config.loader import load_config
+    from tests.test_config_authoring import (
+        BASE_FAMILY_LAST_NAME_COLUMN,
+        BASE_STUDENT_EMAIL_COLUMN,
+        SNAPSHOT_FAMILY_LAST_NAME_COLUMN,
+    )
+
+    email, last_name = _base_students_and_family_columns()
+    assert (email, last_name) == (smoke._BASE_STUDENT_EMAIL_COLUMN, smoke._BASE_FAMILY_LAST_NAME_COLUMN)
+    assert smoke._BASE_STUDENT_EMAIL_COLUMN == BASE_STUDENT_EMAIL_COLUMN
+    assert smoke._BASE_FAMILY_LAST_NAME_COLUMN == BASE_FAMILY_LAST_NAME_COLUMN
+    sd74 = load_config("sd74myedbc").to_raw_dict()["mappings"]
+    assert sd74["Family"]["field_map"]["Last Name"] == smoke._SNAPSHOT_FAMILY_LAST_NAME_COLUMN
+    assert smoke._SNAPSHOT_FAMILY_LAST_NAME_COLUMN == SNAPSHOT_FAMILY_LAST_NAME_COLUMN
+    assert sd74["Students"]["field_map"]["User ID"] == smoke._SNAPSHOT_DEMOGRAPHIC_STUDENT_COLUMN
+
+
+def test_the_s13d_overlay_input_copy_adds_only_the_two_base_columns(tmp_path: Path) -> None:
+    source = smoke.DEFAULT_SMOKE_INPUT
+    contacts = smoke._SD93_OVERLAY_SPEC["source_file_renames"]["EmergencyContactInformation.txt"]
+    demographic = smoke._SNAPSHOT_DEMOGRAPHIC_FILE
+    # Positive precondition: the frozen extract really lacks both base columns.
+    assert smoke._BASE_STUDENT_EMAIL_COLUMN not in (source / demographic).read_text(encoding="utf-8").splitlines()[0]
+    assert "," + smoke._BASE_FAMILY_LAST_NAME_COLUMN + "," not in (
+        "," + (source / contacts).read_text(encoding="utf-8").splitlines()[0] + ","
+    )
+
+    student_id_only = smoke.input_with_base_student_id(source, tmp_path / "student_id")
+    dest = smoke.input_for_the_base_mapping(source, tmp_path / "input")
+
+    for name, column in (
+        (demographic, smoke._BASE_STUDENT_EMAIL_COLUMN),
+        (contacts, smoke._BASE_FAMILY_LAST_NAME_COLUMN),
+    ):
+        before = (student_id_only / name).read_text(encoding="utf-8").splitlines()
+        after = (dest / name).read_text(encoding="utf-8").splitlines()
+        assert after[0] == before[0].rstrip("\r") + "," + column
+        assert len(after) == len(before)
+    email_row = (dest / demographic).read_text(encoding="utf-8").splitlines()[1]
+    assert email_row.endswith("@" + smoke._SYNTHETIC_EMAIL_DOMAIN)
+    # Every other file is byte-identical to the Student ID copy.
+    for path in student_id_only.iterdir():
+        if path.name not in (demographic, contacts) and path.is_file():
+            assert (dest / path.name).read_bytes() == path.read_bytes(), path.name
+
+
+def test_the_s13d_overlay_input_copy_refuses_a_file_that_already_has_a_column(tmp_path: Path) -> None:
+    first = smoke.input_for_the_base_mapping(smoke.DEFAULT_SMOKE_INPUT, tmp_path / "once")
+    with pytest.raises(ValueError, match="already carries"):
+        smoke.input_for_the_base_mapping(first, tmp_path / "twice")
+
+
+def test_the_user_overlay_phase_converts_its_copy_from_source(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+    """The CI-only phase reproduced FROM SOURCE: the planted overlay YAML over the phase's own copy
+    previews all five rostering entities as BUILT (``unbuilt_entities`` — the script's own check,
+    over what the dry run really prints); its twin, the Student-ID-only copy the phase fed before
+    S13d, now stops on Students (every student missing a value SpacesEDU requires — the rule
+    working, not a regression)."""
+    from src.etl.errors import EmptyRequiredOutputError
+    from src.etl.pipeline import run_pipeline
+    from src.utils import paths
+
+    overlay = paths.user_mappings_dir() / f"{smoke._SD93_OVERLAY_SIS}_mapping.yaml"
+    overlay.parent.mkdir(parents=True, exist_ok=True)
+    overlay.write_text(smoke._SD93_OVERLAY_YAML, encoding="utf-8")
+    out = tmp_path / "out"
+    out.mkdir()
+    dest = smoke.input_for_the_base_mapping(smoke.DEFAULT_SMOKE_INPUT, tmp_path / "input")
+    capsys.readouterr()
+    result = run_pipeline(smoke._SD93_OVERLAY_SIS, str(dest), str(out), dry_run=True)
+    printed = capsys.readouterr().out
+    assert "=== DRY RUN" in printed
+    assert smoke.unbuilt_entities(printed, smoke._ROSTERING_ENTITIES) == []
+    assert all(result.entity_counts[e] > 0 for e in smoke._ROSTERING_ENTITIES)
+    assert not list(out.glob("*.csv")), "no CSV written by the preview"
+
+    student_id_only = smoke.input_with_base_student_id(smoke.DEFAULT_SMOKE_INPUT, tmp_path / "student_id")
+    with pytest.raises(EmptyRequiredOutputError) as raised:
+        run_pipeline(smoke._SD93_OVERLAY_SIS, str(student_id_only), str(tmp_path / "out2"), dry_run=True)
+    assert raised.value.entity == "Students" and raised.value.required_values_left_out is True

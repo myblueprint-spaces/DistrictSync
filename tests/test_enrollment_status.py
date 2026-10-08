@@ -17,7 +17,7 @@ class TestEnrollmentStatusFromField:
         if raw_data is None:
             raw_data = {"StudentDemographicInformation.txt": df}
         if global_config is None:
-            global_config = {"homeroom_grades": [], "mappings": {"Students": {"field_map": {}}}}
+            global_config = {"homeroom_grades": []}
         mapping = {
             "source_files": {"student_demographic": "StudentDemographicInformation.txt"},
             "field_map": {"EnrollStatus": None},
@@ -92,7 +92,7 @@ class TestEnrollmentStatusFromWithdrawDate:
 
     def _transform_students(self, df):
         raw_data = {"StudentDemographicInformation.txt": df}
-        global_config = {"homeroom_grades": [], "mappings": {"Students": {"field_map": {}}}}
+        global_config = {"homeroom_grades": []}
         mapping = {
             "source_files": {"student_demographic": "StudentDemographicInformation.txt"},
             "field_map": {"EnrollStatus": None},
@@ -144,7 +144,7 @@ class TestEnrollmentStatusNoColumn:
     def test_defaults_to_active(self):
         df = pd.DataFrame({"student number": ["S001", "S002"]})
         raw_data = {"StudentDemographicInformation.txt": df}
-        global_config = {"homeroom_grades": [], "mappings": {"Students": {"field_map": {}}}}
+        global_config = {"homeroom_grades": []}
         mapping = {
             "source_files": {"student_demographic": "StudentDemographicInformation.txt"},
             "field_map": {"EnrollStatus": None},

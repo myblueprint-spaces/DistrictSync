@@ -127,9 +127,10 @@ class TestClassifyField:
         Closes the prior bug where a recognizable-but-malformed EnrollStatus
         dict only warned and passed through. A dict routed into the branch by a
         valid key (``active_values``) that ALSO carries an unknown key
-        (``withdraw_colum`` typo) must raise.
+        (``withdraw_colum`` typo) must raise — since plan 0053 S12 as a ``ValueError``
+        naming the nearest known key (Pydantic's own refusal named none).
         """
-        with pytest.raises(ValidationError):
+        with pytest.raises(ValueError, match="unknown key 'withdraw_colum' .*did you mean 'withdraw_date_column'"):
             classify_field({"active_values": ["Active"], "withdraw_colum": "Left"})
 
 
@@ -679,20 +680,47 @@ class TestEnabledEntities:
             ], f"{sis} should still produce only the 5 rostering CSVs"
 
     def test_sd51_enables_student_attendance(self):
-        """SD51 lists the full set (base 5 rostering + opt-in StudentAttendance).
+        """SD51 lists its full set: four base rostering entities + opt-in StudentAttendance.
 
         Deep-merge REPLACES lists, so SD51 must restate the rostering entities
-        alongside StudentAttendance or they would vanish.
+        alongside StudentAttendance or they would vanish. Family is deliberately
+        NOT among them (owner decision 2026-09-25) — see
+        ``test_sd51_does_not_enable_family``.
         """
         cfg = load_config("sd51myedbc")
         assert cfg.global_config.enabled_entities == [
             "Students",
             "Staff",
-            "Family",
             "Classes",
             "Enrollments",
             "StudentAttendance",
         ]
+
+    # SD51's real contacts export (EmergencyContactInformation.txt) has no email
+    # column, so Family could only ever be EMPTY — and since plan 0053 S8 that is
+    # a standing amber on Home every night. The owner turned it off in the config
+    # (2026-09-25); re-enabling is one line once SD51 sends a contact export WITH
+    # an email column.
+    _SD51_OUTPUTS = frozenset({"Students", "Staff", "Classes", "Enrollments", "StudentAttendance"})
+
+    def test_sd51_does_not_enable_family(self):
+        """The RESOLVED config (``_base`` merged) builds exactly its five entities, never Family —
+        while the inherited Family DEFINITION stays, so re-enabling is the one list line."""
+        cfg = load_config("sd51myedbc")
+        assert "Family" not in cfg.active_entities()
+        assert cfg.active_entities() == self._SD51_OUTPUTS
+        assert "Family" in cfg.mappings, "the base Family entity is still inherited — re-enabling needs no mapping"
+
+    def test_sd51_attendance_tier_is_unaffected(self):
+        """``sd51attendance`` (``_base: sd51myedbc``) declares its OWN list, so the change cannot reach it."""
+        assert load_config("sd51attendance").active_entities() == {"StudentAttendance"}
+
+    @pytest.mark.parametrize("sis", ["myedbc", "unitychristianmyedbc"])
+    def test_twin_the_same_read_sees_family_where_a_config_enables_it(self, sis):
+        """Non-vacuity: the same resolved-config read DOES report Family for a config that enables
+        it (the base, and a district that restates its list) — so the SD51 pin above is reading
+        real config, not an accessor that never returns Family."""
+        assert "Family" in load_config(sis).active_entities()
 
 
 class TestActiveEntities:
@@ -968,16 +996,17 @@ class TestBlendedClassesConfig:
         )
         assert cfg.to_raw_dict()["global_config"]["blended_classes"] is True
 
-    def test_exactly_the_two_sd51_tiers_set_it_false(self):
+    def test_exactly_the_sd51_tiers_and_sd45_set_it_false(self):
         """The key's shipped consumers, stated as a config fact (2026-09-16):
         sd51myedbc sets it directly; sd51attendance inherits it via `_base:
         sd51myedbc` (it declares no `blended_classes` of its own — a scalar
         key is not replaced by deep-merge the way a list would be, so the
-        inherited False survives). Every other bundled config must still
+        inherited False survives). sd45myedbc sets it directly (2026-09-30):
+        the district sends no ClassInformation extract at all. Every other bundled config must still
         resolve to True — a loop, so a future district that flips it must
         edit this test deliberately rather than widen the set by accident."""
         setters = {name for name in available_configs() if load_config(name).global_config.blended_classes is False}
-        assert setters == {"sd51myedbc", "sd51attendance"}
+        assert setters == {"sd45myedbc", "sd51myedbc", "sd51attendance"}
         for name in available_configs():
             if name in setters:
                 continue

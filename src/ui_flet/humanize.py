@@ -24,6 +24,65 @@ from src.config.authoring import custom_sd_number
 logger = logging.getLogger(__name__)
 
 
+# --------------------------------------------------------------------------- #
+# The entity vocabulary — the ONE place an entity key becomes admin words.     #
+#                                                                             #
+# Both maps moved here from ``home_status`` in plan 0053 S3. ``home_status``   #
+# imports ``failure_copy``, and ``failure_copy`` needs these words, so leaving #
+# them in ``home_status`` would have made the two modules import each other.   #
+# This module is the leaf both already import. It is still ONE vocabulary:     #
+# ``home_status`` re-imports ``SIZE_NOUNS`` from here and defines no label map #
+# of its own (pinned by ``tests/test_ui_flet_failure_copy.py``).               #
+# --------------------------------------------------------------------------- #
+
+# The SINGLE source of the entity-key → plain-language output-CSV label. The 5 rostering
+# entities label to themselves; the myBlueprint+ / attendance keys map to their friendly CSV
+# names (``CourseInfo`` → "Courses", ``StudentCourses`` → "Student courses",
+# ``StudentAttendance`` → "Attendance"). This is a pure presentation fact (no flet), so both
+# the pure ``mapping_catalog`` and the flet views (``components.run_table``, Home, Convert)
+# consume ONE definition — a rename here changes every surface at once (DRY). An unknown key
+# has no entry; callers fall back to the raw key (``ENTITY_LABELS.get(name, name)``).
+ENTITY_LABELS: dict[str, str] = {
+    "Students": "Students",
+    "Staff": "Staff",
+    "Family": "Family",
+    "Classes": "Classes",
+    "Enrollments": "Enrollments",
+    "CourseInfo": "Courses",
+    "StudentCourses": "Student courses",
+    "StudentAttendance": "Attendance",
+}
+
+# WHY A SECOND VOCABULARY, beside ``ENTITY_LABELS``. That map names the output CSV
+# ("Attendance", "Courses") — a heading. This one names a COUNTABLE THING ("8,140
+# attendance rows", "1,204 courses"), which is a different presentation fact and reads
+# wrong if borrowed: "8,140 attendance" and "4,812 family" are not sentences. Both forms
+# are written out rather than derived, because ``pluralize`` is a naive ``+ "s"`` and would
+# render "1 classs". Its plural is also the noun a sentence ABOUT an entity uses
+# (``failure_copy.entity_phrase``: "Family contacts were left out of this sync").
+#
+# ORDER IS SEMANTIC. The dict order IS ``home_status.size_clause``'s "which entity leads"
+# rule: the first key this config actually produces wins. That is what keeps an
+# attendance-only or myBlueprint+-only config off the rostering keys entirely.
+#
+# THE TABLE IS THE ALLOWLIST. A config may enable a partner-defined entity whose key came
+# out of a hand-dropped YAML; an unknown key produces NO size clause and the generic
+# "one of your files" phrase rather than being echoed into admin-facing copy. Never render
+# a string we did not author.
+SIZE_NOUNS: dict[str, tuple[str, str]] = {
+    "Students": ("student", "students"),
+    "Staff": ("staff record", "staff records"),
+    # NOT "families": a ``Family.csv`` row is one parent/guardian contact and a student may
+    # have several, so counting rows as families would overstate a number by design.
+    "Family": ("family contact", "family contacts"),
+    "Classes": ("class", "classes"),
+    "Enrollments": ("enrollment", "enrollments"),
+    "CourseInfo": ("course", "courses"),
+    "StudentCourses": ("student course", "student courses"),
+    "StudentAttendance": ("attendance row", "attendance rows"),
+}
+
+
 def pluralize(word: str, count: int) -> str:
     """Return ``word`` at ``count == 1``, else the naive ``word + "s"`` plural. TOTAL.
 

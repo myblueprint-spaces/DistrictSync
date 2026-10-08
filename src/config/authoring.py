@@ -831,7 +831,10 @@ def write_overlay(
     :func:`src.config.loader.validate_overlay`, so a config that could not load is
     refused BEFORE any bytes reach the user's ``mappings/`` dir: the dir never holds a
     file the app cannot read, which matters because a broken file there SHADOWS a
-    bundled config of the same name.
+    bundled config of the same name. The load-back is also stricter than a later load
+    of the written file (plan 0053 S12): an unknown ``global_config`` / entity key or
+    ``source_columns`` role is REFUSED here (``loader.UnknownConfigKeyError``), where the
+    nightly load of a user-dir file would only warn — so this layer never writes one.
 
     Every written overlay carries an ``authored_with`` provenance block (plan 0044 S3)
     — the running :func:`src.utils.version.app_version`, the base id and the base's
@@ -846,7 +849,8 @@ def write_overlay(
 
     Raises:
         FileExistsError: the target exists and ``overwrite`` is False.
-        ValueError / FileNotFoundError: from :func:`build_overlay` or the load-back.
+        ValueError / FileNotFoundError: from :func:`build_overlay` or the load-back
+            (an unknown key included — ``UnknownConfigKeyError`` is a ``ValueError``).
         OSError: the write itself failed (nothing was promoted).
     """
     sis_id = derive_sis_id(spec.sd_number)
@@ -1003,6 +1007,6 @@ def current_digest(sis_id: str) -> str | None:
     """
     try:
         return resolved_digest(load_config(sis_id))
-    except Exception:  # noqa: BLE001 - TOTAL by contract; any load failure means "not current"
+    except Exception:  # noqa: BLE001 — total by contract; any load failure means "not current"
         logger.debug("Could not compute the resolved digest for config '%s'.", sis_id)
         return None

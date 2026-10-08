@@ -12,6 +12,7 @@ import pandas as pd
 import pytest
 
 from src.etl import pipeline
+from src.etl.outcomes import EntityOutcome, OutcomeLedger
 from src.etl.pipeline import (
     TransformOutputs,
     compute_anomalies,
@@ -127,59 +128,28 @@ class TestExtractRequiredFiles:
         assert "ClassInformationEnh.txt" in files
 
 
-class TestAdvisoryExpectedFiles:
-    """The Convert screen's "usually include" chip list — UI-only, never the
-    extractor's actual load list (see TestExtractRequiredFiles's SD83 regression
-    test for why those two functions must stay separate)."""
+class TestTheUiListsTheFilesTheGateRequires:
+    """Owner decision 2026-09-28: every file an enabled entity lists is REQUIRED
+    (``pipeline.check_required_inputs``), so the UI-only ``advisory_expected_files`` — which
+    dropped a fully homeroom-scoped district's schedule and class-information files as
+    "feeding nothing" — was retired: Convert's missing-file chips and the self-service Files
+    step now list ``extract_required_files``, the very list the input gate stops the night for."""
 
-    def test_sd83_homeroom_only_scope_drops_schedule_and_class_info(self):
-        """SD83's `class_rostering_grades: "homeroom"` resolves the timetable scope to
-        EMPTY — no subject class or blend is ever built — so StudentSchedule.txt and
-        ClassInformationEnh.txt feed nothing and must not be listed as expected. This
-        is the exact real-world case reported live during the D-0037-6 QA walk: the
-        Convert screen's "usually include" chips flagged both files even though SD83's
-        actual district export never has them."""
+    def test_the_narrowing_helper_is_gone(self):
+        from src.etl import pipeline
+
+        assert not hasattr(pipeline, "advisory_expected_files")
+
+    def test_twin_a_homeroom_scoped_district_is_shown_the_files_its_night_now_needs(self):
+        """SD83 (``class_rostering_grades: "homeroom"``) used to be told its schedule and class
+        information were not expected; its mapping still LISTS both, so the gate requires them
+        and the chips must name them (DECISIONS 2026-08-17 records SD83's config run with both
+        absent — such a night now stops (``incomplete_input``); SD83 is expected to send both,
+        owner ruling 2026-09-30 (B))."""
         from src.config.loader import load_config
-        from src.etl.pipeline import advisory_expected_files
 
-        cfg = load_config("sd83myedbc")
-        files = set(advisory_expected_files(cfg))
-        assert "StudentSchedule.txt" not in files
-        assert "ClassInformationEnh.txt" not in files
-        # Every other source file SD83's full myBlueprint+ tier declares stays expected.
-        assert files == {
-            "StudentDemographicInformation.txt",
-            "StaffInformationEnhanced.txt",
-            "EmergencyContactInformation.txt",
-            "CourseInformation.txt",
-            "StudentCourseHistory.txt",
-            "StudentCourseSelection.txt",
-        }
-
-    def test_unscoped_config_still_expects_schedule_and_class_info(self):
-        """A district with no class_rostering_grades key (the byte-identical default,
-        e.g. sd74myedbc, which overrides both filenames) still expects its schedule
-        and class-info files — the exclusion must only fire on an EXPLICITLY-resolved
-        empty scope, never on the unscoped None default."""
-        from src.config.loader import load_config
-        from src.etl.pipeline import advisory_expected_files
-
-        cfg = load_config("sd74myedbc")
-        files = set(advisory_expected_files(cfg))
-        assert "studentcourseselection.txt" in files  # SD74's student_schedule override
-        assert "ClassInfoEnhanced.txt" in files  # SD74's class_info override
-
-    def test_byte_identical_to_extract_required_files_when_unscoped(self):
-        """The unscoped default (no class_rostering_grades key) must produce the
-        EXACT same set as extract_required_files — advisory narrowing is opt-in via
-        an explicitly-resolved empty scope only, never a silent behavior change for
-        the eleven districts that don't set the key."""
-        from src.config.loader import load_config
-        from src.etl.pipeline import advisory_expected_files
-
-        for sis in ("myedbc", "sd40myedbc", "sd48myedbc", "sd51myedbc", "sd54myedbc", "sd60myedbc", "sd74myedbc"):
-            cfg = load_config(sis)
-            assert set(advisory_expected_files(cfg)) == set(extract_required_files(cfg)), sis
+        files = set(extract_required_files(load_config("sd83myedbc")))
+        assert {"StudentSchedule.txt", "ClassInformationEnh.txt"} <= files
 
 
 # -----------------------------------------------------------------------
@@ -563,6 +533,12 @@ class TestPrintDiff:
 # -----------------------------------------------------------------------
 
 
+def _run(raw_data, mappings, global_config):
+    """``run_transform`` with the ledger every caller must build (plan 0053 S2)."""
+    ledger = OutcomeLedger(configured_entity_order(mappings, global_config))
+    return run_transform(raw_data, mappings, global_config, ledger=ledger)
+
+
 class TestRunTransform:
     """Unit tests for the shared transform-orchestration extracted from run_pipeline.
 
@@ -628,7 +604,7 @@ class TestRunTransform:
         }
         raw_data = {"Staff.txt": staff_df, "Sched.txt": schedule_df}
 
-        outputs, _, _, _ = run_transform(raw_data, mappings, self._global_config(enabled_entities=["Staff"]))
+        outputs = _run(raw_data, mappings, self._global_config(enabled_entities=["Staff"])).outputs
 
         roles = dict(zip(outputs["Staff"]["User ID"].astype(str), outputs["Staff"]["Role"]))
         assert roles == {"T001": "teacher", "T002": "teacher"}, (
@@ -640,11 +616,13 @@ class TestRunTransform:
         mappings = {"Widgets": self._entity("widgets.txt", {"Out": "in_col"})}
         raw_data = {"widgets.txt": pd.DataFrame({"in_col": ["a", "b"]})}
 
-        result = run_transform(raw_data, mappings, self._global_config())
+        result = _run(raw_data, mappings, self._global_config())
 
         assert isinstance(result, TransformOutputs)
-        # Unpacks cleanly into (outputs, field_orders, data_errors, school_year)
-        outputs, field_orders, data_errors, school_year = result
+        # Unpacks cleanly into (outputs, field_orders, data_errors, school_year, outcomes)
+        outputs, field_orders, data_errors, school_year, outcomes = result
+        # plan 0053 S2: one outcome per configured entity — here the one BUILT entity.
+        assert outcomes == (EntityOutcome.built("Widgets", 2),)
         assert "Widgets" in outputs
         assert list(outputs["Widgets"].columns) == ["Out"]
         # A clean run records no field-transform errors.
@@ -666,7 +644,7 @@ class TestRunTransform:
         }
         gc = self._global_config(enabled_entities=["Widgets"])
 
-        outputs = run_transform(raw_data, mappings, gc).outputs
+        outputs = _run(raw_data, mappings, gc).outputs
 
         assert set(outputs.keys()) == {"Widgets"}
         assert "Gadgets" not in outputs
@@ -682,34 +660,53 @@ class TestRunTransform:
         }
         gc = self._global_config(entity_order=["Gadgets", "Widgets"])
 
-        outputs = run_transform(raw_data, mappings, gc).outputs
+        outputs = _run(raw_data, mappings, gc).outputs
 
         assert list(outputs.keys()) == ["Gadgets", "Widgets"]
 
     def test_skips_entity_with_empty_primary_source(self):
-        """An entity whose primary source frame is empty is skipped, not emitted."""
+        """An entity whose primary source frame is empty is skipped, not emitted — the one entity
+        that may be (Family, owner 2026-09-28); its twin below is any other entity, which stops."""
+        mappings = {
+            "Widgets": self._entity("widgets.txt", {"Out": "in_col"}),
+            "Family": self._entity("contacts.txt", {"Out": "in_col"}),
+        }
+        raw_data = {
+            "widgets.txt": pd.DataFrame({"in_col": ["a"]}),
+            "contacts.txt": pd.DataFrame({"in_col": []}),  # empty primary
+        }
+
+        result = _run(raw_data, mappings, self._global_config())
+        outputs, field_orders = result.outputs, result.field_orders
+
+        assert "Widgets" in outputs
+        assert "Family" not in outputs
+        assert "Family" not in field_orders
+
+    def test_twin_any_other_entity_with_an_empty_source_stops_the_run(self):
+        """ "Never send a header-only file" (owner 2026-09-28): an unregistered name is CRITICAL,
+        so its empty source stops the night typed instead of skipping it."""
+        from src.etl.errors import EmptyRequiredOutputError
+
         mappings = {
             "Widgets": self._entity("widgets.txt", {"Out": "in_col"}),
             "Gadgets": self._entity("gadgets.txt", {"Out": "in_col"}),
         }
         raw_data = {
             "widgets.txt": pd.DataFrame({"in_col": ["a"]}),
-            "gadgets.txt": pd.DataFrame({"in_col": []}),  # empty primary
+            "gadgets.txt": pd.DataFrame({"in_col": []}),
         }
-
-        outputs, field_orders, _, _ = run_transform(raw_data, mappings, self._global_config())
-
-        assert "Widgets" in outputs
-        assert "Gadgets" not in outputs
-        assert "Gadgets" not in field_orders
+        with pytest.raises(EmptyRequiredOutputError) as raised:
+            _run(raw_data, mappings, self._global_config())
+        assert raised.value.entity == "Gadgets"
 
     def test_skips_entity_with_missing_primary_source(self):
         """A referenced-but-absent primary source defaults to an empty frame and
-        is skipped (no back-filling)."""
-        mappings = {"Widgets": self._entity("not_uploaded.txt", {"Out": "in_col"})}
+        is skipped (no back-filling) — for Family, the one entity that may be left out."""
+        mappings = {"Family": self._entity("not_uploaded.txt", {"Out": "in_col"})}
         raw_data: dict[str, pd.DataFrame] = {}
 
-        outputs = run_transform(raw_data, mappings, self._global_config()).outputs
+        outputs = _run(raw_data, mappings, self._global_config()).outputs
 
         assert outputs == {}
 
@@ -723,7 +720,7 @@ class TestRunTransform:
         }
         raw_data = {"widgets.txt": pd.DataFrame({"a": ["1"], "b": ["2"], "c": ["3"]})}
 
-        field_orders = run_transform(raw_data, mappings, self._global_config()).field_orders
+        field_orders = _run(raw_data, mappings, self._global_config()).field_orders
 
         assert field_orders["Widgets"] == ["First", "Second", "Third"]
 

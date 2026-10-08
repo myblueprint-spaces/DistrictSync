@@ -5,6 +5,7 @@ import logging
 import pandas as pd
 import pytest
 
+from src.etl.outcomes import OutcomeNote
 from src.etl.transformer import DataTransformer
 from src.etl.transformers.staff import TEACHING_ASSIGNMENT_SOURCE_ROLES
 
@@ -189,9 +190,10 @@ class TestStaffTransform:
         )
         raw_data = {"StaffInformationEnhanced.txt": no_email_df}
         result = self.transformer.transform(no_email_df, staff_mapping, "Staff", raw_data, global_config)
-        assert len(result) == 1
-        # Email should be missing / NA — not crash
-        assert "Email" in result.columns
+        # Plan 0053 S13d: the mapped Email is blank on the row, and Email is a value SpacesEDU
+        # requires — so the row is LEFT OUT and counted, never shipped blank (and never a crash).
+        assert result.empty and "Email" in result.columns
+        assert (OutcomeNote.STAFF_EXCLUDED_REQUIRED_VALUE, 1) in self.transformer.outcome_notes_for("Staff")
 
 
 class TestStaffDepartedExclusion:

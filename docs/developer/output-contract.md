@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| **contract_version** | `2.6.0` |
-| **emitted_by** | DistrictSync — `2.6.0`, emitted since v3.25.0, which REMOVED rows from `Staff.csv` and narrowed how `Role` may be derived: a teaching flag can no longer produce `administrator`, and a staff member whose role the export does not state is excluded rather than published (plan 0052). Between 19% and 60% of the staff a district delivered were affected, so this is a row-set change of the same kind as `2.3.0` and is versioned the same way. `2.5.0` was emitted since v3.21.0 (the blended class-name change); `2.4.0` since v3.17.0 (the earlier `Staff.csv` / `StudentAttendance.csv` row-set changes). **Note:** the binaries published as v3.18.1 were built from v3.18.0's commit, so the newest tagged build actually emitting `2.4.0` behaviour for SD51 is v3.19.0. |
+| **contract_version** | `2.10.0` |
+| **emitted_by** | DistrictSync — `2.10.0`, emitted since v3.27.0 (plan 0053 through S13e — owner rulings 2026-09-28/30): a config whose blended-class detection is off may go without its Class Information export — that night delivers, its `Enrollments.csv` without the co-teacher rows the export would have linked, and is shown amber (see the changelog). `2.9.0` was emitted by builds that carried plan 0053 S13d but not S13e (owner decisions 2026-09-28; never in a tagged release — v3.27.0 went straight to `2.10.0`): a row missing a value SpacesEDU's import REQUIRES is left out of its rostering file, counted and shown amber, and nothing delivered points at it (see the changelog). `2.8.0` was emitted by builds that carried plan 0053 S13c but not S13d (never in a tagged release either): only `Family.csv` may be left out of a night's delivery, and a missing or row-less required input, or a required output that would come out empty, stops the night instead. `2.7.0` was emitted by builds that carried plan 0053 S4 but not S13c (the entity bulkhead with four isolatable feeds; never in a tagged release either). `2.6.0` was emitted since v3.25.0, which REMOVED rows from `Staff.csv` and narrowed how `Role` may be derived: a teaching flag can no longer produce `administrator`, and a staff member whose role the export does not state is excluded rather than published (plan 0052). Between 19% and 60% of the staff a district delivered were affected, so this is a row-set change of the same kind as `2.3.0` and is versioned the same way. `2.5.0` was emitted since v3.21.0 (the blended class-name change); `2.4.0` since v3.17.0 (the earlier `Staff.csv` / `StudentAttendance.csv` row-set changes). **Note:** the binaries published as v3.18.1 were built from v3.18.0's commit, so the newest tagged build actually emitting `2.4.0` behaviour for SD51 is v3.19.0. |
 | **published_reference** | SpacesEDU *Advanced CSV* v1.0 (2025-07-23) — [Google Doc `1BePvuk5rg-YjUUvdwjb3X3Z0JWEUc5AtVjDfR3nub0U`](https://docs.google.com/document/d/1BePvuk5rg-YjUUvdwjb3X3Z0JWEUc5AtVjDfR3nub0U) |
 | **status** | Maintained mirror. **Confirmation is recorded PER ROW — there is no doc-wide confirmation stamp.** |
 | **mechanical mirror** | `tests/contract_schema.py` (the data) · `tests/test_contract.py` (the sweep) · `tests/test_output_contract_doc.py` (this doc ↔ that data) |
@@ -12,6 +12,10 @@
 
 | contract_version | Date | Change |
 |---|---|---|
+| 2.10.0 | 2026-09-30 | **A district whose blended-class detection is off may now go without its Class Information export — the night delivers, without that export's co-teachers, and is amber.** Owner ruling 2026-09-30, verbatim: "Optional if blended off: ClassInformation becomes optional for any config with blended detection off; when missing, co-teachers are left out and Home is amber (SD45 every night)." (plan 0053 S13e, `docs/developer/failure-policy.md` §2 layer 3a, §5 #15). Under `2.8.0`/`2.9.0` a missing or row-less Class Information file stopped every night of a config that lists it, whatever its blended setting; now, for a config with `blended_classes: false` (`sd45myedbc` — which sends none, every night — and `sd51myedbc`), the night delivers the full configured set, and `Enrollments.csv` simply lacks the co-teacher rows that export would have linked (the same rows a Class Information without its co-teacher columns already leaves out, under the same standing warning) — and `Staff.csv` a staff member the export states no role for whose ONLY teaching evidence is a co-teacher row there (plan 0052's teacher-of-record rescue has nothing to read; synthetic only — no measured drop reaches it). For every other config — blended detection on, the export is its working frame — nothing changes: a missing or row-less Class Information still stops the night. Decided by ONE predicate over the config's own declarations (`outcomes.source_file_may_be_absent`), never a district list. Measured: the seven real drops are byte-identical (every one sends its files); SD45's contract fixture, stopped under `2.9.0`, delivers five files byte-identical to v3.26.0's. No column, order, filename or encoding changed and no owner-**confirmed** row is invalidated — MINOR under the row-set rule below. |
+| 2.9.0 | 2026-09-30 | **Rows missing a value SpacesEDU requires are left out of the five rostering files — counted and shown amber — and nothing delivered points at them.** Owner ruling 2026-09-28 ("leave out + count + amber"; plan 0053 S13d, `docs/developer/failure-policy.md` §5 #42): the per-entity tables below now mark every rostering column **Required** or **Optional**, exactly the values the SpacesEDU *Advanced CSV* spec requires (single-sourced in `src/etl/required_fields.py`, pinned both ways), and a row with any Required value blank (empty, whitespace or `nan`) is no longer emitted. This generalises the `2.2.0` Family rule (a contact with no `Email`) to every Required value, and REVERSES `2.2.0`'s "a student with no `Email Address` is still emitted": `Students.csv` now leaves such a student out. The rows are never dropped in silence — each file's count rides on the run record and keeps Home, Run History and Convert amber every night it persists — and the ids they carried cascade: a left-out student leaves no row in `Family.csv`, `Classes.csv` (homerooms), `Enrollments.csv` or `StudentCourses.csv`; a left-out staff member leaves no TEACHER row in `Enrollments.csv`; a left-out class leaves no row in `Enrollments.csv`. If EVERY row of a required file would be left out, that file comes out empty, which stops the night (`2.8.0`'s empty-output rule) — for `Family.csv` it is left out, amber. Measured on the real drops (2026-09-30): `Staff.csv` loses the staff with a blank `Email` (SD40 63 of 622, SD51 3, SD60 10, SD74 9), SD40's `Family.csv` 3 contacts with a blank `First Name`, and SD40's `Enrollments.csv` the 3 teacher rows of its left-out staff; every other delivered file is byte-identical. No column, order, filename or encoding changed, and no owner-**confirmed** row is invalidated (`EnrollStatus` and `SchoolCode` are Required and never blank — derived, and the student's school) — MINOR under the row-set rule below. Also recorded by this slice (plan 0053 S13d, S14 folded in): the owner's answer to Q5 (2026-09-28), under *Open owner questions*, whose status line now reads answered. |
+| 2.8.0 | 2026-09-28 | **A night's delivery can now lack only `Family.csv`; the three standalone feeds are never left out alone again, and no required file is ever delivered empty.** Owner decisions 2026-09-28 (plan 0053 S13c, `docs/developer/failure-policy.md` §2/§3): `CourseInfo.csv`, `StudentCourses.csv` and `StudentAttendance.csv` are CRITICAL again, so a fault in one of their exports stops the whole night — nothing is written or delivered and SpacesEDU keeps the last good sync — where `2.7.0` left that one file out and delivered the rest. Two new stops tighten the set further: a source file a required output lists that is MISSING from the input folder, or PRESENT with no data rows, stops the night before anything is built (except the family contacts export, whose absence only leaves `Family.csv` out, and an attendance file present with no rows — a night without absences); and a required output that would come out with no rows stops the night rather than being skipped — DistrictSync never writes or sends a header-only file. So every night delivers either the COMPLETE configured set (less `Family.csv` when its export fails), or nothing. No column, order, filename, encoding or row changed; the delivered SET can only be MORE complete than under `2.7.0` — a delivery-envelope statement, MINOR. What the importer does with family links an earlier delivery created, on a night `Family.csv` is absent, is Q5e (the owner answered Q5 on 2026-09-28 — recorded here by plan 0053 S14). |
+| 2.7.0 | 2026-09-24 | **A night's delivery may now lack `Family.csv` because of a detected fault, not only because Family built no rows.** When the family-contact export is present but cannot be built — Unity Christian's 2026-09-22 drop sent the plain Emergency Contact report, which lacks the guardian column the district's `row_filters` reads — DistrictSync leaves `Family.csv` out of that night's rostering zip and delivers the other four rostering files, where it used to fail the whole run and deliver nothing (plan 0053 S4, the entity bulkhead; `docs/developer/failure-policy.md` §3). The same holds for the three standalone feeds — `CourseInfo.csv`, `StudentCourses.csv` and `StudentAttendance.csv` — each of which may be absent on a night its own export fails. `Students.csv`, `Staff.csv`, `Classes.csv` and `Enrollments.csv` are never left out this way: a fault in any of them still fails the run with nothing delivered. A left-out file is never substituted (no stale copy, no unfiltered rows); its previous copy is archived out of the delivery folder that same night. No column, order, filename or encoding changed and no delivered file's rows changed; only the delivered SET can be narrower on such a night — a delivery-envelope statement, MINOR. What the importer does with records an earlier delivery of an absent file created is **not confirmed** — Q5 (open). |
 | 2.6.0 | 2026-09-23 | **Rows removed from `Staff.csv`, and `Role` narrowed.** A teaching flag yields `teacher` or nothing — never `administrator`. A staff member with no stated role is excluded unless they are teacher-of-record on a section, in which case they are published as `teacher`. `administrator` is emitted only where the district's export states it. |
 | 2.5.0 | 2026-09-16 | **`Name` values change for BLENDED rows of `Classes.csv`.** A blended class name now carries the teacher and its timetable block — `<Teacher> <Course titles> (Block <slot>) (<Grades>) <Year>` — where it previously carried only `<Course titles> (<Grades>) <Year>`. Two blends of the same course pair by one teacher in different blocks were therefore indistinguishable: on one district's delivery 68 of 98 blended classes shared a display name with another blend, and one teacher's five blends rendered as two names. The block segment is built from the session key's own `term/semester/day/period` components — the same components the blended `Class ID` already encodes — joined and never labelled individually, because their meanings differ per district; components a district's export omits are simply absent, and a district carrying none of them is named exactly as before. Truncation now consumes the course-title segment rather than the tail, so the block, grades and year survive the 100-character cap (previously 22 of those 98 names truncated and ALL of them lost their grade token, which is the only grade signal a blended row has — `Grade` is deliberately blank). **Subject, homeroom and co-teacher class names are unchanged**, as are `Class ID`, `Grade`, `School ID` and both dates; no row set moves, and no column, order, filename or encoding changed. No owner-**confirmed** row is invalidated (every `Classes.csv` row is `pending owner confirmation`) — MINOR under the row-value rule below. **What is verified is our side only:** `Class ID` is untouched, so nothing re-keys in the files we emit. How the live importer treats a changed `Name` is a trust-chain link-1 question this repo cannot answer — SpacesEDU is *understood* to match a class on `Class ID` (recorded 2026-07-20 when subject names changed, and hedged there too with a first-run spot-check), but that has never been confirmed against the importer, and the 2.0.0 row is the standing reminder that an unconfirmed assumption about it held for months while the old shape was silently broken. Routed to the owner as **Q4** under *Open owner questions*. |
 | 2.4.0 | 2026-09-10 | **Rows removed from `StudentAttendance.csv`.** A student-day reported in BOTH the K-7 daily band and the 8-12 period band — a district taking attendance in a homeroom/attendance-only section records the same absence in both files — is now reported ONCE, by the daily band; the file carries no band marker, so the duplicate was previously double-weighted by SpacesEDU's per-grade aggregation (K-7 0.5/entry, 8-12 0.25/entry) and silently promoted a half-day absence to a full day. A student-day present in only one band is unaffected, including a genuine 8-12 per-period district's intentional per-period multiplicity. No column, order, filename or encoding changed, and no owner-**confirmed** row is invalidated (every `StudentAttendance.csv` row is `pending owner confirmation`) — MINOR under the row-set rule below, no importer re-confirmation needed. |
@@ -81,6 +85,8 @@ Every verdict row carries two independent axes. Do not collapse them.
 | `emitted` | This is simply what DistrictSync writes today, read from the code/config. Says nothing about acceptance. |
 | `internal` | Internal spec (Confluence / this document). |
 
+**Required** (the five SpacesEDU rostering files only, since contract `2.9.0`) — does SpacesEDU's import require a VALUE in this column on every row? `Required`: yes, per the *Advanced CSV* spec — a row whose value would be blank (empty, whitespace or `nan`) is LEFT OUT of the file, counted on the run record and shown amber, and nothing else delivered points at it (`docs/developer/failure-policy.md` §5 #42; single-sourced in `src/etl/required_fields.py`, and this column is pinned to it both ways by `tests/test_output_contract_doc.py`). `Optional`: the column is always emitted, and its value may be blank. The course and attendance feeds follow the myBlueprint+ docs, not that spec, so their tables carry no Required column.
+
 **Guarantee** — is this a promise or a courtesy? Five values are used across the tables; all five are listed so none reads as an unexplained blank:
 
 - **GUARANTEED** — we commit to emitting exactly this. Changing it is partner-visible and hits the re-confirmation trigger.
@@ -100,11 +106,11 @@ What actually leaves the machine, and under what names.
 | Aspect | Value | Status | Basis | Guarantee |
 |---|---|---|---|---|
 | Entity → filename | `<EntityName>.csv`, exactly — `Students.csv`, `Staff.csv`, `Family.csv`, `Classes.csv`, `Enrollments.csv`, `CourseInfo.csv`, `StudentCourses.csv`, `StudentAttendance.csv`. `DataLoader.csv_filename` is the intended single source and every *write/detect/manifest* path routes through it — but it is not literally the only spelling: `sftp/uploader.STANDALONE_CSV_FILENAMES` re-spells the three standalone feeds to split them out of the zip (a deliberate layer isolation — importing the loader would drag pandas into the SFTP import graph — pinned to the loader's rule by `tests/test_sftp_uploader.TestStandaloneFeedNames`). | pending owner confirmation | emitted | GUARANTEED |
-| Rostering bundle | The five **rostering** CSVs — `Students`, `Staff`, `Family`, `Classes`, `Enrollments` — ship inside one zip named `districtsync_<district>_YYYY-MM-DD.zip` (e.g. `districtsync_sd40_2026-04-10.zip`); `districtsync_YYYY-MM-DD.zip` when no district is supplied. Single source: `sftp/uploader.build_zip_name`. **Changed in contract 2.0.0** — the two course feeds used to ride this bundle. | pending owner confirmation | emitted | GUARANTEED |
+| Rostering bundle | The five **rostering** CSVs — `Students`, `Staff`, `Family`, `Classes`, `Enrollments` — ship inside one zip named `districtsync_<district>_YYYY-MM-DD.zip` (e.g. `districtsync_sd40_2026-04-10.zip`); `districtsync_YYYY-MM-DD.zip` when no district is supplied. Single source: `sftp/uploader.build_zip_name`. **Changed in contract 2.0.0** — the two course feeds used to ride this bundle. **Not every night carries all five — but only `Family.csv` may be missing:** since contract 2.8.0 (owner 2026-09-28) `Family.csv` alone is absent on a night its export is missing, empty or fails — the other four still ship, and the run is flagged PARTIAL (plan 0053 S4/S13c). Any other rostering file that would be missing or empty stops the whole night instead: nothing is delivered, and SpacesEDU keeps the last good sync. No file is ever written header-only. What happens to family links an earlier delivery created was answered 2026-09-28 by the owner (Q5e, under *Open owner questions*): it depends on import settings SpacesEDU keeps for each district, usually OFF, and with them OFF those links stay as they were. That answer is owner knowledge of SpacesEDU's settings, not an import check of this row, so the row's Status is unchanged. | pending owner confirmation | emitted, owner knowledge | GUARANTEED |
 | No empty archive | The zip is built only when the run produced at least one rostering CSV, so a standalone-only config (`sd51attendance`, `mbponly`) delivers its files and **no zip**. A config with exactly one rostering CSV (`mbp_core` — `Students` plus the two course feeds) therefore ships a **one-file zip**, which looks odd but imports correctly; the owner reviewed this on 2026-08-27 and chose to leave it rather than special-case `Students` out of the bundle. | pending owner confirmation | emitted | GUARANTEED |
 | Zip idempotency | The date stamp makes a retry a re-put over the same remote name rather than a duplicate delivery. | pending owner confirmation | emitted | GUARANTEED |
-| `StudentAttendance.csv` | Ships **standalone, outside the zip**, put into the same remote directory. SpacesEDU's nightly check looks for it by name and it must not pollute the Advanced-CSV bundle. | pending owner confirmation | observed import, owner knowledge | GUARANTEED |
-| `CourseInfo.csv` · `StudentCourses.csv` | Ship **standalone, outside the zip**, each put into the same remote directory. The myBlueprint+ course feeds are ingested as individual files, not as members of the Advanced-CSV bundle. **New in contract 2.0.0.** **Do not put these back inside the zip.** The owner checked both shapes against the live importer on 2026-08-27: delivered standalone they import; delivered inside the rostering zip, **nothing is imported from either file and no error is raised** — a silent no-op, which is why this split is a correctness rule and not a packaging preference. `StudentCourses.csv` is the consequential half (the transcript data); `CourseInfo.csv` no-ops the same way. | confirmed 2026-08-27 | owner check against the live importer, both shapes | GUARANTEED |
+| `StudentAttendance.csv` | Ships **standalone, outside the zip**, put into the same remote directory. SpacesEDU's nightly check looks for it by name and it must not pollute the Advanced-CSV bundle. On a night without absences (its absence files present with no rows) it is not produced — a normal night (for an attendance-only configuration such a night delivers nothing at all and is still a success — owner ruling 2026-09-30); a missing absence file, or a fault in the attendance export, stops the whole night (contract 2.8.0). | pending owner confirmation | observed import, owner knowledge | GUARANTEED |
+| `CourseInfo.csv` · `StudentCourses.csv` | Ship **standalone, outside the zip**, each put into the same remote directory. The myBlueprint+ course feeds are ingested as individual files, not as members of the Advanced-CSV bundle. **New in contract 2.0.0.** **Do not put these back inside the zip.** The owner checked both shapes against the live importer on 2026-08-27: delivered standalone they import; delivered inside the rostering zip, **nothing is imported from either file and no error is raised** — a silent no-op, which is why this split is a correctness rule and not a packaging preference. `StudentCourses.csv` is the consequential half (the transcript data); `CourseInfo.csv` no-ops the same way. Since contract 2.8.0 the two arrive together or not at all: a fault in either export, a missing or row-less course file, or either output coming out empty stops the whole night. | confirmed 2026-08-27 | owner check against the live importer, both shapes | GUARANTEED |
 | Attendance filename rule | The published BC/Aspen attendance Doc states a "file name must end with" rule. DistrictSync satisfies it by emitting exactly `StudentAttendance.csv`; the Doc's literal wording is **not mirrored in this repo**, so this row is a cited-not-quoted reference. The 2026-06-19 incident's error text (*"Unexpected file: StudentAttendance.csv"*) confirms the importer identifies this feed by name. | pending owner confirmation | published Doc (cited, not quoted), observed import | GUARANTEED (the emitted name) |
 | Delivery manifest | Only files the run *vouched for* are uploaded — `DataLoader.output_filenames(outputs)`, passed as the required keyword-only `manifest=` to `SFTPUploader.upload_csvs`. A stray `*.csv` an admin drops in the output folder never egresses. | n/a (our own safety rule) | emitted | GUARANTEED |
 | `archive_<ts>/` | Stale entity CSVs this run did not produce are **moved** into this subfolder, never deleted. The uploader globs `*.csv` **top-level only**, so archived files structurally cannot ship. | n/a | emitted | GUARANTEED |
@@ -177,23 +183,23 @@ Emitted columns are treated as **POSITIONAL**. Order-sensitivity is **establishe
 
 <!-- contract-table: Students -->
 
-| # | Column | Source / semantics | Status | Basis | Guarantee |
-|---|---|---|---|---|---|
-| 1 | User ID | The pupil number (`Student Number`). The join key every other feed references. | pending owner confirmation | emitted | GUARANTEED |
-| 2 | Student Number | Same pupil number, repeated as the district-facing identifier. | pending owner confirmation | emitted | GUARANTEED |
-| 3 | First Name | Legal first name. | pending owner confirmation | emitted | GUARANTEED |
-| 4 | Last Name | Legal surname. | pending owner confirmation | emitted | GUARANTEED |
-| 5 | Date of Birth | Source date normalized to ISO `YYYY-MM-DD`. | pending owner confirmation | emitted | GUARANTEED |
-| 6 | Grade | CEDS-coded grade via the `grade_to_ceds` transform (2-char codes such as `03`, `KG`, `12`). | pending owner confirmation | emitted | GUARANTEED |
-| 7 | EnrollStatus | Derived, never copied — see *EnrollStatus resolution* below. | **confirmed 2026-07-27** | owner knowledge | GUARANTEED |
-| 8 | SchoolCode | The school number the student rosters under. Under `cross_enrollment.collapse` this is the **home** school. | **confirmed 2026-07-27** | owner knowledge | GUARANTEED |
-| 9 | Homeroom | Homeroom label as supplied by the district. | pending owner confirmation | emitted | GUARANTEED |
-| 10 | PreRegSchoolCode | Next/pre-registration school code; blank for most rows. | pending owner confirmation | emitted | GUARANTEED |
-| 11 | Preferred First Name | "Usual" first name; blank when the district supplies none. | pending owner confirmation | emitted | GUARANTEED |
-| 12 | Preferred Last Name | "Usual" surname; blank when the district supplies none. | pending owner confirmation | emitted | GUARANTEED |
-| 13 | Community Hours | Always the empty string today (fixed `value: ""` in the base). | pending owner confirmation | emitted | GUARANTEED |
-| 14 | Literacy Test Completed | Always the empty string today (fixed `value: ""` in the base). | pending owner confirmation | emitted | GUARANTEED |
-| 15 | Email Address | Either a district-supplied address or one generated from an `email format` template (`{student number}@sd51.bc.ca`, optionally `sanitize`d and with a derived date part). | pending owner confirmation | emitted | GUARANTEED |
+| # | Column | Required | Source / semantics | Status | Basis | Guarantee |
+|---|---|---|---|---|---|---|
+| 1 | User ID | Required | The pupil number (`Student Number`). The join key every other feed references. | pending owner confirmation | emitted | GUARANTEED |
+| 2 | Student Number | Required | Same pupil number, repeated as the district-facing identifier. | pending owner confirmation | emitted | GUARANTEED |
+| 3 | First Name | Required | Legal first name. | pending owner confirmation | emitted | GUARANTEED |
+| 4 | Last Name | Required | Legal surname. | pending owner confirmation | emitted | GUARANTEED |
+| 5 | Date of Birth | Optional | Source date normalized to ISO `YYYY-MM-DD`. | pending owner confirmation | emitted | GUARANTEED |
+| 6 | Grade | Required | CEDS-coded grade via the `grade_to_ceds` transform (2-char codes such as `03`, `KG`, `12`). | pending owner confirmation | emitted | GUARANTEED |
+| 7 | EnrollStatus | Required | Derived, never copied — see *EnrollStatus resolution* below. | **confirmed 2026-07-27** | owner knowledge | GUARANTEED |
+| 8 | SchoolCode | Required | The school number the student rosters under. Under `cross_enrollment.collapse` this is the **home** school. | **confirmed 2026-07-27** | owner knowledge | GUARANTEED |
+| 9 | Homeroom | Optional | Homeroom label as supplied by the district. | pending owner confirmation | emitted | GUARANTEED |
+| 10 | PreRegSchoolCode | Optional | Next/pre-registration school code; blank for most rows. | pending owner confirmation | emitted | GUARANTEED |
+| 11 | Preferred First Name | Optional | "Usual" first name; blank when the district supplies none. | pending owner confirmation | emitted | GUARANTEED |
+| 12 | Preferred Last Name | Optional | "Usual" surname; blank when the district supplies none. | pending owner confirmation | emitted | GUARANTEED |
+| 13 | Community Hours | Optional | Always the empty string today (fixed `value: ""` in the base). | pending owner confirmation | emitted | GUARANTEED |
+| 14 | Literacy Test Completed | Optional | Always the empty string today (fixed `value: ""` in the base). | pending owner confirmation | emitted | GUARANTEED |
+| 15 | Email Address | Required | Either a district-supplied address or one generated from an `email format` template (`{student number}@sd51.bc.ca`, optionally `sanitize`d and with a derived date part). | pending owner confirmation | emitted | GUARANTEED |
 
 **EnrollStatus resolution** (`BaseTransformer.compute_enroll_status` — the single source for "is this student active"):
 
@@ -207,28 +213,30 @@ The status column is auto-resolved from the alias list `("enrollment status", "e
 
 **Rows that reach the file:** only rows whose label is not `Inactive`. A pupil enrolled at several schools produces one row per school unless the district enables `cross_enrollment.collapse`, which keeps the home-school row (first wins) — SD60 today. When it is enabled the student still keeps their enrollments and classes at **every** school (see `Enrollments.csv`); when it is not, `Students.csv` legitimately carries one row per school and the quality report will flag those as duplicates on `User ID`.
 
-**A blank `Email Address` is KEPT.** SpacesEDU imports a student without an email address, so the row is emitted as-is; the run log carries one WARNING counting how many students in the run have none, because such a student cannot be invited by email. It is a count only (no names or ids) and it is not a data error — the run status is unaffected. Contrast `Family.csv`, where a blank email EXCLUDES the row.
+**A student missing a Required value is LEFT OUT** (since contract `2.9.0`, plan 0053 S13d — owner ruling 2026-09-28). The *Advanced CSV* spec requires every column marked Required above, `Email Address` included, so a student with any of them blank is not emitted: the run record counts them (`students_excluded_required_value`), the run log carries ONE WARNING with a count per column (no names, ids or addresses), and Home, Run History and Convert show the run amber every night it persists. Until `2.9.0` a student with no `Email Address` was emitted, because the importer accepts one (`2.2.0`); the owner's ruling supersedes that. `First Name` / `Last Name` fall back to the preferred-name columns first, so only a student with neither is left out. The student's other rows go with them — see the zero-orphan invariant below — and if EVERY student would be left out, `Students.csv` comes out empty, which stops the night.
 
-**Zero-orphan invariant:** the surviving `User ID` set is published as the active roster and every student row in `Family.csv`, `Classes.csv` and `Enrollments.csv` is filtered against it, so no other feed can reference a student absent from this file.
+**Zero-orphan invariant:** the surviving `User ID` set — after the Required-value rule above — is published as the active roster and every student row in `Family.csv`, `Classes.csv`, `Enrollments.csv` and `StudentCourses.csv` is filtered against it, so no other feed can reference a student absent from this file.
 
 ### 2. `Staff.csv`
 
 <!-- contract-table: Staff -->
 
-| # | Column | Source / semantics | Status | Basis | Guarantee |
-|---|---|---|---|---|---|
-| 1 | User ID | Teacher ID. | pending owner confirmation | emitted | GUARANTEED |
-| 2 | First Name | Staff first name. | pending owner confirmation | emitted | GUARANTEED |
-| 3 | Last Name | Staff surname. | pending owner confirmation | emitted | GUARANTEED |
-| 4 | Email | Staff email address as supplied. | pending owner confirmation | emitted | GUARANTEED |
-| 5 | Role | `teacher` or `administrator` — those two values are the entire vocabulary and are asserted per config. **`administrator` is emitted ONLY where the district's export STATES it**, through `normalize_staff_role` against a column carrying the role itself (SD83 repurposes MyEd BC's `Prefix` this way). The default `map_role` transform reads the teaching-staff FLAG and can only ever produce `teacher` (`Y`) or no role at all — see the role rule below. | pending owner confirmation | emitted | GUARANTEED |
-| 6 | School ID | School number. | pending owner confirmation | emitted | GUARANTEED |
+| # | Column | Required | Source / semantics | Status | Basis | Guarantee |
+|---|---|---|---|---|---|---|
+| 1 | User ID | Required | Teacher ID. | pending owner confirmation | emitted | GUARANTEED |
+| 2 | First Name | Required | Staff first name. | pending owner confirmation | emitted | GUARANTEED |
+| 3 | Last Name | Required | Staff surname. | pending owner confirmation | emitted | GUARANTEED |
+| 4 | Email | Required | Staff email address as supplied. | pending owner confirmation | emitted | GUARANTEED |
+| 5 | Role | Required | `teacher` or `administrator` — those two values are the entire vocabulary and are asserted per config. **`administrator` is emitted ONLY where the district's export STATES it**, through `normalize_staff_role` against a column carrying the role itself (SD83 repurposes MyEd BC's `Prefix` this way). The default `map_role` transform reads the teaching-staff FLAG and can only ever produce `teacher` (`Y`) or no role at all — see the role rule below. | pending owner confirmation | emitted | GUARANTEED |
+| 6 | School ID | Required | School number. | pending owner confirmation | emitted | GUARANTEED |
 
 **A staff member whose role the export does not state is EXCLUDED from this file, and is NEVER published as an administrator.** A teaching flag answers *does this person teach*; it has never said who administers, so a secretary, an education assistant and a principal are all alike `N`. Until 2026-09-22 every non-`Y` value became `administrator` — a real SpacesEDU privilege level — which silently granted it to support staff at every district using the default mapping (44.9% of one district's export; 60% of the staff another actually ships, found by that school's own network administrator in their production tenant).
 
 Before dropping an unroled row the transformer **rescues anyone who is teacher-of-record on a real section**, publishing them as `teacher`. MyEd BC's flag is demonstrably stale for some teachers — three at one school carry 26, 26 and 16 sections between them while flagged `N` — and a bare drop would have stranded 68 of that school's 186 sections with no teacher. The evidence is the teacher-id column of the timetable, class-info and student-demographic source files (the last names the HOMEROOM teacher); the staff file itself is deliberately NOT evidence, since it lists every employee and would rescue the whole export. The rescue can only ADD a teacher — a stated `administrator` is always believed, even for someone who also teaches.
 
 Consequence for a district that wants its administrators rostered: the export must SAY who they are. There is no way back to inferring it from the teaching flag. The run log carries one INFO line per outcome (counts only — never a name, an email or an id).
+
+**A staff member missing a Required value is LEFT OUT** (since contract `2.9.0`, plan 0053 S13d) — most often a blank `Email`. The run record counts them (`staff_excluded_required_value`), the log carries ONE WARNING with a count per column, the run shows amber, and their TEACHER rows leave `Enrollments.csv` with them. A staff member with no stated role is not "missing a Role": the role rule above excludes them first, and they are never counted here.
 
 **A staff member the source marks as departed is EXCLUDED from this file.** A MyEd BC staff GDE is unfiltered — it carries former employees alongside current ones — and shipping them creates active SpacesEDU users for people who have left the district. The rule is keyed on the DATA, not on per-district config, so a district nobody has configured is covered: when the resolved status column is present (default `Staff Status`, overridable via the entity's `source_columns.staff_status`) AND its non-blank values are a subset of the recognised vocabulary (`Active` / `Inactive`, case- and whitespace-insensitive), only `Active` survives. A BLANK status is dropped too — unlike a pupil, a staff record carries no withdraw date to fall back on, so a missing status is not a positive signal of employment. The run log carries one INFO line counting the exclusions (a count and the status vocabulary only — never a name or an email).
 
@@ -241,14 +249,14 @@ A district may additionally narrow the source rows with `row_filters` before map
 
 <!-- contract-table: Family -->
 
-| # | Column | Source / semantics | Status | Basis | Guarantee |
-|---|---|---|---|---|---|
-| 1 | First Name | Contact first name. | pending owner confirmation | emitted | GUARANTEED |
-| 2 | Last Name | Contact surname. | pending owner confirmation | emitted | GUARANTEED |
-| 3 | Email | Contact email address. | pending owner confirmation | emitted | GUARANTEED |
-| 4 | Student User ID | The pupil number this contact belongs to — must exist in `Students.csv`. | pending owner confirmation | emitted | GUARANTEED |
+| # | Column | Required | Source / semantics | Status | Basis | Guarantee |
+|---|---|---|---|---|---|---|
+| 1 | First Name | Required | Contact first name. | pending owner confirmation | emitted | GUARANTEED |
+| 2 | Last Name | Required | Contact surname. | pending owner confirmation | emitted | GUARANTEED |
+| 3 | Email | Required | Contact email address. | pending owner confirmation | emitted | GUARANTEED |
+| 4 | Student User ID | Required | The pupil number this contact belongs to — must exist in `Students.csv`. | pending owner confirmation | emitted | GUARANTEED |
 
-**A contact row whose `Email` is blank (empty or whitespace-only) is EXCLUDED from this file**, and the run log carries one WARNING counting how many were left out (a count only — never a name, address or pupil number). SpacesEDU does not import a family contact without an email address, so such a row can only be rejected on ingest; excluding it here makes the loss visible instead of silent. A config that maps no `Email` at all cannot be filtered — that is a config fault against this contract and is logged as its own WARNING, with the rows passed through untouched. Contrast `Students.csv`, where a blank address is kept and merely counted.
+**A contact row whose `Email` is blank (empty or whitespace-only) is EXCLUDED from this file**, and the run log carries one WARNING counting how many were left out (a count only — never a name, address or pupil number). SpacesEDU does not import a family contact without an email address, so such a row can only be rejected on ingest; excluding it here makes the loss visible instead of silent. Since contract `2.9.0` (plan 0053 S13d) the count also shows the run amber, and a contact missing any OTHER Required value — a first or last name, or the student it belongs to — is left out and counted the same way. A config that maps no `Email` at all cannot be filtered — that is a config fault against this contract and is logged as its own WARNING, with the rows passed through untouched. `Students.csv` follows the same rule since `2.9.0`.
 
 A district may narrow the source rows with `row_filters` before mapping — SD60 keeps only rows whose `Parent Auth / Guardian` is `Y`, excluding non-guardian emergency contacts. A `row_filters` column missing from the extract fails **loud** rather than silently keeping everyone.
 
@@ -256,16 +264,16 @@ A district may narrow the source rows with `row_filters` before mapping — SD60
 
 <!-- contract-table: Classes -->
 
-| # | Column | Source / semantics | Status | Basis | Guarantee |
-|---|---|---|---|---|---|
-| 1 | Class ID | `<Master Timetable ID>_<school year end year>` — see *Appended-year Class IDs* below. | pending owner confirmation | emitted | GUARANTEED |
-| 2 | Name | Composite display name — see *The name-config composite* below. Truncated at a word boundary to 100 characters. | pending owner confirmation | emitted | GUARANTEED |
-| 3 | Grade | Grade level of the class. | pending owner confirmation | emitted | GUARANTEED |
-| 4 | School ID | School number. | pending owner confirmation | emitted | GUARANTEED |
-| 5 | Start Date | Academic-period start, derived from `academic_start_month_day` plus the resolved school year. Every bundled config auto-derives (`use_academic_year: true`); a pinned literal date is a supported but currently unused escape hatch. | pending owner confirmation | emitted | GUARANTEED |
-| 6 | End Date | Academic-period end, derived from `academic_end_month_day`. | pending owner confirmation | emitted | GUARANTEED |
+| # | Column | Required | Source / semantics | Status | Basis | Guarantee |
+|---|---|---|---|---|---|---|
+| 1 | Class ID | Required | `<Master Timetable ID>_<school year end year>` (the START year where a config sets `class_id_year: start`) — see *Appended-year Class IDs* below. | pending owner confirmation | emitted | GUARANTEED |
+| 2 | Name | Required | Composite display name — see *The name-config composite* below. Truncated at a word boundary to 100 characters. | pending owner confirmation | emitted | GUARANTEED |
+| 3 | Grade | Optional | Grade level of the class. | pending owner confirmation | emitted | GUARANTEED |
+| 4 | School ID | Required | School number. | pending owner confirmation | emitted | GUARANTEED |
+| 5 | Start Date | Optional | Academic-period start, derived from `academic_start_month_day` plus the resolved school year. Every bundled config auto-derives (`use_academic_year: true`); a pinned literal date is a supported but currently unused escape hatch. | pending owner confirmation | emitted | GUARANTEED |
+| 6 | End Date | Optional | Academic-period end, derived from `academic_end_month_day`. | pending owner confirmation | emitted | GUARANTEED |
 
-**Appended-year Class IDs.** `Class ID` is `f"{master_timetable_id}_{school_year}"`, where `school_year` is the academic year's **end** year (MyEd BC convention; `school_year_naming: "end"`). The year suffix is what keeps a section reused across years from colliding. Classes and Enrollments compute the ID through the **same** `BaseTransformer.assign_class_ids`, so the two files can never disagree. A blended class overrides the ID via the blended map before that fallback applies.
+**Appended-year Class IDs.** `Class ID` is `f"{master_timetable_id}_{class_id_year}"`, where `class_id_year` is the academic year's **end** year (MyEd BC convention; `school_year_naming: "end"`) unless the config opts into `global_config.class_id_year: start` (the START year — `sd45myedbc` only, to keep the Class IDs its pre-DistrictSync converter already delivered; homeroom and blended IDs follow the same rule, via `TransformContext.class_id_year`). The year suffix is what keeps a section reused across years from colliding. Classes and Enrollments compute the ID through the **same** `BaseTransformer.assign_class_ids`, so the two files can never disagree. A blended class overrides the ID via the blended map before that fallback applies.
 
 **The name-config composite.** `Name` is built from four *configured* source columns (`primary teacher flag`, `teacher last name`, `course title`, `section letter`) as:
 
@@ -285,7 +293,7 @@ Example: `Clark Carol Business 11 / PHE 9 (Block 1 2 1 2) (08/11) 2026`. `<Grade
 
 The 100-character cap applies to both composites, but on a blended name it consumes the **course-title segment** rather than the tail, so the block, grades and year survive whenever those identifying parts themselves fit the cap. In the degenerate case where they do not — a teacher name and grade range that together exceed it, which no real timetable produces — the whole name is truncated from the end as before.
 
-**Which classes exist:** homeroom classes are auto-generated for the configured `homeroom_grades`, subject classes come from the schedule, and blended classes (same teacher/time spanning 2+ grade levels) merge into one — **unless none of the blend's pupils would receive a subject enrollment at all**, in which case the blended class is not emitted (see the grade-scope rule below). `global_config.excluded_course_codes` drops bookkeeping sections (SD40 excludes `ATT--AM` / `ATT--PM`) before any of it. Homeroom-class creation is filtered to the active roster, so a homeroom with no active students is not emitted.
+**Which classes exist:** homeroom classes are auto-generated for the configured `homeroom_grades`, subject classes come from the schedule, and blended classes (same teacher/time spanning 2+ grade levels) merge into one — **unless none of the blend's pupils would receive a subject enrollment at all**, in which case the blended class is not emitted (see the grade-scope rule below). `global_config.excluded_course_codes` drops bookkeeping sections (SD40 excludes `ATT--AM` / `ATT--PM`) before any of it. Homeroom-class creation is filtered to the active roster, so a homeroom with no active students is not emitted. Since contract `2.9.0` (plan 0053 S13d) a class missing a Required value (its `Class ID`, `Name` or `School ID`) is left out, counted and shown amber, and every `Enrollments.csv` row of that class goes with it.
 
 **The grade-scope rule for blended classes** (every district, since contract 1.1.0 / DistrictSync v3.12.0). Grades split into a homeroom side (`homeroom_grades`) and a timetable side (everything else, or the configured scope when a district set one). A blended class is emitted only when **at least one of its pupils' grades is on the timetable side**; a blend all of whose schedule rows sit on the homeroom side is dropped, together with its teacher enrollment row. Nothing is lost: those pupils are rostered through their homeroom classes, which is why the blend could only ever have shipped with a teacher and zero students.
 
@@ -299,16 +307,18 @@ Read as a grade-scope rule, not as a promise about occupancy. It is **necessary,
 
 <!-- contract-table: Enrollments -->
 
-| # | Column | Source / semantics | Status | Basis | Guarantee |
-|---|---|---|---|---|---|
-| 1 | Class ID | Must exist in `Classes.csv` — asserted per config. | pending owner confirmation | emitted | GUARANTEED |
-| 2 | User ID | Student pupil number or teacher ID, whichever the row is. Never empty or `nan`. | pending owner confirmation | emitted | GUARANTEED |
-| 3 | Role | `student` or `teacher` — the entire vocabulary, asserted per config. | pending owner confirmation | emitted | GUARANTEED |
-| 4 | School ID | School number. | pending owner confirmation | emitted | GUARANTEED |
+| # | Column | Required | Source / semantics | Status | Basis | Guarantee |
+|---|---|---|---|---|---|---|
+| 1 | Class ID | Required | Must exist in `Classes.csv` — asserted per config. | pending owner confirmation | emitted | GUARANTEED |
+| 2 | User ID | Required | Student pupil number or teacher ID, whichever the row is. Never empty or `nan`. | pending owner confirmation | emitted | GUARANTEED |
+| 3 | Role | Required | `student` or `teacher` — the entire vocabulary, asserted per config. | pending owner confirmation | emitted | GUARANTEED |
+| 4 | School ID | Required | School number. | pending owner confirmation | emitted | GUARANTEED |
 
 **Dedup key:** `(Class ID, User ID, Role)`. Homeroom, subject, blended and co-teacher rows are unioned and then deduplicated on that triple, so the same person cannot appear twice in the same class in the same role.
 
-**Referential integrity, both directions:** every `Class ID` must resolve in `Classes.csv` (the blended-orphan regression guard), and every *student* row is filtered to the active roster (the zero-orphan invariant). Teacher rows are deliberately **not** roster-filtered — staff are not in `Students.csv`. Invalid teacher IDs (`nan`, blank) are dropped.
+**Co-teacher rows** come from the Class Information export (a `Primary Teacher: Y` row linked to its homeroom by section letter, or to its blended class by Master Timetable ID). When that export lacks a column they are linked by they are left out, and — since contract `2.10.0` (owner ruling 2026-09-30) — so are all of them when a config whose blended-class detection is off runs without the export (missing, or present with no rows) — and then a co-teacher the staff export states no role for, and whom only that export shows teaching, leaves `Staff.csv` too (nothing else evidences that they teach); either way the run is shown amber every night it persists. A config with blended detection ON still requires the export (its night stops without it).
+
+**Referential integrity, both directions:** every `Class ID` must resolve in `Classes.csv` (the blended-orphan regression guard), and every *student* row is filtered to the active roster (the zero-orphan invariant). Teacher rows are **not** roster-filtered — staff are not in `Students.csv` — but since contract `2.9.0` (plan 0053 S13d) a staff member left out of `Staff.csv` for a missing Required value leaves no teacher row here, and a class left out of `Classes.csv` for one leaves no row at all. Deliberately narrow: a teacher row whose staff member is absent from `Staff.csv` for any other reason is unchanged (roadmap). Invalid teacher IDs (`nan`, blank) are dropped, from every kind of teacher row. A row missing a Required value of its own is left out and counted like the other rostering files.
 
 **Cross-enrollment:** when a district enables `cross_enrollment.collapse`, the student collapses to one `Students.csv` row but keeps an enrollment row at **every** school they actually attend.
 
@@ -521,7 +531,7 @@ That is why the additive-key rule below binds harder than it used to. A repurpos
 
 `MappingConfig` (the root model) is `extra="ignore"` — an unknown top-level key is dropped rather than rejected. That is **forward compatibility**: a config carrying a key only a newer build understands still loads and runs on an older build.
 
-**Be precise about how far that leniency reaches** — it is the Pydantic **default everywhere except five leaf models**. `MappingConfig`, `GlobalConfig` and `EntityConfig` all declare no `model_config`, so they inherit `extra="ignore"`. Only `EmailDerivedDate`, `FieldEmailFormat`, `FieldEnrollStatus`, `RowFilter` and `CrossEnrollmentConfig` declare `extra="forbid"`. So a typo in `global_config` or in an entity block is **silently dropped, not rejected** — see the two rows in the matrix below and the `enabled_entities` consequence spelled out there.
+**Be precise about how far that leniency reaches** — since plan 0053 S12 *silent* leniency reaches the ROOT only; below it, an unknown key in `global_config`, in an entity block, or an unknown `source_columns` role is judged by the config's ORIGIN (`src/config/loader.unknown_config_keys`): a **bundled** config raises at load (so `make validate-config` stops it before a release), a **user-dir** overlay loads with ONE WARNING per key naming the nearest known key (the key is ignored — a stray key never stops a district's nightly), and **authoring** (`validate_overlay`) refuses it. `EmailDerivedDate`, `RowFilter`, `CrossEnrollmentConfig` and every field-mapping variant (`FieldTransform`, `FieldNameConfig`, `FieldEmailFormat`, `FieldEnrollStatus`, … — all of `ConfiguredField`) declare `extra="forbid"` and refuse an unknown key for **every** origin — see the rows in the matrix below.
 
 ### Two-direction compatibility matrix
 
@@ -533,10 +543,10 @@ Version is `<major>.<minor>` as a **quoted string** (`'1.9'`). A bare YAML float
 | Same major, **newer** minor | Loads, with a loud **WARNING** naming both versions. | Same-major semantics are safe; the config may use features this build ignores. |
 | **Different major** (older *or* newer) | **Fails loud** (`ValueError`), naming the supported major. | An out-of-major-range config must never silently drive a conversion. |
 | Unknown **top-level** key (`MappingConfig`) | **Ignored.** | Forward compatibility — the Pydantic default, declared deliberately. |
-| Unknown key in **`global_config`** or in an **entity block** | **Ignored** (`GlobalConfig` / `EntityConfig` declare no `model_config`, so they inherit `extra="ignore"`). | Forward compatibility again — but note the cost: **typos here are silent.** A mistyped `enabled_entities` (e.g. `enabled_entites:`) is dropped, leaving the field at its `[]` default, and empty `enabled_entities` means **ALL defined mappings are enabled** — so a one-character typo can widen a config's output rather than narrow it. The creator's forms only ever emit key names the authoring layer spells (`src/config/authoring.py`), which is what keeps a self-authored overlay clear of this trap — a hand edit to one is not protected. |
-| Unknown key in one of the **five leaf models** — `EmailDerivedDate`, `FieldEmailFormat`, `FieldEnrollStatus`, `RowFilter`, `CrossEnrollmentConfig` | **Rejected** (`extra="forbid"`). | These are small closed value objects where a typo is far more likely than a forward-compat key, so typo-catching wins. |
+| Unknown key in **`global_config`**, in an **entity block**, or an unknown **`source_columns` role** (the roles are each transformer's `SOURCE_COLUMN_ROLES`) | **Bundled:** fails loud (`UnknownConfigKeyError`, naming location, key and nearest known key). **User-dir:** loads, with one **WARNING** per key; the key is ignored. **Authoring:** refused. | A typo here is not harmless: a mistyped `enabled_entities` (e.g. `enabled_entites:`) left the field at its inherited default — for `[]`, **ALL defined mappings enabled** — so a one-character typo could widen a config's output; a mistyped role silently read the default column. A bundled typo costs nothing to stop in CI; a user-dir overlay is never seen by CI and must not lose its nightly over a stray key — which is also what keeps an overlay written by a NEWER build loading on an older one (forward compatibility, with a warning). |
+| Unknown key in a **field mapping** (`FieldTransform`, `FieldNameConfig`, `FieldEmailFormat`, `FieldEnrollStatus`, … — every `ConfiguredField`), or in `EmailDerivedDate`, `RowFilter`, `CrossEnrollmentConfig` | **Rejected** for every origin (`extra="forbid"`); a field-mapping refusal names the nearest known key. A field-mapping dict with NO recognisable shape is rejected too (it used to be logged and shipped blank). | A misspelled key inside a field mapping (`transfrom:`) is wrong OUTPUT — the column ships untransformed — not a stray key, so typo-catching wins everywhere (plan 0053 D11). Consequence, stated: a hand-placed user-dir config with such a key stops its nightly (config failure) until it is fixed. |
 
-`_base:` inheritance is a recursive deep merge with cycle detection. **Only dicts merge key-by-key; every other value — including lists — REPLACES wholesale.** An override that wants to extend a list must restate the whole list. A user-dir YAML shadows a same-named bundled config entirely (logged at INFO, never silent).
+`_base:` inheritance is a recursive deep merge with cycle detection. **Only dicts merge key-by-key; every other value — including lists — REPLACES wholesale.** An override that wants to extend a list must restate the whole list. One dict exception (plan 0053 S12): a `field_map` entry whose override SWITCHES the field's shape (`{value: "09"}` over an inherited `{column, transform}`) keeps only the inherited keys the new shape accepts (`models.switch_field_shape`) — merged key by key, the inherited keys would be refused as unknown by the forbidding variant. A partial override (`{column: "Gr"}`) still merges and keeps the inherited `transform`. A user-dir YAML shadows a same-named bundled config entirely (logged at INFO, never silent).
 
 ### Versioning convention
 
@@ -554,10 +564,11 @@ This table is **hand-written and GATED AGAINST** the enforced contract by `tests
 |---|---|---|---|
 | `myedbc` | Students, Staff, Family, Classes, Enrollments | Students, Staff, Family, Classes, Enrollments | The base config every district inherits. |
 | `sd40myedbc` | Students, Staff, Family, Classes, Enrollments | Students, Staff, Family, Classes, Enrollments | CSV extracts, headerless schedule, `ATT--*` exclusions. |
+| `sd45myedbc` | Students, Staff, Family, Classes, Enrollments | Students, Staff, Family, Classes, Enrollments | Migrated 2026-09-30 from the district's standalone gde2acsv-era mapping. Renamed `.csv` source files; `blended_classes: false` (no ClassInformation extract) — so, since contract `2.10.0`, the export it inherits the listing of is optional: its nights run without it, co-teachers left out, Home amber. Class IDs end in the school year's START year (`class_id_year: start`) to match the IDs its old converter delivered. School year from today's date (its `School Year` column's convention is unconfirmed). |
 | `sd48myedbc` | Students, Staff, Family, Classes, Enrollments | Students, Staff, Family, Classes, Enrollments | Renamed source files. |
-| `sd51myedbc` | Students, Staff, Family, Classes, Enrollments, StudentAttendance | Students, Staff, Family, Classes, Enrollments | **Enables StudentAttendance**, but the contract fixture supplies no absence GDEs on purpose — that pins skip-on-empty (a missing attendance drop must never block rostering). In production with absence GDEs present it emits six files. |
+| `sd51myedbc` | Students, Staff, Classes, Enrollments, StudentAttendance | Students, Staff, Classes, Enrollments, StudentAttendance | **Enables StudentAttendance beside rostering, from ONE drop** — the headerless daily file and the headerful Enhanced period file. Until 2026-09-30 the contract fixture withheld both on purpose to pin "a missing attendance drop never blocks rostering"; the owner reversed that on 2026-09-28 (a MISSING listed file stops the night — only a PRESENT absence file may be row-less), so the fixture now ships the complete export (owner ruling 2026-09-30, plan 0053 S13c). **`Family` is OFF (owner decision 2026-09-25):** the district's real `EmergencyContactInformation.txt` is the plain report with no email column at all, so the entity could only ever build nothing — and, since plan 0053 S8, hold Home at a standing warning every night. Re-enabling is one line in `enabled_entities` once SD51 sends a contact export with an email column; the Family definition is inherited from the base unchanged. |
 | `sd54myedbc` | Students, Staff, Family, Classes, Enrollments | Students, Staff, Family, Classes, Enrollments | No status column: withdraw-date-only active detection. |
-| `sd60myedbc` | Students, Staff, Family, Classes, Enrollments, StudentAttendance | Students, Staff, Family, Classes, Enrollments, StudentAttendance | Family `row_filters`, cross-enrollment collapse, generated emails; the district's own `Spaces_*` filenames. **Enables StudentAttendance and the fixture DOES supply absence GDEs** — the deliberate complement to `sd51myedbc` above, which withholds them: SD51 pins skip-on-empty, SD60 pins the emit path. Both bands are headerful here. |
+| `sd60myedbc` | Students, Staff, Family, Classes, Enrollments, StudentAttendance | Students, Staff, Family, Classes, Enrollments, StudentAttendance | Family `row_filters`, cross-enrollment collapse, generated emails; the district's own `Spaces_*` filenames. **Enables StudentAttendance and the fixture supplies its absence GDEs**, as `sd51myedbc`'s does — here both bands are headerful. |
 | `sd74myedbc` | Students, Staff, Family, Classes, Enrollments | Students, Staff, Family, Classes, Enrollments | The frozen snapshot district. |
 | `sd83myedbc` | Students, Staff, Family, Classes, Enrollments, CourseInfo, StudentCourses | Students, Staff, Family, Classes, Enrollments, CourseInfo, StudentCourses | Full myBlueprint+ tier; extended homeroom grades (through 08), **`class_rostering_grades: "homeroom"`** (K-8 class rostering only — grades 9-12 are on `Students.csv` with no enrollment rows, so their transcripts still work), `course_start_grade: 9`, Date of Birth withheld. Staff roles come from the district's repurposed `Prefix` column via `normalize_staff_role`, with `row_filters` keeping only stated-role rows (employment status is handled for every district by the departed-staff rule, not here). Standard MyEd BC file naming. |
 | `sd51attendance` | StudentAttendance | StudentAttendance | Attendance-only tier — no roster anchor is a legitimate delivery here. |
@@ -593,10 +604,12 @@ Where this contract differs from a published reference, and what we intend to do
 
 ## Open owner questions
 
-**Q1a is SETTLED (owner, 2026-07-30).** Q1b–Q4 remain `pending owner confirmation` — an accepted landing
-state, a **status field, not debt** — and Q5 (plan 0053) is open with SpacesEDU. Each is stated verbatim beside the rows it governs; collected here
-with the exact check that would settle it, so the certification pass is a short bench test rather than a
-research task. **Q1a–Q4 are ordered by blast radius, not by number; Q5 is appended after Q4 and carries its own priority note.**
+**Q1a is SETTLED (owner, 2026-07-30), and Q5 (plan 0053) is ANSWERED (owner, 2026-09-28).** Q1b–Q4 remain
+`pending owner confirmation` — an accepted landing state, a **status field, not debt**. Each is stated verbatim
+beside the rows it governs; collected here with the exact check that would settle it, so the certification pass is
+a short bench test rather than a research task. **Q1a–Q4 are ordered by blast radius, not by number; Q5 is appended
+after Q4, kept verbatim as it was asked, with the owner's answer and what DistrictSync does about it beside each
+part.**
 
 > **✅ Q1a — attendance date format. SETTLED: ISO `yyyy-MM-dd` is REQUIRED.**
 > `dd-MMM-yyyy` — the shape the published BC/Aspen Doc documents — is **not accepted** by the live
@@ -608,7 +621,7 @@ research task. **Q1a–Q4 are ordered by blast radius, not by number; Q5 is appe
 > **Q1b — attendance category vocabulary: does the live importer IGNORE an unaccepted code, or REJECT the file?**
 > The published Docs list the categories `A`, `AD`, `A-E`, `A-E OffSite`, `AL`, `AL-E`, `L`, `L AUTH`, `L-E`. DistrictSync DERIVES only `A`, `A-E`, `L`, `L-E` for the K-7 daily band — that vocabulary is ours to promise — and PASSES THROUGH the district's own codes unfiltered for the 8-12 period band, including values the Docs never list (`OffSite`, `ISS`, …). That pass-through rests on an understanding recorded 2026-06-19 and never confirmed: that SpacesEDU ignores non-accepted codes rather than rejecting the file. Which of the Docs' values does the live importer actually accept today, and what does it do with one it does not — skip the row, or refuse the whole feed?
 
-**🔴 Settle Q1b FIRST.** Everything else in Q1b–Q4 is a documentation question (Q5, below, is the other live correctness question); this one is a live correctness
+**🔴 Settle Q1b FIRST.** Everything else in Q1b–Q4 is a documentation question (Q5, below, was the other live correctness question — answered 2026-09-28); this one is a live correctness
 question with district-wide blast radius. *The check:* import a `StudentAttendance.csv` carrying one row
 with a category outside the Docs' nine (e.g. `ISS`) alongside several valid rows. Does the importer
 (a) accept the file and skip that row, (b) accept the file and import the row, or (c) reject the whole
@@ -643,23 +656,28 @@ shape was silently broken.
 > **Q5 — an ABSENT or header-only CSV: what does the live importer do with records an earlier delivery created?**
 > DistrictSync sometimes delivers without one of its files — today when an entity builds no rows, and from plan 0053 S4 also when an optional entity's export fails. Nothing in this repo records what SpacesEDU does in that case, for any of the eight files. Five sub-questions follow, each with its own check.
 
-Q5-status: open
+Q5-status: answered
 
-**🔴 Highest blast radius — answer before any demotion/promotion (S14).** Plan 0053's criticality table
-(`docs/developer/failure-policy.md` §3) lets Family, StudentAttendance, CourseInfo and StudentCourses be
-left out of a night's delivery when their own export fails — an owner decision (2026-09-23) taken ahead of
-this answer; every later change to that table waits on it. Q1b stays the first attendance-correctness check; Q5 governs every
-file. **What we have is evidence, not an answer:** `docs/partner/faq.md` states that a student missing from a
-DELIVERED `Students.csv` is marked Inactive and that what happens to staff and to class enrollments missing
-from a DELIVERED file depends on the district's import settings — all of it describes a row absent from a file that arrived, not a file that did not;
-the same FAQ's import-validation table says a file with an invalid format is skipped as a whole, which
-suggests but does not establish how an absent file is treated; and rostering zips without `Family.csv`
-already ship whenever Family builds no rows (SD51 since its contacts export carries no email column —
-DECISIONS 2026-09-12) — whether anything was unlinked on those nights has not been checked. DistrictSync
-does not emit a header-only CSV today (an entity with no rows is skipped, never written), so Q5b matters
-only if that ever changes. The owner sends Q5 (plan 0053 D2); S14 records the answer.
+**✅ Answered 2026-09-28 by the owner (the SpacesEDU product owner).** Q5 and its five parts stay verbatim as they
+were asked (plan 0053 D2); each part now carries the owner's answer in place of its bench check, and what
+DistrictSync does about it. The answer is recorded in substance in `docs/DECISIONS.md` (2026-09-28,
+"Q5 ANSWERED") and was recorded here on 2026-09-30 (plan 0053 S13d, which folded in S14). It is owner knowledge of
+SpacesEDU's side plus a rule the owner agreed — not an import check of any row in this document, so no row's
+Status moved with it (see the Status legend); the Rostering-bundle row carries its family-links part.
 
-**Evidence so far (2026-09-24).** Six sources, none of them a Q5 answer; `Q5-status` stays `open`.
+**What it settled.** Plan 0053's criticality table (`docs/developer/failure-policy.md` §3) had let Family,
+StudentAttendance, CourseInfo and StudentCourses be left out of a night's delivery when their own export failed —
+an owner decision (2026-09-23) taken ahead of this answer (contract 2.7.0). With the answer the owner revised that
+decision ("we don't have optional files"): what DistrictSync sends overwrites what SpacesEDU already holds, so a
+set generated without one of its files is not a smaller delivery but a wrong one, and is never sent. Since
+contract 2.8.0 (plan 0053 S13c, owner decisions 2026-09-28) only `Family.csv` may be left out; a missing or
+row-less required input, or a required output that would come out empty, stops the night — nothing is written or
+sent, and SpacesEDU keeps the last good sync. The question's own premise moved with it: an entity that builds no
+rows now stops the night too, except Family and an attendance feed on a night without absences. Q1b stays the
+first attendance-correctness check.
+
+**Evidence before the answer (2026-09-24).** Six sources, gathered while Q5 was open; none of them was the answer.
+They stay as the record of what was known before it.
 
 - **E1 — owner, 2026-09-24:** the SpacesEDU import works in a hierarchy — it can import users
   (Students/Staff) on their own, but not Enrollments without Classes, and not Family without users.
@@ -677,51 +695,81 @@ only if that ever changes. The owner sends Q5 (plan 0053 D2); S14 records the an
 - **E6 — Confluence "GDE 2 AdvancedCSV ETL Tool" (2025-08-06):** user records are marked Inactive when they
   no longer have a matching record in `Students.csv` or `Staff.csv`, matched on User ID, Role and School ID.
 
-What it narrows, sub-question by sub-question:
+What the evidence had narrowed, and what the answer settled, sub-question by sub-question:
 
-- **Q5a — narrowed (E1 + E3), not answered.** Per the requirement in E3 and the owner in E1, the import
-  proceeds with the files present, within the hierarchy (users alone; Enrollments need Classes; Family
-  needs users). NOT confirmed: that records an earlier
-  delivery of the absent file created stay unchanged.
-- **Q5b — still open.** No source says what a header-only file does.
-- **Q5c — still open.** No source says whether a missing `CourseInfo.csv`, `StudentCourses.csv` or
-  `StudentAttendance.csv` raises an alert, or what it changes.
-- **Q5d — not narrowed.** E1's hierarchy covers the rostering files only; it says nothing about the two
-  course feeds.
-- **Q5e — narrowed (E4 + E2), not answered.** E4 describes an opt-in district setting that removes
-  associations no longer in the data and needs a complete family file when ON; no source says what
-  happens when it is OFF. Unity has it OFF (E2).
+- **Q5a — answered.** E1 + E3 had narrowed it (the import proceeds with the files present, within the
+  hierarchy); the answer settled what DistrictSync needed: a set missing one of its files is never sent.
+- **Q5b — answered, by an agreed rule.** No source had said what a header-only file does; the owner agreed
+  DistrictSync's empty-file rule instead, and DistrictSync never sends one.
+- **Q5c — answered.** No source had covered it: nothing changes in SpacesEDU and nobody is alerted — and the
+  feeds are required all the same.
+- **Q5d — answered: it depends on the mapping.** E1's hierarchy had covered the rostering files only.
+- **Q5e — answered.** E4 + E2 had narrowed it to an opt-in district setting (OFF at Unity); the owner named the
+  import settings that govern it — SpacesEDU's, set per district, usually OFF.
 
 > **Q5a — rostering files: when `Students.csv`, `Staff.csv`, `Family.csv`, `Classes.csv` or `Enrollments.csv` is ABSENT from the rostering zip, what happens to records an earlier delivery of that file created?**
 > For each of the five files separately: are previously imported records left unchanged, deactivated / unlinked / unenrolled, or is the whole zip rejected?
 
-*The check:* for each file in turn, import a full zip, then a zip identical except that the one file is
-omitted. Record, per file, whether the records it created are unchanged, deactivated/unlinked/unenrolled,
-or whether the import refused the zip.
+**Answered 2026-09-28 (owner):** "if missing we cannot generate and send since the generated files will be
+incomplete and will overwrite what is already there." The owner answered with the rule rather than a per-file
+importer outcome: a rostering set generated without one of its files is incomplete, and what DistrictSync sends
+overwrites what SpacesEDU already holds. **What DistrictSync does:** it never sends an incomplete set. Since
+contract 2.8.0 every file a required output's mapping lists must be in the input folder with data rows (an absence
+file may have none — Q5c), or the night stops before anything is built (`pipeline.check_required_inputs` —
+`incomplete_input`), and a required output
+that would come out empty stops it too (`empty_required_output`; `failure-policy.md` §2 layers 3a and 4): nothing
+is written or sent, and SpacesEDU keeps the last good sync. `Family.csv` is the one rostering file that may be left
+out (its export missing, empty or failing — the run is flagged PARTIAL); what that means for family links is Q5e.
 
 > **Q5b — rostering files: does a header-only file (the header row and no records) behave like an absent file, or like a file that lists nobody?**
 > Same five files, same three possible outcomes: records unchanged, deactivated/unlinked/unenrolled, or the zip rejected.
 
-*The check:* repeat Q5a's check with each file present but header-only, and compare the outcome to Q5a's
-for the same file.
+**Answered 2026-09-28 (owner):** the owner asked DistrictSync for a suggestion and agreed the empty-file rule,
+rather than stating an importer outcome. An input file present with only a header row (or zero bytes) counts as
+missing and stops the night — except an attendance (absence) file, which has rows only on nights with absences, and
+Family's own file (Family is then left out, with a warning) — and DistrictSync never sends a header-only CSV: a
+required output that would come out empty stops the night rather than being written. **What DistrictSync does:**
+exactly that, since contract 2.8.0. What the live importer does with a header-only file is therefore not recorded,
+and no longer needs to be: DistrictSync never sends one.
 
 > **Q5c — standalone feeds: when `CourseInfo.csv`, `StudentCourses.csv` or `StudentAttendance.csv` is absent on a night, does anything change in SpacesEDU, and does the nightly check alert anyone?**
 > For each feed separately: are previously imported course, transcript or attendance records unchanged or removed, and does SpacesEDU's nightly check for the file raise an alert, and to whom?
 
-*The check:* for one night deliver each feed's usual file set minus that one feed; note whether the
-previously imported data changes and whether any alert is raised.
+**Answered 2026-09-28 (owner):** when one of these feeds is absent, nothing changes on the SpacesEDU side and
+nobody is alerted — but it is "an edge case once it's set up … if they are [missing] it's presumably a problem and
+we shouldn't ship incomplete data." **What DistrictSync does:** CourseInfo, StudentCourses and StudentAttendance
+are CRITICAL again (contract 2.8.0 reversed 2.7.0's leave-one-out): a fault in one of their exports, a missing
+course or attendance file, a row-less course file, or a course output coming out empty stops the whole night. A
+night without absences — the attendance files present with no rows — is normal: `StudentAttendance.csv` is simply
+not produced, which by this answer changes nothing in SpacesEDU (an attendance-only configuration then sends
+nothing, and the night is still a success — owner ruling 2026-09-30). And because nobody is alerted on the
+SpacesEDU side, a stopped night shows only in DistrictSync — on Home, in Run History and in the run log;
+DistrictSync itself sends no alerts (owner, 2026-09-28).
 
 > **Q5d — must `StudentCourses.csv` and `CourseInfo.csv` arrive together?**
 > If one arrives without the other on a night, is the one that arrived imported normally, imported against the previously imported copy of the other, or refused?
 
-*The check:* deliver `StudentCourses.csv` alone (no `CourseInfo.csv`) after a normal night, then the
-reverse; note what is imported in each case.
+**Answered 2026-09-28 (owner):** it depends on the mapping. SpacesEDU rostering is the primary configuration, and
+the myBlueprint+ mappings add the two course files: "If the mapping needs the file it should be there … some of the
+important data is concatenated key." **What DistrictSync does:** a configuration's mapping decides which files it
+sends, and every file it lists is required. Every bundled configuration that enables one course feed enables both
+(the expected-outputs table above), and since contract 2.8.0 the two arrive together or not at all: a fault in
+either export, a missing or row-less course file, or either output coming out empty stops the night (the
+`CourseInfo.csv` · `StudentCourses.csv` row of the delivery envelope).
 
 > **Q5e — family links: when a guardian who was in the previous `Family.csv` is missing from a DELIVERED `Family.csv`, is that guardian unlinked from the student?**
 > The FAQ now says staff and enrollment removal depend on district import settings and describes the family-association setting; it does not say what happens to a guardian missing from a delivered `Family.csv` when that setting is OFF.
 
-*The check:* import a `Family.csv`, then one identical except that one guardian row is removed; note
-whether that guardian's link to the student survives.
+**Answered 2026-09-28 (owner):** family unlinking — and removals like it — is handled by import settings SpacesEDU
+keeps for each partner district: set by SpacesEDU, usually OFF, and used sometimes when a partner's data is dirty.
+The owner named four: "Remove from classes students unenrolled in the imports", "Unenroll teachers absent or
+unenrolled in the imports", "Remove admins absent from imports" and "Update Family Records". So whether a guardian
+missing from a delivered `Family.csv` is unlinked depends on that district's settings; with them OFF — the usual
+case — family links stay as they were, including on a night `Family.csv` is left out. What a setting that is ON
+does on such a night is not recorded here (E4: the family-association setting needs a complete family file when
+it is enabled). **What DistrictSync does:** nothing new — `Family.csv` stays the one file that may be left out
+(Q5a) — and the partner FAQ now states this answer where it used to say "pending confirmation"
+(`tests/test_failure_policy_parity.py` ties that sentence to `Q5-status`).
 
 ---
 

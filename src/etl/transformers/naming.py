@@ -11,6 +11,8 @@ from typing import Any, Protocol
 
 import pandas as pd
 
+from src.etl.column_names import COURSE_TITLE
+
 
 class _HasSchoolYear(Protocol):
     """The slice of ``TransformContext`` the naming helpers read."""
@@ -57,8 +59,13 @@ def generate_class_name(
     "<Teacher last> <Course title> (<Section>) <Year>" — the teacher part is
     included only when the primary-teacher flag column (if configured and
     present) is 'y'. Truncated at a word boundary to the 100-char limit.
+
+    When the row lacks ``course_title_col`` the title falls back to
+    :data:`~src.etl.column_names.COURSE_TITLE` — the CourseInformation title that
+    ``ClassTransformer._merge_course_and_staff`` joins onto every subject row
+    under that same structural name (plan 0053 S9 replaced the literal here).
     """
-    course_title = str(row.get(course_title_col, row.get("title", "Unknown Course"))).strip()
+    course_title = str(row.get(course_title_col, row.get(COURSE_TITLE, "Unknown Course"))).strip()
     teacher_last = ""
 
     if teacher_flag_col and teacher_flag_col in row:

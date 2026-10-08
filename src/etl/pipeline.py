@@ -14,10 +14,9 @@ import logging
 import os
 import sys
 import time
-from collections.abc import Collection, Iterable, Mapping
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import Enum
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -26,12 +25,40 @@ import yaml
 
 from src.config.app_config import AppConfig
 from src.config.loader import load_config
-from src.config.models import filter_enabled_entities
+from src.config.models import MappingConfig, filter_enabled_entities
+from src.etl.errors import (
+    EmptyRequiredOutputError,
+    EtlError,
+    IncompleteInputError,
+    NoUsableInputError,
+    RunErrorCategory,
+    classify_error_category,
+)
 from src.etl.extractor import DataExtractor
 from src.etl.loader import DataLoader, output_target_problem
+from src.etl.outcomes import (
+    MAY_BE_EMPTY,
+    OUTCOMES_RECORD_KEY,
+    ROSTER_ANCHOR_ENTITY,
+    EntityCriticality,
+    EntityOutcome,
+    OutcomeKind,
+    OutcomeLedger,
+    OutcomeReason,
+    criticality_of,
+    every_entity_may_be_empty,
+    failed_entities,
+    nothing_to_send,
+    outcomes_to_record,
+    source_file_may_be_absent,
+    stopped_file_labels,
+    stops_when_empty,
+)
+from src.etl.preflight import label_vocabulary_by_entity, missing_columns_by_entity
+from src.etl.required_fields import left_out_for_required_values
 from src.etl.transformer import DataTransformer
+from src.etl.transformers.columns import reset_run_notices as reset_column_notices
 from src.etl.transformers.dates import SchoolYearDetermination
-from src.etl.transformers.grades import resolve_timetable_scope
 from src.history.store import VALID_SOURCES, write_run_record
 from src.quality.report import DataQualityReport, declared_blank_fields
 from src.sftp.uploader import SFTPUploader
@@ -58,35 +85,52 @@ _RECORD_ENTITY_KEYS: tuple[str, ...] = (
 
 _SOURCE_ENV_VAR = "DSYNC_SOURCE"  # scheduled/cron/Docker set this; the registered task passes --source
 
-ROSTER_ANCHOR_ENTITY = "Students"
-"""The entity every other delivered file's student references resolve against.
+# The ONE log line the entity bulkhead writes for an ISOLATABLE entity it left out (plan 0053 S4),
+# at ERROR with the traceback. `ENTITY NOT BUILT` is the grep anchor the partner troubleshooting
+# page tells an admin to search `etl_tool.log` for (pinned by
+# tests/test_partner_doc_schedule_copy_parity.py). Arguments: the entity, the reason's value.
+_ENTITY_NOT_BUILT_LOG_FORMAT = "ENTITY NOT BUILT [%s] reason=%s — left out of this run; every other entity continues."
 
-``Students.csv`` is the referential ROOT of a SpacesEDU delivery: the zero-orphan
-invariant (CLAUDE.md → Key Data Flow → Enrollments) is defined as "no emitted row
-references a ``User ID`` absent from ``Students.csv``", and ``Family`` /
-``StudentCourses`` carry the same dependency (see ``quality/report.py``'s orphan
-checks). That makes it the ONE entity whose absence invalidates the whole payload —
-every other entity may legitimately be empty on a given night (per-entity
-skip-on-empty). Named here rather than inlined so the special case is explicit and
-single-sourced.
-"""
+# The ONE log line `run_transform` writes when an entity the night cannot go without comes out
+# EMPTY (owner 2026-09-28 — `outcomes.stops_when_empty`), at ERROR, just before it raises
+# `EmptyRequiredOutputError`. Arguments: the entity, the reason's value (both closed vocabularies).
+_REQUIRED_OUTPUT_EMPTY_LOG_FORMAT = (
+    "REQUIRED OUTPUT EMPTY [%s] reason=%s — this output may not be empty, so the run stops; nothing is written or sent."
+)
 
+# The ONE log line both entry points write, at INFO, on a night with nothing to send (owner ruling
+# 2026-09-30 — `outcomes.nothing_to_send`: an attendance-only config whose absence files are all
+# present with no rows). `NOTHING TO SEND` is the grep anchor for "why was nothing written?".
+NOTHING_TO_SEND_LOG_LINE = (
+    "NOTHING TO SEND — every configured output may be empty and has no rows tonight (no absences "
+    "recorded); nothing was written, archived or delivered, and the last output is untouched."
+)
 
-class RunErrorCategory(str, Enum):
-    """The bounded, PII-free failure taxonomy stamped on every run record (mirrors the
-    ``LatestReason`` closed-set style). The store carries ONLY this category — never the
-    free-text ``str(e)`` (which can leak a path / column / sis_type); the diagnostic log
-    keeps the rich message for ops. A closed set so a future filter UI can rely on it.
-    """
+# The ONE log line the input gate writes, at ERROR, before it raises `IncompleteInputError`
+# (owner 2026-09-28 — `check_required_inputs`). Arguments: the missing files, the row-less files
+# (config spelling — the mapping's `source_files` names, never a path) and the entities stopped.
+# The closing clause names every file a night may go without (`outcomes.source_file_may_be_absent`
+# — the family contacts file; since owner ruling 2026-09-30 also the class information file where
+# blended-class detection is off), so it is true for every config.
+_REQUIRED_INPUT_UNUSABLE_LOG_FORMAT = (
+    "REQUIRED INPUT UNUSABLE — missing: %s; no data rows: %s; needed by: %s. The run stops before "
+    "anything is built; only the family contacts file, and the class information file where "
+    "blended-class detection is off, may be left out."
+)
 
-    NONE = "none"  # a completed run (delivery/anomaly/data-warning axes live in their own fields)
-    NO_INPUT = "no_input"  # no usable input (input folder missing, or every required file missing/empty)
-    NO_OUTPUT = "no_output"  # input loaded, but every entity was empty/skipped — nothing to write or deliver
-    INCOMPLETE_ROSTER = "incomplete_roster"  # the roster anchor produced nothing while dependent entities did
-    CONFIG = "config"  # a config/validation problem surfaced as the failure
-    DATA = "data"  # a build/write problem (missing field-map column, transform, loader)
-    OUTPUT = "output"  # the OUTPUT FOLDER is unreachable / unwritable (before or during the write)
-    UNKNOWN = "unknown"  # an unclassified failure
+# The ONE line the source observation writes per entity whose mapped columns are absent from the
+# file(s) it reads (plan 0053 S6, failure-policy §10). WARNING, not ERROR: the observation never
+# changes the run (P11). Arguments: the entity, the columns in CONFIG spelling (never an observed
+# header — §8).
+# The line states only what the observation KNOWS: it runs BEFORE the transform, so it cannot
+# say what the transform then does with the gap (a field falls back to another column, a missing
+# row-filter column fails the entity closed, ...) — never claim "blank" here.
+_MAPPED_COLUMNS_MISSING_LOG_FORMAT = (
+    "MAPPED COLUMNS MISSING [%s] %s — named by this district's mapping but not in the export file(s) this entity reads."
+)
+
+# `ROSTER_ANCHOR_ENTITY` (the referential root of a delivery) moved to `src.etl.outcomes`
+# with plan 0053 S2, beside the criticality table it forces; imported above.
 
 
 @dataclass
@@ -114,6 +158,11 @@ class PipelineResult:
     raise) return no result at all and carry no observation — by design: those
     failures name the offending column themselves and fail loudly, while an
     absent mapped column is an *intended blank* that nothing else reports.
+
+    ``entity_outcomes`` (plan 0053 S2) is one :class:`~src.etl.outcomes.EntityOutcome`
+    per configured entity, in configured order — the same outcomes the run record
+    carries. REQUIRED keyword-only with NO default: a consumer that gates on it (the
+    creator's activation gate, S4) must never read a defaulted "nothing failed".
     """
 
     entity_counts: dict[str, int] = field(default_factory=dict)
@@ -123,6 +172,9 @@ class PipelineResult:
     # `field(default_factory=dict)` per the `entity_counts` precedent above — a bare
     # `{}` default raises `ValueError: mutable default` at class definition.
     input_columns: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    # `kw_only`: every field above has a default, and a required positional field after
+    # defaulted ones is a `TypeError` at class definition.
+    entity_outcomes: tuple[EntityOutcome, ...] = field(kw_only=True)
 
 
 def extract_required_files(config) -> list[str]:
@@ -133,9 +185,15 @@ def extract_required_files(config) -> list[str]:
     by an enabled entity — when they aren't, ``determine_school_year``
     falls back to the calendar-date heuristic in BaseTransformer.
 
-    This is the list ``extractor.load_data`` actually reads — NOT merely an
-    advisory "what does the UI expect" set (see ``advisory_expected_files``
-    for that). It must stay grade-scope-AGNOSTIC: a district whose resolved
+    This is the list ``extractor.load_data`` actually reads, and — since owner
+    decision 2026-09-28 — also the list the UI shows as what a district's sync reads
+    (Convert's missing-file chips, the self-service Files step): every file an enabled
+    entity lists is required (:func:`check_required_inputs`) — but for the few a night may go
+    without, which :func:`optional_source_files` names — so the UI-only
+    ``advisory_expected_files``, which dropped a fully homeroom-scoped district's
+    schedule and class-information roles as "feeding nothing", was retired — it would have
+    hidden the very files the input gate now stops the night for. It must stay
+    grade-scope-AGNOSTIC: a district whose resolved
     timetable scope is empty (``class_rostering_grades: "homeroom"``) still
     gets no harm from opportunistically loading a present ``StudentSchedule.txt``
     — it may still carry a usable ``school_year_sources`` value, and the
@@ -156,45 +214,41 @@ def extract_required_files(config) -> list[str]:
     return list(files)
 
 
-def advisory_expected_files(config) -> list[str]:
-    """The UI-facing "your district's extracts usually include" file list.
+def optional_source_files(config: MappingConfig) -> dict[str, frozenset[tuple[str, str]]]:
+    """The files ``config``'s night may go without, each with the ``(entity, role)`` listings it is
+    optional under: ``{filename: listings}``.
 
-    Same base set as :func:`extract_required_files`, MINUS the
-    ``student_schedule``/``class_info`` source-file roles when the district's
-    resolved timetable scope is EMPTY (``class_rostering_grades: "homeroom"``,
-    or an explicit list equal to ``homeroom_grades``) — for a fully
-    homeroom-scoped config those two files feed no surviving class or
-    enrollment (every blend is unconditionally suppressed and no subject
-    class is ever built), so flagging them as "usually included" is actively
-    misleading rather than merely optional.
-
-    Deliberately SEPARATE from :func:`extract_required_files`: this function
-    is advisory-only (it decides what a chip on the Convert screen says, never
-    what the extractor reads), so it is free to narrow past the safe,
-    scope-agnostic set that function must keep. Branches on ``is None`` per
-    ``grades.resolve_timetable_scope``'s own contract — never on truthiness —
-    so an unscoped config (the default) is byte-identical to
-    ``extract_required_files``.
+    Read through the ONE optional-input predicate the input gate applies,
+    ``outcomes.source_file_may_be_absent``, over the same ENABLED entities and the same
+    ``global_config`` dict :func:`check_required_inputs` is handed (``config.to_raw_dict()``), so a
+    screen that says which missing file stops the night (Convert's missing-file line) can never
+    disagree with the run. A file is optional only when EVERY enabled listing of it is: a file
+    Family shares with a CRITICAL entity is required through that entity. Family's own files
+    (owner 2026-09-28) and — owner ruling 2026-09-30 — the Class Information export of a config
+    whose blended detection is off are today's members. The ENTITY rides each listing so a screen
+    can say which exception holds without spelling an entity's role (Family's file is optional
+    through Family's criticality, whatever role its mapping names it under).
     """
+    global_config = config.to_raw_dict().get("global_config", {})
     active = config.active_entities()
-    raw_global_config = config.to_raw_dict().get("global_config", {})
-    homeroom_grades = raw_global_config.get("homeroom_grades", [])
-    timetable_scope = resolve_timetable_scope(raw_global_config, homeroom_grades)
-    inert_roles = {"student_schedule", "class_info"} if timetable_scope is not None and not timetable_scope else set()
-
-    files: set[str] = set()
+    optional: dict[str, set[tuple[str, str]]] = {}
+    required: set[str] = set()
     for entity_name, entity_cfg in config.mappings.items():
         if entity_name not in active:
             continue
         for role, filename in entity_cfg.source_files.items():
-            if role in inert_roles:
-                continue
-            files.add(filename)
-    return list(files)
+            if source_file_may_be_absent(entity_name, role, global_config=global_config):
+                optional.setdefault(filename, set()).add((entity_name, role))
+            else:
+                required.add(filename)
+    return {filename: frozenset(listings) for filename, listings in optional.items() if filename not in required}
 
 
-def has_no_usable_input(raw_data: Mapping[str, pd.DataFrame]) -> bool:
-    """True when a load produced NOTHING usable — no keys, or every frame empty.
+def has_no_usable_input(
+    raw_data: Mapping[str, pd.DataFrame], *, configured: Iterable[str], absent: Collection[str]
+) -> bool:
+    """True when a load produced NOTHING usable — no keys, or every frame empty — on a run that
+    needed something.
 
     The single source for "this folder gave us nothing", shared by ``run_pipeline``
     (which raises) and ``convert_job`` (which returns ``NO_INPUT``). It exists
@@ -207,11 +261,208 @@ def has_no_usable_input(raw_data: Mapping[str, pd.DataFrame]) -> bool:
     unreachable.
 
     Keys off INPUT presence, independent of ``run_transform``'s per-entity
-    skip-on-empty — so a PARTIAL load (some files present) is usable, and a
+    skip-on-empty — so a PARTIAL load (some files present) is not "nothing", and a
     period-only attendance run (period file non-empty, daily absent) does not fire
-    it.
+    it. Whether a partial load may RUN is the next gate's question,
+    :func:`check_required_inputs` (owner 2026-09-28), which both entry points call after
+    this one: a missing file a CRITICAL entity lists stops the night there instead.
+
+    **The one exception (owner ruling 2026-09-30): a night with nothing to send.** A run whose
+    every ``configured`` entity may arrive empty (``outcomes.every_entity_may_be_empty`` — an
+    attendance-only config) and whose listed files are ALL on disk (``absent`` empty — the
+    extractor's own ``absent_files`` for the same read) is a night without absences, not "the
+    wrong folder": it goes on to record StudentAttendance EMPTY / ``source_files_empty`` and to
+    end a success with nothing written or sent (``outcomes.nothing_to_send``). A MISSING absence
+    file still stops the night (:func:`check_required_inputs`), and a config with any other
+    entity whose files are all row-less still fails here. ``configured`` and ``absent`` are
+    REQUIRED keyword-only: a default would decide the exception for the caller.
     """
-    return not raw_data or all(df.empty for df in raw_data.values())
+    if raw_data and not all(df.empty for df in raw_data.values()):
+        return False
+    return not (raw_data and not absent and every_entity_may_be_empty(configured))
+
+
+def _declared_source_listings(entity_cfg: Mapping[str, Any]) -> list[tuple[str, str]]:
+    """An entity block's configured ``source_files`` as ``(role, filename)`` listings — declared
+    order, non-blank string filenames only (the input gate's reading; ``run_transform`` derives its
+    own list in the entity loop, and the two agree on every Pydantic-validated config). A legacy
+    list carries no role, so each of its names is listed under ``""`` — a role no exception names.
+    """
+    source_config = entity_cfg.get("source_files", {}) if isinstance(entity_cfg, Mapping) else {}
+    if isinstance(source_config, dict):
+        listings = [(str(role), name) for role, name in source_config.items()]
+    else:
+        listings = [("", name) for name in (source_config or [])]
+    return [(role, name) for role, name in listings if isinstance(name, str) and name]
+
+
+def check_required_inputs(
+    mappings: Mapping[str, Any],
+    raw_data: Mapping[str, pd.DataFrame],
+    *,
+    absent: Collection[str],
+    ledger: OutcomeLedger,
+    global_config: Mapping[str, Any],
+) -> None:
+    """The INPUT gate (owner decision 2026-09-28, ``failure-policy.md`` §2 layer 3a, §7) — shared
+    by BOTH entry points, called after the read (and the source observation) and before
+    :func:`run_transform` (AST-pinned).
+
+    "We don't have optional files; maybe family info can be optional." Every file a CRITICAL
+    entity's mapping lists (``outcomes.ENTITY_CRITICALITY`` — every entity but Family) must be
+    in the input folder, and must have data rows unless that entity is in
+    ``outcomes.MAY_BE_EMPTY`` (StudentAttendance: a night with no absences is a file with no
+    rows, never an absent file). Otherwise the night STOPS here, before anything is built:
+
+    * each entity it stopped is recorded FAILED / ``missing_source_file``
+      (:meth:`~src.etl.outcomes.OutcomeLedger.record_missing_files` — the file named when it
+      is the entity's only problem), and the failure sink marks the rest NOT_RUN;
+    * :class:`~src.etl.errors.IncompleteInputError` is raised — category
+      ``incomplete_input``, exit 1, nothing written or sent, the last good output untouched —
+      naming every missing and every row-less file in the CONFIG's spelling (config
+      vocabulary, never a path) and carrying the names the copy may print
+      (``outcomes.stopped_file_labels`` over the outcomes just recorded, so Convert's card and
+      the run record name the same files).
+
+    **The exceptions come from the declarations, not a list here** — ONE predicate,
+    ``outcomes.source_file_may_be_absent``, judged per listing (entity, role), which Convert's
+    missing-file line reads too (:func:`optional_source_files`):
+
+    * an ISOLATABLE entity's own file (Family's contacts export) is never checked: a missing or
+      row-less one reaches ``run_transform``, which records Family EMPTY /
+      ``source_files_empty`` — a standing WARNING (amber), the rest delivered;
+    * the Class Information export of a config whose blended-class detection is OFF (owner
+      ruling 2026-09-30) is never checked either: detection does not read it, so a missing or
+      row-less one only leaves Enrollments' co-teacher rows out, with the standing
+      ``coteacher_source_unusable`` warning (``EnrollmentTransformer._classinfo_coteacher_enrollments``).
+      With detection ON it is the blended working frame and stays required.
+
+    A file another listing requires is required through it (a file Family shares with a CRITICAL
+    entity, for one). A present, row-less file of a ``MAY_BE_EMPTY`` entity reaches
+    ``run_transform`` too (EMPTY, neutral).
+
+    **An entity whose mapping names no source file at all** has no file to judge here; it is
+    :func:`run_transform`'s EMPTY / ``no_source_files_declared``, which stops the night there
+    for a CRITICAL entity (``outcomes.stops_when_empty``) — one rule per question.
+
+    ``absent`` is ``DataExtractor.absent_files`` for the same read — REQUIRED keyword-only,
+    because ``raw_data`` answers "missing" and "present with no record" identically and the
+    rule treats them differently for StudentAttendance; ``ledger`` is the run's, built from
+    :func:`configured_entity_order`; ``global_config`` is the config's ``global_config`` section
+    (the dict ``run_transform`` is handed) — REQUIRED keyword-only, because it decides the Class
+    Information exception and a default would decide it for the caller. Returns ``None`` when
+    every requirement holds.
+    """
+    problems: dict[str, list[str]] = {}
+    missing: list[str] = []
+    empty: list[str] = []
+    for entity in ledger.configured:
+        for role, name in _declared_source_listings(mappings.get(entity, {})):
+            if source_file_may_be_absent(entity, role, global_config=global_config):
+                continue
+            if name in absent:
+                stopped = missing
+            elif entity not in MAY_BE_EMPTY and raw_data.get(name, pd.DataFrame()).empty:
+                stopped = empty
+            else:
+                continue
+            if name not in problems.setdefault(entity, []):
+                problems[entity].append(name)
+            if name not in stopped:
+                stopped.append(name)
+
+    if not problems:
+        return
+
+    for entity, files in problems.items():
+        ledger.record_missing_files(entity, files)
+    logger.error(_REQUIRED_INPUT_UNUSABLE_LOG_FORMAT, missing or "none", empty or "none", ", ".join(problems))
+    parts = []
+    if missing:
+        parts.append(f"missing from the input folder: {missing}")
+    if empty:
+        parts.append(f"present with no data rows: {empty}")
+    raise IncompleteInputError(
+        f"The input stopped the run — a file this district's mapping requires is not usable: {'; '.join(parts)} "
+        f"(needed by {', '.join(problems)}). "
+        "Nothing was written or sent; the last good output is untouched. Check the export job and the "
+        "input folder — only the family contacts file, and the class information file where blended-class "
+        "detection is off, may be left out.",
+        missing=missing,
+        empty=empty,
+        named=stopped_file_labels(ledger.outcomes),
+    )
+
+
+def observed_input_columns(raw_data: Mapping[str, pd.DataFrame]) -> dict[str, tuple[str, ...]]:
+    """The run's RAW observation of its input headers: ``{configured filename: its columns}``.
+
+    The ONE derivation behind ``PipelineResult.input_columns`` and the source observation
+    (:func:`observe_source_columns`). The extractor already normalised every frame's columns,
+    so this is a copy — never a re-read or a second normalisation; ``str()`` so nothing but
+    ``str`` leaves the pipeline. A file not on disk keeps its key with an empty tuple.
+    """
+    return {filename: tuple(str(column) for column in df.columns) for filename, df in raw_data.items()}
+
+
+def observe_source_columns(
+    config: MappingConfig,
+    raw_data: Mapping[str, pd.DataFrame],
+    ledger: OutcomeLedger,
+) -> None:
+    """The SOURCE OBSERVATION (plan 0053 S6, ``failure-policy.md`` §10, P11) — shared by BOTH
+    entry points, called after the input is read and before :func:`run_transform`.
+
+    For every configured entity whose mapped columns are absent from the file(s) it reads
+    (:func:`~src.etl.preflight.missing_columns_by_entity` — own files, soundness rule, config
+    spelling), it logs ONE WARNING naming them and holds them on the ``ledger``
+    (:meth:`~src.etl.outcomes.OutcomeLedger.note_missing_mapped`), so the entity's outcome
+    carries ``missing_mapped`` and an EMPTY / NO_ROWS_AFTER_TRANSFORM or REQUIRED_VALUES_MISSING
+    outcome is refined to EMPTY / MISSING_SOURCE_COLUMN (:func:`~src.etl.outcomes.apply_observation`).
+
+    **It never enforces.** It raises nothing, gates nothing and changes no delivered byte: the
+    derivation sits in a broad handler, and so does EACH entity's note + warning, both logging
+    at DEBUG (the exception's type only), so a bug here can at worst leave the record without
+    an observation — the run's result, exit code and files are exactly what they would have
+    been without it (raise-isolation twin, ``tests/test_pipeline_run_store.py``). The
+    per-entity handler is what keeps one entity's refused note (an unusable column name) from
+    costing every LATER entity its observation; the note is taken BEFORE the warning, so a
+    name the ledger refuses never reaches the log line. An entity the ledger was not
+    configured with (a hand-written ``entity_order`` omitting an enabled entity) is skipped,
+    never noted. Guards are enforced once, where a column is USED (§5), never here.
+
+    **It also hands the ledger each entity's config-declared label vocabulary** (plan 0053 S7,
+    D4 — :func:`~src.etl.preflight.label_vocabulary_by_entity`), so a
+    ``missing_source_column`` outcome can name its column (and, for a single-file entity, its
+    file) through ``outcomes.safe_label``. Under the same never-enforces guards, separately
+    from the observation: a failure there costs labels only, never the observation.
+    """
+    try:
+        vocabularies = label_vocabulary_by_entity(config)
+    except Exception as exc:  # noqa: BLE001 — advisory only; labels never enforce (failure-policy §8, P11)
+        logger.debug("Label vocabulary skipped (%s)", type(exc).__name__)
+        vocabularies = {}
+    for entity, vocabulary in vocabularies.items():
+        if entity not in ledger.configured:
+            continue
+        try:
+            ledger.note_label_vocabulary(entity, vocabulary)
+        except Exception as exc:  # noqa: BLE001 — advisory only; one entity's vocabulary never costs another's (P11)
+            logger.debug("Label vocabulary skipped for %s (%s)", entity, type(exc).__name__)
+
+    try:
+        findings = missing_columns_by_entity(config, observed_input_columns(raw_data))
+    except Exception as exc:  # noqa: BLE001 — advisory only; source observation never enforces (failure-policy §10, P11)
+        logger.debug("Source-column observation skipped (%s)", type(exc).__name__)
+        return
+    for entity, columns in findings.items():
+        if entity not in ledger.configured:
+            continue
+        try:
+            ledger.note_missing_mapped(entity, columns)
+            logger.warning(_MAPPED_COLUMNS_MISSING_LOG_FORMAT, entity, ", ".join(f"'{column}'" for column in columns))
+        except Exception as exc:  # noqa: BLE001 — advisory only; one entity's observation never costs another's (P11)
+            logger.debug("Source-column observation skipped for %s (%s)", entity, type(exc).__name__)
 
 
 def configured_entity_order(mappings: dict, global_config: dict) -> list[str]:
@@ -225,6 +476,13 @@ def configured_entity_order(mappings: dict, global_config: dict) -> list[str]:
     entities in the mapping (see CLAUDE.md "Output Targeting"), and treating
     those as expected would fire false anomalies against a DIFFERENT config's
     legitimate CSV sharing the output dir.
+
+    Each entity appears ONCE (its first position wins). An ``entity_order`` that listed
+    an entity twice used to transform it twice — the second pass overwriting the first
+    with the same frame and double-counting its data errors; since plan 0053 S2 the
+    per-run :class:`~src.etl.outcomes.OutcomeLedger` holds exactly one outcome per
+    entity, so the list it is built from names each entity once. (No bundled config
+    lists an entity twice; this guards a hand-written overlay.)
     """
     entity_order = global_config.get("entity_order") or list(mappings.keys())
     # `enabled_entities` (when non-empty) filters which mappings actually run.
@@ -232,7 +490,8 @@ def configured_entity_order(mappings: dict, global_config: dict) -> list[str]:
     # activates by default — districts opt in by listing them. The selection
     # rule itself is single-sourced in `filter_enabled_entities` (the same
     # kernel behind `MappingConfig.active_entities`).
-    return filter_enabled_entities(entity_order, global_config.get("enabled_entities"))
+    selected = filter_enabled_entities(entity_order, global_config.get("enabled_entities"))
+    return list(dict.fromkeys(selected))
 
 
 class TransformOutputs(NamedTuple):
@@ -247,18 +506,25 @@ class TransformOutputs(NamedTuple):
     determination (diagnostics only — carries no in-code default, since every
     run genuinely has one) — threaded out so ``--quality`` can report WHY a
     year was chosen, not just what it was (see ``DataQualityReport.school_year``).
+
+    ``outcomes`` (plan 0053 S2) is the COMPLETE per-entity ledger — one
+    :class:`~src.etl.outcomes.EntityOutcome` per configured entity, in configured
+    order. Read fields by attribute; the production callers never unpack this tuple.
     """
 
     outputs: dict[str, pd.DataFrame]
     field_orders: dict[str, list[str]]
     data_errors: list[dict]
     school_year: SchoolYearDetermination
+    outcomes: tuple[EntityOutcome, ...]
 
 
 def run_transform(
     raw_data: dict[str, pd.DataFrame],
     mappings: dict,
     global_config: dict,
+    *,
+    ledger: OutcomeLedger,
 ) -> TransformOutputs:
     """Shared transform-orchestration: school-year determination + the per-entity loop.
 
@@ -273,11 +539,70 @@ def run_transform(
     The returned :class:`TransformOutputs` also carries ``data_errors`` — the
     shared context's fail-loud field-transform ledger accumulated across every
     entity (empty on a clean run).
+
+    ``ledger`` (plan 0053 S2) is REQUIRED keyword-only: the caller builds it (from
+    :func:`configured_entity_order`, before the input is read) so a failure BEFORE
+    this function still yields a complete ledger through its failure sink. Every
+    skip branch below records EMPTY with its reason and every emitted entity BUILT
+    with its row count.
+
+    **An EMPTY output the night cannot go without STOPS it (owner 2026-09-28).** Every EMPTY
+    outcome is judged, as recorded, by ``outcomes.stops_when_empty``: a CRITICAL entity that
+    comes out with no rows — every row filtered out, every row LEFT OUT for a missing required
+    value (``required_values_missing``, plan 0053 S13d — the composition of this rule with the
+    required-value rule), a mapped column missing, no source file declared — records its EMPTY
+    outcome, marks every later entity NOT_RUN and raises
+    :class:`~src.etl.errors.EmptyRequiredOutputError` (``empty_required_output``, exit 1,
+    nothing written or sent). Only Family (the ONE ISOLATABLE entity: EMPTY, a standing
+    WARNING) and a StudentAttendance with nothing to send (``outcomes.empty_is_expected``:
+    EMPTY, neutral) are recorded and passed. **Both entry points call
+    :func:`check_required_inputs` first**, so on a real run a CRITICAL entity whose files are
+    missing or row-less has already stopped the night there; a direct caller that skips that
+    gate still gets this stop for an entity whose every file is empty.
+
+    **The entity bulkhead (plan 0053 S4, ``failure-policy.md`` §2/§3) — the ONE
+    entity-scope boundary in the product, shared by the CLI and Convert.** A raise from
+    an entity's transform is recorded FAILED (:meth:`~src.etl.outcomes.OutcomeLedger.record_failure`:
+    the reason by type, plus any config-declared labels from a ``SourceSchemaError``'s own
+    columns — plan 0053 S7) and then decided by the entity's DECLARED criticality
+    (:func:`~src.etl.outcomes.criticality_of` — anything unlisted is CRITICAL):
+
+    * **CRITICAL** — every later entity is recorded NOT_RUN and the exception is
+      re-raised BARE: the same object, so its category and the exit code are exactly
+      what they were before the bulkhead existed.
+    * **ISOLATABLE** — the entity's own data-error entries are rolled back (a dropped
+      entity must not inflate the run's "N data warnings"), ONE ``ENTITY NOT BUILT``
+      ERROR line is logged with its traceback, and the loop CONTINUES. The entity is
+      absent from ``outputs`` — never substituted — so the loader archives its previous
+      CSV out of the delivery glob and the manifest cannot carry it; the run record's
+      FAILED outcome is what keeps the run PARTIAL (WARNING) every night it persists.
+
+    ``BaseException`` (a Ctrl+C, a ``SystemExit``) is never caught. There is no
+    dependent-withholding branch: nothing ISOLATABLE is ever depended on
+    (``outcomes.DEPENDS_ON`` — pinned), so a failed isolatable entity has no dependent.
+
+    **Nothing built ⇒ the first isolated failure fails the run.** When the loop ends
+    with no entity BUILT and at least one FAILED (a single-entity config such as
+    ``sd51attendance`` with a broken absence code; or every other entity legitimately
+    empty), the FIRST isolated exception is re-raised — its own traceback, its own
+    category — rather than letting :func:`check_delivery_integrity` report the vaguer
+    ``no_output``. Isolation may never turn a precise failure into a vaguer one, and
+    ``no_output`` keeps its meaning: nothing to build.
     """
+    configured = configured_entity_order(mappings, global_config)
+    if ledger.configured != tuple(configured):
+        raise ValueError(
+            f"The outcome ledger was built for {list(ledger.configured)}, but this run is "
+            f"configured to produce {configured}; build it from configured_entity_order()."
+        )
+
     transformer = DataTransformer()
     # Before the entity loop: an entity may need a source file that ANOTHER
     # entity declares (Staff resolves the Classes timetable roles).
     transformer.set_entity_mappings(mappings)
+    # Open this run's window for the column resolver's once-per-run notices (the
+    # default-fallback DEBUG line and plan 0053 S9's transitional WARNING).
+    reset_column_notices()
 
     outputs: dict[str, pd.DataFrame] = {}
     field_orders: dict[str, list[str]] = {}
@@ -317,17 +642,54 @@ def run_transform(
             f"resolved={sy}. academic start={transformer.academic_start}, end={transformer.academic_end}"
         )
 
-    for entity_name in configured_entity_order(mappings, global_config):
+    # The first exception the bulkhead contained — re-raised after the loop if NOTHING was built.
+    first_isolated: Exception | None = None
+
+    def record_empty(position: int, outcome: EntityOutcome) -> None:
+        """Record an EMPTY ``outcome``, then STOP the night if its entity may not be empty.
+
+        Owner decision 2026-09-28 — "DistrictSync never sends a header-only file": the
+        recorded outcome (its reason possibly refined by the source observation) is judged by
+        ``outcomes.stops_when_empty``. A stop records every later entity NOT_RUN, logs ONE
+        ``REQUIRED OUTPUT EMPTY`` line and raises :class:`~src.etl.errors.EmptyRequiredOutputError`
+        naming the entity — the same run-scope stop a CRITICAL raise is, so nothing is written
+        or sent and the last good output is untouched. Family (ISOLATABLE) and a
+        StudentAttendance with nothing to send (``outcomes.empty_is_expected``) are recorded and
+        the loop continues, as before.
+        """
+        ledger.record(outcome)
+        recorded = next(o for o in ledger.outcomes if o.entity == outcome.entity)
+        if not stops_when_empty(recorded.entity, recorded.reason):
+            return
+        ledger.mark_not_run(configured[position + 1 :])
+        logger.error(_REQUIRED_OUTPUT_EMPTY_LOG_FORMAT, recorded.entity, recorded.reason.value)
+        # Plan 0053 S13d: every row left out for a missing required value is an EMPTY output too
+        # (the composition of the two owner rules), but the export HAD rows — the card and the
+        # record must say so, from the SAME fact (the entity's required-value note).
+        values_left_out = left_out_for_required_values(recorded.notes)
+        why = " — every row was missing a value SpacesEDU requires" if values_left_out else ""
+        raise EmptyRequiredOutputError(
+            f"{recorded.entity} came out with no rows{why} (reason={recorded.reason.value}), and this output may not "
+            "be empty — only family contacts may be left out, and DistrictSync never sends an empty file. "
+            "Nothing was written or sent; the last good output is untouched. Check this district's export "
+            f"for {recorded.entity}.",
+            entity=recorded.entity,
+            required_values_left_out=values_left_out,
+        )
+
+    for position, entity_name in enumerate(configured):
         entity_cfg = mappings.get(entity_name, {})
         source_config = entity_cfg.get("source_files", {})
 
         if not source_config:
             logger.warning(f"No source_files for entity '{entity_name}' in the mapping; skipping.")
+            record_empty(position, EntityOutcome.empty(entity_name, OutcomeReason.NO_SOURCE_FILES_DECLARED))
             continue
 
         source_files = list(source_config.values()) if isinstance(source_config, dict) else source_config
         if not source_files:
             logger.warning(f"No valid source files for entity '{entity_name}'; skipping.")
+            record_empty(position, EntityOutcome.empty(entity_name, OutcomeReason.NO_SOURCE_FILES_DECLARED))
             continue
 
         # Skip only when EVERY source frame is empty. The positional-first frame
@@ -339,24 +701,68 @@ def run_transform(
         source_frames = [raw_data.get(sf, pd.DataFrame()) for sf in source_files]
         if all(df.empty for df in source_frames):
             logger.warning(f"All source files {source_files} are empty for '{entity_name}'; skipping.")
+            record_empty(position, EntityOutcome.empty(entity_name, OutcomeReason.SOURCE_FILES_EMPTY))
             continue
         primary_df = source_frames[0]  # may be empty for a role-resolved entity (period-only attendance)
 
-        transformed = transformer.transform(primary_df, entity_cfg, entity_name, raw_data, global_config)
+        # Where this entity's data-error entries begin, so an ISOLATED failure can take back
+        # exactly its own (earlier entities' entries are untouched).
+        mark = transformer.data_errors_mark()
+        try:
+            transformed = transformer.transform(primary_df, entity_cfg, entity_name, raw_data, global_config)
+        except Exception as exc:  # noqa: BLE001 — entity bulkhead, failure-policy §2
+            # `Exception`, never `BaseException`: a Ctrl+C or a SystemExit is not an entity
+            # outcome; the caller's failure sink marks what is left.
+            # The reason by TYPE, and any config-declared labels from the error's own columns
+            # (plan 0053 S7) — never its message.
+            reason = ledger.record_failure(entity_name, exc)
+            if criticality_of(entity_name) is not EntityCriticality.ISOLATABLE:
+                # CRITICAL (or unlisted): the run fails exactly as it always has — the ORIGINAL
+                # object, so its category and the exit code are unchanged.
+                ledger.mark_not_run(configured[position + 1 :])
+                raise
+            transformer.rollback_data_errors(mark)
+            logger.error(_ENTITY_NOT_BUILT_LOG_FORMAT, entity_name, reason.value, exc_info=True)
+            if first_isolated is None:
+                first_isolated = exc
+            continue
 
+        # The facts the transform recorded about what it left out (plan 0053 S10) ride on its
+        # outcome — a BUILT one included, which is how "built, but co-teachers left out" reaches
+        # Home as a standing warning (`failure_copy.NOTE_TIER`).
+        notes = transformer.outcome_notes_for(entity_name)
         if transformed.empty:
             logger.warning(f"No data transformed for entity '{entity_name}'; skipping.")
+            # WHY it is empty (plan 0053 S13d): the required-value rule runs LAST on each rostering
+            # output, so an empty output carrying its note lost its final rows to it — the export
+            # had rows, every one missing a value SpacesEDU requires. Anything else kept no row.
+            reason = (
+                OutcomeReason.REQUIRED_VALUES_MISSING
+                if left_out_for_required_values(notes)
+                else OutcomeReason.NO_ROWS_AFTER_TRANSFORM
+            )
+            record_empty(position, EntityOutcome.empty(entity_name, reason, notes=notes))
             continue
 
         outputs[entity_name] = transformed
         field_orders[entity_name] = list(entity_cfg.get("field_map", {}).keys())
+        ledger.record(EntityOutcome.built(entity_name, len(transformed), notes=notes))
+
+    # Nothing built and something FAILED: the bulkhead contained a failure that is, in effect,
+    # the whole run. Re-raise the first one (its own traceback and category) rather than let the
+    # delivery-integrity gate report the vaguer "no output".
+    if first_isolated is not None and not any(o.kind is OutcomeKind.BUILT for o in ledger.outcomes):
+        logger.error("NO ENTITY BUILT — every entity that could be built failed; the run fails with the first failure.")
+        raise first_isolated
 
     # The shared per-run TransformContext accumulates fail-loud field-transform
     # errors across every entity; surface them on the same axis as the outputs.
-    return TransformOutputs(outputs, field_orders, transformer.data_errors, sy_determination)
+    # `complete()` refuses a ledger missing any configured entity: every branch above
+    # records exactly one outcome, and this is where that claim is checked.
+    return TransformOutputs(outputs, field_orders, transformer.data_errors, sy_determination, ledger.complete())
 
 
-class DeliveryIntegrityError(RuntimeError):
+class DeliveryIntegrityError(EtlError, RuntimeError):
     """The produced output set cannot be vouched for — refuse to write or deliver it.
 
     Subclasses ``RuntimeError`` so it rides the EXISTING "``run_pipeline`` raises →
@@ -365,17 +771,18 @@ class DeliveryIntegrityError(RuntimeError):
     would be wrong — it promises "output is present on disk, only delivery failed",
     and here nothing is written at all.
 
-    Carries a BOUNDED :class:`RunErrorCategory` value so the run store records the
-    real fault without the free-text message (the privacy split — see
-    :func:`build_run_record`). Classified by TYPE, never by interpolating text.
+    Carries a BOUNDED :class:`~src.etl.errors.RunErrorCategory` member so the run store
+    records the real fault without the free-text message (the privacy split — see
+    :func:`build_run_record`). Classified by TYPE, never by interpolating text: it is an
+    :class:`~src.etl.errors.EtlError` (plan 0053 S1), and ``category`` is REQUIRED — the
+    gate is the only site that knows which of its two faults fired.
     """
 
-    def __init__(self, message: str, category: str) -> None:
-        super().__init__(message)
-        self.category = category
+    def __init__(self, message: str, category: RunErrorCategory) -> None:
+        super().__init__(message, category=category)
 
 
-class OutputWriteError(RuntimeError):
+class OutputWriteError(EtlError, RuntimeError):
     """The output folder failed AFTER a clean pre-flight — the window a pre-check cannot see.
 
     :func:`~src.etl.loader.output_target_problem` closes the "unusable at t=0" window;
@@ -394,16 +801,18 @@ class OutputWriteError(RuntimeError):
     rolls back per file inside ``try/except OSError`` and a restore that itself fails is
     logged at ERROR, not raised (on a drive that drops mid-commit it fails on the same
     dead path), after which ``save_all``'s ``finally`` discards the backup dir.
+
+    An :class:`~src.etl.errors.EtlError` whose class category is ``output`` (plan 0053 S1).
     """
 
-    def __init__(self, message: str) -> None:
-        super().__init__(message)
-        self.category = RunErrorCategory.OUTPUT.value
+    default_category = RunErrorCategory.OUTPUT
 
 
 def check_delivery_integrity(
     outputs: dict[str, pd.DataFrame],
     configured_entities: Iterable[str],
+    *,
+    outcomes: Sequence[EntityOutcome],
 ) -> DeliveryIntegrityError | None:
     """Pure pre-write gate: is this output set safe to commit and deliver?
 
@@ -431,29 +840,43 @@ def check_delivery_integrity(
       Exactly the orphan class the zero-orphan invariant exists to prevent, caught
       at the delivery boundary rather than inside a transformer.
 
-    What this deliberately does NOT gate (per CLAUDE.md's exit-code contract,
-    "a *partial* run with some empty sources stays exit 0 by design"):
+    What this deliberately does NOT gate:
 
-    * a NON-anchor entity that is empty or vanished (a missing Family export stays
-      an ``ANOMALY`` warning plus a stale-CSV archive, never a failure);
+    * a NON-anchor entity that is empty or vanished — since owner decision 2026-09-28 no
+      CRITICAL entity reaches here empty: :func:`check_required_inputs` stopped any whose file
+      was missing or row-less, and :func:`run_transform` any that came out EMPTY. What reaches
+      here empty is Family (its missing export an EMPTY WARNING, an ``ANOMALY`` the first
+      night and a stale-CSV archive, never a failure) or a StudentAttendance with nothing to
+      send (a normal night). That makes the roster check below a FLOOR: an empty Students
+      stops in ``run_transform`` first (``empty_required_output``), so ``incomplete_roster``
+      answers only a caller whose outputs did not come from ``run_transform``;
     * a config whose configured entity set has no anchor at all (``mbponly``,
-      ``sd51attendance``) — nothing there references an undelivered roster.
+      ``sd51attendance``) — nothing there references an undelivered roster;
+    * **a night with nothing to send** (owner ruling 2026-09-30): no output at all, and EVERY
+      outcome is an EMPTY a normal night allows (``outcomes.nothing_to_send`` — an
+      attendance-only config without absences). That is a success with nothing to write or
+      deliver, never ``no_output``; both callers then skip the write, the archive and the upload.
 
     Args:
         outputs: the entities this run actually produced (``run_transform``'s frames).
         configured_entities: the enabled-entities-derived list this run was configured
             to produce (:func:`configured_entity_order`) — NEVER raw ``mappings.keys()``,
             which ``_base`` inheritance pollutes with inherited-but-disabled entities.
+        outcomes: the run's per-entity outcomes (``TransformOutputs.outcomes``) — REQUIRED
+            keyword-only: they alone tell "nothing to send tonight" from "nothing built", and a
+            default would silently decide which.
 
     Returns:
         The fault to raise, or ``None`` when the output set is safe to deliver.
     """
     if not outputs:
+        if nothing_to_send(outcomes):
+            return None
         return DeliveryIntegrityError(
             "The run produced no output files at all — every entity was empty or skipped. "
             "Nothing was written and nothing was delivered. Check that the input folder "
             "holds this district's extract files and that the correct district is selected.",
-            RunErrorCategory.NO_OUTPUT.value,
+            RunErrorCategory.NO_OUTPUT,
         )
 
     anchor = ROSTER_ANCHOR_ENTITY
@@ -464,7 +887,7 @@ def check_delivery_integrity(
             f"Delivering them would reference students absent from {anchor}.csv, so nothing "
             f"was written and nothing was delivered — the previous output is untouched. "
             f"Check this district's student export for this run.",
-            RunErrorCategory.INCOMPLETE_ROSTER.value,
+            RunErrorCategory.INCOMPLETE_ROSTER,
         )
 
     return None
@@ -480,7 +903,7 @@ def _previous_row_count(prev_path: Path) -> int | None:
     try:
         with open(prev_path, encoding="utf-8") as f:
             return sum(1 for _ in f) - 1
-    except Exception:  # noqa: BLE001 - any read failure means "unreadable baseline"; the caller warns loudly
+    except Exception:  # noqa: BLE001 — total by contract; any read failure means "unreadable baseline" and the caller warns loudly
         return None
 
 
@@ -574,7 +997,8 @@ def build_run_record(
     data_errors: dict[str, Any] | None = None,
     source: str,
     sis_type: str,
-    error_category: str,
+    error_category: RunErrorCategory | str,
+    entity_outcomes: Sequence[EntityOutcome] | None,
     timestamp: str | None = None,
 ) -> dict[str, Any]:
     """Build the ONE flat run-record dict written to BOTH sinks (D2a — one dict, two sinks).
@@ -597,6 +1021,29 @@ def build_run_record(
     autocommit commits; a crash between them re-ALTERs every night thereafter). It is an
     OS account name, never a student identifier — the same class of value the log already
     carries, and it stays local.
+
+    ``error_category`` is normalised HERE, once, for every sink (plan 0053 S1): coerced
+    through :class:`~src.etl.errors.RunErrorCategory` (an unknown string raises rather than
+    persisting a value no reader knows) and stored as its plain ``.value`` string, so the
+    ``runs.error_category`` column and the JSON record can never disagree.
+
+    ``entity_outcomes`` (plan 0053 S2) is REQUIRED keyword-only with no default (P8): the
+    per-entity outcomes, stored under :data:`~src.etl.outcomes.OUTCOMES_RECORD_KEY` as
+    ``{entity: {"kind", "reason", "rows"}}`` in configured order — or ``None`` ONLY when no
+    ledger existed: the attempt ended at the input-folder check, the config load, the
+    output-folder pre-flight or any other raise before the ledger was built, or the record
+    is a delivery-only one (a delivery is not a build). Like ``run_as`` it is an additive JSON key, never a ``runs`` column: no DDL, no
+    ``user_version`` bump (the additive-migration ladder has a measured brick state — the
+    ROADMAP "migration ladder" item), and an older exe sharing the ``history.db`` ignores the
+    key and renders the record exactly as it did before.
+
+    **Two row numbers, two meanings.** The FLAT per-entity count keys (``record["Students"]``
+    …) keep exactly their existing meaning: the rows in ``outputs`` when the record was built
+    (``_counts_from_outputs``) — which on a run that failed AFTER the transform is NOT
+    necessarily 0. ``entity_outcomes[e]["rows"]`` is the rows the entity's TRANSFORM
+    produced. The two agree for every BUILT entity on a successful run. Read the flat keys for
+    "how big was what this run wrote" (Home's size clause and Run History's columns do, and
+    are unchanged); read the outcomes for "did each entity build, and if not, why".
     """
     record: dict[str, Any] = {
         "timestamp": timestamp or datetime.now().isoformat(timespec="seconds"),
@@ -604,7 +1051,7 @@ def build_run_record(
         "source": source,
         "sis_type": sis_type,
         "run_as": process_account(),
-        "error_category": error_category,
+        "error_category": RunErrorCategory(error_category).value,
         "duration_s": round(elapsed, 1),
         "sftp_attempted": sftp_attempted,
         "sftp_ok": sftp_ok,
@@ -613,6 +1060,7 @@ def build_run_record(
     }
     for key in _RECORD_ENTITY_KEYS:
         record[key] = int(entity_counts.get(key, 0))
+    record[OUTCOMES_RECORD_KEY] = None if entity_outcomes is None else outcomes_to_record(entity_outcomes)
     return record
 
 
@@ -642,13 +1090,14 @@ def _emit_run_log(
     *,
     source: str = "cli",
     sis_type: str = "",
-    error_category: str = RunErrorCategory.NONE.value,
+    error_category: RunErrorCategory = RunErrorCategory.NONE,
 ) -> None:
     """Build a run record from ``outputs`` and write the diagnostic-log line (log sink only).
 
     Retained as the small "count the outputs and log it" convenience the unit tests pin;
     ``run_pipeline`` uses the finer-grained :func:`build_run_record` + :func:`_log_run_record`
     + :func:`_store_run_record` split so the SAME dict reaches both sinks (build once).
+    It holds no outcome ledger, and its record says so: ``entity_outcomes`` is ``None``.
     """
     record = build_run_record(
         status=status,
@@ -661,6 +1110,7 @@ def _emit_run_log(
         source=source,
         sis_type=sis_type,
         error_category=error_category,
+        entity_outcomes=None,
     )
     _log_run_record(record, error=error)
 
@@ -694,12 +1144,14 @@ def _store_run_record(record: dict[str, Any], *, source: str, dry_run: bool) -> 
         return False
     try:
         return write_run_record(record, source=source)
-    except Exception as exc:  # noqa: BLE001 - the store is a best-effort sink; it must never propagate
+    except Exception as exc:  # noqa: BLE001 — best-effort side effect; the store must never propagate
         logger.warning("Run-history store write raised unexpectedly (%s); the run is in the diagnostic log", exc)
         return False
 
 
-def _record_early_failure(t0: float, *, source: str, sis_type: str, error: str, category: str, dry_run: bool) -> None:
+def _record_early_failure(
+    t0: float, *, source: str, sis_type: str, error: str, category: RunErrorCategory, dry_run: bool
+) -> None:
     """Record a pre-ETL failure (bad input dir / config) to BOTH sinks before an early ``sys.exit``.
 
     The ``sys.exit(1)`` paths inside ``run_pipeline`` re-raise through the ``except SystemExit``
@@ -712,6 +1164,11 @@ def _record_early_failure(t0: float, *, source: str, sis_type: str, error: str, 
     ``dry_run`` is REQUIRED and keyword-only for the same reason it is on
     :func:`_store_run_record`: every early-exit sink must forward the caller's preview flag,
     and a default would let a new ``sys.exit`` path silently record a preview as a run.
+
+    Every caller exits BEFORE the run's :class:`~src.etl.outcomes.OutcomeLedger` exists (the
+    input-folder check, the config load, the output-folder pre-flight), so the record's
+    ``entity_outcomes`` is ``None`` — "no ledger existed", never an empty success. A failure
+    after the ledger exists reaches ``run_pipeline``'s generic sink instead, which completes it.
     """
     try:
         record = build_run_record(
@@ -721,11 +1178,12 @@ def _record_early_failure(t0: float, *, source: str, sis_type: str, error: str, 
             source=source,
             sis_type=sis_type,
             error_category=category,
+            entity_outcomes=None,
         )
         _log_run_record(record, error=error)  # rich free-text error → LOG only
         # store carries error_category only — and nothing at all for a dry run
         _store_run_record(record, source=source, dry_run=dry_run)
-    except Exception as record_exc:  # noqa: BLE001 - recording must never block the early exit
+    except Exception as record_exc:  # noqa: BLE001 — best-effort side effect; recording must never block the early exit
         logger.error(f"Failed to record the failed run ({record_exc}); exiting anyway")
 
 
@@ -738,32 +1196,6 @@ def _resolve_source(source: str | None) -> str:
     """
     resolved = source or os.environ.get(_SOURCE_ENV_VAR) or "cli"
     return resolved if resolved in VALID_SOURCES else "unknown"
-
-
-def _classify_error_category(exc: BaseException) -> str:
-    """Map a failure to the bounded, PII-free :class:`RunErrorCategory` (never the message).
-
-    Classified by exception type/marker, not text interpolation — the store never sees the
-    free-text error. ``SystemExit`` never reaches here (it is re-raised before the failure sink).
-    """
-    if isinstance(exc, DeliveryIntegrityError):
-        # Must precede the RuntimeError branch below — DeliveryIntegrityError IS a
-        # RuntimeError, and it already carries its own bounded category.
-        return exc.category
-    if isinstance(exc, OutputWriteError):
-        # Same shape, same reason (also a RuntimeError, also a carrier): the site that
-        # raised it is the only one that KNOWS the fault came from the write, so it
-        # stamps the category there rather than having this function guess from a type
-        # (`OSError` alone cannot tell an output-folder failure from any other).
-        return exc.category
-    if isinstance(exc, RuntimeError) and "No usable required input" in str(exc):
-        return RunErrorCategory.NO_INPUT.value
-    if isinstance(exc, FileNotFoundError):
-        return RunErrorCategory.CONFIG.value
-    if isinstance(exc, ValueError):
-        # A missing field-map column (loader) / validation surfaces as ValueError.
-        return RunErrorCategory.DATA.value
-    return RunErrorCategory.UNKNOWN.value
 
 
 def _summarize_data_errors(data_errors: list[dict]) -> dict[str, Any]:
@@ -811,10 +1243,14 @@ def run_pipeline(
     move the Home verdict. Its ``__DISTRICTSYNC_RUN__`` diagnostic log line is
     unchanged (see :func:`_store_run_record`).
 
-    Two boundaries fail LOUD rather than let an unattended run report success —
-    both raise, so ``main`` exits **1** (no new exit code): no usable required
-    input on the way IN, and :func:`check_delivery_integrity` on the way OUT
-    (nothing produced, or the roster anchor missing while dependents were built).
+    Three boundaries fail LOUD rather than let an unattended run report success —
+    each raises, so ``main`` exits **1** (no new exit code): the input on the way IN
+    (no usable required input at all, then :func:`check_required_inputs` — a missing
+    or row-less file a CRITICAL entity lists, owner 2026-09-28), each entity's output in
+    :func:`run_transform` (a CRITICAL entity that came out EMPTY — ``empty_required_output``,
+    owner 2026-09-28), and :func:`check_delivery_integrity` on the way OUT (nothing produced,
+    or the roster anchor missing while dependents were built — the floor beneath the
+    previous one).
 
     The out-gate refuses BEFORE any write, so the previous output set is left
     untouched. Neither affects the exit-3 contract: a delivery failure AFTER a
@@ -831,6 +1267,9 @@ def run_pipeline(
     t0 = time.monotonic()
     resolved_source = _resolve_source(source)
     outputs: dict[str, pd.DataFrame] = {}
+    # The per-entity outcome ledger (plan 0053 S2). `None` until it is built below — which is
+    # what lets the failure sink tell "no ledger existed" from "this run's outcomes".
+    ledger: OutcomeLedger | None = None
     sftp_attempted = False
     sftp_ok = False
     anomalies: list[str] = []
@@ -845,7 +1284,7 @@ def run_pipeline(
                 source=resolved_source,
                 sis_type=sis_type,
                 error=error,
-                category=RunErrorCategory.NO_INPUT.value,
+                category=RunErrorCategory.NO_INPUT,
                 dry_run=dry_run,
             )
             sys.exit(1)
@@ -875,7 +1314,7 @@ def run_pipeline(
                 source=resolved_source,
                 sis_type=sis_type,
                 error=str(e),
-                category=RunErrorCategory.CONFIG.value,
+                category=RunErrorCategory.CONFIG,
                 dry_run=dry_run,
             )
             sys.exit(1)
@@ -903,10 +1342,16 @@ def run_pipeline(
                     source=resolved_source,
                     sis_type=sis_type,
                     error=error,
-                    category=RunErrorCategory.OUTPUT.value,
+                    category=RunErrorCategory.OUTPUT,
                     dry_run=dry_run,
                 )
                 sys.exit(1)
+
+        # The outcome ledger, built at the SAME point as `convert_job`'s: the raw dicts exist,
+        # the output folder has passed its pre-flight, and nothing has been read. From here on
+        # every exit completes it (`finalize_aborted` in the failure sink), so an
+        # `ExtractionError` or a `NoUsableInputError` records every entity NOT_RUN.
+        ledger = OutcomeLedger(configured_entity_order(mappings, global_config))
 
         extractor = DataExtractor(input_path)
         try:
@@ -933,6 +1378,10 @@ def run_pipeline(
                 file_headers[filename] = header_list
 
         raw_data = extractor.load_data(required_files, file_headers=file_headers)
+        # Which listed files are not on disk — the extractor's own `_locate` rule, read ONCE and
+        # shared by both input gates below (the second needs it to tell "missing" from "present
+        # with no rows"; the first to tell a night without absences from the wrong folder).
+        absent = extractor.absent_files(required_files)
 
         # Fail loud on NO USABLE INPUT. A scheduled, unattended run that received
         # no usable required input (wrong folder, truncated export, locked file)
@@ -940,17 +1389,30 @@ def run_pipeline(
         # `convert_job` (`has_no_usable_input`) so the two paths cannot answer
         # "this folder gave us nothing" differently — see its docstring for why the
         # bare truthiness test is a trap once a caller reads the CONFIG's file set.
-        if has_no_usable_input(raw_data):
+        if has_no_usable_input(raw_data, configured=ledger.configured, absent=absent):
             empty_or_missing = [name for name, df in raw_data.items() if df.empty] or list(required_files)
-            raise RuntimeError(
+            raise NoUsableInputError(
                 "No usable required input was loaded — every required file is "
                 f"missing or empty: {empty_or_missing}. Check the input folder, "
                 "the export job, and that the files are not locked."
             )
 
+        # The source observation (plan 0053 S6): advisory, never raises, never gates — shared
+        # with `convert_job`, at the same point, so both record the same outcomes.
+        observe_source_columns(config, raw_data, ledger)
+
+        # The input gate (owner 2026-09-28): a missing or row-less file a CRITICAL entity lists
+        # stops the night here, typed, before anything is built — shared with `convert_job`, at
+        # the same point. After the observation, so a stopped entity's outcome can name its file.
+        check_required_inputs(mappings, raw_data, absent=absent, ledger=ledger, global_config=global_config)
+
         # Shared transform-orchestration (school-year + per-entity loop +
         # enabled_entities filter + field-order collection).
-        outputs, field_orders, data_errors, sy_determination = run_transform(raw_data, mappings, global_config)
+        transform_outputs = run_transform(raw_data, mappings, global_config, ledger=ledger)
+        outputs = transform_outputs.outputs
+        field_orders = transform_outputs.field_orders
+        data_errors = transform_outputs.data_errors
+        sy_determination = transform_outputs.school_year
 
         # Surface fail-loud field-transform errors (a separate axis from ETL
         # status): consolidated ERROR + a compact run-log summary. The run still
@@ -974,22 +1436,30 @@ def run_pipeline(
         # state: the previous `Students.csv` is neither overwritten nor archived out of
         # the SFTP glob. Applies to dry-run too — a preview that previews nothing is
         # just as misleading as a live run that delivers nothing.
-        integrity_fault = check_delivery_integrity(outputs, expected_entities)
+        integrity_fault = check_delivery_integrity(outputs, expected_entities, outcomes=transform_outputs.outcomes)
         if integrity_fault is not None:
             raise integrity_fault
+        # Past the gate, an EMPTY output set means the night had nothing to send (owner ruling
+        # 2026-09-30 — `outcomes.nothing_to_send`): nothing is written, archived or delivered, and
+        # the last output is left exactly as it was.
+        if not outputs:
+            logger.info(NOTHING_TO_SEND_LOG_LINE)
 
         # Check for anomalies before writing — including entities this run was
         # configured to produce that produced nothing while a previous non-empty CSV
-        # sits on disk (present→absent / N→0). A partial run with some empty sources
-        # stays exit 0 by design — these are warnings, not failures.
-        if not dry_run:
+        # sits on disk (present→absent / N→0). These are warnings, not failures: an
+        # entity that reaches here empty is Family (the one that may be left out) or a
+        # StudentAttendance with nothing to send — a missing input already stopped the night
+        # at `check_required_inputs`, and an empty required output in `run_transform`.
+        if not dry_run and outputs:
             anomalies = _check_anomalies(outputs, Path(output_path), expected_entities)
 
-        # Write all outputs transactionally (all-or-nothing commit).
-        # `outputs` is guaranteed non-empty here — the integrity gate above raises on
-        # an empty set, so the old `and outputs` short-circuit (which silently skipped
-        # save + archive + upload and still reported success) is gone by construction.
-        if not dry_run:
+        # Write all outputs transactionally (all-or-nothing commit). An empty `outputs` reaches
+        # here ONLY as a night with nothing to send — the integrity gate refuses every other
+        # empty set (`no_output`) — and writes, archives and delivers nothing. That skip is the
+        # owner's ruling, not the old silent `and outputs` short-circuit, which skipped save +
+        # archive + upload on ANY empty night and still reported success.
+        if not dry_run and outputs:
             # The write-time window the pre-flight structurally cannot see (a CSV locked
             # by Excel, a drive dropping mid-run, a create-files-denied ACL). `OSError`
             # ONLY — a `ValueError` here is a missing field-map column, a DATA fault that
@@ -1032,13 +1502,15 @@ def run_pipeline(
         # CI-PINNED STRING — do not reword the banner without updating the smoke.
         # `scripts/ci_flet_pack_smoke.py` (smoke 2, run against the PACKED exe in
         # `.github/workflows/flet-pack.yml`) asserts the literal "=== DRY RUN"
-        # banner plus the entity names printed below (never the row counts — the
-        # SD74 golden owns values). Same discipline as the `--version` string in
+        # banner plus a BUILT line per entity (`<Entity>: <n> rows` — never the
+        # count's value; the SD74 golden owns values). An entity the bulkhead left
+        # out prints in a DISTINCT shape (`dry_run_entity_lines`), so it can never
+        # satisfy that check. Same discipline as the `--version` string in
         # `src/main.py` (smoke 1).
         if dry_run:
             print("\n=== DRY RUN (no files written) ===")
-            for name, df in outputs.items():
-                print(f"  {name}: {len(df)} rows, columns: {list(df.columns)}")
+            for line in dry_run_entity_lines(outputs, transform_outputs.outcomes):
+                print(line)
             print()
 
         # Diff against existing output
@@ -1053,7 +1525,15 @@ def run_pipeline(
             )
             print(report.to_text())
 
-        logger.info("ETL process completed successfully.")
+        left_out = failed_entities(transform_outputs.outcomes)
+        if left_out:
+            # A PARTIAL run (plan 0053 S4): it completed, but not whole — never the success line.
+            logger.warning(
+                "ETL process completed WITHOUT %s — see the ENTITY NOT BUILT line(s) above.",
+                ", ".join(outcome.entity for outcome in left_out),
+            )
+        else:
+            logger.info("ETL process completed successfully.")
 
         # Build the run record ONCE (D2a) → the diagnostic-log line AND the durable store.
         # The store write is best-effort/non-fatal and positioned AFTER the output commit,
@@ -1069,7 +1549,8 @@ def run_pipeline(
             data_errors=data_errors_summary,
             source=resolved_source,
             sis_type=sis_type,
-            error_category=RunErrorCategory.NONE.value,
+            error_category=RunErrorCategory.NONE,
+            entity_outcomes=transform_outputs.outcomes,
         )
         _log_run_record(record)
         _store_run_record(record, source=resolved_source, dry_run=dry_run)
@@ -1079,16 +1560,15 @@ def run_pipeline(
             sftp_attempted=sftp_attempted,
             sftp_ok=sftp_ok,
             anomalies=anomalies,
-            # The observed headers, carried verbatim (see PipelineResult): the
-            # extractor already normalised them, so this is a copy — never a
-            # re-read, a second normalisation or a new extractor seam. `str()` so
-            # nothing but `str` leaves the pipeline.
-            input_columns={filename: tuple(str(column) for column in df.columns) for filename, df in raw_data.items()},
+            # The observed headers, carried verbatim (see PipelineResult and
+            # `observed_input_columns`, the one derivation the source observation shares).
+            input_columns=observed_input_columns(raw_data),
+            entity_outcomes=transform_outputs.outcomes,
         )
 
     except SystemExit:
         raise
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — re-raised; the failure is recorded to both sinks first
         elapsed = time.monotonic() - t0
         logger.error(f"Pipeline failed: {e}")
         # Record the failure to BOTH sinks — but recording must NEVER raise and mask the
@@ -1104,12 +1584,16 @@ def run_pipeline(
                 sftp_ok=sftp_ok,
                 source=resolved_source,
                 sis_type=sis_type,
-                error_category=_classify_error_category(e),
+                error_category=classify_error_category(e),
+                # Complete the ledger: an entity the run never reached is NOT_RUN/RUN_ABORTED
+                # (idempotent after a transform raise, which already recorded FAILED + the rest).
+                # `None` only when the raise came before the ledger was built.
+                entity_outcomes=None if ledger is None else ledger.finalize_aborted(),
             )
             _log_run_record(record, error=str(e))  # rich free-text error → LOG only
             # store carries error_category only — and nothing at all for a dry run
             _store_run_record(record, source=resolved_source, dry_run=dry_run)
-        except Exception as record_exc:  # noqa: BLE001 - recording must never mask the ETL failure
+        except Exception as record_exc:  # noqa: BLE001 — best-effort side effect; recording must never mask the ETL failure
             logger.error(f"Failed to record the failed run ({record_exc}); re-raising the original error")
         raise
 
@@ -1191,13 +1675,28 @@ def _sftp_upload(
         # upload_csvs returned an empty list (e.g. no CSVs found) — treat as failure
         logger.error(f"SFTP upload FAILED — output files were NOT delivered to {host} (no files were transferred)")
         return False
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — failure returned as a result; logged at ERROR, the caller exits 3
         try:
             host = AppConfig.load().sftp_host or "<unknown host>"
-        except Exception:
+        except Exception:  # noqa: BLE001 — total by contract; the host name only decorates the error line
             host = "<unknown host>"
         logger.error(f"SFTP upload FAILED — output files were NOT delivered to {host}: {e}")
         return False
+
+
+def dry_run_entity_lines(outputs: Mapping[str, pd.DataFrame], outcomes: Iterable[EntityOutcome]) -> list[str]:
+    """The ``--dry-run`` summary's per-entity lines.
+
+    A BUILT entity prints ``  <Entity>: <n> rows, columns: [...]`` — the shape the packed-exe
+    smoke (``scripts/ci_flet_pack_smoke.py``) asserts per entity. An entity the bulkhead left
+    out (plan 0053 S4) prints ``  ! not built: <Entity> (<reason>)`` AFTER them — a DIFFERENT
+    shape on purpose, so a check for the built line can never be satisfied by a line saying
+    the entity was not built. EMPTY entities are not listed (unchanged: each logs its own
+    skip). The reason is the closed-set code; a line carries no path, column or value.
+    """
+    lines = [f"  {name}: {len(df)} rows, columns: {list(df.columns)}" for name, df in outputs.items()]
+    lines += [f"  ! not built: {outcome.entity} ({outcome.reason.value})" for outcome in failed_entities(outcomes)]
+    return lines
 
 
 def _print_diff(outputs: dict[str, pd.DataFrame], output_path: str) -> None:
@@ -1213,7 +1712,7 @@ def _print_diff(outputs: dict[str, pd.DataFrame], output_path: str) -> None:
 
         try:
             old_df = pd.read_csv(existing_path)
-        except Exception:
+        except Exception:  # noqa: BLE001 — total by contract; --diff reports an unreadable file and moves on
             print(f"  {name}: could not read existing file")
             continue
 

@@ -42,6 +42,8 @@ SHIPPED_DOMAINS: dict[str, str] = {
     "sd27.bc.ca": "sd27myedbc",
     "sd38.bc.ca": "sd38myedbc",
     "sd40.bc.ca": "sd40myedbc",
+    "wvschools.ca": "sd45myedbc",  # West Vancouver's STAFF domain (district Staff.csv, 2026-09-28)
+    "sd45.bc.ca": "sd45myedbc",  # the conventional form, held by a minority of SD45 staff
     "sd48.bc.ca": "sd48myedbc",
     "sd51.bc.ca": "sd51myedbc",
     "sd54.bc.ca": "sd54myedbc",
@@ -167,7 +169,7 @@ def test_unclaimed_configs_carry_no_domains(sis, resolved):
     """The base and the myBlueprint+ tiers stay UNCLAIMED — and the base especially.
 
     A domain on the base ``myedbc`` would deep-merge into EVERY descendant config, so one
-    district's domain would claim all twenty. The `mbp_*` tiers are cross-district
+    district's domain would claim all twenty-one. The `mbp_*` tiers are cross-district
     product tiers with no single owner, so they stay unclaimed too — which under the
     fail-open rule means "shown in every unmatched / no-identity / show-all state".
     """
@@ -395,12 +397,16 @@ def test_the_forbid_and_ignore_models_are_exactly_as_documented():
     The S2b panel corrected a doc that claimed nested models reject unknown keys; S3 then
     named five forbidders from memory and got three of them wrong (two of the names did
     not even exist). Prose about a mechanism is not a mechanism — this asserts BOTH
-    directions against the real `model_config`, so `models.py`'s comment, CLAUDE.md and
-    the contract doc can be checked against one place instead of against recollection.
+    directions against the real `model_config`, so `models.py`'s comment,
+    `docs/developer/configuration-reference.md` (moved there from CLAUDE.md by plan 0053 S15)
+    and the contract doc can be checked against one place instead of against recollection.
 
-    The negatives are the consequential half: `GlobalConfig` and `EntityConfig` inheriting
-    `ignore` is exactly why a typo'd `enabled_entities` is silently dropped — leaving
-    `[]`, which means ALL entities enabled.
+    Since plan 0053 S12 every field-mapping variant forbids (D11 — a `transfrom:` typo is
+    wrong output, for every origin). The negatives are still the consequential half:
+    `GlobalConfig` and `EntityConfig` stay `ignore` at the PYDANTIC level on purpose — an
+    unknown key there is judged by ORIGIN in `loader.unknown_config_keys` (bundled raises,
+    user-dir warns), which a model-level `forbid` would flatten into "every origin raises"
+    and so stop a district's nightly over a stray key in its own hand-edited file.
     """
     from src.config import models
 
@@ -412,12 +418,16 @@ def test_the_forbid_and_ignore_models_are_exactly_as_documented():
 
     assert forbidders == {
         "EmailDerivedDate",
-        "FieldEmailFormat",
-        "FieldEnrollStatus",
         "RowFilter",
         "CrossEnrollmentConfig",
+        # plan 0053 S12: the field-mapping base and every variant it has
+        "ConfiguredField",
+        "ConfigCarrierField",
+        *(variant.__name__ for variant in models.FIELD_VARIANTS),
     }
-    for permissive in ("FieldTransform", "FieldNameConfig", "GlobalConfig", "EntityConfig", "MappingConfig"):
+    # Non-vacuity: the variants named in the S12 spec are among them.
+    assert {"FieldTransform", "FieldNameConfig", "FieldEmailFormat", "FieldEnrollStatus"} <= forbidders
+    for permissive in ("GlobalConfig", "EntityConfig", "MappingConfig"):
         assert getattr(models, permissive).model_config.get("extra", "ignore") == "ignore", (
             f"{permissive} started forbidding extras — that is a compatibility change, "
             "not a tidy-up; see models.MappingConfig's comment."

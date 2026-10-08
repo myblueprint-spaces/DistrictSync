@@ -58,9 +58,11 @@ safety rule belongs where it can be tested directly.
 Layering: imports the config layer (``authoring`` / ``models`` /
 ``bc_district_domains``), ``src.utils.validators``, the ETL's CEDS grade vocabulary —
 the same co-ownership ``models._ceds_grade_codes`` documents, since every grade-scope
-question is asked in the CEDS OUTPUT space and a second table would drift — and the pure
+question is asked in the CEDS OUTPUT space and a second table would drift — the pure
 ``ui_flet.identity_gate`` for its ONE digit rule (``sd_number_digits``), so the creator
-reads "SD48" exactly as the launch page's not-listed answer does.
+reads "SD48" exactly as the launch page's not-listed answer does — and, for the gate's
+entity-outcome rule (plan 0053 S4), the ETL's closed ``outcomes`` vocabulary plus
+``ui_flet.failure_copy.entity_phrase``, the ONE entity vocabulary every failure sentence uses.
 """
 
 from __future__ import annotations
@@ -87,8 +89,12 @@ from src.config.models import (
     MappingConfig,
     is_valid_district_domain,
 )
+from src.etl.errors import EmptyRequiredOutputError, IncompleteInputError, NoUsableInputError
+from src.etl.outcomes import EntityOutcome, OutcomeKind
 from src.etl.transformers.grades import CEDS_MAPPING
+from src.ui_flet.failure_copy import entity_phrase, note_sentence, outcome_tier, warning_notes
 from src.ui_flet.identity_gate import sd_number_digits
+from src.ui_flet.verdict import Verdict
 from src.utils.validators import is_config_digest, validate_sis_type
 
 if TYPE_CHECKING:  # pragma: no cover - typing only; no runtime import of either layer
@@ -143,6 +149,45 @@ CONFIG_ERROR_DOMAIN = "One of the email domains isn't a plain district domain (l
 CONFIG_ERROR_MISSING_BASE = "The starting point this district builds on isn't in this version of DistrictSync."
 CONFIG_ERROR_UNREADABLE = "This district's mapping file couldn't be read."
 CONFIG_ERROR_OTHER = "This district's mapping can't be used as it stands."
+#: The gate's note for a test conversion the INPUT stopped (owner 2026-09-28): a file this
+#: mapping reads is missing from the folder or has no rows (``IncompleteInputError``), or none
+#: could be read (``NoUsableInputError``). Decided by TYPE, before the text-keyed categories,
+#: so a folder problem is never reported as a mapping problem. The missing files themselves are
+#: the gate's own ``missing_files`` list, shown beside it. It says the file is one the mapping
+#: "can't run without" rather than that only the family contacts file may be missing: since owner
+#: ruling 2026-09-30 a mapping whose blended detection is off may go without its class information
+#: file too (``outcomes.source_file_may_be_absent``), so the sentence holds for every mapping.
+GATE_INPUT_INCOMPLETE_NOTE = (
+    "A file this mapping can't run without is missing from the input folder or has no rows, so the "
+    "test stopped. Add the file, then test again."
+)
+
+#: The gate's note when the test conversion COMPLETED but left entities out (plan 0053 S4 —
+#: the entity bulkhead lets a run finish without an ISOLATABLE entity). ``{entities}`` is
+#: filled ONLY from ``failure_copy.entity_phrase`` — authored words, never a key, a column, a
+#: file name or exception text — and the rest is fixed: a mapping that cannot build every file
+#: it produces is not one to switch on.
+GATE_ENTITIES_NOT_BUILT_NOTE = (
+    "{entities} couldn't be built from these files, so this mapping can't be switched on yet. "
+    "Check that each export is the report this mapping expects, then test again."
+)
+#: The gate's note when a completed test conversion carries NO outcome for its entities — it
+#: cannot say what it built, so it is not evidence the mapping works (P8: never a defaulted pass).
+GATE_NO_OUTCOMES_NOTE = (
+    "This test conversion couldn't report what it built, so this mapping can't be switched on yet. Test again."
+)
+#: The gate's note when an enabled output came out EMPTY in the test (owner 2026-09-28: "block
+#: empty outputs") — an output that would produce nothing every night. Two paths reach it: a
+#: completed test whose Family (the one output that may be left out) is EMPTY with a WARNING
+#: tier, and a test the pipeline STOPPED because any other output came out empty
+#: (``EmptyRequiredOutputError``). ``{entities}`` is filled ONLY from
+#: ``failure_copy.entity_phrase``, like the note above. StudentAttendance present with no rows is
+#: a HEALTHY empty (``outcomes.empty_is_expected``) and never lands here.
+GATE_ENTITIES_EMPTY_NOTE = (
+    "{entities} came out empty in this test, so this mapping can't be switched on yet. Check that "
+    "each export holds its rows and is the report this mapping expects — or turn that output off — "
+    "then test again."
+)
 
 #: ONE line per column no loaded file carried (plan 0044 S5). A reviewed constant on THIS
 #: module rather than in ``src/etl/preflight.py``, for the reason every other sentence in
@@ -359,7 +404,7 @@ def _ordered_reference_sites(config: MappingConfig) -> tuple[tuple[_SiteKey, str
     a vendor-only entity is never silently dropped from the walk), roles in the config's
     own order, then ``global_config.school_year_sources``.
 
-    The order matters: ``pipeline.advisory_expected_files`` returns ``list(set)``, whose
+    The order matters: ``pipeline.extract_required_files`` returns ``list(set)``, whose
     order varies with ``PYTHONHASHSEED``, and the Files step's rows must not move between
     runs. So the ROW ORDER is this walk's, never ``expected``'s.
     """
@@ -414,22 +459,22 @@ def distinct_source_files(
     selection, injected by the caller; the base's when ``None``) and its
     filename is in ``expected``; the first site to name a file decides that row's place.
 
-    ``expected`` is INJECTED rather than derived here so ``pipeline.advisory_expected_files``
-    stays the SINGLE source for "which files matter" — including its one narrowing (a fully
-    homeroom-scoped config's ``student_schedule``/``class_info`` roles feed no surviving
-    class, so a row for ``class_info`` would offer a name that changes nothing).
+    ``expected`` is INJECTED rather than derived here so ``pipeline.extract_required_files``
+    stays the SINGLE source for "which files matter". It used to be a UI-only list that
+    dropped a fully homeroom-scoped config's ``student_schedule``/``class_info`` roles as
+    "feeding no surviving class"; since owner decision 2026-09-28 every file an enabled
+    entity lists is REQUIRED (``pipeline.check_required_inputs``), so those files get their
+    rows — a name the admin cannot fix would be the one the run stops for.
 
     A school-year file that no ACTIVE entity reads gets NO slot: ``extract_required_files``
     never loads it, so the row would be equally inert. ``names_school_year`` therefore only
     ever ANNOTATES a row that exists for an entity's sake.
 
     ``expected`` is UNIONED with ``global_config.school_year_sources`` (plan 0044 S4 review,
-    SHOULD 3), because those two lists answer different questions: a fully homeroom-scoped
-    config's ``student_schedule`` role feeds no surviving class, so
-    ``advisory_expected_files`` correctly drops it — but ``extract_required_files`` still
-    LOADS that file for the school-year lookup, so the district whose schedule extract is
-    named differently would have lost the only row that can say so. The entity filter above
-    is untouched: a school-year file no active entity reads still gets nothing.
+    SHOULD 3). The union was added while ``expected`` could omit a homeroom-scoped config's
+    schedule; it is now a no-op for any file an active entity lists (those are all in
+    ``expected``), and kept so the row set never depends on the caller's list. The entity
+    filter above is untouched: a school-year file no active entity reads still gets nothing.
     """
     # The entity filter must follow the DISTRICT's selection, not the starting point's:
     # `myedbc` enables the five rostering entities, so filtering on the BASE would keep
@@ -912,7 +957,7 @@ class GateState(Enum):
     NOT_RUN = "not_run"  # nothing pressed yet
     RUNNING = "running"  # the worker is in flight (set by the view, not derived)
     PASSED = "passed"  # a dry run completed; counts are trustworthy
-    FAILED = "failed"  # the run raised or exited; `note` carries a bounded category
+    FAILED = "failed"  # raised/exited, or completed without an entity; `note` says which (bounded)
     REFUSED_NO_OUTPUT_DIR = "refused_no_output_dir"  # never started: no usable output folder
 
 
@@ -925,14 +970,26 @@ class GateOutcome:
         counts: entity name → row count, from the dry run's ``PipelineResult``.
         missing_files: expected source files the folder does not hold (the MAPPING's
             spelling, since that is the name to fix).
-        note: the bounded error category on ``FAILED`` (see
-            :func:`humanize_config_error`), and ``""`` in every other state — the view
+        note: on ``FAILED``, the bounded error category (see
+            :func:`humanize_config_error`) or — for a run that completed without an
+            entity — :data:`GATE_ENTITIES_NOT_BUILT_NOTE` / :data:`GATE_NO_OUTCOMES_NOTE`;
+            ``""`` in every other state — the view
             owns the copy for the states that need no diagnosis, so no screen constant
             is duplicated here.
         missing_columns: the columns the config names that NO loaded file carried (plan
             0044 S5) — a LENS, not a verdict, carried only when the claim is sound (see
             :func:`gate_outcome_for`). Column NAMES only: config vocabulary and a GDE
             header row, never a cell.
+        completed: on ``FAILED``, ``True`` when the test conversion RAN TO THE END but left
+            an entity unbuilt or empty (or recorded no outcomes) — the view picks its
+            headline from this bounded flag, never from the note text, because "didn't
+            finish" is false for a run that finished. ``False`` for a raised run and in
+            every other state.
+        warning_notes: on ``PASSED``, the sentences of every WARNING-tier outcome note the
+            test recorded on a built output (owner 2026-09-28 — "show notes, don't block":
+            e.g. co-teachers left out), in configured order, each once. Authored copy only
+            (``failure_copy.note_sentence``) — never a count, a column or a value. The view
+            shows them BEFORE the activation confirm; they never change the state.
     """
 
     state: GateState
@@ -940,6 +997,8 @@ class GateOutcome:
     missing_files: tuple[str, ...] = ()
     note: str = ""
     missing_columns: tuple[MissingColumn, ...] = ()
+    completed: bool = False
+    warning_notes: tuple[str, ...] = ()
 
 
 def missing_files(expected: Iterable[str], present: Iterable[str]) -> tuple[str, ...]:
@@ -974,7 +1033,17 @@ def humanize_config_error(exc: BaseException) -> str:
     loader actually raises for an absent ``_base`` (``FileNotFoundError``) and for a torn
     or non-YAML file. ``SystemExit`` — how ``run_pipeline`` reports a config-level
     refusal — lands in the last category, since it carries no diagnosis of its own.
+
+    An INPUT stop (owner 2026-09-28 — ``IncompleteInputError``, and its all-files sibling
+    ``NoUsableInputError``) and an EMPTY required output (``EmptyRequiredOutputError`` — named
+    by its authored entity phrase, never the key) are decided by TYPE first: neither is a
+    mapping-file problem, and reading their text for "grade" or "domain" could only mislabel
+    them as one.
     """
+    if isinstance(exc, (IncompleteInputError, NoUsableInputError)):
+        return GATE_INPUT_INCOMPLETE_NOTE
+    if isinstance(exc, EmptyRequiredOutputError):
+        return GATE_ENTITIES_EMPTY_NOTE.format(entities=_phrase_list([exc.entity]))
     if isinstance(exc, FileNotFoundError):
         return CONFIG_ERROR_MISSING_BASE
     if isinstance(exc, (yaml.YAMLError, UnicodeDecodeError, OSError)):
@@ -1051,10 +1120,25 @@ def gate_outcome_for(
     2. **An exception ⇒ ``FAILED``**, with a bounded category in ``note`` and the
        missing-file list still derived (a failed run is exactly when "your extract is
        missing these files" is the useful sentence).
-    3. **A result ⇒ ``PASSED``**, carrying its entity counts. Missing files are
-       reported alongside rather than downgrading the verdict: a per-entity
-       skip-on-empty is legitimate, and the run DID complete.
-    4. **Neither ⇒ ``NOT_RUN``.** ``RUNNING`` is the view's own transient state (it
+    3. **A result that left an entity out, or empty, ⇒ ``FAILED``** (plan 0053 S4; owner
+       2026-09-28). Since the entity bulkhead, a dry run can COMPLETE without an ISOLATABLE
+       entity (Family whose export lacks the guardian column the mapping filters on), and
+       passing it would let ``activation_allowed`` switch on a self-service mapping that
+       silently drops a file every night. So any FAILED or NOT_RUN outcome — or a result with
+       no outcomes at all (``None`` or empty: it cannot say what it built) — is ``FAILED``;
+       and so, since 2026-09-28, is any EMPTY outcome whose tier is WARNING
+       (``failure_copy.outcome_tier`` — an enabled output that would produce nothing every
+       night: "block empty outputs"). A HEALTHY empty — StudentAttendance present with no
+       rows, ``outcomes.MAY_BE_EMPTY`` — passes. Each note is fixed and bounded, naming the
+       entities by their authored phrase only.
+    4. **A result ⇒ ``PASSED``**, carrying its entity counts and, since 2026-09-28, the
+       sentences of every WARNING-tier note a BUILT output recorded (``warning_notes`` —
+       "show notes, don't block": e.g. co-teachers left out), which the view shows before
+       the confirm. Missing files are reported alongside rather than downgrading the
+       verdict (only a file ``outcomes.source_file_may_be_absent`` excuses — Family's, and a
+       blended-off mapping's class information file — may be missing and still complete;
+       every other one stops the test at the input gate, which is branch 2).
+    5. **Neither ⇒ ``NOT_RUN``.** ``RUNNING`` is the view's own transient state (it
        cannot be derived from a result that does not exist yet), so it is never
        returned here.
 
@@ -1083,12 +1167,86 @@ def gate_outcome_for(
         return GateOutcome(state=GateState.FAILED, missing_files=absent, note=humanize_config_error(error))
     if result is None:
         return GateOutcome(state=GateState.NOT_RUN)
+    outcomes = getattr(result, "entity_outcomes", None)
+    not_built_note = _not_built_note(outcomes)
+    if not_built_note:
+        return GateOutcome(state=GateState.FAILED, missing_files=absent, note=not_built_note, completed=True)
     return GateOutcome(
         state=GateState.PASSED,
         counts=dict(getattr(result, "entity_counts", {}) or {}),
         missing_files=absent,
         missing_columns=() if (absent or preflight is None) else tuple(preflight.missing),
+        warning_notes=_warning_note_sentences(outcomes),
     )
+
+
+#: The outcome kinds a test conversion may carry and still pass: built, or empty with a HEALTHY
+#: tier (owner 2026-09-28 — a WARNING-tier empty is refused, see `_not_built_note`). FAILED and
+#: NOT_RUN — and anything a future build adds — do not.
+_GATE_PASSING_KINDS: frozenset[OutcomeKind] = frozenset({OutcomeKind.BUILT, OutcomeKind.EMPTY})
+
+
+def _phrase_list(entities: Iterable[object]) -> str:
+    """``entities`` (registry keys) as one capitalised phrase list — authored phrases only, each once.
+
+    ``failure_copy.entity_phrase`` is total: a key the vocabulary does not know, or a
+    non-``str``, reads as its generic phrase and is never echoed.
+    """
+    phrases: list[str] = []
+    for entity in entities:
+        phrase = entity_phrase(entity)
+        if phrase not in phrases:
+            phrases.append(phrase)
+    joined = phrases[0] if len(phrases) == 1 else f"{', '.join(phrases[:-1])} and {phrases[-1]}"
+    return joined[:1].upper() + joined[1:]
+
+
+def _warning_note_sentences(outcomes: object) -> tuple[str, ...]:
+    """The WARNING-tier note sentences on BUILT outcomes, in configured order, each once (owner 2026-09-28)."""
+    if not isinstance(outcomes, (tuple, list)):
+        return ()
+    sentences: list[str] = []
+    for outcome in outcomes:
+        if not isinstance(outcome, EntityOutcome) or outcome.kind is not OutcomeKind.BUILT:
+            continue
+        for note in warning_notes(outcome):
+            sentence = note_sentence(note)
+            if sentence not in sentences:
+                sentences.append(sentence)
+    return tuple(sentences)
+
+
+def _not_built_note(outcomes: object) -> str:
+    """The gate's FAILED note for a completed run's outcomes, or ``""`` when every entity passed.
+
+    ``None`` or an empty collection is never a pass: a result that holds no outcome for any
+    entity cannot vouch that anything was built, and "no configured entity failed" is not
+    the same fact (P8 — a defaulted empty would be a permissive default on the ONE
+    activation gate). An entity that is not ``BUILT``/``EMPTY`` is named by its authored
+    phrase, once, in configured order; an unknown key reads as ``failure_copy``'s generic
+    phrase and is never echoed. An EMPTY entity whose tier is WARNING (owner 2026-09-28 —
+    ``failure_copy.outcome_tier``) is named in a second sentence, :data:`GATE_ENTITIES_EMPTY_NOTE`:
+    both refuse, and one note says everything the admin has to fix.
+    """
+    if not isinstance(outcomes, (tuple, list)) or not outcomes:
+        return GATE_NO_OUTCOMES_NOTE
+    not_built = [o for o in outcomes if not (isinstance(o, EntityOutcome) and o.kind in _GATE_PASSING_KINDS)]
+    empty = [
+        o
+        for o in outcomes
+        if isinstance(o, EntityOutcome) and o.kind is OutcomeKind.EMPTY and outcome_tier(o) is not Verdict.HEALTHY
+    ]
+    notes = []
+    if not_built:
+        notes.append(GATE_ENTITIES_NOT_BUILT_NOTE.format(entities=_phrase_list(_entities_of(not_built))))
+    if empty:
+        notes.append(GATE_ENTITIES_EMPTY_NOTE.format(entities=_phrase_list(_entities_of(empty))))
+    return " ".join(notes)
+
+
+def _entities_of(outcomes: Iterable[object]) -> list[object]:
+    """Each outcome's entity key — ``None`` for anything that is not an :class:`EntityOutcome`."""
+    return [outcome.entity if isinstance(outcome, EntityOutcome) else None for outcome in outcomes]
 
 
 # ---------------------------------------------------------------------------

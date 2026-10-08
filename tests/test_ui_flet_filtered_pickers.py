@@ -38,6 +38,7 @@ from src.ui_flet.screens.convert import build_convert
 from src.ui_flet.screens.mapping import build_mapping
 from src.ui_flet.screens.setup import build_setup
 from src.ui_flet.verdict import Verdict
+from tests._pins import BUNDLED_CONFIG_COUNT
 
 # An address at a REAL shipped staff domain — the live end-to-end input. Using a synthetic
 # domain here would test the plumbing while proving nothing about the rows we ship.
@@ -284,13 +285,13 @@ class TestWizardDistrictStep:
         # The SET is the fail-open property; the ORDER is the picker pin (`_PINNED_FIRST`).
         assert sorted(_keys(dropdown)) == sorted(available_configs())
         assert _keys(dropdown)[0] == "myedbc", "the generic MyEducationBC mapping leads the picker"
-        assert len(_keys(dropdown)) == 20
+        assert len(_keys(dropdown)) == BUNDLED_CONFIG_COUNT
         assert dropdown.value is None
 
     def test_no_identity_at_all_sees_every_district(self, page: MagicMock, monkeypatch, isolated_user_profile) -> None:
         _pin_config(monkeypatch, _cfg(setup_completed=False, sis_type="", identity_email=""))
 
-        assert len(_keys(_dropdown(build_setup(page), "District"))) == 20
+        assert len(_keys(_dropdown(build_setup(page), "District"))) == BUNDLED_CONFIG_COUNT
 
     def test_the_wizard_step_offers_no_way_to_widen_the_list(
         self, page: MagicMock, monkeypatch, isolated_user_profile
@@ -315,7 +316,7 @@ class TestWizardDistrictStep:
         _pin_config(monkeypatch, _cfg(setup_completed=False, sis_type="", identity_email=UNMATCHED))
         root = build_setup(page)
 
-        assert len(_keys(_dropdown(root, "District"))) == 20
+        assert len(_keys(_dropdown(root, "District"))) == BUNDLED_CONFIG_COUNT
         _assert_no_widen_affordance(root, "the unmatched wizard District step")
 
 
@@ -335,7 +336,7 @@ class TestSettingsFoldersCard:
     ) -> None:
         _pin_config(monkeypatch, _cfg(identity_email=UNMATCHED))
 
-        assert len(_keys(_dropdown(build_setup(page), "District"))) == 20
+        assert len(_keys(_dropdown(build_setup(page), "District"))) == BUNDLED_CONFIG_COUNT
 
     def test_the_saved_district_survives_a_match_that_EXCLUDES_it(
         self, page: MagicMock, monkeypatch, isolated_user_profile
@@ -505,7 +506,7 @@ class TestConvertScreen:
         _pin_config(monkeypatch, _cfg(identity_email=UNMATCHED))
         tree = build_convert(page)
 
-        assert len(_keys(_dropdown(tree, "District"))) == 20
+        assert len(_keys(_dropdown(tree, "District"))) == BUNDLED_CONFIG_COUNT
         _assert_no_widen_affordance(tree, "unmatched Convert")
 
 
@@ -549,7 +550,7 @@ class TestMappingScreen:
 
         # The positive twin: without it a counter that saw NOTHING (a renamed seam, a patch
         # that missed) passes the uniqueness check trivially — `[] == set([])`.
-        assert len(parsed) == 20, f"the parse counter saw nothing like a full catalog: {parsed}"
+        assert len(parsed) == BUNDLED_CONFIG_COUNT, f"the parse counter saw nothing like a full catalog: {parsed}"
         assert len(parsed) == len(set(parsed)), f"a config was parsed more than once: {parsed}"
 
     def test_mapping_offers_no_way_to_widen_the_list(self, page: MagicMock, monkeypatch, isolated_user_profile) -> None:
@@ -566,7 +567,7 @@ class TestMappingScreen:
         _assert_no_widen_affordance(tree, "Mapping")
 
         unfiltered = build_mapping(page, app_config=_cfg(identity_email=UNMATCHED))
-        assert len(_keys(_dropdown(unfiltered, "Roster mapping"))) == 20
+        assert len(_keys(_dropdown(unfiltered, "Roster mapping"))) == BUNDLED_CONFIG_COUNT
         _assert_no_widen_affordance(unfiltered, "unmatched Mapping")
 
     def test_an_APPLIED_mapping_survives_in_its_own_picker(
@@ -696,7 +697,7 @@ class TestTheScreensNeverFailClosed:
 
         dropdown = _dropdown(build_convert(page), "District")
 
-        assert len(_keys(dropdown)) == 20
+        assert len(_keys(dropdown)) == BUNDLED_CONFIG_COUNT
         assert dropdown.value == "sd48myedbc"
 
     def test_an_unreadable_profile_scopes_nothing(self, page: MagicMock, monkeypatch, isolated_user_profile) -> None:
@@ -706,7 +707,7 @@ class TestTheScreensNeverFailClosed:
 
         _pin_config(monkeypatch, _cfg(load_state=ConfigLoadState.UNREADABLE))
 
-        assert len(_keys(_dropdown(build_convert(page), "District"))) == 20
+        assert len(_keys(_dropdown(build_convert(page), "District"))) == BUNDLED_CONFIG_COUNT
 
 
 # --------------------------------------------------------------------------- #
@@ -807,7 +808,9 @@ class TestTheMarkerReachesEveryPicker:
             _dropdown(build_convert(page), "District"),
             _dropdown(build_mapping(page, app_config=cfg), "Roster mapping"),
         ):
-            assert len(_texts(dropdown)) == 20, "the positive twin: a full shipped list really rendered"
+            assert len(_texts(dropdown)) == BUNDLED_CONFIG_COUNT, (
+                "the positive twin: a full shipped list really rendered"
+            )
             assert not any(CUSTOM_ORIGIN_LABEL in text for text in _texts(dropdown)), _texts(dropdown)
 
 

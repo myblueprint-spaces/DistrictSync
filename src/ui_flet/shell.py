@@ -450,14 +450,16 @@ def build_app_body(
     # elsewhere); a probe failure is swallowed (the badge simply stays clear).
     def _refresh_setup_badge() -> None:  # runs OFF the UI thread
         from src.history.store import read_run_records
-        from src.ui_flet.home_status import sync_window_paused
+        from src.ui_flet.home_status import sync_window_paused, verdict_latest_timestamp
         from src.ui_flet.schedule_probe import foreign_task_account, probe_schedule
         from src.ui_flet.schedule_status import needs_setup_badge
         from src.utils import paths
 
         cfg = AppConfig.load()
-        records = read_run_records()
-        latest_ts = records[0].get("timestamp") if records else None
+        # D14 (plan 0053 S5): the newest record the VERDICT reads, the same one Home and Run
+        # History hand the probe — so a failed manual attempt cannot mask a nightly that fired
+        # and recorded nothing, and the badge cannot disagree with Home about it.
+        latest_ts = verdict_latest_timestamp(read_run_records())
         # 0049 S-2a.1: the shared-profile fact, read from the ONE predicate (pinned once per
         # process, so this is not a registry read per probe). It decides whether Slice C's
         # foreign-principal suppressions still apply on this install.

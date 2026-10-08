@@ -120,11 +120,13 @@ ROSTERING_ENTITIES: frozenset[str] = frozenset({"Students", "Staff", "Family", "
 #:
 #: This is deliberately NOT derived from the config: it is
 #: ``config.active_entities() ∩ entities whose source files the fixture supplies``.
-#: ``sd51myedbc`` actively enables StudentAttendance, but the contract fixture
-#: supplies no absence GDEs on purpose (the skip-on-empty pin — a missing
-#: attendance drop must never block rostering), so StudentAttendance is absent
-#: from its expected set. Deriving this from ``active_entities()`` would erase
-#: exactly that pin.
+#: Every fixture now supplies every file its config lists (a missing or row-less
+#: required file stops the night — owner decisions 2026-09-28, fixtures completed
+#: 2026-09-30), so today each value equals its config's active entities; the table
+#: stays authored rather than derived so a future deliberate gap has to be DECLARED
+#: in ``test_contract.DELIBERATELY_UNCOVERED`` rather than absorbed. (sd51myedbc's
+#: Family is absent because the config itself no longer enables it — owner decision
+#: 2026-09-25, see ``sd51myedbc_mapping.yaml``.)
 #:
 #: Its VALUES are not free-floating: ``test_contract.test_expected_entities_track_active_entities``
 #: pins every entry against the real config plus ``test_contract.DELIBERATELY_UNCOVERED``,
@@ -133,14 +135,16 @@ EXPECTED_ENTITIES: dict[str, frozenset[str]] = {
     "myedbc": ROSTERING_ENTITIES,
     "sd40myedbc": ROSTERING_ENTITIES,
     "sd48myedbc": ROSTERING_ENTITIES,
-    "sd51myedbc": ROSTERING_ENTITIES,  # StudentAttendance enabled, absence GDEs deliberately absent
+    # SD51: Family OFF in the config (2026-09-25 — its contacts export has no
+    # email column); StudentAttendance built from its two absence GDEs (the fixture
+    # withheld them until 2026-09-30, when a missing listed file began to stop the night).
+    "sd51myedbc": (ROSTERING_ENTITIES - {"Family"}) | {"StudentAttendance"},
     "sd54myedbc": ROSTERING_ENTITIES,
-    # SD60 delivers attendance in the SAME drop as rostering (2026-09-10). Same
-    # enabled_entities as sd51myedbc — but SD51's absence GDEs are deliberately
-    # withheld from its fixture (pinning skip-on-empty), whereas SD60's fixture
-    # SUPPLIES them, so this row is where the rostering+attendance emit path is
-    # actually proven. sd51attendance emits attendance ALONE.
+    # SD60 delivers attendance in the SAME drop as rostering (2026-09-10), as does
+    # sd51myedbc — SD60's absence GDEs are HEADERFUL, SD51's daily file headerless.
+    # sd51attendance emits attendance ALONE.
     "sd60myedbc": ROSTERING_ENTITIES | {"StudentAttendance"},
+    "sd45myedbc": ROSTERING_ENTITIES,
     "sd74myedbc": ROSTERING_ENTITIES,
     "sd51attendance": frozenset({"StudentAttendance"}),
     "sd83myedbc": ROSTERING_ENTITIES | {"CourseInfo", "StudentCourses"},

@@ -46,6 +46,7 @@ python -m pytest tests/ -k "test_active_only_filter" -v
 | `test_pipeline_e2e_districts.py` | SD48 + SD74 full pipeline with district-specific file naming |
 | `test_cli.py` | CLI flags — `--dry-run`, `--diff`, `--quality`, transactional write |
 | `test_benchmarks.py` | Performance benchmarks — excluded from CI, run manually |
+| `test_schema_drift_matrix.py` | The schema-drift matrix — every bundled config × source file × dropped column through the whole pipeline; deselected by default, run by CI's own `drift-matrix` job (see below) |
 
 ---
 
@@ -140,7 +141,7 @@ omit = [
 ```toml
 # pyproject.toml
 [tool.pytest.ini_options]
-addopts = "-m 'not benchmark'"
+addopts = "-v --tb=short -m 'not benchmark and not drift_matrix'"
 ```
 
 Run manually when profiling:
@@ -148,6 +149,16 @@ Run manually when profiling:
 ```bash
 python -m pytest tests/test_benchmarks.py -v --benchmark-only
 ```
+
+## The schema-drift matrix
+
+`tests/test_schema_drift_matrix.py` (plan 0053 S13b, `docs/developer/failure-policy.md` §5) drops every column of every headered source file each bundled config's contract fixture writes, one at a time, runs the whole pipeline, and checks the outcome the failure policy declares — derived from `source_files`, `outcomes.ENTITY_CRITICALITY`/`DEPENDS_ON` and the fail-closed guards the code itself calls (a spy on `columns.require_columns`), never from a per-column expectation list; after the full run it asserts every §5 `require-columns` row was raised by some case or is listed unreachable with its reason. About 1,000 runs (~3½ minutes locally), so the parametrised cases carry the `drift_matrix` marker, are deselected by the default `addopts` above, and run in CI's own `drift-matrix` job (ubuntu + windows). The module's derivation, checker, one real case per outcome class and its planted-regression twins stay in the default run. A new district's contract fixture joins the matrix automatically. Run it locally before landing anything that changes what a transformer reads:
+
+```bash
+python -m pytest tests/test_schema_drift_matrix.py -m drift_matrix -q -rx
+```
+
+A combination that contradicts the policy and awaits a decision is listed in the module's `KNOWN_FINDINGS` with its reason and where it is tracked, as a strict `xfail` that turns red the day it stops reproducing. The registry is empty today: the two findings the matrix first registered were owner-ruled on 2026-09-26 and fixed in the code.
 
 ---
 

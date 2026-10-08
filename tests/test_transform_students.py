@@ -3,6 +3,8 @@
 import pandas as pd
 import pytest
 
+from src.etl.errors import GuardKind, SourceSchemaError
+from src.etl.outcomes import OutcomeNote
 from src.etl.transformer import DataTransformer
 
 
@@ -54,7 +56,7 @@ class TestStudentsTransform:
                 "previous school number": ["", "", ""],
                 "usual first name": ["", "", ""],
                 "usual surname": ["", "", ""],
-                "student email address": ["", "", ""],
+                "student email address": ["a@test.ca", "b@test.ca", "c@test.ca"],
                 "enrolment status": ["Active", "Inactive", "Active"],
             }
         )
@@ -89,7 +91,7 @@ class TestStudentsTransform:
                 "previous school number": ["", "", ""],
                 "usual first name": ["", "", ""],
                 "usual surname": ["", "", ""],
-                "student email address": ["", "", ""],
+                "student email address": ["a@test.ca", "b@test.ca", "c@test.ca"],
                 "enrolment status": ["Active", "Active", "Active"],
             }
         )
@@ -117,7 +119,7 @@ class TestStudentsTransform:
                 "school number": ["100", "100", "100"],
                 "homeroom": ["A", "B", "C"],
                 "previous school number": ["", "", ""],
-                "student email address": ["", "", ""],
+                "student email address": ["a@test.ca", "b@test.ca", "c@test.ca"],
                 "enrolment status": ["Active", "Active", "Active"],
             }
         )
@@ -259,9 +261,13 @@ class TestStudentsCrossEnrollmentCollapse:
         assert len(result) == 3
 
     def test_missing_home_school_column_raises(self):
+        # Asserted by TYPE since plan 0053 S10 (the message is `require_columns`' one
+        # shape and no longer spells the config key): the column in config spelling.
         df = self._cross_df().drop(columns="home school number")
-        with pytest.raises(ValueError, match="home_school_column"):
+        with pytest.raises(SourceSchemaError) as exc:
             self.transformer.transform(df, self._MAPPING, "Students", {"Demo.txt": df}, self._gc())
+        assert (exc.value.entity, exc.value.guard) == ("Students", GuardKind.JOIN_KEY)
+        assert [c.lower() for c in exc.value.columns] == ["home school number"]
 
 
 class TestStudentEmailGeneration:
@@ -334,9 +340,12 @@ class TestStudentEmailGeneration:
         assert result["Email Address"].iloc[0] == "alicesmith@learn60.ca"
 
     def test_missing_derived_column_raises(self):
+        # Asserted by TYPE since plan 0053 S10 (the message no longer spells the key).
         df = self._df("Alice", "Smith", "15-Sep-2018").drop(columns="admission date")
-        with pytest.raises(ValueError, match="derived_dates"):
+        with pytest.raises(SourceSchemaError) as exc:
             self._run(self._SD60_EMAIL, df)
+        assert (exc.value.entity, exc.value.guard) == ("Students", GuardKind.JOIN_KEY)
+        assert [c.lower() for c in exc.value.columns] == ["admission date"]
 
     def test_pseudo_column_not_leaked_into_output(self):
         # The injected pseudo-column lives only on the local copy — it must not
@@ -371,7 +380,9 @@ class TestStudentEmailGeneration:
         df["student number"] = ["S001", "S002"]
         with caplog.at_level("ERROR"):
             result = self._run(email_cfg, df)
-        assert list(result["Email Address"]) == ["", ""]
+        # Plan 0053 S13d: a blank Email Address is a missing REQUIRED value, so both rows are then left
+        # out (and counted) rather than shipped blank — the data error is still recorded.
+        assert result.empty and "Email Address" in result.columns
         errors = self.transformer.data_errors
         assert len(errors) == 1
         assert errors[0]["entity"] == "Students"
@@ -396,12 +407,13 @@ class TestStudentEmailGeneration:
 
 
 class TestStudentsNoEmailWarning:
-    """A student with no email address is KEPT and counted (never dropped).
+    """A student with no email address is LEFT OUT and counted (plan 0053 S13d).
 
-    WHY: SpacesEDU imports a student without an email address — unlike a family
-    contact, which it rejects — but such a student cannot be invited by email.
-    So the row stays and the district is told ONCE, in counts only (never a
-    name, an id or an address), and it is NOT a data error.
+    WHY: the SpacesEDU Advanced CSV spec REQUIRES a student's email address (owner ruling
+    2026-09-28, "leave out + count + amber" — superseding DECISIONS 2026-09-02, which KEPT such a
+    student because the importer accepts one). So the row is left out, the district is told ONCE,
+    in counts only (never a name, an id or an address), the Students outcome carries the
+    WARNING-tier note, and it is NOT a data error.
     """
 
     _MAPPING = {
@@ -417,7 +429,7 @@ class TestStudentsNoEmailWarning:
     }
     _GC = {"academic_start_month_day": "08-25", "academic_end_month_day": "07-25"}
     #: Literals the log must never echo (PII rule).
-    _PII = ["alice@sd51.bc.ca", "diana@sd51.bc.ca", "Alice", "Bob", "Charlie", "Diana", "S001", "S004"]
+    _PII = ["alice@sd51.bc.ca", "diana@sd51.bc.ca", "Alice", "Bob", "Charlie", "Diana", "S001", "S002", "S003", "S004"]
 
     def setup_method(self):
         self.transformer = DataTransformer()
@@ -441,27 +453,30 @@ class TestStudentsNoEmailWarning:
 
     @staticmethod
     def _no_email_records(caplog):
-        return [r for r in caplog.records if "have no email address" in r.message]
+        return [r for r in caplog.records if "REQUIRED VALUES MISSING" in r.message]
 
     def _assert_no_pii(self, caplog):
         for record in caplog.records:
             for literal in self._PII:
                 assert literal not in record.message, f"PII leaked into the log: {literal!r}"
 
-    def test_students_without_email_are_kept_and_counted_once(self, caplog):
-        """2 of 4 blank (NaN + whitespace) → all 4 rows kept, ONE warning."""
+    def test_students_without_email_are_left_out_and_counted_once(self, caplog):
+        """2 of 4 blank (NaN + whitespace) → 2 rows left out, ONE warning, the note counts 2.
+
+        Flipped deliberately by plan 0053 S13d (it pinned "all 4 rows kept" under DECISIONS
+        2026-09-02, which the owner's required-values ruling of 2026-09-28 supersedes)."""
         df = self._df(["alice@sd51.bc.ca", float("nan"), "   ", "diana@sd51.bc.ca"])
         with caplog.at_level("WARNING"):
             result = self._run(df)
-        assert len(result) == 4  # nothing dropped
+        assert list(result["User ID"]) == ["S001", "S004"]
         records = self._no_email_records(caplog)
         assert len(records) == 1, [r.message for r in records]
-        assert "2 of 4" in records[0].message
         assert records[0].levelname == "WARNING"
-        assert records[0].message == (
-            "[Students] 2 of 4 student row(s) have no email address — "
-            "kept (SpacesEDU imports them), but they cannot be invited by email."
-        )
+        assert "left out 2 of 4 row(s)" in records[0].message
+        assert "'Email Address': 2" in records[0].message
+        assert (OutcomeNote.STUDENTS_EXCLUDED_REQUIRED_VALUE, 2) in self.transformer.outcome_notes_for("Students")
+        # The roster Students publishes is the KEPT rows: the left-out pupils reach no other file.
+        assert self.transformer._context.active_student_ids == {"S001", "S004"}
         self._assert_no_pii(caplog)
 
     def test_no_email_is_not_a_data_error(self, caplog):
@@ -497,15 +512,17 @@ class TestStudentsNoEmailWarning:
         assert self._no_email_records(caplog) == []
 
     def test_config_without_email_column_warns_and_keeps_every_row(self, caplog):
-        """No Email Address in the field_map → the count cannot be taken; say so."""
+        """No Email Address in the field_map → a MAPPING gap, never a per-row one: every row ships,
+        and it is said once (``email_output_not_mapped``, unchanged in meaning by plan 0053 S13d)."""
         mapping = dict(self._MAPPING)
         mapping["field_map"] = {k: v for k, v in self._MAPPING["field_map"].items() if k != "Email Address"}
         with caplog.at_level("WARNING"):
             result = self._run(self._df(["", "", "", ""]), mapping)
         assert len(result) == 4
         assert "Email Address" not in result.columns
-        no_column = [r for r in caplog.records if "no-email count could not be" in r.message]
+        no_column = [r for r in caplog.records if "rows without an email cannot be left out" in r.message]
         assert len(no_column) == 1
         assert "[Students] No 'Email Address' output column" in no_column[0].message
+        assert (OutcomeNote.EMAIL_OUTPUT_NOT_MAPPED, 4) in self.transformer.outcome_notes_for("Students")
         assert self._no_email_records(caplog) == []
         self._assert_no_pii(caplog)

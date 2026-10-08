@@ -91,6 +91,16 @@ _DOC_QUOTES: dict[str, frozenset[str]] = {
     "docs/developer/adding-district.md": frozenset(),
     "docs/PRODUCT.md": frozenset(),
     "CLAUDE.md": frozenset(),
+    # Plan 0053 S15 moved CLAUDE.md's narratives into six developer guides VERBATIM. None of
+    # them quotes a creator label (the self-service narrative names the constants, never their
+    # values), and each is registered EMPTY so a label pasted into one arrives red, not unpinned.
+    "docs/developer/self-service-mappings.md": frozenset(),
+    "docs/developer/ui-surfaces.md": frozenset(),
+    "docs/developer/configuration-reference.md": frozenset(),
+    "docs/developer/etl-internals.md": frozenset(),
+    "docs/developer/scheduler.md": frozenset(),
+    "docs/developer/machine-scope.md": frozenset(),
+    # The rule text abridged out of CLAUDE.md when the dev harness was removed.
     "docs/developer/architecture-notes.md": frozenset(),
 }
 

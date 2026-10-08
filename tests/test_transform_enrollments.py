@@ -14,8 +14,9 @@ from src.etl.transformers.context import ClassArtifacts
 class TestClassArtifactsHandoff:
     """The explicit Classes → Enrollments ordering contract (ClassArtifacts)."""
 
-    def setup_method(self):
-        self.transformer = DataTransformer()
+    @pytest.fixture(autouse=True)
+    def _published_transformer(self, published_transformer):
+        self.transformer = published_transformer
         self.transformer.set_school_year(2025, "08-25", "07-25")
 
     def test_enrollments_without_classes_fails_loud(
@@ -79,8 +80,9 @@ class TestClassArtifactsHandoff:
 
 
 class TestEnrollmentsTransform:
-    def setup_method(self):
-        self.transformer = DataTransformer()
+    @pytest.fixture(autouse=True)
+    def _published_transformer(self, published_transformer):
+        self.transformer = published_transformer
         self.transformer.set_school_year(2025, "08-25", "07-25")
 
     def _run_classes_then_enrollments(self, schedule_df, classes_mapping, enrollments_mapping, global_config, raw_data):
@@ -202,8 +204,9 @@ class TestEnrollmentsTransform:
 
 
 class TestEnrollmentsBlended:
-    def setup_method(self):
-        self.transformer = DataTransformer()
+    @pytest.fixture(autouse=True)
+    def _published_transformer(self, published_transformer):
+        self.transformer = published_transformer
         self.transformer.set_school_year(2025, "08-25", "07-25")
 
     def test_blended_teacher_enrollments(
@@ -234,8 +237,9 @@ class TestClassInfoCoTeacherEnrollments:
     appear in the student_schedule as the driving teacher for any student.
     """
 
-    def setup_method(self):
-        self.transformer = DataTransformer()
+    @pytest.fixture(autouse=True)
+    def _published_transformer(self, published_transformer):
+        self.transformer = published_transformer
         self.transformer.set_school_year(2025, "08-25", "07-25")
 
     def test_coteacher_attached_via_section_letter(
@@ -499,8 +503,9 @@ class TestEnrollmentsExcludedCourseCodes:
     they become orphans (enrollment pointing at a non-existent class).
     """
 
-    def setup_method(self):
-        self.transformer = DataTransformer()
+    @pytest.fixture(autouse=True)
+    def _published_transformer(self, published_transformer):
+        self.transformer = published_transformer
         self.transformer.set_school_year(2025, "08-25", "07-25")
 
     def test_attendance_enrollments_suppressed(
