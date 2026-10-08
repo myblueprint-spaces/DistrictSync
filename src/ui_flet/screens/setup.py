@@ -569,7 +569,7 @@ def service_account_delivery_note(*, delivery_enabled: bool, foreign: bool, will
 # Scope this deliberately does NOT claim: the SKIPPABLE steps' own section-level saves (the
 # seasonal-window write and the delivery write) are unguarded and do not block advancement, so
 # under the same fault the admin can reach this note with those entries unpersisted. Tracked in
-# `docs/claugentic-ROADMAP.md` ("Spotted during S6") — the fix is a step-level note, not a
+# `docs/ROADMAP.md` ("Spotted during S6") — the fix is a step-level note, not a
 # reword of the copy below.
 FINISH_SAVE_FAILED_NOTE = "We couldn't save your settings just now — nothing was lost. Please try again."
 

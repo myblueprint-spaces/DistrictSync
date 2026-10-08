@@ -414,7 +414,7 @@ class AppConfig:
         only ``sis_type``. The displaced bytes survive as ``config.corrupt-*.json``, so
         this costs recovery effort rather than data, and it is strictly better than the
         pre-fix behaviour (which clobbered with no copy at all) — but it is a residual,
-        not a solved problem. Tracked in ``docs/claugentic-ROADMAP.md``; the candidate
+        not a solved problem. Tracked in ``docs/ROADMAP.md``; the candidate
         fixes (merge onto a re-read here, or a ``settings_unreadable()`` guard on the
         non-wizard surfaces) need a product call on the copy, not a mechanical patch.
 

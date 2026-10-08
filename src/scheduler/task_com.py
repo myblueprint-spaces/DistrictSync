@@ -118,7 +118,7 @@ RESULT_BATCH_LOGON_PROBLEM = 0x80070569
 # because a re-worded canonical silently moves a branch to the unclassified fallback. The
 # cause copy is the classifier's, hedged to its evidence; this module states the STATUS only.
 #
-# RULE (pinned; docs/claugentic-INVARIANTS.md): no string this module can RETURN — a table
+# RULE (pinned; docs/INVARIANTS.md): no string this module can RETURN — a table
 # value, Windows' own description, or `str(exc)` — may carry a marker another consumer owns
 # (`messages.ABSENT_TASK_MARKERS` / `ACCESS_DENIED_MARKERS` / `SECRET_SENTINEL_PREFIX`) unless
 # it IS that code's canonical; and every `MSG_`/`_MSG_`-NAMED binding in `task_com` / `windows` /

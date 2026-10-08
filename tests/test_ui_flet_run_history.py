@@ -752,7 +752,7 @@ class TestBannerRowAgreement:
 # --------------------------------------------------------------------------- #
 class TestHomeHistoryAgreementOnFailures:
     """W3-B: Home and this banner answer the SAME "is my sync OK?" question over the SAME latest
-    record, so they must never disagree (``docs/claugentic-PRODUCT.md`` → Run History).
+    record, so they must never disagree (``docs/PRODUCT.md`` → Run History).
 
     They used to: Home's schedule-attention rule returned above its two FAILED rules, so a failed
     latest under an expected-MISSING / fired-but-no-record schedule read amber-and-schedule on Home

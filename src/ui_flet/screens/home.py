@@ -18,7 +18,7 @@ Three-way dispatch (mirrors the IA model; branch (a) is the first-run surface):
     (``home_status.size_clause``). Per-entity counts live in Run History for the rostering +
     myBlueprint+ entities; an attendance district's row count reaches exactly ONE surface — that
     healthy size clause — because Run History's columns exclude ``StudentAttendance``, and the
-    clause is HEALTHY-branch only. An OPEN item in ``docs/claugentic-ROADMAP.md``.
+    clause is HEALTHY-branch only. An OPEN item in ``docs/ROADMAP.md``.
   * **(c) configured + broken / attention / empty / unavailable** — an amber/red banner
     NAMING the fault (from the pure derivation, never a raw ``error``/path) + a concrete
     fix-path CTA (``status.fix``), then the same strip minus the destination that CTA owns.

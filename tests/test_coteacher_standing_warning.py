@@ -1,6 +1,6 @@
 """Co-teachers left out: a standing WARNING, never silent, never a failure (plan 0053 S10).
 
-Owner ruling 2026-09-25 (``docs/claugentic-DECISIONS.md``; ``failure-policy.md`` §5 #15, §7):
+Owner ruling 2026-09-25 (``docs/DECISIONS.md``; ``failure-policy.md`` §5 #15, §7):
 when a present, non-empty ClassInformation lacks a column the co-teacher rows are linked by,
 Enrollments ships WITHOUT those rows and the run carries ``OutcomeNote.COTEACHER_SOURCE_UNUSABLE``
 on the Enrollments outcome — which Home and Run History show as a standing amber every night it

@@ -6,8 +6,8 @@
 - **Blockers:** none
 - **Flags:** none
 - **Disposition at close:** single slice; done when it lands.
-- **Roadmap item:** adjacent to the 2026-09-17 "mapped network drive fails the nightly silently" entry in `docs/claugentic-ROADMAP.md` — this plan is **neither** of that entry's two named halves (see Non-goals).
-- **References:** `docs/claugentic-ARCHITECTURE_TREE.md` · `docs/claugentic-DECISIONS.md` · commit `0fbdb9c`
+- **Roadmap item:** adjacent to the 2026-09-17 "mapped network drive fails the nightly silently" entry in `docs/ROADMAP.md` — this plan is **neither** of that entry's two named halves (see Non-goals).
+- **References:** `docs/claugentic-ARCHITECTURE_TREE.md` · `docs/DECISIONS.md` · commit `0fbdb9c`
 
 ## Problem
 
@@ -308,7 +308,7 @@ docstring bullet `filepicker.py:58`, the inline note `filepicker.py:87`, the des
   `:123` `convert_result`, `:124` `convert_output`, `:131` filepicker). The pre-commit gate checks
   entry *presence*, not description drift, so this is a manual obligation the gate will not catch.
 - `docs/FLET_1.0_CONVENTIONS.md:67` — drops the `check_writable` clause.
-- `docs/claugentic-DECISIONS.md` · `docs/claugentic-ROADMAP.md` · `CLAUDE.md` (≤1 dense line).
+- `docs/DECISIONS.md` · `docs/ROADMAP.md` · `CLAUDE.md` (≤1 dense line).
 
 ## Risks & mitigations
 
@@ -397,7 +397,7 @@ RUNNING AS: Opus 5
 | `check_writable` has zero production callers | **TRUE** — the definition, its own banner comment, `convert_output.py:60` prose, tests, 3 docs. Nothing calls it |
 | `.dsync_probe_*` invisible to every output-dir sweep/glob | **TRUE** — grepped every `iterdir()`/`glob(` in `src/`: the only output-dir scans are `loader.py:144` (branches `.bak_`/`.tmp_` only), `loader.py:357`, `uploader.py:581`, `convert_output.py:460` — all `*.csv` |
 | `error_category` is read by no user-facing surface | **TRUE** — written at `pipeline.py:1000` / `store.py:135` / `convert.py:542`; `classify_latest_reason` keys on `status` (`home_status.py:511`). The non-goal's honesty holds |
-| the two ROADMAP halves | **TRUE** — `docs/claugentic-ROADMAP.md:155` names `WNetGetConnection` and the principal-reachability half exactly as the Non-goals describe, incl. its own "do not ship (1) alone" warning |
+| the two ROADMAP halves | **TRUE** — `docs/ROADMAP.md:155` names `WNetGetConnection` and the principal-reachability half exactly as the Non-goals describe, incl. its own "do not ship (1) alone" warning |
 
 ### Required changes
 
@@ -459,7 +459,7 @@ region.
 from Affected files.** §5 names two prose references; there are **four** live ones:
 `filepicker.py:58` (the purity banner comment), `filepicker.py:87`, `convert_output.py:60`, plus
 **`docs/FLET_1.0_CONVENTIONS.md:67`** and **`docs/claugentic-ARCHITECTURE_TREE.md:131`** — the last
-two are current-state prose that would name a deleted function. (`docs/claugentic-DECISIONS.md:319`
+two are current-state prose that would name a deleted function. (`docs/DECISIONS.md:319`
 /`:436` are dated historical entries — leave them, and say so.) Separately,
 **`docs/claugentic-ARCHITECTURE_TREE.md` appears nowhere in Affected files** while this slice makes
 five of its lines stale: `:19` (pipeline), `:20` (loader — gains `output_target_problem`), `:123`
@@ -534,12 +534,12 @@ backup-and-restore atomic and the pre-check writes nothing.)
 ### Harness impact
 
 - **None plugin-side.** No new STANDARD, agent, or managed doc; nothing is staged for upstream. All
-  four doc touches are repo-local: `docs/claugentic-DECISIONS.md` (R3's recording rule + R4's
-  reversal), `docs/claugentic-ROADMAP.md` (the four lines already listed), `CLAUDE.md` (≤1 dense line),
+  four doc touches are repo-local: `docs/DECISIONS.md` (R3's recording rule + R4's
+  reversal), `docs/ROADMAP.md` (the four lines already listed), `CLAUDE.md` (≤1 dense line),
   and **`docs/claugentic-ARCHITECTURE_TREE.md`** (R5 — currently missing).
 - **Stage-9 candidate, not a required change:** *"a probe artefact needs a reaper at a chosen age or it
   is unbounded"* — §1's reap reasoning generalises beyond this repo and is a reasonable
-  `docs/claugentic-standards/CANDIDATES.md` line at Land.
+  `docs/CANDIDATES.md` line at Land.
 
 **Bounding the loop:** R1–R8 are sentence- or line-level edits to the plan plus two Affected-files
 additions — none re-opens a design fork. **Applying them as written closes the gate; the next round is

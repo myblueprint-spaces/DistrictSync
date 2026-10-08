@@ -8,7 +8,7 @@ The decisions themselves are COUNTED elsewhere: the form/gate/stored-fact rules 
 **does an admin whose district ships no mapping actually get one, and can they only
 activate it after a test conversion that wrote nothing?**
 
-Per ``docs/claugentic-CHARTER.md`` → "Flet view-glue surfaces": per-STATE render + wiring
+Per ``docs/CHARTER.md`` → "Flet view-glue surfaces": per-STATE render + wiring
 tests over the REAL control tree (``build_setup`` → ``build_creator``), with the real
 ``write_overlay`` / ``delete_overlay`` / ``AppConfig`` writes landing in the per-test
 profile ``isolated_user_profile`` (autouse) redirects. Every ABSENCE assertion carries its

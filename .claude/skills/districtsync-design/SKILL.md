@@ -14,7 +14,7 @@ description: >-
 
 **Authority:** `docs/DESIGN_SYSTEM.md` (the standard) + `src/ui_flet/tokens.py` (the only hex/size
 source) + `src/ui_flet/components.py` (the only control factories). This skill is the checklist; the
-doc is the reference. On any conflict, the harness + `docs/DESIGN_SYSTEM.md` win.
+doc is the reference. On any conflict, `docs/DESIGN_SYSTEM.md` wins.
 
 ## Non-negotiables (do these every time)
 - **Build via `components.py` factories.** Never hand-roll an `ft.FilledButton` / card / band / chip
@@ -87,4 +87,4 @@ doc is the reference. On any conflict, the harness + `docs/DESIGN_SYSTEM.md` win
    hex/px in screens; built via `components.py`.
 4. **One-primary + verdict-first** upheld on every touched screen; copy uses the vocabulary map.
 5. Record any newly-verified Flet API form in `docs/FLET_1.0_CONVENTIONS.md`; a non-trivial design
-   decision in `docs/claugentic-DECISIONS.md`.
+   decision in `docs/DECISIONS.md`.

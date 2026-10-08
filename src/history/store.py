@@ -6,7 +6,7 @@ rotating-log parser (``ui_flet/run_log.py``, retired) so run history survives lo
 rotation and is immune to the multi-process log-write race between the UI and the
 scheduled CLI.
 
-Design (see ``docs/claugentic-INVARIANTS.md`` for the load-bearing contract):
+Design (see ``docs/INVARIANTS.md`` for the load-bearing contract):
 
 - **Open-use-close per operation.** No shared/module-level connection — the UI reads
   on the UI thread while Convert writes on its worker thread, so each call opens its

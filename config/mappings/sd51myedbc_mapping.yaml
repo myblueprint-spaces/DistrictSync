@@ -64,7 +64,7 @@ global_config:
   # session_key and produces the same false merges) and no Primary Teacher
   # column (so co-teacher enrollments would be left out, with a standing
   # warning on Home — plan 0053 S10, owner ruling 2026-09-25). See
-  # docs/claugentic-DECISIONS.md (2026-09-16) and the session_key ROADMAP item.
+  # docs/DECISIONS.md (2026-09-16) and the session_key ROADMAP item.
   blended_classes: false
 
 mappings:

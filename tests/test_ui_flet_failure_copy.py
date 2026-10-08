@@ -22,7 +22,7 @@ What is pinned here, and why each pin has a twin:
   (``build_run_record``), never in a shape no producer writes.
 * **No permissive default.** The tail's and the outcome sentence's bools are keyword-only with no
   default (signature-pinned, with a doctored twin proving the check can fail).
-* **Doc parity.** The PARTIAL strings ``docs/claugentic-PRODUCT.md`` quotes are computed from source.
+* **Doc parity.** The PARTIAL strings ``docs/PRODUCT.md`` quotes are computed from source.
 * **The import cycle the entity-map move avoided.** ``failure_copy`` imports nothing from
   ``home_status``, and ``home_status`` defines no entity label map — AST-pinned with doctored twins.
 """
@@ -859,9 +859,9 @@ class TestClaimBoolsHaveNoDefault:
 
 
 # --------------------------------------------------------------------------- #
-# The PARTIAL strings docs/claugentic-PRODUCT.md quotes                        #
+# The PARTIAL strings docs/PRODUCT.md quotes                        #
 # --------------------------------------------------------------------------- #
-_PRODUCT_DOC = Path(__file__).resolve().parents[1] / "docs" / "claugentic-PRODUCT.md"
+_PRODUCT_DOC = Path(__file__).resolve().parents[1] / "docs" / "PRODUCT.md"
 
 
 def _product_doc_quotes() -> list[str]:

@@ -75,7 +75,7 @@ def build_placeholder(dest: nav.Destination) -> ft.Control:
     dead (all six destinations replace their placeholder in ``build_app_body`` before the
     rail renders); it is kept because ``build_screens`` guarantees ``render_by_id`` a
     factory for EVERY destination, so a future rail entry can never KeyError its way to a
-    blank pane. (Roadmap item discharged; see ``docs/claugentic-ROADMAP.md``.)
+    blank pane. (Roadmap item discharged; see ``docs/ROADMAP.md``.)
     """
     icon_name = getattr(ft.Icons, dest.selected_icon, ft.Icons.WIDGETS_ROUNDED)
     return ft.Column(

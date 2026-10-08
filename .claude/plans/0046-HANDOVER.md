@@ -113,7 +113,7 @@ Also: `run_as_password or None` normalised once at entry; `elevated_apply._do_re
 re-validates `user` unconditionally and normalises identically; `validators.py` docstrings
 corrected (they still described the PowerShell `-User` transport retired at plan 0041 S1b).
 
-**A deliberate deviation from the plan's spec is recorded** in `docs/claugentic-DECISIONS.md`
+**A deliberate deviation from the plan's spec is recorded** in `docs/DECISIONS.md`
 (2026-09-15) and the plan's implementation notes — read it, because it constrains what you do
 next. Short version: the spec said never validate the machine-derived fallback on either branch;
 what shipped validates the caller-CHOSEN account always and keeps today's behaviour for the
@@ -636,7 +636,7 @@ A slice may land only when **all** hold: acceptance criteria met · in-scope
 `ENGINEERING_STANDARDS` dimensions pass an architect-reviewer audit · all gates green (tests +
 SD74 snapshot + tree-check + lint/type/security + config validation) · **no new tech debt** ·
 **CI's own result read and quoted**. Iterate to that fixed bar, then stop. Genuinely separate work
-goes to `docs/claugentic-ROADMAP.md` as backlog, not debt.
+goes to `docs/ROADMAP.md` as backlog, not debt.
 
 Two house rules that bite here specifically:
 

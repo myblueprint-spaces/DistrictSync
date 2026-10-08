@@ -9,7 +9,7 @@
   the review caught that and it is declared here rather than left unmentioned.
 - **Disposition at close:** two slices; Slice 1 alone satisfies the reported fault.
 - **Roadmap item:** the 2026-09-22 "Convert parses EVERY `.csv`/`.txt` in the input folder" entry in
-  `docs/claugentic-ROADMAP.md`. This plan closes findings (1) and (3); finding (2) is Slice 2.
+  `docs/ROADMAP.md`. This plan closes findings (1) and (3); finding (2) is Slice 2.
 - **References:** `docs/claugentic-ARCHITECTURE_TREE.md` · commit `431dc40` (the SD67 config fix that
   surfaced this) · plan 0050 (the adjacent output-folder pre-flight, same screen)
 
@@ -234,8 +234,8 @@ satisfies the reported fault; Slice 2 closes the fault a district hits when the 
 | `tests/test_extractor.py` | 1 | retire the bytes-path classes (audit below) |
 | `tests/test_extractor.py` | 2 | the **disk** empty-file assertion `test_empty_file_raises_extraction_error` inverts (NOT the bytes twin, which Slice 1 deletes) |
 | `CHANGELOG.md` | 1 | `[Unreleased]` — the fix plus the two behaviour changes |
-| `docs/claugentic-ROADMAP.md` | both | close the entry |
-| `docs/claugentic-DECISIONS.md` | both | dated entry: Convert/CLI parity; empty ≠ unparseable |
+| `docs/ROADMAP.md` | both | close the entry |
+| `docs/DECISIONS.md` | both | dated entry: Convert/CLI parity; empty ≠ unparseable |
 
 `docs/claugentic-ARCHITECTURE_TREE.md:17` DOES change: it describes `extractor.py` as having "two
 public entrypoints … `load_data` (disk) and `load_from_bytes`", false after this slice. The
@@ -489,7 +489,7 @@ declare that diff as Slice-1-in-progress or park it until Stage 5. An untracked 
   narrow, `_present_gde_files` is the folder listing; the advisory list must never become the
   loading list. Plus, with Slice 2, *empty ≠ unparseable* and why the narrowness is the safety
   property.
-- `docs/claugentic-DECISIONS.md` + `docs/claugentic-ROADMAP.md` + `CHANGELOG.md [Unreleased]` — as
+- `docs/DECISIONS.md` + `docs/ROADMAP.md` + `CHANGELOG.md [Unreleased]` — as
   amended by item 8.
 - No new STANDARD and no new agent. No partner/developer doc describes Convert's folder read, so
   `docs/partner/` needs nothing.

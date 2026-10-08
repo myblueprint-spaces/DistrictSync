@@ -746,7 +746,7 @@ def _record_manual_run(
     own. It rides the record as ``entity_outcomes`` through the shared ``build_run_record``.
 
     **Exactly one record per attempt (plan 0053 S5), with four deliberate non-records** (the
-    list lives in ``docs/claugentic-DECISIONS.md`` 2026-09-24): an unset output folder
+    list lives in ``docs/DECISIONS.md`` 2026-09-24): an unset output folder
     (``OutputFolderUnsetError`` — a gate/programming error the view cannot reach), the
     output-folder refusal (``OUTPUT_FOLDER_UNUSABLE``, from the pre-flight before any ETL work
     or from the write's ``OSError``), ``NO_INPUT`` ("you picked the wrong folder") and

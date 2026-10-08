@@ -9,7 +9,7 @@ is not hypothetical here: the bullet this slice replaced reproduced the PIN / mi
 it at plan 0041 S1b, and it sat there wrong for months with every gate green.
 
 Pinned in BOTH directions, per the declared-gap discipline in
-``docs/claugentic-standards/CANDIDATES.md`` and the shape of
+``docs/CANDIDATES.md`` and the shape of
 ``tests/test_creator_doc_copy_parity.py``:
 
 * every string a doc is DECLARED to quote must be present in it verbatim — so rewording a
@@ -366,8 +366,7 @@ _DOC_QUOTES: dict[str, frozenset[str]] = {
     # and this row deliberately stays "all of them" for that family so a new classifier quote
     # lands pinned by default rather than arriving unnoticed.
     _TROUBLESHOOTING: frozenset(_PINNED) - _SCOPE_PINS,
-    # The harness docs describe the log line's shape, so they legitimately carry the anchor.
-    "docs/claugentic-ARCHITECTURE_TREE.md": frozenset({"log_anchor"}),
+    # The developer docs describe the log line's shape, so they legitimately carry the anchor.
     # Plan 0053 S15 moved both of CLAUDE.md's log-line descriptions out VERBATIM — the
     # `windows.py` bullet into the scheduler guide, the gMSA (S-4) span into the machine-scope
     # guide — so those two carry the anchor now and CLAUDE.md declares nothing. The other four
@@ -379,6 +378,8 @@ _DOC_QUOTES: dict[str, frozenset[str]] = {
     "docs/developer/self-service-mappings.md": frozenset(),
     "docs/developer/configuration-reference.md": frozenset(),
     "docs/developer/etl-internals.md": frozenset(),
+    # The rule text abridged out of CLAUDE.md when the dev harness was removed.
+    "docs/developer/architecture-notes.md": frozenset(),
     # Plan 0049 S-2b: the service-account guide leads with "which kind of install is this?",
     # and Step 4 of the install guide explains the line. Both quote the app verbatim.
     _HEADLESS: _SCOPE_PINS,

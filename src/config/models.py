@@ -835,7 +835,7 @@ class GlobalConfig(BaseModel):
     # session_key (school + teacher + term + semester + day + period) needs a
     # day rotation to disambiguate sections — an export with no rotation (Day
     # always "1", e.g. SD51) makes distinct secondary courses collide into
-    # false blends. See `docs/claugentic-ROADMAP.md` for the general fix.
+    # false blends. See `docs/ROADMAP.md` for the general fix.
     blended_classes: bool = True
     # Opt-in CLASS-rostering scope: the COMPLETE set of grades that receive class
     # rostering, in CEDS OUTPUT space ("KG", "01", ... — NOT raw MyEd values like

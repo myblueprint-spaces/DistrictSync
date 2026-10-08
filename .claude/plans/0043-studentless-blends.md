@@ -1,7 +1,7 @@
 # 0043 — suppress studentless blended classes (ungate the timetable-scope rule)
 
 - **Status:** **Spec'd — awaiting Stage 5 owner approval.** (2a draft → 2b six-lens panel → 2c → Stage 3 gate → per-row delta re-gate → all 15 required changes applied → Stage 4 spec.)
-- **Roadmap item:** `docs/claugentic-ROADMAP.md` → *"2026-08-13 — NEXT (plan 0043): blended detection ignores `homeroom_grades`…"*
+- **Roadmap item:** `docs/ROADMAP.md` → *"2026-08-13 — NEXT (plan 0043): blended detection ignores `homeroom_grades`…"*
 - **References:** `docs/claugentic-INVARIANTS.md:71` · `docs/developer/output-contract.md` · plan `0042-class-rostering-grades.md` (1a + 1b landed)
 - **Owner decisions (2026-08-14):** land **unconditionally** · **fold in** the `create_name` guard. *(Both taken before the re-key impact below was known — see §Open question for the owner.)*
 
@@ -196,7 +196,7 @@ Split in 2c to answer the attribution objection: the draft bundled a rewrite of 
 
 ## Affected files
 
-**Slice 1** — `src/etl/transformers/grades.py` (new function, subject-branch consumer, header + `resolve_timetable_scope` docstring; `why` comment at `:103`) · `src/etl/transformers/blended.py` (`create_name` guard + alias resolution + **one** warning) · `tests/test_class_rostering_grades.py` (helper unit rows beside `TestResolveTimetableScope`) · `tests/test_property_based.py` (range containment) · `tests/test_blended_classes.py` (structural DRY pin; `create_name` rows) · **`docs/claugentic-ROADMAP.md`** (strike the `create_name` `KeyError` entry) · **`docs/claugentic-DECISIONS.md`** (skip-not-substitute + the alias + why it declines the roadmap's recorded fix shape) · **`docs/claugentic-ARCHITECTURE_TREE.md:27`** (`grades.py`'s description gains the derived set).
+**Slice 1** — `src/etl/transformers/grades.py` (new function, subject-branch consumer, header + `resolve_timetable_scope` docstring; `why` comment at `:103`) · `src/etl/transformers/blended.py` (`create_name` guard + alias resolution + **one** warning) · `tests/test_class_rostering_grades.py` (helper unit rows beside `TestResolveTimetableScope`) · `tests/test_property_based.py` (range containment) · `tests/test_blended_classes.py` (structural DRY pin; `create_name` rows) · **`docs/ROADMAP.md`** (strike the `create_name` `KeyError` entry) · **`docs/DECISIONS.md`** (skip-not-substitute + the alias + why it declines the roadmap's recorded fix shape) · **`docs/claugentic-ARCHITECTURE_TREE.md:27`** (`grades.py`'s description gains the derived set).
 
 > *Stage-3 #2:* without the ROADMAP/DECISIONS pair, slice 1 would close a tracked bug while the roadmap still claimed it open — and it **declines** that entry's recorded fix (`"Unknown Course"`) in favour of skipping the segment, which is a re-litigated decision and must be recorded, not silently substituted.
 
@@ -333,8 +333,8 @@ The changes below are about **claims, traceability and one untested reader** —
 ### Harness impact
 
 - **`docs/claugentic-INVARIANTS.md:71` — the minimal edit must add a distinction, not just soften wording.** After 0043 the resolver's `None` **no longer means "nothing is suppressed"**; it means "no scope was CONFIGURED", and the effective rostered set is derived. Both facts now live in `grades.timetable_rostered_grades`. If the edit only relaxes "gated", the next reader re-derives `CEDS − homeroom` at a call site and re-opens exactly the class of bug this invariant exists to prevent.
-- **`docs/claugentic-DECISIONS.md` — three lines, not one:** (i) 0043 lands **without** importer re-confirmation, with the `output-contract.md:37-44` closed-list argument (this overrides the ROADMAP entry's opposite claim); (ii) `create_name` **skips** the course segment rather than substituting `"Unknown Course"`, deviating from the recorded roadmap fix; (iii) whatever the owner rules on the row-set versioning rule (#5).
-- **`docs/claugentic-standards/CANDIDATES.md` — one genuinely universal lesson:** *a derived vocabulary set promoted from a validation-only role to an output-determining one needs a range-containment property binding it to its producer.* `CEDS_GRADE_CODES` is safe to mask on **only** because `grade_to_ceds`'s fallback literal happens to also be a table value — an invisible coupling whose breakage is a green suite and silently dropped rows. That is the same family as the repo's *no vacuous greens* rule and belongs upstream, not just in this plan's risk table.
+- **`docs/DECISIONS.md` — three lines, not one:** (i) 0043 lands **without** importer re-confirmation, with the `output-contract.md:37-44` closed-list argument (this overrides the ROADMAP entry's opposite claim); (ii) `create_name` **skips** the course segment rather than substituting `"Unknown Course"`, deviating from the recorded roadmap fix; (iii) whatever the owner rules on the row-set versioning rule (#5).
+- **`docs/CANDIDATES.md` — one genuinely universal lesson:** *a derived vocabulary set promoted from a validation-only role to an output-determining one needs a range-containment property binding it to its producer.* `CEDS_GRADE_CODES` is safe to mask on **only** because `grade_to_ceds`'s fallback literal happens to also be a table value — an invisible coupling whose breakage is a green suite and silently dropped rows. That is the same family as the repo's *no vacuous greens* rule and belongs upstream, not just in this plan's risk table.
 - **No new STANDARD and no new agent** — this is ETL work inside patterns the repo already owns. `CLAUDE.md:165`'s "stays GATED … until plan 0043 ungates it" is already on slice 2's list; keep it there.
 
 ### Disposition of the 9 required changes (2026-08-14)
@@ -420,9 +420,9 @@ Necessity holds **only given finding 1**. Sufficiency's real modulus is the whol
 #### Harness impact (re-gated)
 
 - **`docs/claugentic-INVARIANTS.md` — a NEW entry, not just the 0042-1b amendment already required.** Finding 1's row-set identity is textbook invariant shape: *the blend-suppression gate's grade basis must be derived from the same rows, with the same null handling, as `split_by_homeroom_grades(keep="subject")`* — invisible from either call site, and its breach is silent `Classes.csv` growth + a live re-key with a green golden.
-- **`docs/claugentic-DECISIONS.md` — five lines, not four.** The plan's four plus: the mode-named / per-row-gated survivor (finding 3) is accepted deliberately, in exchange for eliminating the re-key.
-- **`docs/claugentic-ROADMAP.md` — `:115` needs more than the `:119` amendment already listed.** Its residual-#2 clause becomes "narrowed at the gate, alive in `validate()`", and its "two things to flip deliberately" names `TestShapeDefaultUnchanged` as a pin that must go RED — measured GREEN under per-row (the `ARCHITECTURE_TREE:182` twin is already in disposition #4; this one is not). `:117` is already correct and needs no edit.
-- **`docs/claugentic-standards/CANDIDATES.md` — one addition to the lesson already staged:** *a simulated/monkeypatched flip measurement cannot see tests that inspect module SOURCE or AST — enumerate those pins by hand before quoting a red count as complete.*
+- **`docs/DECISIONS.md` — five lines, not four.** The plan's four plus: the mode-named / per-row-gated survivor (finding 3) is accepted deliberately, in exchange for eliminating the re-key.
+- **`docs/ROADMAP.md` — `:115` needs more than the `:119` amendment already listed.** Its residual-#2 clause becomes "narrowed at the gate, alive in `validate()`", and its "two things to flip deliberately" names `TestShapeDefaultUnchanged` as a pin that must go RED — measured GREEN under per-row (the `ARCHITECTURE_TREE:182` twin is already in disposition #4; this one is not). `:117` is already correct and needs no edit.
+- **`docs/CANDIDATES.md` — one addition to the lesson already staged:** *a simulated/monkeypatched flip measurement cannot see tests that inspect module SOURCE or AST — enumerate those pins by hand before quoting a red count as complete.*
 - **No new STANDARD, no new agent.**
 
 ## Spec  _(Stage 4)_

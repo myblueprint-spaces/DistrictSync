@@ -1,21 +1,9 @@
 # Charter — the approach this project has settled on, per KIND of work
 
 A living, per-work-**TYPE** record. It exists so agents and sessions stay consistent
-without re-deriving the same judgment every time, and so the harness never collapses into
-one golden hammer.
+without re-deriving the same judgment every time.
 
-> **Provenance and version skew — read before citing this file.** The apply/record/adapt/
-> grow model comes from **claugentic-dev-harness 0.4.1** (the INSTALLED plugin), whose
-> WORKFLOW carries a *methodology toolbox* section. **This repo's managed
-> `docs/claugentic-WORKFLOW.md` is stamped `@0.3.0` and contains no such section**, so do
-> not cite it for the rules below — it does not contain them. This file is therefore
-> **adopted ahead of the repo's harness stamp**: it is a 0.4.1 practice living in a 0.3.0
-> checkout, and it will reconcile when the managed docs are refreshed by a re-`init`.
-> (The version skew itself is a known standing item — the repo stamps 0.3.0 against an
-> installed 0.4.1; re-running `init` is the owner's call.)
-
-**How to use it** (per the installed harness 0.4.1's *methodology toolbox*, NOT per this
-repo's `@0.3.0` WORKFLOW.md — see the provenance note above):
+**How to use it:**
 
 - **APPLY** — an entry exists for this kind of work → continue with the recorded approach.
 - **RECORD** — the first time a kind of work is judged → add a
@@ -25,7 +13,7 @@ repo's `@0.3.0` WORKFLOW.md — see the provenance note above):
 - **GROW** — a recorded approach proved wrong for its type → update the entry **in place**
   (an entry is a *revisable default*, never a mandate).
 
-An **absent entry means the harness's default grain**, not "anything goes".
+An **absent entry means the default grain**, not "anything goes".
 
 ---
 
@@ -139,4 +127,4 @@ assertion by perturb-and-restore.**
 *Rationale:* red-first does not apply when the doc IS the artifact and the test is only its
 gate. What matters instead is that the gate has teeth — and that at least one perturbation
 is aimed at the space the gate does NOT cover, since perturbation evidence inherits the
-perturber's blind spots (see `docs/claugentic-standards/CANDIDATES.md`, 2026-07-29).
+perturber's blind spots (see `docs/CANDIDATES.md`, 2026-07-29).

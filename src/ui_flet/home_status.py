@@ -9,7 +9,7 @@ headline + supporting detail + an optional fix path + an optional ``HomeMetrics`
 row; the one number that survived rides the healthy detail's ``size_clause``. The bundle stays
 on the model as the pipeline↔UI record-shape contract ``tests/test_pipeline_run_store.py``
 reads, and as the honest "no countable build behind this run" signal (``metrics is None``).
-Retiring it from the model is a named residual in ``docs/claugentic-ROADMAP.md`` — not a claim
+Retiring it from the model is a named residual in ``docs/ROADMAP.md`` — not a claim
 that a screen still paints it.
 
 **Graceful degradation is a first-class OUTPUT, not an exception path** — an
@@ -81,7 +81,7 @@ from src.ui_flet.verdict import Verdict
 # ``StudentAttendance`` is deliberately omitted. Its ONE surface is Home's healthy ``size_clause``
 # ("It included 8,140 attendance rows.") — nowhere else: Run History's per-entity columns derive
 # from these same two tuples, so an attendance-only run renders five zeros there, and the clause
-# itself is emitted only from the HEALTHY branch. Still-open in ``docs/claugentic-ROADMAP.md``.
+# itself is emitted only from the HEALTHY branch. Still-open in ``docs/ROADMAP.md``.
 _ROSTERING_ENTITIES: tuple[str, ...] = ("Students", "Staff", "Family", "Classes", "Enrollments")
 _MYBLUEPRINT_ENTITIES: tuple[str, ...] = ("CourseInfo", "StudentCourses")
 

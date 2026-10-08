@@ -137,7 +137,7 @@ What actually leaves the machine, and under what names.
 | StudentCourses | `utf-8-sig` (BOM) | as above | internal spec | emitted |
 | **StudentAttendance** | **`utf-8` (NO BOM)** | The attendance importer is BOM-strict and case-sensitive on the first header. | pending owner confirmation | **observed import** |
 
-**The StudentAttendance exception is not theoretical.** On 2026-06-19 a delivery was rejected with *"Unexpected file: StudentAttendance.csv"* plus a cascading *"Invalid date format"*, even though the data matched the spec. Root cause: every CSV was written `utf-8-sig`, so the importer's BOM-strict header check read the first header as `﻿School Number` ≠ `School Number` — the file was not recognized and column mapping broke, which then mis-validated the date column. The fix was the `_NO_BOM_ENTITIES` allowlist. The rostering CSVs were unaffected because they reach SpacesEDU through the zip path, which tolerates the BOM. See `docs/claugentic-DECISIONS.md` → 2026-06-19.
+**The StudentAttendance exception is not theoretical.** On 2026-06-19 a delivery was rejected with *"Unexpected file: StudentAttendance.csv"* plus a cascading *"Invalid date format"*, even though the data matched the spec. Root cause: every CSV was written `utf-8-sig`, so the importer's BOM-strict header check read the first header as `﻿School Number` ≠ `School Number` — the file was not recognized and column mapping broke, which then mis-validated the date column. The fix was the `_NO_BOM_ENTITIES` allowlist. The rostering CSVs were unaffected because they reach SpacesEDU through the zip path, which tolerates the BOM. See `docs/DECISIONS.md` → 2026-06-19.
 
 The two encoding classes are asserted end-to-end on real bytes, one config per class: `sd51myedbc` for the BOM class, `sd51attendance` for the bare `School Number` first header.
 
@@ -156,7 +156,7 @@ So the *same* config emitting the *same* data produces byte-different files on d
 |---|---|---|---|
 | Importer tolerance for LF vs CRLF | **pending owner confirmation** — **owner question Q3: "we emit CRLF on Windows and LF on the Mac/Linux artifacts — does the importer care?"** | none (this has never been tested either way) | not claimed |
 
-A `lineterminator="\r\n"` pin in `DataLoader._write_csv` would make this deterministic. It is deliberately **not** done here (this document's slice is zero-runtime-change) and is tracked in `docs/claugentic-ROADMAP.md` — it needs its own snapshot-gated slice because it changes emitted bytes on the Linux/macOS artifacts.
+A `lineterminator="\r\n"` pin in `DataLoader._write_csv` would make this deterministic. It is deliberately **not** done here (this document's slice is zero-runtime-change) and is tracked in `docs/ROADMAP.md` — it needs its own snapshot-gated slice because it changes emitted bytes on the Linux/macOS artifacts.
 
 ### Quoting and empty values
 
@@ -407,7 +407,7 @@ Only these four columns are emitted. The SpacesEDU attendance spec permits dropp
 > expressible (the token vocabulary supports it) and, as of Q1a, would produce a file the live importer
 > refuses. Nothing validates that today — an unsupported *token* fails loud, but a well-formed
 > *non-ISO shape* does not. A district config setting it is a silent delivery failure at 3am. Tracked
-> in `docs/claugentic-ROADMAP.md`; the candidate fix is to accept only ISO unless an explicit
+> in `docs/ROADMAP.md`; the candidate fix is to accept only ISO unless an explicit
 > acknowledgement key is set, per CLAUDE.md's "make the unsafe call unrepresentable" rule.
 >
 > **This is a rank-1-over-rank-2 divergence:** the published BC/Aspen Doc documents `DD-MMM-YYYY`, and
@@ -550,7 +550,7 @@ Version is `<major>.<minor>` as a **quoted string** (`'1.9'`). A bare YAML float
 
 ### Versioning convention
 
-The loader's rule is: bump MINOR when the bundled configs start using new same-major features; bump MAJOR only on a breaking config-format change, migrating every bundled config in the same release. **Scoped to ETL-affecting keys** — a purely presentational addition (a display label, a UI-only list) does not require a version bump, because it cannot change what a conversion produces. See `docs/claugentic-DECISIONS.md`.
+The loader's rule is: bump MINOR when the bundled configs start using new same-major features; bump MAJOR only on a breaking config-format change, migrating every bundled config in the same release. **Scoped to ETL-affecting keys** — a purely presentational addition (a display label, a UI-only list) does not require a version bump, because it cannot change what a conversion produces. See `docs/DECISIONS.md`.
 
 ---
 
@@ -660,7 +660,7 @@ Q5-status: answered
 
 **✅ Answered 2026-09-28 by the owner (the SpacesEDU product owner).** Q5 and its five parts stay verbatim as they
 were asked (plan 0053 D2); each part now carries the owner's answer in place of its bench check, and what
-DistrictSync does about it. The answer is recorded in substance in `docs/claugentic-DECISIONS.md` (2026-09-28,
+DistrictSync does about it. The answer is recorded in substance in `docs/DECISIONS.md` (2026-09-28,
 "Q5 ANSWERED") and was recorded here on 2026-09-30 (plan 0053 S13d, which folded in S14). It is owner knowledge of
 SpacesEDU's side plus a rule the owner agreed — not an import check of any row in this document, so no row's
 Status moved with it (see the Status legend); the Rostering-bundle row carries its family-links part.
@@ -781,5 +781,5 @@ it is enabled). **What DistrictSync does:** nothing new — `Family.csv` stays t
 - `src/etl/loader.py` — `csv_filename`, `csv_encoding`, `select_ordered`, the atomic write.
 - `src/sftp/uploader.py` — `build_zip_name`, the manifest, `STANDALONE_CSV_FILENAMES` (the standalone-feed rule).
 - `config/mappings/myedbc_mapping.yaml` — the base `field_map`s that *are* the column order.
-- `docs/claugentic-DECISIONS.md` — the dated incidents this document cites.
+- `docs/DECISIONS.md` — the dated incidents this document cites.
 - `docs/developer/adding-transformer.md` — the checklist for adding a new output entity.

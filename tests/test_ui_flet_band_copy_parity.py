@@ -32,7 +32,7 @@ exists to stop hand-copying would be the same defect one level up):
 Prior art for the shape: ``tests/test_ui_flet_pin.py`` reads ``docs/FLET_1.0_CONVENTIONS.md``.
 
 Pinned in BOTH directions, per the declared-gap discipline in
-``docs/claugentic-standards/CANDIDATES.md``:
+``docs/CANDIDATES.md``:
 
 * every constant a doc is DECLARED to quote must be present in it verbatim — so editing
   the constant and not the doc is red;
@@ -90,16 +90,8 @@ _QUICK_ALL = frozenset({"QUICK_CONVERT_LABEL", "QUICK_RUN_HISTORY_LABEL", "QUICK
 
 # doc -> the constants that doc is DECLARED to quote. Anything not listed must be absent.
 _DOC_QUOTES: dict[str, frozenset[str]] = {
-    "docs/claugentic-PRODUCT.md": _WELCOME_ALL
-    | _S7_HEADLINES
-    | _D14_HEADLINE
-    | _QUICK_ALL
-    | frozenset({"SIZE_CLAUSE_LEAD"}),
-    "docs/claugentic-PRODUCT_SPEC.md": _WELCOME_ALL
-    | _S7_HEADLINES
-    | _D14_HEADLINE
-    | _QUICK_ALL
-    | frozenset({"SIZE_CLAUSE_LEAD"}),
+    "docs/PRODUCT.md": _WELCOME_ALL | _S7_HEADLINES | _D14_HEADLINE | _QUICK_ALL | frozenset({"SIZE_CLAUSE_LEAD"}),
+    "docs/PRODUCT_SPEC.md": _WELCOME_ALL | _S7_HEADLINES | _D14_HEADLINE | _QUICK_ALL | frozenset({"SIZE_CLAUSE_LEAD"}),
     "docs/developer/qa-checklist.md": frozenset(
         {"WELCOME_FRESH", "WELCOME_RESUME_WITH_HISTORY", "WELCOME_RESUME_SETTINGS_ONLY"}
     )
@@ -121,8 +113,8 @@ _DOC_QUOTES: dict[str, frozenset[str]] = {
 # read off the module (never re-typed), so this table is data about the DOCS, exactly like
 # ``_DOC_QUOTES``. Forward direction only — see the module docstring's declared gap.
 _DOC_SIZE_NOUNS: dict[str, frozenset[str]] = {
-    "docs/claugentic-PRODUCT.md": frozenset({"Students", "CourseInfo", "StudentAttendance"}),
-    "docs/claugentic-PRODUCT_SPEC.md": frozenset({"Students", "CourseInfo", "StudentAttendance"}),
+    "docs/PRODUCT.md": frozenset({"Students", "CourseInfo", "StudentAttendance"}),
+    "docs/PRODUCT_SPEC.md": frozenset({"Students", "CourseInfo", "StudentAttendance"}),
     "docs/developer/qa-checklist.md": frozenset({"Students", "CourseInfo", "StudentAttendance"}),
 }
 

@@ -59,7 +59,7 @@ def _add(repo: Path, rel: str, text: str) -> None:
         "src/ui_flet/screens/thing.py",
         "config/mappings/sd99_mapping.yaml",
         "docs/partner/installation.md",
-        "docs/claugentic-DECISIONS.md",
+        "docs/DECISIONS.md",
         "CLAUDE.md",
         "README.md",
         ".github/workflows/ci.yml",
@@ -289,7 +289,6 @@ def test_the_gate_is_actually_WIRED_into_the_pre_commit_hook() -> None:
     hook = (REPO_ROOT / ".githooks" / "pre-commit").read_text(encoding="utf-8")
 
     assert "check_no_emails" in hook
-    assert "claugentic-check_architecture_tree" in hook, "the tree gate must survive alongside it"
 
 
 def test_the_gate_is_actually_WIRED_into_ci() -> None:

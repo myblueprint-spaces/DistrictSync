@@ -7,7 +7,7 @@ lists — ``task_com``, ``windows``, ``src/scheduler/__init__.py`` and
 ``ui_flet.schedule_status`` and ``ui_flet.setup_errors`` (its defensive access-denied
 fallback, since plan 0047 A2) all import from here today. ONE live consumer still hand-spells
 a marker rather than importing it: ``src/scheduler/linux.py`` (its own ``"no crontab"``
-check) — tracked on ``docs/claugentic-ROADMAP.md`` beside the cron path's unguarded
+check) — tracked on ``docs/ROADMAP.md`` beside the cron path's unguarded
 marker interpolation, so the "never re-spelled on one side only" property holds for the five
 importers above, not universally.
 
@@ -25,7 +25,7 @@ Three vocabularies, three owners:
 :func:`carries_foreign_marker` is the boundary guard ``task_com._canonical_message`` applies to
 both of its uncontrolled escapes (Windows' own ``excepinfo`` description and ``str(exc)``).
 There is deliberately no ``owned=`` knob: the HRESULT table returns BEFORE the guard, so the
-two legitimate owners never reach it. See ``docs/claugentic-INVARIANTS.md``.
+two legitimate owners never reach it. See ``docs/INVARIANTS.md``.
 """
 
 from __future__ import annotations

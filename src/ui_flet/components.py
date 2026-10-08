@@ -546,7 +546,7 @@ def page_header(
 # only caller in the repo was Home's "Latest roster" line above the metric-tile row, and slim
 # Home removed both. An uncalled factory in the module the design system calls "the ONLY
 # control factories" advertises a shape nothing uses; re-adding it is a dozen lines if a
-# future screen genuinely needs a group header. See docs/claugentic-DECISIONS.md.
+# future screen genuinely needs a group header. See docs/DECISIONS.md.
 
 
 # --------------------------------------------------------------------------- #

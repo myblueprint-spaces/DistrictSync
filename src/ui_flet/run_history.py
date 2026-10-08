@@ -514,7 +514,7 @@ def _row_entity_counts(record: dict) -> dict[str, int]:
     ``StudentAttendance``**, so an attendance-only run renders five zeros HERE. Its real row count
     reaches exactly ONE surface — Home's healthy ``size_clause`` — and only from the HEALTHY
     branch, so a warning/failed attendance run shows its size nowhere. That is an OPEN defect,
-    tracked in ``docs/claugentic-ROADMAP.md`` — not a discharged one. A delivery-only
+    tracked in ``docs/ROADMAP.md`` — not a discharged one. A delivery-only
     record (deliver-from-disk, 0034 Slice 2) built nothing this run — its count keys are zeros by
     shape, so return ``{}`` and the table renders "—" cells, never a "0 Students" lie.
     """

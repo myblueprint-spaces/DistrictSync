@@ -1,8 +1,7 @@
-# Standards candidates — staged for upstream promotion
+# Standards candidates
 
-> Universal lessons harvested from this repo's programs, staged here because the
-> per-dimension modules in this directory are managed plugin copies (do not edit).
-> Promote into the upstream claugentic-dev-harness standards/roles, then remove.
+> Universal lessons harvested from this repo's programs. Promote a candidate into
+> CLAUDE.md or the relevant developer guide once it has earned a standing rule, then remove it.
 
 ## product-ux — "Honest system-status copy (trust surfaces)"  [staged 2026-07-08, plan 0029]
 
@@ -351,7 +350,7 @@ A blend-suppression gate written the obvious way — `if global_config.get("clas
 district is not licensed to send, raising no quality warning and no anomaly, on precisely the path
 the bound exists to make total. Slice 1a's code happened to spell the gate correctly; nothing
 pinned it, and nothing had told anyone the spelling was load-bearing. Now recorded in
-`docs/claugentic-INVARIANTS.md` and pinned two-sided over the SD74 corpus.
+`docs/INVARIANTS.md` and pinned two-sided over the SD74 corpus.
 Beneficiary roles: `implementer-architect`, `plan-reviewer`, `architect-reviewer`.
 
 ---

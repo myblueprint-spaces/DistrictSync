@@ -74,7 +74,7 @@ _TRANSIENT_DIR_PARTS: frozenset[str] = frozenset({"downloads", "temp", "tmp"})
 # NOT closed on Unix: `linux._read_crontab_lines` interpolates RAW `crontab` output into its
 # failure message, so a crontab that prints one of these phrases still reaches here unguarded —
 # the cron half of the same defect the Windows guard closes (ROADMAP).
-# See the marker-guard entry in `docs/claugentic-INVARIANTS.md` before adding a phrase here.
+# See the marker-guard entry in `docs/INVARIANTS.md` before adding a phrase here.
 
 
 class RunResult(Enum):

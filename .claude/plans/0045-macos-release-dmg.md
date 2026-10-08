@@ -2,7 +2,7 @@
 
 - **Status:** Implemented — CI-verified 2026-09-01; awaiting the owner's real-Mac check (AC 7)
 - **Roadmap item:** none yet — field-reported by a district on 2026-08-31 (see Problem); a ROADMAP entry lands with the slice for the deferred items below.
-- **References:** `docs/claugentic-ARCHITECTURE_TREE.md` · `docs/claugentic-DECISIONS.md` (2026-06-29 PLAT-3 offline-embed evidence · 2026-07-28 light flavor) · `.claude/plans/0041-legit-distribution-com-scheduler-onedir-installer.md` (§B distribution shape; "Linux/macOS artifacts unchanged" — this plan supersedes that row for macOS only) · `docs/FLET_1.0_CONVENTIONS.md:117,160` (macOS embed verified)
+- **References:** `docs/claugentic-ARCHITECTURE_TREE.md` · `docs/DECISIONS.md` (2026-06-29 PLAT-3 offline-embed evidence · 2026-07-28 light flavor) · `.claude/plans/0041-legit-distribution-com-scheduler-onedir-installer.md` (§B distribution shape; "Linux/macOS artifacts unchanged" — this plan supersedes that row for macOS only) · `docs/FLET_1.0_CONVENTIONS.md:117,160` (macOS embed verified)
 
 ## Problem
 
@@ -89,8 +89,8 @@ Step 3 is the answer to finding 2, and it is deliberately **gating**. If the one
 | `docs/index.md` | Same row |
 | `docs/developer/release.md` | Permalink block; the `publish-release` prose at `:60` describing three renamed binaries |
 | `docs/partner/installation.md` | macOS steps, if it names the file (verify during implementation) |
-| `docs/claugentic-DECISIONS.md` | Dated entry: the bug, the DMG decision, the accepted permalink break, the kept bare binary, the deferred onedir/icns items |
-| `docs/claugentic-ROADMAP.md` | Deferred: macOS `--onedir` migration (PyInstaller 7 blocker), `.icns` icon, signing pointer to 0041 §C |
+| `docs/DECISIONS.md` | Dated entry: the bug, the DMG decision, the accepted permalink break, the kept bare binary, the deferred onedir/icns items |
+| `docs/ROADMAP.md` | Deferred: macOS `--onedir` migration (PyInstaller 7 blocker), `.icns` icon, signing pointer to 0041 §C |
 | `CHANGELOG.md` | Release-facing row |
 
 `scripts/` and `.github/` are outside the architecture-tree gate's scope (`src/**/*.py` + `config/mappings/*.yaml`), so no tree entry is required — consistent with PLAT-3's precedent.
@@ -197,8 +197,8 @@ def mounted_app_problems(mount: Path, name: str) -> list[str]:
 `README.md`, `docs/index.md` — macOS row -> `DistrictSync-macos.dmg` + drag-to-Applications note, with the bare binary named as the headless option.
 `docs/developer/release.md` — the permalink block and the `publish-release` prose at `:60`.
 `docs/partner/installation.md`, `docs/partner/headless-sftp-setup.md` — audited during implementation; updated only where they name the macOS file.
-`docs/claugentic-DECISIONS.md` — dated entry (bug · DMG · accepted permalink break · bare binary kept · onedir/icns deferred).
-`docs/claugentic-ROADMAP.md` — macOS `--onedir` migration (PyInstaller 7 blocker), `.icns` icon.
+`docs/DECISIONS.md` — dated entry (bug · DMG · accepted permalink break · bare binary kept · onedir/icns deferred).
+`docs/ROADMAP.md` — macOS `--onedir` migration (PyInstaller 7 blocker), `.icns` icon.
 `CHANGELOG.md` — release-facing row.
 
 ### Tests to add — `tests/test_ci_flet_pack_smoke.py`
