@@ -2,7 +2,7 @@
 
 - **Status:** CLOSED 2026-09-17 — Slice 1 (#117), B (#124), C (#125), D (#126) LANDED and released in v3.21.0; Slice A shipped as **plan 0047**. The parked gMSA / machine-scope half continues as **plan 0049** (`0049-machine-scope-gmsa.md`), which supersedes the *Revision* block's N1/N2 stands (DECISIONS 2026-09-17). The Investigations and Review sections below remain the evidence of record.
 - **Roadmap item:** partially discharges *"Service-account / machine-scope secret storage (SYSTEM/gMSA task principals; non-keyring secret sources) — enterprise-scope, L"*. This plan takes the **password-account half only**.
-- **Supersedes:** the 2026-06-05 decision *"the task's run-as account must equal the setup account"* (`docs/claugentic-DECISIONS.md:444`).
+- **Supersedes:** the 2026-06-05 decision *"the task's run-as account must equal the setup account"* (`docs/DECISIONS.md:444`).
 - **References:** plan 0034 (reconcile), plan 0041 (COM scheduler), `docs/DESIGN_SYSTEM.md`
 - **Review:** 3 adversarial passes (plan-gate · YAGNI · security lens). Verdict was **CHANGES REQUIRED**; this revision incorporates them. See `## Review`.
 
@@ -183,8 +183,8 @@ Rejected: snapshotting the task XML for rollback (the credential is absent, so t
 
 **Docs**
 - `docs/partner/headless-sftp-setup.md` — **extend, do not add a file** (YAGNI CUT 4): it already owns `--sftp-configure` and has a Task Scheduler section.
-- `docs/claugentic-DECISIONS.md` — supersede 2026-06-05; record A1, A8, and the N3 consequence. Target ~4 lines, not five paragraphs.
-- `docs/claugentic-ROADMAP.md` — narrow the deferred item to gMSA/machine-scope; add the UPN line; record A9.
+- `docs/DECISIONS.md` — supersede 2026-06-05; record A1, A8, and the N3 consequence. Target ~4 lines, not five paragraphs.
+- `docs/ROADMAP.md` — narrow the deferred item to gMSA/machine-scope; add the UPN line; record A9.
 
 ## Risks & mitigations
 

@@ -1,6 +1,6 @@
 r"""The launch page's PURE matching layer (plan 0038 S4a) — the S4a→S5 seam.
 
-Written RED-FIRST per `docs/claugentic-CHARTER.md` → "Pure predicate / primitive modules
+Written RED-FIRST per `docs/CHARTER.md` → "Pure predicate / primitive modules
 whose semantics the spec DECIDES": every judgment call below (exact-vs-suffix matching,
 what an empty domain does, which order matches come back in, what counts as an SD number)
 is a DECISION the spec makes, so it is stated here as a requirement before any code can

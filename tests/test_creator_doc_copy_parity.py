@@ -11,7 +11,7 @@ modules — which is exactly how brief 0037's S6 inherited FOUR stale doc quotes
 a blocker had already deleted, every one of them green the whole time.
 
 Shaped after ``tests/test_ui_flet_band_copy_parity.py`` and pinned in BOTH directions, per
-the declared-gap discipline in ``docs/claugentic-standards/CANDIDATES.md``:
+the declared-gap discipline in ``docs/CANDIDATES.md``:
 
 * every constant a doc is DECLARED to quote must be present in it verbatim — so renaming a
   button and not touching the docs is red;
@@ -83,14 +83,15 @@ _QA_ONLY = frozenset({"mapping.MAPPING_EXPORT_LABEL"})
 # in a doc that has none today go red instead of arriving unpinned.
 _DOC_QUOTES: dict[str, frozenset[str]] = {
     "docs/developer/qa-checklist.md": _QA_ALL | _QA_ONLY,
-    "docs/claugentic-PRODUCT_SPEC.md": _QA_ALL,
+    "docs/PRODUCT_SPEC.md": _QA_ALL,
     # The Help Centre draft is the one PUBLIC doc here: a district admin reads it on the
     # vendor KB and looks for these labels word-for-word, so it declares every one.
     "docs/partner/help-centre-myedbc-districtsync-guide.md": _QA_ALL | _QA_ONLY,
     "docs/partner/installation.md": frozenset({"creator.CREATOR_ENTRY_LABEL"}),
     "docs/developer/adding-district.md": frozenset(),
-    "docs/claugentic-PRODUCT.md": frozenset(),
+    "docs/PRODUCT.md": frozenset(),
     "CLAUDE.md": frozenset(),
+    "docs/developer/architecture-notes.md": frozenset(),
 }
 
 _QA_CHECKLIST = "docs/developer/qa-checklist.md"

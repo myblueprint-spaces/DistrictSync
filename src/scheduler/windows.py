@@ -39,7 +39,7 @@ DECISIONS 2026-06-25 — consult git history for the scripts themselves.
     (``task_com.MSG_ACCESS_DENIED`` / ``MSG_LOGON_FAILURE`` / ``MSG_ACCOUNT_INFO_NOT_SET``
     / ``MSG_NO_LOGON_SESSION`` / ``MSG_NOT_FOUND``, or Windows' own description plus its
     hex status for an unmapped one) — locale-independent, injective, and marker-guarded
-    (plan 0047; ``docs/claugentic-INVARIANTS.md``). ``setup_errors.classify_schedule_error``
+    (plan 0047; ``docs/INVARIANTS.md``). ``setup_errors.classify_schedule_error``
     IMPORTS these constants and branches on them by EXACT equality (as it already did for the
     ``windows._MSG_*`` elevation canonicals), so an edit to a canonical here silently moves a
     branch there — mirror it. Only the defensive access-denied fallback still matches by

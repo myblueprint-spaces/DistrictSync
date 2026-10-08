@@ -1,8 +1,8 @@
 # 0041 — Legit distribution: COM scheduler + onedir installer (+ signing)
 
 - **Status:** Approved 2026-08-05; amended same day (owner): **installer LAST and ADDITIVE** — the one-file exe stays published beside `DistrictSync-Setup.exe`. Order: 1a (LANDED, PR #79) → 1b → signing (when the account lands) → installer (2–3) → release truthing (4). Slice 1a: DONE.
-- **Roadmap item:** `docs/claugentic-ROADMAP.md` — the `[AV / DISTRIBUTION]` backlog entry (2026-08-04 Bitdefender ATC incident), its fixes (1), (2) and (3); overlaps the queued `0036 bigger bets — startup/installer spike`.
-- **References:** `docs/claugentic-ARCHITECTURE_TREE.md` · `docs/claugentic-DECISIONS.md` (2026-06-15 XML / 2026-06-25 EncodedCommand + CLIXML / 2026-07-08 D4 read-back + D5 elevation / 2026-07-28 light-flavor + no-UPX / 2026-07-30 land gate / 2026-07-31 v3.9.0 override) · plan 0038 (house style) · `.claude/plans/0032-ui-ux-sweep-proposal.md` (installer spike detail)
+- **Roadmap item:** `docs/ROADMAP.md` — the `[AV / DISTRIBUTION]` backlog entry (2026-08-04 Bitdefender ATC incident), its fixes (1), (2) and (3); overlaps the queued `0036 bigger bets — startup/installer spike`.
+- **References:** `docs/claugentic-ARCHITECTURE_TREE.md` · `docs/DECISIONS.md` (2026-06-15 XML / 2026-06-25 EncodedCommand + CLIXML / 2026-07-08 D4 read-back + D5 elevation / 2026-07-28 light-flavor + no-UPX / 2026-07-30 land gate / 2026-07-31 v3.9.0 override) · plan 0038 (house style) · `.claude/plans/0032-ui-ux-sweep-proposal.md` (installer spike detail)
 
 ## Problem
 

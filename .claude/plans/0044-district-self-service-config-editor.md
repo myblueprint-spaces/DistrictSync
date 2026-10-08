@@ -15,8 +15,8 @@
   - `S3 staleness + activation writer: chose a digest of the RESOLVED config (sha256 over the validated `MappingConfig.model_dump(mode="json")`) over the plan's overlay-BYTES hash — a vendor base change on app update leaves overlay bytes unchanged while what converts differs — plus an advisory `authored_with` root key (app version + base digest) the loader ignores; and ONE atomic activation writer (`AppConfig.activate_creator_config`), which makes `sis_type` write sites four, not three` — reviewable at the S3 gate.
   - `S6 scope addition (owner, 2026-09-02): a CREATE door — "Set up a district that isn't listed" — on the Mapping screen, because a configured install otherwise has no way into the creator; S6 reordered ahead of S5` — ratified by the owner in the same message.
 - **Disposition at close:** per `docs/claugentic-WORKFLOW.md` plan-file lifecycle.
-- **Roadmap item:** `docs/claugentic-ROADMAP.md` → "Brief 0037 … Phase 2 = the district self-service config editor" (updated 2026-08-27)
-- **References:** `docs/claugentic-ARCHITECTURE_TREE.md` · `docs/claugentic-DECISIONS.md` (2026-08-27 re-scope entry — the authority for everything this plan builds) · `.claude/plans/0037-brief-front-door-district-identity-mapping-creator.md` (superseded scope, retained safety rails) · plan 0038 (Phase 1, landed)
+- **Roadmap item:** `docs/ROADMAP.md` → "Brief 0037 … Phase 2 = the district self-service config editor" (updated 2026-08-27)
+- **References:** `docs/claugentic-ARCHITECTURE_TREE.md` · `docs/DECISIONS.md` (2026-08-27 re-scope entry — the authority for everything this plan builds) · `.claude/plans/0037-brief-front-door-district-identity-mapping-creator.md` (superseded scope, retained safety rails) · plan 0038 (Phase 1, landed)
 
 ## Problem
 
@@ -668,7 +668,7 @@ safety-relevant parameter.
 
 #### Harness impact (delta from round 1)
 
-- **`docs/claugentic-DECISIONS.md`** — add the R2-2 adjudication (which advisory-writer shape,
+- **`docs/DECISIONS.md`** — add the R2-2 adjudication (which advisory-writer shape,
   and why a gate-governing fact is classified advisory) alongside the three already flagged.
 - **`docs/claugentic-INVARIANTS.md`** — a fourth entry: *the verified fact is content-hash-keyed
   so a REFUSED invalidation write still fails SAFE* (with the UNREADABLE-provenance provenance).
@@ -2777,7 +2777,7 @@ the PR opens, as a plan, not a deferral; Stage 9 retrospect.
 Handoff `handoff0044round3.md` plus three owner answers to its open items. Fixed inline on the
 branch (no subagents — standing instruction for finding rounds). **The branch was first merged up
 from `origin/main`**, which had shipped v3.15.0 and v3.16.0 (the first signed Windows build) since it
-was cut: 7 files conflicted on paper, only 2 in fact (`docs/claugentic-DECISIONS.md`, both sides
+was cut: 7 files conflicted on paper, only 2 in fact (`docs/DECISIONS.md`, both sides
 appending at the head of a newest-first log — resolved by date, our 09-03 block, main's 09-02 release
 block, then our 09-02 block; and `docs/developer/output-contract.md`'s front matter, resolved to our
 `2.2.0` with an honest `emitted_by` saying `2.2.0` is UNRELEASED and the newest tag still emits

@@ -87,7 +87,7 @@ The budgeting stays inline in `create_name` over the one named segment. If it ev
 | `tests/test_blended_classes.py` | new cases; **re-pin `:866`**, an exact-equality assertion outside `TestCreateBlendedClassName` whose inline frame *does* carry the four components, without weakening what it pins (course-code skip-don't-substitute + once-only warning) |
 | `tests/snapshots/output/Classes.csv` | SD74 golden: 4 blended rows gain teacher + block |
 | `docs/developer/output-contract.md` | row-VALUE tier rule; 2.4.0 → 2.5.0 front matter **and** a new row in the doc's own changelog table; `emitted_by` refresh; blended composite line |
-| `docs/claugentic-DECISIONS.md` | one dated line |
+| `docs/DECISIONS.md` | one dated line |
 | `CHANGELOG.md` | `[Unreleased]` → `Fixed` |
 
 No source file added/moved/removed ⇒ no `ARCHITECTURE_TREE` entry.
@@ -140,7 +140,7 @@ The diagnosis is right and the three defects are real — all three mechanisms c
 
 #### Required changes
 
-1. **Scope the goal — the repo's own ROADMAP contradicts "for every district."** `docs/claugentic-ROADMAP.md` (item dated **2026-09-16**, the same day as this plan, same area) records that `session_key` "cannot distinguish sections when an export has no day rotation (`Day` always `"1"`) — SD51-shaped secondary timetables produce false merges, and the fallback frame … shares the SAME key". The discriminator is built from four of that key's six components, so name uniqueness inherits the key's coarseness exactly: on a no-rotation export the new segment prints a **constant** — noise with no signal — and two blends a partner sees as different still share a name. Restate the goal as "identifies a blend as finely as `session_key` distinguishes blends", add a Risks row naming the ROADMAP item, and say explicitly that this plan does not narrow the key. (The other residual — same teacher, two schools, same slot, school omitted from the discriminator — was checked and dismissed: physically unreachable.)
+1. **Scope the goal — the repo's own ROADMAP contradicts "for every district."** `docs/ROADMAP.md` (item dated **2026-09-16**, the same day as this plan, same area) records that `session_key` "cannot distinguish sections when an export has no day rotation (`Day` always `"1"`) — SD51-shaped secondary timetables produce false merges, and the fallback frame … shares the SAME key". The discriminator is built from four of that key's six components, so name uniqueness inherits the key's coarseness exactly: on a no-rotation export the new segment prints a **constant** — noise with no signal — and two blends a partner sees as different still share a name. Restate the goal as "identifies a blend as finely as `session_key` distinguishes blends", add a Risks row naming the ROADMAP item, and say explicitly that this plan does not narrow the key. (The other residual — same teacher, two schools, same slot, school omitted from the discriminator — was checked and dismissed: physically unreachable.)
 
 2. **A1 must branch on ABSENT columns, not just blank values — the plan's own regression claim depends on it.** `_add_session_key` only stringifies the components that are `available` in the frame (`blended.py:190-195`), so `group["period"]` on a district whose export lacks the column raises `KeyError`, and the four existing `TestCreateBlendedClassName` cases pass groups carrying **none** of the four. "All four blank → segment omitted" must read **"absent or blank"**, derived from the intersection of the four with the frame's columns — the same `available` computation `_add_session_key` does. Also correct the supporting sentence: "every row in the group shares these values by construction (they are the group key)" is true only for the *available* subset.
 
@@ -170,7 +170,7 @@ The diagnosis is right and the three defects are real — all three mechanisms c
 
 #### Harness impact
 
-**Nothing lands plugin-side.** No new STANDARD, agent, or managed harness doc; the new contract row-value tier (R6) lands in `docs/developer/output-contract.md`, a project doc, and the dated entry in `docs/claugentic-DECISIONS.md` is project-local. Nothing to stage upstream from this slice.
+**Nothing lands plugin-side.** No new STANDARD, agent, or managed harness doc; the new contract row-value tier (R6) lands in `docs/developer/output-contract.md`, a project doc, and the dated entry in `docs/DECISIONS.md` is project-local. Nothing to stage upstream from this slice.
 
 #### Closing the gate
 

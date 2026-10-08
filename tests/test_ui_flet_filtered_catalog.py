@@ -1,6 +1,6 @@
 """The district-list filter — `mapping_catalog.filtered_catalog` (plan 0038 S5, COUNTED).
 
-Written RED-FIRST per `docs/claugentic-CHARTER.md` → "Pure predicate / primitive modules
+Written RED-FIRST per `docs/CHARTER.md` → "Pure predicate / primitive modules
 whose semantics the spec DECIDES": every judgment call below (which tier a state falls in,
 whether an unclaimed config can be hidden, whether a broken YAML can exclude anyone) is
 DECIDED by the plan, so it is stated as an assertion before any code can quietly make it.
@@ -22,7 +22,7 @@ argument that can widen a matched list, so the escape cannot silently grow back.
 The failure this rule exists to make unrepresentable is **a district disappearing on its own
 admin**. Every test below that asserts an absence is paired with a positive twin, because
 "the row was not hidden" is equally satisfied by a working rule and by a filter that never
-fired at all (see `docs/claugentic-standards/CANDIDATES.md`, 2026-07-29 vacuous-green lesson).
+fired at all (see `docs/CANDIDATES.md`, 2026-07-29 vacuous-green lesson).
 """
 
 from __future__ import annotations

@@ -59,7 +59,7 @@ logger = logging.getLogger(__name__)
 # config-format change (and migrate every bundled config in the same release,
 # so the bundled set always loads clean against these constants).
 #
-# SCOPE (amended 2026-07-29, plan 0038 S3 — see docs/claugentic-DECISIONS.md):
+# SCOPE (amended 2026-07-29, plan 0038 S3 — see docs/DECISIONS.md):
 # "ETL-affecting" is the operative word. This gate exists so an OLDER build
 # refuses (or warns about) a config whose behaviour it would silently get
 # wrong — which can only happen for a key that changes what the pipeline

@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **What this is** | The ONE written rule set for how the ETL fails: at what scope, for which entity, in which direction, with which bounded reason, and what the admin sees. Read it before adding a check, an entity or a config knob. |
-| **Plan** | `.claude/plans/0053-etl-failure-policy.md` (slices S0–S15). Decisions: `docs/claugentic-DECISIONS.md` 2026-09-23. Register: one `docs/claugentic-INVARIANTS.md` row per rule P1–P16. |
+| **Plan** | `.claude/plans/0053-etl-failure-policy.md` (slices S0–S15). Decisions: `docs/DECISIONS.md` 2026-09-23. Register: one `docs/INVARIANTS.md` row per rule P1–P16. |
 | **Verified against** | commit `8d33664` (v3.25.0). Every code `file:line` below was read at that commit. Citations into docs this change also edits (`faq.md`, the ROADMAP) are by question heading or item title, never by line, so they do not drift. |
 | **Pinned by** | `tests/test_failure_policy_parity.py` — **arrives in S2**; until then this document is held true by review only. |
 | **Style** | Tables first, graded like `docs/developer/output-contract.md`. Every rule row says what the code does TODAY and carries a Status. |

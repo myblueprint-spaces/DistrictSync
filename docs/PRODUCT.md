@@ -1,4 +1,3 @@
-<!-- claugentic-dev-harness@0.3.0 -->
 # DistrictSync — Product spec (narrative)
 
 > The durable, human-readable product spec for the DistrictSync desktop cockpit (the Flet 1.0
@@ -154,7 +153,7 @@ are pinned verbatim against `home_status` by `tests/test_ui_flet_band_copy_parit
   myBlueprint+ entities. An attendance district's row count reaches exactly ONE place — the healthy
   size sentence above** — because that table's columns exclude `StudentAttendance` by design; and
   because the sentence rides the healthy verdict only, a warning or failed attendance run shows its
-  size nowhere. That is an OPEN gap tracked in `claugentic-ROADMAP.md`, not an accepted residual.
+  size nowhere. That is an OPEN gap tracked in `ROADMAP.md`, not an accepted residual.
 - Below the verdict block (and the identity cards) sits a **quick-action strip**: Convert / Run
   History / Settings, minus whichever destination the fix button already offers. **Exactly one
   filled button exists in every state** — the fix when there is a fault, "Convert now" when there is

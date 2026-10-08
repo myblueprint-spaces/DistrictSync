@@ -841,7 +841,7 @@ with an empty or absent `StudentSchedule.txt`** — for everyone else the CSVs a
 byte-identical.
 
 **This release ran the certification pass.** The audit, product-gap review and
-26-row manual QA walkthrough that `docs/claugentic-DECISIONS.md` (D-0037-6)
+26-row manual QA walkthrough that `docs/DECISIONS.md` (D-0037-6)
 reserves were all completed against this build — the first release since 3.8.x
 to do so, after three consecutive releases shipped ahead of it.
 
@@ -921,7 +921,7 @@ bug that could affect every district. **No output change for any district
 that doesn't set the new keys** — SD83 is the only shipped config that does.
 
 **Released ahead of the certification pass by owner decision (2026-08-17).**
-The audit + product-gap + QA-checklist walk that `docs/claugentic-DECISIONS.md`
+The audit + product-gap + QA-checklist walk that `docs/DECISIONS.md`
 (D-0037-6) reserves has **not** run against this build — the third consecutive
 release to skip it; see that decision log for what this release is and is not
 evidence of.
@@ -1053,7 +1053,7 @@ continuous integration caught two further defects that the Windows development m
 structurally could not see.
 
 **Not certified.** The audit and quality walk this project reserves before a release
-have not been run against this build (see `docs/claugentic-DECISIONS.md`, 2026-08-05).
+have not been run against this build (see `docs/DECISIONS.md`, 2026-08-05).
 What *did* run: the full automated suite on three operating systems, and an owner walk
 of the real scheduling paths on a real machine.
 
@@ -1138,7 +1138,7 @@ test pass untouched; everything here is UI.
   `%USERPROFILE%\.flet\client\` lets it re-extract from the executable, offline.
   **Your nightly scheduled sync is unaffected — it runs the command-line path and
   never opens a window.** Code signing and a non-self-extracting installer are the
-  real fixes and are tracked in `docs/claugentic-ROADMAP.md`.
+  real fixes and are tracked in `docs/ROADMAP.md`.
 
 ## [3.9.0] - 2026-07-31
 
@@ -1147,7 +1147,7 @@ first-run experience and the Home dashboard were both rewritten. **No CSV output
 changes** — the SD74 golden and every district contract test pass untouched.
 
 **Released ahead of the certification pass by owner decision (2026-07-31).** The
-audit + product-gap + QA-checklist walk that `docs/claugentic-DECISIONS.md`
+audit + product-gap + QA-checklist walk that `docs/DECISIONS.md`
 (D-0037-6) reserves for after Phase 2 has **not** run against this build; see that
 decision log for what this release is and is not evidence of.
 

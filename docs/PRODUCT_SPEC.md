@@ -1,6 +1,6 @@
 # PRODUCT_SPEC — what DistrictSync is supposed to be
 
-> Plain-English, durable statement of what DistrictSync promises: who it's for, the job it does, each feature's flow and the states that matter — ending in a machine-readable list of acceptance criteria. This is **user-owned**: it is never stamped and never auto-refreshed. The narrative product context (personas, the three hats, the trust bar, the design language, the three journeys) lives in [`docs/claugentic-PRODUCT.md`](claugentic-PRODUCT.md); this file is its checkable projection.
+> Plain-English, durable statement of what DistrictSync promises: who it's for, the job it does, each feature's flow and the states that matter — ending in a machine-readable list of acceptance criteria. This is **user-owned**: it is never stamped and never auto-refreshed. The narrative product context (personas, the three hats, the trust bar, the design language, the three journeys) lives in [`docs/PRODUCT.md`](PRODUCT.md); this file is its checkable projection.
 
 ## Who it's for
 
@@ -35,7 +35,7 @@ Naming these is the trust bar applied to the product's own edges: a tool that sa
 
 ## Features
 
-Each feature below carries a **Flow** (the happy path), **States** (only which of loading/empty/error this surface has — the *bar* for those states is the standard [`docs/claugentic-standards/product-ux.md`](claugentic-standards/product-ux.md) → *Loading / empty / error states* and *User-flow completeness*, not restated here), and **What good feels like**. The pytest suite (~1,686 tests, SD74 golden-file snapshot, config validation, 80% coverage gate) is the real automated gate behind these; the acceptance criteria are the plain-English projection a person can check.
+Each feature below carries a **Flow** (the happy path), **States** (only which of loading/empty/error this surface has — those states are not restated here), and **What good feels like**. The pytest suite (~1,686 tests, SD74 golden-file snapshot, config validation, 80% coverage gate) is the real automated gate behind these; the acceptance criteria are the plain-English projection a person can check.
 
 ### Launch identity — "who looks after this sync?"
 
@@ -130,7 +130,7 @@ The Watcher's daily glance. One plain sentence answers *"is my roster syncing?"*
 
 - **Flow**
   1. Open the app; Home derives a single verdict from the newest run record.
-  2. Read the verdict: HEALTHY "Your roster is syncing", whose detail carries the last-sync phrasing plus ONE roster-size number ("It included 4,812 students") — or an amber/red WARNING/FAILED with a plain headline. There are no metric tiles: the tile row retired at 0038 S7. Per-entity counts live in Run History for the rostering and myBlueprint+ entities; an attendance district's row count reaches exactly ONE place — this size sentence — since that table's columns exclude `StudentAttendance`, and it is shown only on the healthy verdict. An OPEN gap in `claugentic-ROADMAP.md`.
+  2. Read the verdict: HEALTHY "Your roster is syncing", whose detail carries the last-sync phrasing plus ONE roster-size number ("It included 4,812 students") — or an amber/red WARNING/FAILED with a plain headline. There are no metric tiles: the tile row retired at 0038 S7. Per-entity counts live in Run History for the rostering and myBlueprint+ entities; an attendance district's row count reaches exactly ONE place — this size sentence — since that table's columns exclude `StudentAttendance`, and it is shown only on the healthy verdict. An OPEN gap in `ROADMAP.md`.
   3. If not healthy, follow the one fix button, which routes to the right place (Run History or Settings) and keeps the nav "you are here" highlight truthful.
   4. Below the verdict block sits a quick-action strip — the few places you actually go next (Convert / Run History / Settings), minus whichever one the fix button already offers.
 - **States** — **loading** (a fast synchronous local read), **empty** (no runs yet → a calm amber WARNING, never red: an install whose run store has never been created reads "No runs recorded yet" — a claim about the ledger, since a pre-v3.5.0 upgrader has no store either — naming the nightly time only when the schedule read-back CONFIRMS one (a merely-registered task whose read-back is unprobed or UNKNOWN names no time) and no mention of a nightly at all when nothing confirms or records one; an install whose store predates this update reads "Run history starts fresh here"), **error** (the never-crash `ErrorCard` floor — never a stack trace; a Refresh re-checks in place). Degraded and stale reads render as calm WARNINGs, not red.
@@ -941,4 +941,4 @@ pass recognizes and skips them. One terse line each; never stamped; never auto-e
   spatial memory; raised as an observation, not a recommendation.
 -->
 
-_Proposals from the 2026-07-21 Product Excellence pass that are **owner decisions, not spec fixes**, are recorded in [`claugentic-ROADMAP.md`](claugentic-ROADMAP.md) (prove-it-now run at the wizard finish; input-folder GDE preflight; code-signing; an update-available signal). They are **not** picked up automatically by any build step — they enter when the owner names one._
+_Proposals from the 2026-07-21 Product Excellence pass that are **owner decisions, not spec fixes**, are recorded in [`ROADMAP.md`](ROADMAP.md) (prove-it-now run at the wizard finish; input-folder GDE preflight; code-signing; an update-available signal). They are **not** picked up automatically by any build step — they enter when the owner names one._

@@ -554,7 +554,7 @@ class TestThisRunLabel:
         assert this_run_label("sd40myedbc", "   ", config_dir=tmp_path) == "sd40myedbc"
 
     def test_it_renders_the_FRIENDLY_name_when_one_exists(self) -> None:
-        """A trust surface never shows a raw config id (`docs/claugentic-PRODUCT.md`)."""
+        """A trust surface never shows a raw config id (`docs/PRODUCT.md`)."""
         label = this_run_label("sd48myedbc", "sd74myedbc")
 
         assert label is not None

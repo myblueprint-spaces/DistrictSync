@@ -342,7 +342,7 @@ repeats across a teacher's whole course load. On that shape the session key
 cannot tell two genuinely different sections apart, and unrelated sections
 taught by the same teacher at "the same time" merge into one false blended
 class (SD51's 2026-09-14 drop: 85 false blends, Classes.csv 428→207,
-Enrollments.csv 5081→4699 — see `docs/claugentic-DECISIONS.md`, 2026-09-16).
+Enrollments.csv 5081→4699 — see `docs/DECISIONS.md`, 2026-09-16).
 
 Set `blended_classes: false` when a district's `Day` column doesn't rotate
 (or you otherwise can't trust the session key to disambiguate sections).

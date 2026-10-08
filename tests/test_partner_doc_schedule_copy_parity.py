@@ -9,7 +9,7 @@ is not hypothetical here: the bullet this slice replaced reproduced the PIN / mi
 it at plan 0041 S1b, and it sat there wrong for months with every gate green.
 
 Pinned in BOTH directions, per the declared-gap discipline in
-``docs/claugentic-standards/CANDIDATES.md`` and the shape of
+``docs/CANDIDATES.md`` and the shape of
 ``tests/test_creator_doc_copy_parity.py``:
 
 * every string a doc is DECLARED to quote must be present in it verbatim — so rewording a
@@ -157,7 +157,8 @@ _DOC_QUOTES: dict[str, frozenset[str]] = {
     _TROUBLESHOOTING: frozenset(_PINNED) - _SCOPE_PINS,
     # The harness docs describe the log line's shape, so they legitimately carry the anchor.
     "CLAUDE.md": frozenset({"log_anchor"}),
-    "docs/claugentic-ARCHITECTURE_TREE.md": frozenset({"log_anchor"}),
+    # The per-subsystem detail moved out of CLAUDE.md verbatim, log-line description included.
+    "docs/developer/architecture-notes.md": frozenset({"log_anchor"}),
     # Plan 0049 S-2b: the service-account guide leads with "which kind of install is this?",
     # and Step 4 of the install guide explains the line. Both quote the app verbatim.
     _HEADLESS: _SCOPE_PINS,

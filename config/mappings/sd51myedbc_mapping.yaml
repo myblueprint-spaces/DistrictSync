@@ -48,7 +48,7 @@ global_config:
   # (so blended falls back to the schedule dedup, which uses the SAME
   # session_key and produces the same false merges) and no Primary Teacher
   # column (so co-teacher enrollments would drop to zero). See
-  # docs/claugentic-DECISIONS.md (2026-09-16) and the session_key ROADMAP item.
+  # docs/DECISIONS.md (2026-09-16) and the session_key ROADMAP item.
   blended_classes: false
 
 mappings:

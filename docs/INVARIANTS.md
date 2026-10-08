@@ -1,4 +1,4 @@
-# Invariants (claugentic harness)
+# Invariants
 
 Load-bearing constraints that **must stay true or something breaks**. Each entry
 is a non-obvious "must hold" rule that already bit (or would bite) if a future
@@ -240,7 +240,7 @@ change "simplified" it. Consult this before changing the named subsystem.
 
 ---
 
-_The sixteen rows below are the plan 0053 ETL failure policy, one per rule P1–P16. Each is a POINTER: the rule, its Today/Status detail and its cited lines live in `docs/developer/failure-policy.md` (the section named in the row); the decision is `docs/claugentic-DECISIONS.md` 2026-09-23 "failure is scoped to the entity". A row marked **planned** describes a target the code does not yet meet — the named slice makes it true and flips both the row here and its section there, in the same change._
+_The sixteen rows below are the plan 0053 ETL failure policy, one per rule P1–P16. Each is a POINTER: the rule, its Today/Status detail and its cited lines live in `docs/developer/failure-policy.md` (the section named in the row); the decision is `docs/DECISIONS.md` 2026-09-23 "failure is scoped to the entity". A row marked **planned** describes a target the code does not yet meet — the named slice makes it true and flips both the row here and its section there, in the same change._
 
 - **P1 — Asymmetric risk: never widen delivered PII (fail CLOSED at the smallest scope containing the fault); never silently shrink or omit a deactivating file because of a DETECTED fault; surplus rows fail OPEN with a recorded signal; optional blanks are recorded.** _(Plan 0053, 2026-09-23 · `failure-policy.md` §1.)_ **Planned** (S4 scope; S10 partial ship; S11 signals; D10 the all-Active default). Today the PII guards fail closed but at RUN scope, and fail-open signals are log lines only.
 

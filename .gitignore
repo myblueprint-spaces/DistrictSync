@@ -31,7 +31,7 @@ htmlcov/
 .hypothesis/
 
 # Claude Code + MCP tooling
-# Local Claude state stays ignored; SHARE the harness: agent role library, plans, skills, shared settings.
+# Local Claude state stays ignored; SHARE: agent role library, plans, skills, shared settings.
 .claude/*
 !.claude/agents/
 !.claude/hooks/

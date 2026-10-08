@@ -5,7 +5,7 @@ question that file cannot: **does the rule reach the screen?** S3 shipped the do
 S4a shipped the launch page, and through both slices every picker still rendered all eleven
 configs — a filter is only real when a picker is short.
 
-Per ``docs/claugentic-CHARTER.md`` → "Flet view-glue surfaces": these are per-STATE render
+Per ``docs/CHARTER.md`` → "Flet view-glue surfaces": these are per-STATE render
 smokes over the real control trees, not a re-test of the rule. Four consumers, one question
 each:
 

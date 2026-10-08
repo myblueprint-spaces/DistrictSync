@@ -532,7 +532,7 @@ def filtered_catalog(
     PICK passes it.
 
     **There is no per-surface "Show all districts" escape any more** (2026-08-04, owner
-    decision — see ``docs/claugentic-DECISIONS.md``). A matched admin sees their own
+    decision — see ``docs/DECISIONS.md``). A matched admin sees their own
     district's rows, plus anything added on this computer, and no OTHER district's shipped
     rows, on all four pickers — so the scoping is a property of the install rather than of
     whichever screen was last toggled. The escape

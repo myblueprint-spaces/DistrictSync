@@ -49,7 +49,7 @@ class TransformContext:
     # is why `get_teacher_id_col`/`get_demo_student_col` below have always
     # silently resolved to their defaults (harmless today: every bundled config
     # agrees with those defaults, verified across all 20 — see
-    # `docs/claugentic-ROADMAP.md`). Read by Staff to find the timetable files
+    # `docs/ROADMAP.md`). Read by Staff to find the timetable files
     # an entity other than its own declares; empty in a directly-constructed
     # context, which callers must treat as "no cross-entity config available"
     # rather than as an error.
