@@ -514,6 +514,11 @@ def _create_sd45_inputs(d: Path) -> None:
     _write_student_demographic(d, "StudentDemographicEnhanced.csv")
     _write_staff(d, "StaffInformationEnhanced.csv")
     _write_base_schedule(d, "StudentScheduleDrops.csv")
+    # The district's schedule has `Student Number` and NO `Student ID` (its first real run
+    # stopped on the missing column), so the shared shape's `Student ID` copy is dropped:
+    # leaving it would mask a config that reads it (tests/test_sd45_real_schedule_headers.py).
+    schedule = d / "StudentScheduleDrops.csv"
+    pd.read_csv(schedule, dtype=str, keep_default_na=False).drop(columns=["Student ID"]).to_csv(schedule, index=False)
     _write_course_info(d, "CourseInformationEnhanced.csv")
     _write_family(d, "EmergencyContactInfoEnhanced.csv")
 
