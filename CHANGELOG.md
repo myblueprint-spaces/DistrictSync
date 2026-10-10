@@ -9,6 +9,8 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+## [3.27.1] - 2026-10-10
+
 ### Fixed
 
 - **SD45 (West Vancouver): the night no longer stops at Enrollments.** The district's schedule
