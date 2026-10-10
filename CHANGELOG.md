@@ -9,6 +9,18 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+## [3.27.1] - 2026-10-10
+
+### Fixed
+
+- **SD45 (West Vancouver): the night no longer stops at Enrollments.** The district's schedule
+  export (`StudentScheduleDrops.csv`) identifies students by `Student Number`; its mapping
+  inherited the standard one's `Student ID`, so the night stopped with "column(s) ['Student ID']
+  not found in the source" after Students, Staff, Family and Classes were built. The mapping now
+  reads the student from `Student Number`, the column the student file already uses. The
+  schedule has no `Section Letter` or `Primary Teacher` column either, so class names carry no
+  section letter; the run log and Run History say so, and Home stays green.
+
 ## [3.27.0] - 2026-09-30
 
 A night with a problem no longer sends half-right data. If an export your mapping needs is

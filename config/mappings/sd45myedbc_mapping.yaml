@@ -10,6 +10,15 @@
 # school is what SpacesEDU wants). The base's "Next school code" is inherited.
 # No ClassInformation extract is sent, so blended-class detection is off.
 # Class IDs keep the START year, as the district's old converter wrote them.
+# The schedule extract carries `Student Number` and NO `Student ID` (found on the
+# district's first real run: Enrollments stopped on the missing column), so the
+# Enrollments overlay below points the schedule's student column at
+# `Student Number`. The extract also lacks the base's `Section Letter` and
+# `Primary Teacher`: class names then carry no section, and the teacher is no
+# longer gated on the primary-teacher flag (a log warning and a Run History note
+# record it; Home stays green). `Section` is
+# deliberately NOT assumed to be the section letter until a sample value
+# confirms it.
 _base: myedbc
 version: '1.14'
 sis: MyEducationBC
@@ -63,3 +72,12 @@ mappings:
     source_files:
       student_schedule: "StudentScheduleDrops.csv"
       student_demographic: "StudentDemographicEnhanced.csv"
+    # The base reads the schedule's student from `Student ID`, which this district's
+    # schedule does not have. `Student Number` is the same column the demographic
+    # file keys on. Teacher ID is inherited. `Role` carries the same pair, as sd40,
+    # sd60 and sd74 (the other districts that override this) write it.
+    field_map:
+      "User ID":
+        "student_id_col": "Student Number"
+      "Role":
+        "student_id_col": "Student Number"
