@@ -198,7 +198,7 @@ mappings:
 | `src/scheduler/linux.py` | `crontab` wrapper for Linux cron |
 | `src/quality/report.py` | `DataQualityReport` — missing fields, duplicates, orphaned enrollments |
 | `src/utils/helpers.py` | `normalize_columns()` and other shared utilities |
-| `src/utils/logger.py` | Configured from `config/logging.conf`; log rotates at 5 MB |
+| `src/utils/logger.py` | Levels/console from `config/logging.conf`; the file handler is built in code (log path never goes through fileConfig); log rotates at 5 MB |
 | `src/utils/validators.py` | Input validation, SFTP host allowlist enforcement |
 | `src/etl/column_names.py` | Column name constants — avoids magic strings across transformers |
 
