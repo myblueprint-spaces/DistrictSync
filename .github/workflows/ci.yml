@@ -144,3 +144,41 @@ jobs:
 
       - name: Run the schema-drift matrix
         run: python -m pytest tests/test_schema_drift_matrix.py -m drift_matrix -q -rx
+
+  # Dependency CVE scan (Jira DSYNC-8). REPORT-ONLY for now: `continue-on-error` keeps a
+  # finding from failing the build, and the findings land in the job summary. Making it
+  # blocking is a separate, deliberate decision (drop `continue-on-error`). Scans the
+  # RUNTIME deps only (requirements.txt) - paramiko/keyring carry student data over SFTP.
+  # pip-audit is installed on its own (pinned), not via requirements-dev.txt, so this job
+  # stays fast and does not pull the dev toolchain.
+  # tests/test_ci_dependency_audit.py pins that this job exists and stays report-only.
+  dependency-audit:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+
+      - name: Install pip-audit
+        run: |
+          python -m pip install --upgrade pip
+          pip install pip-audit==2.10.1
+
+      - name: Audit runtime dependencies for known vulnerabilities
+        run: |
+          set +e
+          pip-audit -r requirements.txt --progress-spinner off > pip-audit.txt 2>&1
+          status=$?
+          {
+            echo "## pip-audit (requirements.txt) - report-only"
+            echo
+            echo '```'
+            cat pip-audit.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          cat pip-audit.txt
+          exit $status

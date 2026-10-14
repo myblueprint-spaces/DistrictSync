@@ -106,4 +106,4 @@ python scripts/check_no_emails.py      # no plaintext email in any tracked file 
 ## Working notes
 
 - Land gate (owner decision 2026-07-30): a slice is not landed until CI's own result is read and reported (`gh pr checks --watch`, quoted); local gates run on Windows only, so a local green is not a green.
-- Docs: `docs/DECISIONS.md` (dated decisions), `docs/ROADMAP.md` (backlog), `docs/INVARIANTS.md` (rules that must not be inverted), `docs/CANDIDATES.md` (staged lessons), `docs/developer/architecture-notes.md` (full rule text). Plans live in `.claude/plans/`. Locate code with Glob/Grep.
+- Docs: `docs/DECISIONS.md` (dated decisions), the Jira DSYNC board (backlog; `docs/ROADMAP.md` is only a pointer), `docs/INVARIANTS.md` (rules that must not be inverted), `docs/CANDIDATES.md` (staged lessons), `docs/developer/architecture-notes.md` (full rule text). In-flight plans live in `.claude/plans/` (landed ones are deleted; git history keeps them). Locate code with Glob/Grep.
