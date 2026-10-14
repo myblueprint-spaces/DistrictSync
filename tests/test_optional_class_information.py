@@ -17,7 +17,7 @@ declarations — never a per-district list — through ONE predicate every consu
 * when the file is missing or row-less, Enrollments' co-teacher path records
   ``OutcomeNote.COTEACHER_SOURCE_UNUSABLE`` (count 1 — the file) with ONE warning naming the file
   in the mapping's spelling — it used to return in silence — so Home and Run History are amber
-  every night it persists (SD45, which sends no Class Information, every night).
+  every night it persists (SD45, every night until it began sending the file on 2026-10-13).
 
 Blended-ON configs are unchanged: a missing or row-less Class Information still stops the night
 (``incomplete_input``), pinned end to end on the SD74 fixture. All data is synthetic (the
@@ -327,7 +327,7 @@ class TestEveryConsumerAgreesWithTheRule:
         monkeypatch.setattr(outcomes, "blended_detection_off", lambda _global_config: False)
         problems = _consumer_disagreements("sd45myedbc")
         assert len(problems) == 2
-        assert all("ClassInformationEnh.txt" in problem for problem in problems)
+        assert all("ClassInformationEnhanced.csv" in problem for problem in problems)
 
 
 # --------------------------------------------------------------------------- #
@@ -405,12 +405,14 @@ def _csvs(out: Path) -> dict[str, bytes]:
 @pytest.mark.integration
 @pytest.mark.parametrize("damage", ["missing", "header_only"])
 def test_sd45_without_class_information_is_partial_two_nights_running(tmp_path: Path, damage: str) -> None:
-    """SD45 sends no Class Information (its mapping inherits the base's listing): every night ends
-    success, Enrollments BUILT with the co-teacher note, Home and Run History amber."""
+    """A SD45 night whose ClassInformationEnhanced.csv is missing or row-less (blended detection is
+    off, so the file is optional): every night ends success, Enrollments BUILT with the co-teacher
+    note, Home and Run History amber."""
     inp, out = _dirs(tmp_path)
     _create_sd45_inputs(inp)
+    (inp / "ClassInformationEnhanced.csv").unlink()
     if damage == "header_only":
-        _write_class_info(inp, "ClassInformationEnh.txt", sections=())
+        _write_class_info(inp, "ClassInformationEnhanced.csv", sections=())
     for _night in (1, 2):
         result = run_pipeline("sd45myedbc", str(inp), str(out))
         record, prior, records = _latest()
@@ -430,11 +432,12 @@ def test_twin_sd45_with_a_complete_class_information_is_clean_and_delivers_the_s
     without it."""
     without_in, without_out = _dirs(tmp_path / "without")
     _create_sd45_inputs(without_in)
+    (without_in / "ClassInformationEnhanced.csv").unlink()
     run_pipeline("sd45myedbc", str(without_in), str(without_out))
 
     with_in, with_out = _dirs(tmp_path / "with")
     _create_sd45_inputs(with_in)
-    _write_class_info(with_in, "ClassInformationEnh.txt")
+    assert (with_in / "ClassInformationEnhanced.csv").exists()
     run_pipeline("sd45myedbc", str(with_in), str(with_out))
     record, _prior, _records = _latest()
     assert record["status"] == "success"
@@ -524,6 +527,7 @@ def test_cli_and_convert_agree_on_a_night_without_class_information(tmp_path: Pa
     ui_out = tmp_path / "ui_out"
     ui_out.mkdir()
     _create_sd45_inputs(inp)
+    (inp / "ClassInformationEnhanced.csv").unlink()
     cli_result = run_pipeline("sd45myedbc", str(inp), str(cli_out))
     AppConfig(input_dir=str(inp), output_dir=str(ui_out), sis_type="sd45myedbc").save()
     ui_result = convert_job("sd45myedbc", str(inp))

@@ -359,7 +359,8 @@ run (`outcomes.source_file_may_be_absent`, the ONE predicate both the gate and
 Convert's missing-file line read; `outcomes.blended_detection_off` is the ONE
 reading of this key) and only the co-teacher enrollments are left out, with one
 `CO-TEACHERS LEFT OUT` warning naming the file and the standing amber
-`coteacher_source_unusable` note (SD45, which sends none, every night). With
+`coteacher_source_unusable` note (SD45 every night until it began sending
+`ClassInformationEnhanced.csv` on 2026-10-13). With
 detection on, a missing or row-less Class Information still stops the night.
 
 Pointing `class_info` at the non-Enhanced `ClassInformation.txt` is **not** a
