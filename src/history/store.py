@@ -20,6 +20,13 @@ Design (see ``docs/INVARIANTS.md`` for the load-bearing contract):
   owner-only permissions on Unix. A writer that sees a HIGHER ``user_version`` than it
   knows writes with NAMED columns only and never migrates/downgrades (two exe versions
   share this DB: the pinned scheduled exe + an updated UI). Additive-only schema rule.
+  A LOWER-than-current ``user_version`` is migrated FORWARD by the ordered ``_MIGRATIONS``
+  ladder (DSYNC-11): each step is one additive change (``ALTER TABLE ... ADD COLUMN``), runs
+  in its own transaction together with its ``user_version`` bump, and is idempotent on
+  re-open. The ladder is empty today (version 1 is the baseline schema). A failing step
+  rolls back, leaves the DB usable at its old version, and raises :class:`MigrationError`
+  naming the step; ``write_run_record`` logs that at ERROR (not the routine WARNING) and
+  still returns ``False`` so the run's exit code is untouched.
 
 - **Writes are strictly non-fatal.** Any ``sqlite3.Error`` / ``OSError`` is logged at
   WARNING and returns ``False`` — a store failure never propagates (the enriched
@@ -43,6 +50,7 @@ import logging
 import os
 import sqlite3
 import sys
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -62,6 +70,27 @@ source of truth reused by ``pipeline._resolve_source`` — an out-of-set value c
 ``"unknown"`` rather than aborting the write on a CHECK violation."""
 
 _VALID_STATUSES: tuple[str, ...] = ("success", "failed")
+
+
+class MigrationError(RuntimeError):
+    """A forward-migration step failed; ``step`` is the target ``user_version`` it was reaching.
+
+    Deliberately NOT a ``sqlite3.Error`` so it is never mistaken for corruption by
+    ``_is_corrupt`` (which would quarantine a healthy DB). Carries only the step id and the
+    underlying exception's TYPE name — no row data, no paths.
+    """
+
+    def __init__(self, step: int, cause: BaseException) -> None:
+        self.step = step
+        super().__init__(f"history.db migration to schema version {step} failed ({type(cause).__name__})")
+
+
+_MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {}
+"""The forward-migration ladder: ``{target_version: step}``. Version 1 is the baseline
+(``_SCHEMA``), so the ladder starts at 2 and is empty today. A step receives the connection
+inside an open transaction and must be an ADDITIVE change (e.g. ``ALTER TABLE runs ADD
+COLUMN x TEXT``) — never a drop/rename/retype. Keys must be contiguous ``2..SCHEMA_VERSION``;
+bumping ``SCHEMA_VERSION`` and registering its step ship together (pinned by a test)."""
 
 # The schema is CREATE ... IF NOT EXISTS throughout, so re-running it on an existing
 # (or higher-version) DB is a harmless no-op — the writer never ALTERs or drops.
@@ -126,6 +155,14 @@ def write_run_record(record: dict[str, Any], *, source: str) -> bool:
     src = source if source in VALID_SOURCES else "unknown"
     try:
         return _write(db_path, record, src)
+    except MigrationError as exc:
+        # LOUD (ERROR, step id) — a failed migration means history has stopped recording until fixed.
+        logger.error(
+            "Run-history store migration failed at step %d (%s); the run is recorded in the diagnostic log only",
+            exc.step,
+            exc,
+        )
+        return False
     except sqlite3.Error as exc:
         if _is_corrupt(exc):
             return _quarantine_and_recreate(db_path, record, src, exc)
@@ -194,19 +231,50 @@ def _set_journal_mode(conn: sqlite3.Connection) -> None:
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
-    """Create the schema if absent + stamp ``user_version`` on a brand-new DB only.
+    """Create the schema if absent, stamp a brand-new DB, then migrate a LOWER DB forward.
 
-    A DB already at a KNOWN or HIGHER ``user_version`` is left untouched — the writer never
-    migrates or downgrades (two exe versions share the file). The ``CREATE ... IF NOT EXISTS``
-    statements are harmless no-ops on any existing/higher-version DB.
+    A DB at a HIGHER ``user_version`` than this code knows is left untouched — the writer
+    never migrates or downgrades it (two exe versions share the file). The
+    ``CREATE ... IF NOT EXISTS`` statements are harmless no-ops on any existing DB. A DB below
+    ``SCHEMA_VERSION`` climbs the ``_MIGRATIONS`` ladder one transactional step at a time;
+    a failing step raises :class:`MigrationError` and leaves the DB at its last good version.
     """
     row = conn.execute("PRAGMA user_version").fetchone()
     user_version = int(row[0]) if row else 0
     conn.executescript(_SCHEMA)
     if user_version == 0:
-        # Brand-new (or pre-versioning) DB — stamp the current schema version. PRAGMA
-        # takes no bound parameter; the value is a controlled int constant, never input.
-        conn.execute(f"PRAGMA user_version={int(SCHEMA_VERSION)}")  # nosec B608
+        # Brand-new (or pre-versioning) DB — stamp the BASELINE (v1) schema version, then let
+        # the ladder carry it to current. PRAGMA takes no bound parameter; the value is a
+        # controlled int constant, never input.
+        conn.execute("PRAGMA user_version=1")
+        user_version = 1
+    if user_version < SCHEMA_VERSION:
+        _migrate_forward(conn)
+
+
+def _migrate_forward(conn: sqlite3.Connection) -> None:
+    """Run each pending ladder step in its own transaction; raise :class:`MigrationError` on failure."""
+    for target in range(2, SCHEMA_VERSION + 1):
+        step = _MIGRATIONS.get(target)
+        if step is None:
+            raise MigrationError(target, LookupError("no migration step registered"))
+        try:
+            conn.execute("BEGIN IMMEDIATE")  # takes the write lock so two processes can't both migrate
+            try:
+                row = conn.execute("PRAGMA user_version").fetchone()
+                current = int(row[0]) if row else 0
+                if current >= target:  # another process already applied it (idempotent re-open)
+                    conn.execute("ROLLBACK")
+                    continue
+                step(conn)
+                # The stamp rides in the same transaction as the step (user_version is transactional).
+                conn.execute(f"PRAGMA user_version={int(target)}")  # nosec B608
+                conn.execute("COMMIT")
+            finally:
+                if conn.in_transaction:  # any failure path: undo the step AND its version stamp
+                    conn.execute("ROLLBACK")
+        except sqlite3.Error as exc:
+            raise MigrationError(target, exc) from exc
 
 
 def _quarantine_and_recreate(db_path: Path, record: dict[str, Any], source: str, exc: sqlite3.Error) -> bool:

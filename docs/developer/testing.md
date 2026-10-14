@@ -174,6 +174,10 @@ CI also runs the following quality gates on each push:
 | Type check | `mypy src/ --exclude 'src/ui_flet'` (Flet UI excluded — no beta stubs) |
 | Security scan | `bandit -r src/ -q` |
 | Config validation | `make validate-config` (all district + tier YAML configs) |
+| Dependency CVE scan | `pip-audit -r requirements.txt` (separate `dependency-audit` job, **report-only**) |
+
+!!! note "Dependency CVE scan is report-only"
+    The `dependency-audit` job runs `pip-audit` over the runtime deps in `requirements.txt` and is `continue-on-error`, so a finding never fails the build. Read it in the job's **Summary** tab (or the step log): "No known vulnerabilities found" means clean; otherwise each row names the package, installed version, advisory ID and the fix version to raise the pin to. Making it blocking (drop `continue-on-error`) is a separate decision; `tests/test_ci_dependency_audit.py` pins the current report-only shape.
 
 !!! note "Testing district configs with non-standard filenames"
     When writing E2E tests for district configs that use non-standard filenames (e.g., SD40's CSV files with SD-40_ prefix), create fixture files in `tmp_path` using the exact filenames the district config expects. See `tests/test_pipeline_e2e_districts.py` for examples.
