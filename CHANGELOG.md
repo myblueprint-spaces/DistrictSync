@@ -9,6 +9,14 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+### Fixed
+
+- **SFTP delivery can no longer hang forever on a half-dead network.** Only the connect step
+  was time-limited, so a connection that went silent mid-upload stalled the night until the task
+  scheduler killed it, leaving no run record. The connection now sends keepalives and every
+  read/write on the SFTP channel is time-limited; a stalled upload fails, is retried like any
+  other transient network error, and, if it still fails, ends as the usual "SFTP delivery
+  failed" (exit code 3) with the output files kept.
 ### Changed
 
 - **Run history can now be upgraded safely in future releases.** The run-history database
