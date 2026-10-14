@@ -366,7 +366,7 @@ jobs:
       # (headless CLI). The .app is not among them — it was MOVED into the DMG
       # staging dir above, because uploading it loose would strip its mode bits and
       # hand anyone who used it the same broken download this plan fixes.
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: DistrictSync-${{ matrix.os }}
