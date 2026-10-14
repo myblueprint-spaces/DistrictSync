@@ -80,7 +80,7 @@ PUBLISHED_ADDRESSES: dict[str, str] = {
     "support@myblueprint.ca": "myBlueprint published support address (former product contact)",
     # The product's published support + partner-enquiry address — src/ui_flet/screens/help.py's
     # SUPPORT_EMAIL (and via it Home's not-listed card), src/main.py's failure hint,
-    # docs/index.md, README.md, and the partner docs.
+    # README.md, and the partner docs.
     "hello@spacesedu.com": "SpacesEDU published support / partner-contact address",
     # pyproject.toml's `authors` package metadata — the maintainer's own work address,
     # published deliberately as part of packaging metadata.
