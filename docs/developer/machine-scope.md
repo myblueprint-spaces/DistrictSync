@@ -48,7 +48,7 @@ Developer reference for where DistrictSync keeps its profile — the per-user ap
 
 ## The named hole
 
-**THE NAMED HOLE:** `prune_principal` has a handler and an implementation but **no producer in `src/`** — Remove still sends only `{"op": "delete"}`, so a retired principal keeps its aces on the shared folder (ROADMAP; needs a decision on the unconfirmed-delete case).
+**THE NAMED HOLE:** `prune_principal` has a handler and an implementation but **no producer in `src/`** — Remove still sends only `{"op": "delete"}`, so a retired principal keeps its aces on the shared folder (open backlog item; needs a decision on the unconfirmed-delete case).
 
 ## `--diagnose` — the support report (plan 0049 D7)
 

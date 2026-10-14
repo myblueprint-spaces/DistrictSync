@@ -156,7 +156,7 @@ So the *same* config emitting the *same* data produces byte-different files on d
 |---|---|---|---|
 | Importer tolerance for LF vs CRLF | **pending owner confirmation** — **owner question Q3: "we emit CRLF on Windows and LF on the Mac/Linux artifacts — does the importer care?"** | none (this has never been tested either way) | not claimed |
 
-A `lineterminator="\r\n"` pin in `DataLoader._write_csv` would make this deterministic. It is deliberately **not** done here (this document's slice is zero-runtime-change) and is tracked in `docs/ROADMAP.md` — it needs its own snapshot-gated slice because it changes emitted bytes on the Linux/macOS artifacts.
+A `lineterminator="\r\n"` pin in `DataLoader._write_csv` would make this deterministic. It is deliberately **not** done here (this document's slice is zero-runtime-change) and is tracked on the DSYNC Jira board — it needs its own snapshot-gated slice because it changes emitted bytes on the Linux/macOS artifacts.
 
 ### Quoting and empty values
 
@@ -407,7 +407,7 @@ Only these four columns are emitted. The SpacesEDU attendance spec permits dropp
 > expressible (the token vocabulary supports it) and, as of Q1a, would produce a file the live importer
 > refuses. Nothing validates that today — an unsupported *token* fails loud, but a well-formed
 > *non-ISO shape* does not. A district config setting it is a silent delivery failure at 3am. Tracked
-> in `docs/ROADMAP.md`; the candidate fix is to accept only ISO unless an explicit
+> on the DSYNC Jira board; the candidate fix is to accept only ISO unless an explicit
 > acknowledgement key is set, per CLAUDE.md's "make the unsafe call unrepresentable" rule.
 >
 > **This is a rank-1-over-rank-2 divergence:** the published BC/Aspen Doc documents `DD-MMM-YYYY`, and
@@ -616,7 +616,7 @@ part.**
 > importer. Confirmed by the owner on 2026-07-30, corroborated by the 2026-06-22 observed rejection.
 > Consequences already applied above: the default row and the base config comment are confirmed, the
 > "still accepted" row is REFUTED, divergence register row 1 is confirmed (the Doc needs correcting),
-> and the `attendance.date_format` footgun is recorded in the ROADMAP.
+> and the `attendance.date_format` footgun is recorded in the backlog.
 
 > **Q1b — attendance category vocabulary: does the live importer IGNORE an unaccepted code, or REJECT the file?**
 > The published Docs list the categories `A`, `AD`, `A-E`, `A-E OffSite`, `AL`, `AL-E`, `L`, `L AUTH`, `L-E`. DistrictSync DERIVES only `A`, `A-E`, `L`, `L-E` for the K-7 daily band — that vocabulary is ours to promise — and PASSES THROUGH the district's own codes unfiltered for the 8-12 period band, including values the Docs never list (`OffSite`, `ISS`, …). That pass-through rests on an understanding recorded 2026-06-19 and never confirmed: that SpacesEDU ignores non-accepted codes rather than rejecting the file. Which of the Docs' values does the live importer actually accept today, and what does it do with one it does not — skip the row, or refuse the whole feed?

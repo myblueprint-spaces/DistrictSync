@@ -75,7 +75,7 @@ asserts every row of the §5 ``require-columns`` table was RAISED by at least on
 
 **Scope, stated.** HEADERLESS files (a ``headers:`` block — SD40's schedule, SD51's daily
 absences) are not in the matrix: a column removed from a headerless export SHIFTS every later
-column rather than going missing, a different fault this model does not describe (ROADMAP).
+column rather than going missing, a different fault this model does not describe (open item).
 The clock is pinned (:data:`_FROZEN_NOW`, the ``src.etl.transformers.base.datetime`` seam) so
 the school-year determination and every date filter are deterministic.
 
@@ -827,7 +827,7 @@ def test_a_dropped_column_has_its_declared_outcome(baselines: BaselineCache, cas
 
 #: The ``require-columns`` rows (keyed ``(site, guard)``) no matrix case can make raise, each
 #: with WHY. A stale entry — a row some case does reach — is red, so this cannot outlive its
-#: reason. The gaps are ROADMAP ("the drift matrix cannot reach every require-columns guard").
+#: reason. The gaps are tracked as backlog items ("the drift matrix cannot reach every require-columns guard").
 UNREACHED_GUARDS: Mapping[tuple[str, str], str] = {
     ("models.FieldAppendYear.apply", "join_key"): (
         "no bundled config maps an append-year ID through the field-map engine (§5 #29), so nothing calls it"

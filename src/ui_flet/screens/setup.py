@@ -310,7 +310,7 @@ _SCOPE_FORESHADOW_NOTE_SHARED = (
 #   2. who can then reach these settings — every administrator of this computer, permanently,
 #      and nobody who is not an administrator at all;
 #   3. that it cannot be undone, INCLUDING by "Remove nightly sync", which is the one thing an
-#      admin would reasonably try. Un-provisioning is a ROADMAP item, so the copy says it does
+#      admin would reasonably try. Un-provisioning is a backlog item, so the copy says it does
 #      not exist rather than implying it does.
 SCOPE_CONFIRM_TITLE = "Set this computer up for shared settings?"
 _SCOPE_CONFIRM_MOVE = (
@@ -569,7 +569,7 @@ def service_account_delivery_note(*, delivery_enabled: bool, foreign: bool, will
 # Scope this deliberately does NOT claim: the SKIPPABLE steps' own section-level saves (the
 # seasonal-window write and the delivery write) are unguarded and do not block advancement, so
 # under the same fault the admin can reach this note with those entries unpersisted. Tracked in
-# `docs/ROADMAP.md` ("Spotted during S6") — the fix is a step-level note, not a
+# the retired roadmap note "Spotted during S6" — the fix is a step-level note, not a
 # reword of the copy below.
 FINISH_SAVE_FAILED_NOTE = "We couldn't save your settings just now — nothing was lost. Please try again."
 
@@ -604,7 +604,7 @@ _WINDOW_ERROR = "Enter each date as MM-DD (month then day), e.g. 08-11."
 # ``False`` there and the window is simply never enforced: the sync keeps running all summer. The
 # note states that plainly and names the ONE remedy that actually works today (remove the nightly
 # schedule for the break); it never implies DistrictSync handles the pause for a foreign principal.
-# The real fix — a shared/machine-scope profile — is on the ROADMAP, deliberately not built here.
+# The real fix — a shared/machine-scope profile — is a backlog item, deliberately not built here.
 SYNC_WINDOW_FOREIGN_NOTE = (
     "Your summer pause won't apply while the nightly sync runs as {account}. The pause is stored "
     "with your own Windows account, and the sync reads the settings of the account it runs as — so "

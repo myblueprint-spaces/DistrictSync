@@ -44,7 +44,7 @@ from src.utils.accounts import process_account
 
 LIMIT = 50
 """The newest-N runs shown (mirrors the Streamlit page). A 2-3x/yr admin reviews a short list —
-pagination is a ROADMAP nice-to-have if the log could ever grow large, not built here (YAGNI)."""
+pagination is a nice-to-have if the log could ever grow large, not built here (YAGNI)."""
 
 
 def _greeting_header(app_config: AppConfig) -> ft.Control:

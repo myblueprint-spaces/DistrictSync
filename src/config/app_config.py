@@ -414,7 +414,7 @@ class AppConfig:
         only ``sis_type``. The displaced bytes survive as ``config.corrupt-*.json``, so
         this costs recovery effort rather than data, and it is strictly better than the
         pre-fix behaviour (which clobbered with no copy at all) — but it is a residual,
-        not a solved problem. Tracked in ``docs/ROADMAP.md``; the candidate
+        not a solved problem. Tracked on the DSYNC Jira board; the candidate
         fixes (merge onto a re-read here, or a ``settings_unreadable()`` guard on the
         non-wizard surfaces) need a product call on the copy, not a mechanical patch.
 
@@ -742,8 +742,7 @@ class AppConfig:
         replaces — precisely as it does for the wizard's standard District step. That
         parity is the claim: an admin who just tested a district they set up themselves is
         not treated worse than one who picked a shipped mapping. It also inherits that
-        path's known residual (an unmerged single-section write; see :meth:`save` and the
-        ROADMAP entry) — named, not solved, and recoverable from the quarantine copy.
+        path's known residual (an unmerged single-section write; see :meth:`save`) — named, not solved, and recoverable from the quarantine copy.
 
         Both arguments are validated BEFORE anything is applied: ``sis_type`` through
         :func:`src.utils.validators.validate_sis_type` (this value becomes a ``--sis``

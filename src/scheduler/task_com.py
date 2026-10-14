@@ -6,7 +6,7 @@ imports ``windows`` — and therefore this module — at module level **on every
 the Linux and macOS CI legs. A top-level pywin32 import here would break every non-Windows
 import chain in the repo. Pinned by a ``sys.modules`` assert that runs on Linux CI.
 
-**Why COM at all** (ROADMAP ``[AV / DISTRIBUTION]``, fix 3): ``powershell.exe
+**Why COM at all** (the AV / DISTRIBUTION backlog, fix 3): ``powershell.exe
 -EncodedCommand <base64>`` creating scheduled tasks is the textbook malware-persistence
 signature, explicitly weighted by Defender ASR and Bitdefender ATC — which blocked this
 product live on 2026-08-04. The Task Scheduler COM API is the same service the PowerShell
@@ -178,7 +178,7 @@ MSG_COM_UNAVAILABLE = "The Windows scheduling interface is not available."
 # probe fires on nav clicks and its callers were sized around it.
 READ_TIMEOUT_S = 10.0
 
-# Bound for a delete — the retired schtasks call had NO bound at all (the ROADMAP
+# Bound for a delete — the retired schtasks call had NO bound at all (the backlog
 # "Robustness" gap); generous because a delete is a click-driven action, not a nav probe.
 DELETE_TIMEOUT_S = 30.0
 

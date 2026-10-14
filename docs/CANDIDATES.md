@@ -263,7 +263,7 @@ was false, re-derive the restatement from the code — do not edit the sentence.
 plan 0038 S7` on a premise that was false. Strikethrough reads as *settled* to every future reader, so a
 wrong discharge in a backlog is far more durable than a wrong sentence in a docstring — nobody re-opens
 it to check.
-**Rule.** A discharge claim in ROADMAP is a CLAIM and needs the same bar as a confirmed contract row:
+**Rule.** A discharge claim in a backlog is a CLAIM and needs the same bar as a confirmed contract row:
 name what actually changed, and keep any symptom the change did not touch OPEN and unstruck. Prefer
 "reduced, not resolved — here is what remains" over strikethrough whenever a change is partial.
 

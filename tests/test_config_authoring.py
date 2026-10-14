@@ -73,7 +73,7 @@ SD74_RENAMES = {
 
 #: The Enrollments student column a self-service overlay inherits from ``_base: myedbc``
 #: (``User ID.student_id_col``), which the frozen SD74 schedule does not carry — it has
-#: ``Student Number`` — and which the creator cannot set (ROADMAP, owner ruling 2026-09-25).
+#: ``Student Number`` — and which the creator cannot set (owner ruling 2026-09-25).
 BASE_SCHEDULE_STUDENT_COLUMN = "Student ID"
 
 

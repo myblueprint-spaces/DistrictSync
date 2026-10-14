@@ -800,7 +800,7 @@ calls its student column `Student Number`, a `_base: myedbc` overlay inherits th
 base's `student_id_col: Student ID`, and the timetable enrollments now require it
 (`failure-policy.md` §5 #28) where they used to ship with every timetable student
 left out. The owner kept that stop (2026-09-25); the creator cannot set
-`student_id_col` yet (ROADMAP). To see a run pass, point it at a COPY of the
+`student_id_col` yet (open backlog item). To see a run pass, point it at a COPY of the
 extract whose schedule also carries a `Student ID` column —
 `tests/test_config_authoring.snapshot_input_with_base_student_id` builds one.
 

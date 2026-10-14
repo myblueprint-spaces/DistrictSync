@@ -153,7 +153,7 @@ are pinned verbatim against `home_status` by `tests/test_ui_flet_band_copy_parit
   myBlueprint+ entities. An attendance district's row count reaches exactly ONE place — the healthy
   size sentence above** — because that table's columns exclude `StudentAttendance` by design; and
   because the sentence rides the healthy verdict only, a warning or failed attendance run shows its
-  size nowhere. That is an OPEN gap tracked in `ROADMAP.md`, not an accepted residual.
+  size nowhere. That is an OPEN gap tracked on the DSYNC Jira board, not an accepted residual.
 - Below the verdict block (and the identity cards) sits a **quick-action strip**: Convert / Run
   History / Settings, minus whichever destination the fix button already offers. **Exactly one
   filled button exists in every state** — the fix when there is a fault, "Convert now" when there is
@@ -422,7 +422,7 @@ string.
 
 - **The full column-mapping editor.** Authoring a brand-new *column* mapping in-app (the visual
   field-mapping editor, row filters, headerless files, attendance) is scope-locked to a later epic
-  (IA-8b) on the ROADMAP. A district's own **district-shape** mapping is no longer out — see
+  (IA-8b) on the backlog. A district's own **district-shape** mapping is no longer out — see
   *self-service district setup* — but the column layer stays vendor-authored.
 - **Bundled offline docs in Help.** Help links out to the SpacesEDU Help Centre rather than rendering
   the bundled `docs/` markdown in-app. In-app offline docs are a future consideration, not shipped.

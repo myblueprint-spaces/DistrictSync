@@ -891,7 +891,7 @@ def apply_grant_current_user(payload: Mapping[str, object]) -> None:
 
     Consequence, stated rather than solved here: root aces only ever GROW. A granted admin
     keeps Modify on ``config.json`` and read access to ``sftp_secret.bin`` after demotion,
-    and only the *task principal* has a prune. → ROADMAP.
+    and only the *task principal* has a prune. → backlog.
 
     Raises:
         ProvisionRefused: with ``OVERRIDE``, ``PRE_EXISTING``, ``PRINCIPAL`` or ``GRANT``.

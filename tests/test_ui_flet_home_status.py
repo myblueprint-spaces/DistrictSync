@@ -1732,7 +1732,7 @@ class TestWelcomeBandLine:
         """The band sits one line above the wizard's own "Step 1 of 5" indicator.
 
         Two counts on one screen contradict each other the moment either moves — and the
-        5→4 "Finish unnumbered" question is open on the ROADMAP, so one of them will. The
+        5→4 "Finish unnumbered" question is open on the backlog, so one of them will. The
         indicator owns the count; the band owns the reassurance.
         """
         for line in _all_band_lines():
@@ -2489,7 +2489,7 @@ class TestFailedCategoryOnHome:
         assert status.detail.endswith(NOTHING_SENT_TAIL)
 
     def test_an_output_failure_names_the_output_folder(self) -> None:
-        # Closes the ROADMAP item "Surface the new `output` error category on Home / Run History".
+        # Closes the backlog item "Surface the new `output` error category on Home / Run History".
         status = _derive(_record(status="failed", error_category="output", sftp_attempted=False))
         assert "output folder" in status.detail
         assert status.detail.endswith("Nothing new was saved to your output folder.")

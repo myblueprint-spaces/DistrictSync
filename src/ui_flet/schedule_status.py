@@ -73,7 +73,7 @@ _TRANSIENT_DIR_PARTS: frozenset[str] = frozenset({"downloads", "temp", "tmp"})
 # <user>") on Unix — so a Linux Unregister of a missing entry classifies the same way.
 # NOT closed on Unix: `linux._read_crontab_lines` interpolates RAW `crontab` output into its
 # failure message, so a crontab that prints one of these phrases still reaches here unguarded —
-# the cron half of the same defect the Windows guard closes (ROADMAP).
+# the cron half of the same defect the Windows guard closes (open item).
 # See the marker-guard entry in `docs/INVARIANTS.md` before adding a phrase here.
 
 

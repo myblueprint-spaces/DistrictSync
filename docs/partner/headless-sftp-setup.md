@@ -285,7 +285,7 @@ once it's running.
 This covers a **named account with a password** — a domain service account
 or a local admin account. It does not cover `SYSTEM`, a group-managed
 service account (gMSA), `LOCAL SERVICE` or `NETWORK SERVICE`; none of those
-are supported today (see the project ROADMAP).
+are supported today.
 
 ### First — which kind of install is this?
 
@@ -338,8 +338,8 @@ nightly sync** and schedule it again.
 !!! warning "The change is one-way in this version"
     This release cannot move shared settings back to a single account, and
     **"Remove nightly sync" does not undo it** — that removes the scheduled
-    task and leaves the shared folder in place. Reversing it is on the project
-    ROADMAP and there is no supported way to do it today. Decide before you
+    task and leaves the shared folder in place. Reversing it is a known gap
+    and there is no supported way to do it today. Decide before you
     confirm, not after.
 
 One more thing to weigh before confirming: afterwards these settings are open
@@ -409,7 +409,7 @@ nightly task ever touches it. Verify afterward with
 
 Both are supported. DistrictSync's run-as account validation accepts a bare
 local name, `.\name`, or `DOMAIN\name`. (A UPN, `user@domain`, is **not**
-accepted — see the ROADMAP.)
+accepted.)
 
 - **Local account.** The `runas` step above is everything this account
   needs.

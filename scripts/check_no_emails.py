@@ -49,7 +49,7 @@ matters: a leak that was ``git add``ed and then EDITED OUT of the working copy i
 for commit yet invisible here**, so the hook passes and the leak lands in the commit. (The
 opposite direction is harmless: an unstaged leak in the working copy fails the hook early,
 which is a false alarm at worst.) Reading index blobs would close it; that is a tracked
-ROADMAP item, and CI — which runs against a clean checkout where worktree == index —
+backlog item, and CI — which runs against a clean checkout where worktree == index —
 catches this case today. Say "the hook reduces the chance of a leak"; do not say it
 prevents one.
 

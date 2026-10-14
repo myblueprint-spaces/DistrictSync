@@ -1841,7 +1841,7 @@ def test_no_edit_save_after_mapping_switch_reregisters_from_the_persisted_args(t
 
     _registered_settings_cfg(tmp_path, monkeypatch, unattended=False)
     triggered = _spy_trigger(monkeypatch)
-    # Determinism (ROADMAP 2026-07-15 flake): stub the probe-kick SEAM itself so no
+    # Determinism (2026-07-15 flake): stub the probe-kick SEAM itself so no
     # background schedule-readout probe ever runs during this test — the assertion
     # must never race a paint-then-refine worker.
     monkeypatch.setattr(setup_mod, "_kick_probe_thread", lambda _page, _work: None)

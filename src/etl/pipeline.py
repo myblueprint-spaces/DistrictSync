@@ -1017,8 +1017,9 @@ def build_run_record(
     ``convert._record_manual_run``), so the two can never drift and no future sink can
     forget it. Deliberately a record KEY and not a ``runs`` column: the store's only reader
     returns the parsed JSON blob, so a column would be invisible to it, and the additive
-    ``ALTER TABLE`` + ``PRAGMA user_version`` pair has a measured brick state (two
-    autocommit commits; a crash between them re-ALTERs every night thereafter). It is an
+    ``ALTER TABLE`` + ``PRAGMA user_version`` pair once had a measured brick state (two
+    autocommit commits; a crash between them re-ALTERs every night thereafter), which the
+    transactional ``_MIGRATIONS`` ladder (DSYNC-11) now closes for any future step. It is an
     OS account name, never a student identifier — the same class of value the log already
     carries, and it stays local.
 
@@ -1033,8 +1034,8 @@ def build_run_record(
     ledger existed: the attempt ended at the input-folder check, the config load, the
     output-folder pre-flight or any other raise before the ledger was built, or the record
     is a delivery-only one (a delivery is not a build). Like ``run_as`` it is an additive JSON key, never a ``runs`` column: no DDL, no
-    ``user_version`` bump (the additive-migration ladder has a measured brick state — the
-    ROADMAP "migration ladder" item), and an older exe sharing the ``history.db`` ignores the
+    ``user_version`` bump (a ``runs`` DDL change would have to be a ``_MIGRATIONS`` ladder step in
+    ``src/history/store.py``, DSYNC-11, and an older exe sharing the ``history.db`` ignores the
     key and renders the record exactly as it did before.
 
     **Two row numbers, two meanings.** The FLAT per-entity count keys (``record["Students"]``
