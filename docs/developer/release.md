@@ -173,6 +173,58 @@ Use [semantic versioning](https://semver.org/) for the tag itself:
 
 ---
 
+## Work tracking (Jira)
+
+Work is tracked on the **DSYNC** Jira board (kanban: To Do → In Progress → In Review → Done). District and SIS onboarding is tracked separately on the Technical Onboarding board (`TO`); only product work lives in DSYNC.
+
+- **What gets a ticket:** features, bugs, process or doc changes, and every release. Major themes are epics; do not ticket every small change.
+- **Key convention:** put the key in the branch name, PR title and commit message, e.g. `DSYNC-123-sftp-timeout`. The PR template has a Jira field.
+- **Status flow:** a ticket moves to In Progress when work starts, In Review when the PR opens and Done when the PR merges. **Done means merged, not released.** (Automatic once the Jira GitHub integration and PR-to-status automation are in place, requested in DIH-59 together with the Data Insights Hub; manual until then.)
+- **Fix versions:** each release tag `vX.Y.Z` has a matching Jira version `vX.Y.Z`. Tickets shipped in that release carry it as their fix version, so release notes are a Jira query. Mark the Jira version Released only when the GitHub Release is published with all artifacts and the Windows exe is signed. Districts install on their own schedule, so Released means available, not deployed to every district.
+- **Releases are tickets too:** one release = one version = one release ticket (template in [Release ticket](#release-ticket)), cut from `main` after CI is green and the checklist below is done.
+- **This repo holds no task list.** The board is the backlog; do not recreate one in `docs/ROADMAP.md`.
+
+### Release ticket
+
+Create a Task `Release vX.Y.Z` in DSYNC under the release epic, with Fix Version `vX.Y.Z`, and paste:
+
+```
+Release:        vX.Y.Z
+Commit:         <sha>
+Rollback tag:   <previous release tag>
+Release notes:  <GitHub Release URL>
+Platform:       <SpacesEDU/importer change this depends on, or "none">
+
+Sign-off
+[ ] CI green on the release commit (tests, 80% coverage gate)
+[ ] qa-checklist.md pass on the built Windows exe - run by <name> <date>
+[ ] Output contract unchanged, or output-contract.md updated and importer owner informed
+[ ] GitHub Release published: 3 binaries + SHA256SUMS.txt; Windows exe signed
+[ ] Jira version marked Released
+```
+
+### Rollback
+
+The previous GitHub Release stays published and downloadable; never delete a release that districts may need to return to.
+
+1. **Stop new downloads of the bad release:** edit the bad GitHub Release and mark it a pre-release (or delete it if it must not be installed). The `latest` download links then resolve to the previous release.
+2. **Tell affected districts to reinstall the previous version:** download that release's asset by explicit tag (`https://github.com/myblueprint-spaces/DistrictSync/releases/download/vX.Y.Z/DistrictSync-windows.exe`), verify against its `SHA256SUMS.txt`, and replace the executable **at the same path**, so the existing scheduled task keeps working. Settings, run history and credentials live in the user profile and are not touched.
+3. **Record it** on the release ticket (what was rolled back, why, which districts).
+
+Not yet rehearsed: a first rollback drill is tracked on the board. Output-CSV schema changes are not rolled back by reinstalling; follow [`output-contract.md`](output-contract.md).
+
+---
+
+## Open actions
+
+| Item | Owner | Ticket |
+| --- | --- | --- |
+| GitHub for Jira install and PR to status automation (shared with Data Insights Hub) | Jira / GitHub administrator | DIH-59 |
+| Platform release checklist line for DistrictSync output-contract changes | Doug Topping, Engineering | to be raised |
+| Rollback rehearsal | DistrictSync | to be raised |
+
+---
+
 ## Checklist before tagging
 
 - [ ] All tests pass locally: `python -m pytest tests/ -v`
@@ -184,6 +236,7 @@ Use [semantic versioning](https://semver.org/) for the tag itself:
 - [ ] Security scan passes: `bandit -r src/`
 - [ ] **MANDATORY: manual QA pass on the built Windows exe** — the six-step [QA checklist](qa-checklist.md) (~10 min; native dialogs, fresh/stale profiles, exit hygiene — what CI can't see)
 - [ ] CHANGELOG or commit messages are meaningful (Actions generates release notes from commit history)
+- [ ] Every ticket in this release carries the fix version, and the Jira version `vX.Y.Z` exists
 - [ ] If output CSV schema changed — [`output-contract.md`](output-contract.md) is updated (with a `contract_version` bump and the per-row provenance for anything newly confirmed), **and** the partner guide and FAQ are updated
 
 ---
