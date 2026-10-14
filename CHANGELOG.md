@@ -9,6 +9,14 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+### Changed
+
+- **Run history can now be upgraded safely in future releases.** The run-history database
+  gained a built-in, step-by-step upgrade mechanism so a future release that adds a field no
+  longer risks run history silently stopping. Nothing changes today: no field is added and
+  existing history is untouched. If an upgrade step ever fails, it is rolled back, logged as
+  an error naming the step, and the run itself is unaffected.
+
 ## [3.27.1] - 2026-10-10
 
 ### Fixed
