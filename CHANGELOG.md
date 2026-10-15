@@ -9,6 +9,8 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+## [3.27.2] - 2026-10-15
+
 ### Fixed
 
 - **SD45 (West Vancouver): co-teachers from the district's Class Information export are no
@@ -32,6 +34,12 @@ Per-release download links and auto-generated commit notes live on the
   read/write on the SFTP channel is time-limited; a stalled upload fails, is retried like any
   other transient network error, and, if it still fails, ends as the usual "SFTP delivery
   failed" (exit code 3) with the output files kept.
+- **A Windows user name with an apostrophe (for example `O'Brien`) or a `%` no longer stops
+  DistrictSync before it can log anything.** The log file path was spliced into the logging
+  configuration and evaluated as code, so such a profile path crashed startup, and a crafted one
+  could run code. The log file is now opened directly; levels, format, 5 MB x 3 rotation and the
+  console output are unchanged.
+
 ### Changed
 
 - **SD67 (Okanagan Skaha): Family is built from the district's parent export.** The district's
@@ -44,13 +52,6 @@ Per-release download links and auto-generated commit notes live on the
   longer risks run history silently stopping. Nothing changes today: no field is added and
   existing history is untouched. If an upgrade step ever fails, it is rolled back, logged as
   an error naming the step, and the run itself is unaffected.
-### Fixed
-
-- **A Windows user name with an apostrophe (for example `O'Brien`) or a `%` no longer stops
-  DistrictSync before it can log anything.** The log file path was spliced into the logging
-  configuration and evaluated as code, so such a profile path crashed startup, and a crafted one
-  could run code. The log file is now opened directly; levels, format, 5 MB x 3 rotation and the
-  console output are unchanged.
 
 ## [3.27.1] - 2026-10-10
 
