@@ -509,18 +509,17 @@ def _create_sd48_inputs(d: Path) -> None:
 
 
 def _create_sd45_inputs(d: Path) -> None:
-    """sd45myedbc: the district's own `.csv` Enhanced extract names, and NO
-    ClassInformation file (the config opts out of blended detection)."""
+    """sd45myedbc: the district's own `.csv` extract names. The schedule is the standard
+    Student Schedule GDE (`StudentSchedule.csv`, the base's shape), never the Drops extract
+    (tests/test_sd45_real_schedule_headers.py). Also writes the ClassInformationEnhanced.csv the
+    district has sent since 2026-10-13. It feeds co-teachers only: the config keeps blended
+    detection off, so the file stays optional."""
     _write_student_demographic(d, "StudentDemographicEnhanced.csv")
     _write_staff(d, "StaffInformationEnhanced.csv")
-    _write_base_schedule(d, "StudentScheduleDrops.csv")
-    # The district's schedule has `Student Number` and NO `Student ID` (its first real run
-    # stopped on the missing column), so the shared shape's `Student ID` copy is dropped:
-    # leaving it would mask a config that reads it (tests/test_sd45_real_schedule_headers.py).
-    schedule = d / "StudentScheduleDrops.csv"
-    pd.read_csv(schedule, dtype=str, keep_default_na=False).drop(columns=["Student ID"]).to_csv(schedule, index=False)
+    _write_base_schedule(d, "StudentSchedule.csv")
     _write_course_info(d, "CourseInformationEnhanced.csv")
     _write_family(d, "EmergencyContactInfoEnhanced.csv")
+    _write_class_info(d, "ClassInformationEnhanced.csv")
 
 
 def _create_sd74_inputs(d: Path) -> None:

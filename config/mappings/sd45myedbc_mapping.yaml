@@ -1,24 +1,29 @@
 # SD45 - Inherits from standard MyEducation BC mapping
 # Migrated 2026-09-30 from the district's own gde2acsv-era standalone mapping
-# (v1.9, no `_base`). Every column name in that file matched the base, so only
-# the differences below survive; everything else is inherited.
-# Differences: `.csv` Enhanced extracts with district-specific filenames
-#              (StudentScheduleDrops.csv, EmergencyContactInfoEnhanced.csv,
-#              CourseInformationEnhanced.csv).
+# (v1.9, no `_base`), which kept only its `.csv` Enhanced filenames.
+# Differences: `.csv` extracts with district-specific filenames
+#              (StudentDemographicEnhanced.csv, StaffInformationEnhanced.csv,
+#              EmergencyContactInfoEnhanced.csv, StudentSchedule.csv,
+#              CourseInformationEnhanced.csv, ClassInformationEnhanced.csv).
 # NOT carried over: the old file read PreRegSchoolCode from "Previous school
 # number" — the bug the base fixed in PR #12 (a pre-registered student's NEXT
 # school is what SpacesEDU wants). The base's "Next school code" is inherited.
-# No ClassInformation extract is sent, so blended-class detection is off.
 # Class IDs keep the START year, as the district's old converter wrote them.
-# The schedule extract carries `Student Number` and NO `Student ID` (found on the
-# district's first real run: Enrollments stopped on the missing column), so the
-# Enrollments overlay below points the schedule's student column at
-# `Student Number`. The extract also lacks the base's `Section Letter` and
-# `Primary Teacher`: class names then carry no section, and the teacher is no
-# longer gated on the primary-teacher flag (a log warning and a Run History note
-# record it; Home stays green). `Section` is
-# deliberately NOT assumed to be the section letter until a sample value
-# confirms it.
+#
+# THE SCHEDULE (2026-10-14): Classes + Enrollments read MyEd BC's standard
+# Student Schedule GDE (spec v1.17 §2.41 / v1.8 §2.48), exported as
+# StudentSchedule.csv — the same shape the base reads (Student ID, District
+# Course Code, Section Letter, Master Timetable ID, Teacher ID, Teacher Name,
+# Primary Teacher, ...), so every column is inherited. Until then the mapping
+# read StudentScheduleDrops.csv, a filename carried over from the district's
+# old mapping. That GDE is "Drops only" (spec §2.42 / §2.49; its Change Date
+# is the date the section was DROPPED), so every subject enrollment built from
+# it was a dropped section. The Drops-only overrides (`Student Number` for the
+# schedule's student, `Section` for the class-name section) went with it.
+#
+# Since 2026-10-13 the district sends ClassInformationEnhanced.csv, which Classes
+# now lists: it feeds ClassInformation co-teacher enrollments and counts as
+# teaching evidence for Staff. Blended-class detection stays OFF (see below).
 _base: myedbc
 version: '1.14'
 sis: MyEducationBC
@@ -31,16 +36,22 @@ district_name: SD45 - West Vancouver School District
 district_domains: ["wvschools.ca", "sd45.bc.ca"]
 
 global_config:
-  # School year: deliberately NOT read from StudentScheduleDrops.csv yet. Whether
-  # SD45's `School Year` column holds a bare START or END year is unconfirmed (a
-  # bare start year read as the end year would stamp LAST year on every class),
-  # so the inherited source (StudentSchedule.txt, which SD45 does not send) is
-  # left in place and the year comes from today's date + the 07-25 rollover —
-  # exactly what the district's own mapping did. Point this at
-  # StudentScheduleDrops.csv once a sample value is confirmed.
-  # The base names ClassInformationEnh.txt for blended detection; SD45 sends no
-  # such file (its old mapping never produced blended classes), so opt out
-  # rather than read a file that is not there.
+  # School year: deliberately NOT read from the schedule yet. Whether SD45's
+  # `School Year` column holds a bare START or END year is unconfirmed (a bare
+  # start year read as the end year would stamp LAST year on every class), so
+  # the inherited source (StudentSchedule.txt, which SD45 does not send — its
+  # schedule is StudentSchedule.csv) is left in place and the year comes from
+  # today's date + the 07-25 rollover — exactly what the district's own mapping
+  # did. Point this at StudentSchedule.csv once a sample value is confirmed.
+  # Blended-class detection stays OFF although ClassInformationEnhanced.csv now
+  # arrives (2026-10-13). Turning it on would merge same-teacher/same-time-slot
+  # sections into new BLENDED_<key>_<year> Class IDs, re-keying sections the
+  # district's old converter (and every night since 2026-09-30) shipped under
+  # their own Master Timetable ID — on a live district that empties classes
+  # teachers already use. Off, the file still feeds co-teacher enrollments
+  # (Primary Teacher = Y rows, linked to homeroom classes by School Number +
+  # Section Letter) and stays OPTIONAL at the input gate: a night without it
+  # runs, co-teachers left out, with a standing warning.
   blended_classes: false
   # SD45's pre-DistrictSync converter suffixed every Class ID with the START
   # year of the school year (2026-27 -> <MTID>_2026, <school>_<homeroom>_2026).
@@ -63,21 +74,19 @@ mappings:
 
   Classes:
     source_files:
-      student_schedule: "StudentScheduleDrops.csv"
+      student_schedule: "StudentSchedule.csv"
       course_info: "CourseInformationEnhanced.csv"
       staff_info: "StaffInformationEnhanced.csv"
       student_demographic: "StudentDemographicEnhanced.csv"
+      # Header: School Number, Course Code, Teacher Id, Primary Teacher, Section
+      # Letter, Semester, Term, Day, Period, Master Timetable ID, Class
+      # Identifier, Schedule Expression, Max, Unrotated Schedule. Co-teachers
+      # read School Number + Teacher Id + Primary Teacher + Section Letter (the
+      # Enrollments `source_columns` defaults); Course Code applies
+      # `excluded_course_codes`. Class NAMES come from the schedule alone.
+      class_info: "ClassInformationEnhanced.csv"
 
   Enrollments:
     source_files:
-      student_schedule: "StudentScheduleDrops.csv"
+      student_schedule: "StudentSchedule.csv"
       student_demographic: "StudentDemographicEnhanced.csv"
-    # The base reads the schedule's student from `Student ID`, which this district's
-    # schedule does not have. `Student Number` is the same column the demographic
-    # file keys on. Teacher ID is inherited. `Role` carries the same pair, as sd40,
-    # sd60 and sd74 (the other districts that override this) write it.
-    field_map:
-      "User ID":
-        "student_id_col": "Student Number"
-      "Role":
-        "student_id_col": "Student Number"
