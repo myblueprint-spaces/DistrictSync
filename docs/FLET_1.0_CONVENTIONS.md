@@ -9,7 +9,7 @@
 - **❌ GOTCHA (confirmed via `pip show`):** `flet` requires only `httpx, msgpack, oauthlib, repath` — it pulls **NEITHER** `flet-desktop` **NOR** `flet-web`. So bare `flet` runs neither native nor web; you MUST pin **all three** explicitly. `flet-desktop` → requires `flet`; `flet-web` → requires `flet` **+ `fastapi` + `uvicorn`** (heavier — web mode is for headless CI screenshots, not a runtime dep of the shipped native exe).
 - **Pin them to the SAME exact version.** The downloaded/bundled Flutter client version is tied to the `flet-desktop` package version (cache dir is `flet-desktop-{flavor}-{version}`); a divergent `flet`↔`flet-desktop` pin risks a client↔runtime handshake mismatch.
 - **Recommended (gate, PLAT-1):** a CI assertion that `flet`/`flet-desktop`/`flet-web` are exact-pinned **and** match the version named in this doc — converts the API-drift safeguard from doc-only to gate-enforced.
-- It is **beta** — the API can still shift before 1.0-final. Pin exactly; a ROADMAP trigger tracks the bump to stable.
+- It is **beta** — the API can still shift before 1.0-final. Pin exactly; a backlog trigger tracks the bump to stable.
 
 ## Entry point
 - `ft.run(main)`.  **❌ NOT** the 0.2x `ft.app(target=main)`.

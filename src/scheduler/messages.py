@@ -7,7 +7,7 @@ lists — ``task_com``, ``windows``, ``src/scheduler/__init__.py`` and
 ``ui_flet.schedule_status`` and ``ui_flet.setup_errors`` (its defensive access-denied
 fallback, since plan 0047 A2) all import from here today. ONE live consumer still hand-spells
 a marker rather than importing it: ``src/scheduler/linux.py`` (its own ``"no crontab"``
-check) — tracked on ``docs/ROADMAP.md`` beside the cron path's unguarded
+check) — tracked on the DSYNC Jira board beside the cron path's unguarded
 marker interpolation, so the "never re-spelled on one side only" property holds for the five
 importers above, not universally.
 

@@ -16,8 +16,8 @@ so a reviewer can compare it against the live article and copy the approved text
 
 Scope principle (owner, 2026-09-03): this article is the PUBLIC, HIGH-LEVEL reference —
 installing, configuring, the MyEd BC files it needs, and what it produces. Detailed
-per-screen how-to and troubleshooting belong to the in-app Help surface (see the ROADMAP's
-"In-app Help becomes the partner docs surface" plan), not here. It links to no in-repo doc,
+per-screen how-to and troubleshooting belong to the in-app Help surface (a planned
+"In-app Help becomes the partner docs surface" change), not here. It links to no in-repo doc,
 because none is reachable from the Help Centre.
 
 The button labels quoted in the self-service section are pinned to the app by

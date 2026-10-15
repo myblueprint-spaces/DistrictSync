@@ -185,7 +185,7 @@ class TestUnexpectedShapeWarnsOncePerRun:
 
 
 class TestTransitionalRenameWarning:
-    """TRANSITIONAL (one release; ROADMAP): the district log names a rename that starts
+    """TRANSITIONAL (one release; backlog): the district log names a rename that starts
     taking effect with this build — and stays quiet where nothing changed."""
 
     @pytest.mark.parametrize(

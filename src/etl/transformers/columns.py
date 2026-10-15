@@ -35,7 +35,7 @@ entity's ``source_columns`` block: each is a mapping from a key to a column spel
 ``pipeline.run_transform`` calls it, and it serves both entry points):
 
 * a fallback to the default is logged at DEBUG — a permissive default must say so;
-* **TRANSITIONAL (one release; ROADMAP — "remove the S9 transitional column WARNING"):**
+* **TRANSITIONAL (one release; backlog — "remove the S9 transitional column WARNING"):**
   when the answer differs from what the build before S9 read at that call site
   (:class:`Previously`), one WARNING names the key and both column names. Before S9,
   three resolvers disagreed on a bare string and the Classes/Enrollments homeroom
@@ -91,7 +91,7 @@ class Previously(StrEnum):
     """What the build BEFORE plan 0053 S9 read at a call site — TRANSITIONAL.
 
     Required at every :func:`resolve_source_column` call so each site states its own
-    history; removed, with the WARNING it drives, the release after S9 ships (ROADMAP).
+    history; removed, with the WARNING it drives, the release after S9 ships (open item).
 
     * ``UNCHANGED`` — the site already resolved exactly as S9 does; never warns.
     * ``DEFAULT`` — the site ignored the config and read the default: a hardcoded

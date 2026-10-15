@@ -126,7 +126,7 @@ Each guide below holds a narrative moved VERBATIM out of CLAUDE.md by plan 0053 
 - `src/scheduler/provisioning.py` is the ONLY registry writer and uses the exported `MACHINE_SCOPE_KEY_ACCESS` mask (a 32-bit view answers about a different key); SID strings, never localised names; every `icacls` non-zero exit there is FATAL.
 - A new `MachineScopeRefused` reason needs a plain-language cause in `launcher._MACHINE_SCOPE_CAUSES` (a completeness test makes it RED). `dpapi_call(..., *, flags)` — `flags` is required.
 - The scope words the partner docs quote (`MACHINE_SCOPE_LINE_LEAD`, `diagnostics.SCOPE_SHARED`/`SCOPE_PER_USER`) are single-sourced and pinned by `tests/test_partner_doc_schedule_copy_parity.py` — the wrong answer there is SILENT.
-- Open hole: `prune_principal` has no producer in `src/` (ROADMAP).
+- Open hole: `prune_principal` has no producer in `src/` (open backlog item).
 
 ## Configuration-Driven Design
 
@@ -191,7 +191,7 @@ Priority order: **SOLID > DRY > KISS > YAGNI**. Keep layers isolated (UI / ETL-b
 ## Configurable Columns (core rule)
 
 GDE/source column names MUST come from the district `field_map` — never hardcoded in transformer code. Districts rename columns, so the mapping layer is the single source of truth.
-- Map outputs via `BaseTransformer.apply_field_map(...)`. For direct column access, resolve the name through `columns.resolve_source_column(field_map, key, default=…, previously=…)` — the ONE resolver (plan 0053 S9; a field_map entry, a `Name`/id-role block or a `source_columns` block alike; AST-pinned; `previously=` only drives a one-release rename WARNING, ROADMAP removes it) — never an inline literal like `record.get("final mark")` or an ad-hoc `.get(key, default).lower()`. A column that guards WHO ships or LINKS rows is checked with `columns.require_columns` where it is read (plan 0053 S10; `failure-policy.md` §5 `require-columns` table, AST-pinned).
+- Map outputs via `BaseTransformer.apply_field_map(...)`. For direct column access, resolve the name through `columns.resolve_source_column(field_map, key, default=…, previously=…)` — the ONE resolver (plan 0053 S9; a field_map entry, a `Name`/id-role block or a `source_columns` block alike; AST-pinned; `previously=` only drives a one-release rename WARNING, a backlog item removes it) — never an inline literal like `record.get("final mark")` or an ad-hoc `.get(key, default).lower()`. A column that guards WHO ships or LINKS rows is checked with `columns.require_columns` where it is read (plan 0053 S10; `failure-policy.md` §5 `require-columns` table, AST-pinned).
 - The ONLY sanctioned hardcoded column names are the shared structural join keys in `src/etl/column_names.py` (`SCHOOL_NUMBER`, `MASTER_TIMETABLE_ID`, …) and, beside them, the resolver's `default=` spellings (`STUDENT_NUMBER`, `GRADE`, …). Add new shared keys there, not as scattered literals.
 - `student_courses.py` is config-driven since 2026-07-20 (W4b1): output-keyed reads resolve through the field_map, auxiliary inputs through the optional per-entity `source_columns:` block, and `OUTPUT_COLUMNS` derives from the field_map keys.
 

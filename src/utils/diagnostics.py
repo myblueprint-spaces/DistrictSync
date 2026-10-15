@@ -254,7 +254,7 @@ def _delivery_lines() -> list[str]:
         # NOT asked with a blank identity. ``UserSecretStore`` deliberately ignores the host
         # and the Windows backend is loose about a blank username, so the question has no
         # meaningful answer here — and "yes" against unconfigured delivery is a worse answer
-        # than none. (Noted in ROADMAP: the predicate itself should refuse a blank identity.)
+        # than none. (Noted as a backlog item: the predicate itself should refuse a blank identity.)
         lines.append(_row("identity match", "n/a (delivery is not configured)"))
     return lines
 

@@ -159,7 +159,7 @@ def needs_identity_prompt(app_config: AppConfig) -> bool:
       state**. Be precise about what that does and does not promise — someone who declines
       at the launch page (storing nothing) and then finishes setup has CHANGED the settings
       state, and legitimately meets the ask once more here, where it is dismissible
-      forever. That transition is a product judgment, tracked in the ROADMAP, not a bug in
+      forever. That transition is a product judgment, tracked on the DSYNC Jira board, not a bug in
       this predicate;
     * **the ask has not been dismissed** — "Don't ask again" is PERMANENT. The way back is
       Settings ("Who looks after this sync"), which is also where clearing the address

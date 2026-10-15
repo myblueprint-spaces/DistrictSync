@@ -268,7 +268,7 @@ class TestChildRefusalVocabulary:
     ``_MSG_``-prefixed ``Name`` as the third. A refusal added as a keyword argument, an
     f-string, or via a local variable holding the constant is INVISIBLE to it. Every call site
     uses the bare-literal shape today, so the guard holds in practice; widening it past that
-    blind spot is ROADMAP, not a pinned property.
+    blind spot is a backlog item, not a pinned property.
     """
 
     @staticmethod

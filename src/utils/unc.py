@@ -129,7 +129,7 @@ def reach_unconfirmed(path: str, *, mapped: bool) -> bool:
 
     * ``mapped`` — a drive letter is per-user and per-logon-session, so it does not exist
       in a scheduled task's session at all. This one is not really a heuristic: it is the
-      known silent-failure shape a district already hit (ROADMAP, 2026-09-17);
+      known silent-failure shape a district already hit (open item, 2026-09-17);
     * the path sits under a user profile (``<drive>:\\Users\\…``), **except**
       ``C:\\Users\\Public``, which every account on the computer can read by design.
 

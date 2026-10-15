@@ -488,7 +488,7 @@ class TestTheCascade:
 
     def test_narrow_a_teacher_absent_from_staff_for_another_reason_stays(self):
         """T7 is not in Staff.csv (not exported, departed …) but was not LEFT OUT for a required
-        value: widening the teacher zero-orphan rule is a ROADMAP item, not this slice."""
+        value: widening the teacher zero-orphan rule is a backlog item, not this slice."""
         ctx = _ctx()
         ctx.left_out_staff_ids = frozenset({"T1"})
         out = EnrollmentTransformer._leave_out_orphans_of_left_out_rows(_enrollments(), ctx)

@@ -17,7 +17,7 @@ asserts the two cannot silently diverge. A red assertion sourced from this modul
 is a **partner-visible contract change requiring importer re-confirmation, not a
 test edit**.
 
-Dependency direction (deliberate, per the ROADMAP fold guidance): unit and e2e
+Dependency direction (deliberate, per the fold guidance): unit and e2e
 modules import THIS module. Nothing imports ``test_contract`` — that module
 imports the conftest-registered ``ci_flet_pack_smoke`` and drives a 12-config
 pipeline sweep, so importing it from a unit test would invert the dependency and

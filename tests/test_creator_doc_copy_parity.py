@@ -29,7 +29,7 @@ test that exists to stop hand-copying would be the same defect one level up:
   than no list at all.
 
 And one **cheap structural row**: the QA checklist's prose check-count against its own table
-(ROADMAP gate item (3) — the count had drifted before).
+(gate item (3) — the count had drifted before).
 """
 
 from __future__ import annotations
@@ -231,7 +231,7 @@ def test_the_absent_keys_are_named_as_absent() -> None:
 
 
 # ---------------------------------------------------------------------------
-# The QA checklist's own count (ROADMAP gate item (3))
+# The QA checklist's own count (gate item (3))
 # ---------------------------------------------------------------------------
 
 
