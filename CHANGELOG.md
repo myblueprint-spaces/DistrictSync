@@ -34,6 +34,11 @@ Per-release download links and auto-generated commit notes live on the
   failed" (exit code 3) with the output files kept.
 ### Changed
 
+- **SD67 (Okanagan Skaha): Family is built from the district's parent export.** The district's
+  emergency-contact export is the version with no email column, so every contact was left out for
+  a blank email and no `Family.csv` was produced. The mapping now reads `ParentInformation.txt`,
+  which carries each parent's email. **The district must send `ParentInformation.txt`**: without
+  it, the sync still runs but Family is left out, as before.
 - **Run history can now be upgraded safely in future releases.** The run-history database
   gained a built-in, step-by-step upgrade mechanism so a future release that adds a field no
   longer risks run history silently stopping. Nothing changes today: no field is added and

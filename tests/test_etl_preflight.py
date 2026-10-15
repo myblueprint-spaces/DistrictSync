@@ -734,11 +734,13 @@ class TestMissingColumnsByEntity:
 
     def test_the_sd67_shape_names_family_s_missing_email_column_in_config_spelling(self):
         """SD67 2026-09-22 / SD51 2026-09-18: Family maps ``Email Address``; its contacts
-        file lacks it — every contact is then excluded for a blank email."""
+        file lacks it — every contact is then excluded for a blank email. Since DSYNC-25
+        SD67's Family reads ``ParentInformation.txt``, so that is the file observed."""
         config = load_config("sd67myedbc")
-        assert "Family" not in missing_columns_by_entity(config, _renamed_demographic(_MYEDBC_OBSERVED))
+        assert "Family" not in missing_columns_by_entity(config, _sd67_observed(_MYEDBC_OBSERVED))
 
-        observed = _renamed_demographic(_observed_without("EmergencyContactInformation.txt", "email address"))
+        observed = _sd67_observed(_MYEDBC_OBSERVED)
+        observed[_SD67_PARENTS] = tuple(c for c in observed[_SD67_PARENTS] if c != "email address")
         assert missing_columns_by_entity(config, observed)["Family"] == ("Email Address",)
 
     def test_a_column_in_another_entity_s_file_does_not_hide_a_miss_in_this_one(self):
@@ -853,10 +855,19 @@ class TestMissingColumnsByEntity:
         assert observation_scope("StudentAttendance") is ObservationScope.NO_CLAIM
 
 
-def _renamed_demographic(observed: dict[str, tuple[str, ...]]) -> dict[str, tuple[str, ...]]:
-    """SD67 reads its ENHANCED demographic export under its own filename."""
+_SD67_PARENTS = "ParentInformation.txt"
+
+
+def _sd67_observed(observed: dict[str, tuple[str, ...]]) -> dict[str, tuple[str, ...]]:
+    """SD67's own filenames: its ENHANCED demographic export, and (DSYNC-25) Family's
+    parent export, carrying the district's real header row in place of the base's
+    email-less contacts file."""
+    from tests.test_contract import SD67_PARENT_INFORMATION_HEADER
+
     renamed = dict(observed)
     renamed["StudentDemographicEnh.txt"] = renamed.pop("StudentDemographicInformation.txt")
+    del renamed["EmergencyContactInformation.txt"]
+    renamed[_SD67_PARENTS] = tuple(c.lower() for c in SD67_PARENT_INFORMATION_HEADER)
     return renamed
 
 

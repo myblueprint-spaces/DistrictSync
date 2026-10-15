@@ -1557,7 +1557,9 @@ def _sd67_without_contact_email(d: Path) -> None:
     from tests.test_contract import _create_sd67_inputs
 
     _create_sd67_inputs(d)
-    contacts = d / "EmergencyContactInformation.txt"
+    # Since DSYNC-25 SD67's Family reads the parent export, so the miss is planted in the
+    # file the config names.
+    contacts = d / "ParentInformation.txt"
     frame = pd.read_csv(contacts, dtype=str)
     frame = frame.drop(columns=["Email Address"])
     frame[_SENTINEL_HEADER] = "x"
@@ -1592,7 +1594,7 @@ class TestSourceObservation:
             "rows": 0,
             "missing_mapped": ["Email Address"],
             "labels": ["Email Address"],
-            "file_label": "EmergencyContactInformation.txt",
+            "file_label": "ParentInformation.txt",
             # Plan 0053 S11: the contacts the blank Email excluded are COUNTED on the outcome.
             "notes": {"contacts_excluded_no_email": 2},
         }
@@ -1735,7 +1737,7 @@ class TestSourceObservation:
         result = convert_job(self._SD67, str(sd67_input))
         assert result.entity_outcomes is not None
         family = next(o for o in result.entity_outcomes if o.entity == "Family")
-        assert (family.file_label, family.labels) == ("EmergencyContactInformation.txt", ("Email Address",))
+        assert (family.file_label, family.labels) == ("ParentInformation.txt", ("Email Address",))
         records = read_run_records()
         assert records is not None and records[0]["entity_outcomes"]["Family"]["labels"] == ["Email Address"]
 
