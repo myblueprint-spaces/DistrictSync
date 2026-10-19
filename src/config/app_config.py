@@ -68,6 +68,12 @@ _QUARANTINE_NAME_FMT = "config.corrupt-%Y%m%d-%H%M%S.json"
 # only reaper of these files can never disagree about which files are quarantine copies.
 _QUARANTINE_GLOB = "config.corrupt-*.json"
 
+
+def registration_stamp(now: datetime | None = None) -> str:
+    """The ONE spelling of a registration timestamp (clock-injectable for tests)."""
+    return (now or datetime.now()).isoformat(timespec="seconds")
+
+
 # Fields that describe the LOAD, not the settings. Never written to disk and never
 # accepted from it — one frozenset drives BOTH the save payload and the load allowlist,
 # so persisted-vs-transient can never drift between the two.
@@ -203,6 +209,16 @@ class AppConfig:
     schedule_time: str = "03:00"  # HH:MM (24-hour)
     schedule_task_name: str = "DistrictSync_Daily"
     schedule_registered: bool = False
+    # WHEN the nightly was confirmed registered (DSYNC-26) — a naive-local ISO-8601 string in the
+    # SAME shape as a run record's ``timestamp`` / the store's ``created_at`` (use
+    # :func:`registration_stamp`, never a hand-rolled ``datetime``). Written beside
+    # ``schedule_registered`` and cleared with it. It is the missed-run clock for an install with
+    # NO run store: without it ``history.db`` never existing left Home's "registered but never
+    # ran" check with nothing to measure from. ``""`` = unknown (a registration made before this
+    # field existed) and the check stays SILENT for it — an upgrader is never accused on a guess.
+    # Same ``schedule_`` NAMING CONTRACT as the facets below: it keeps this field OUT of
+    # ``_ADVISORY_FIELD_PREFIXES`` so ``_carries_chosen_settings`` counts it.
+    schedule_registered_at: str = ""
     # The durable "what was ACTUALLY registered" facts (plan 0034 Slice 3) — written ONLY on a
     # confirmed successful register (and cleared on a confirmed unregister), never inferred:
     # ``schedule_unattended`` records whether the task was registered WITH a Windows password

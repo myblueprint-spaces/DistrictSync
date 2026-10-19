@@ -11,6 +11,7 @@ returns a valid ``HomeStatus`` with no exception.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -673,9 +674,97 @@ class TestMissedRun:
         status = derive_home_status([], _CONFIGURED, now=_NOW, store_created_at=fresh, schedule_status=_live_schedule())
         assert status.headline == "Run history starts fresh here"
 
-    def test_no_store_meta_stays_silent(self) -> None:
+    def test_no_store_and_no_registration_anchor_stays_silent(self) -> None:
+        # An upgrader's pre-existing registration carries no ``schedule_registered_at``: with no
+        # store either, nothing can be measured, so Home stays quiet exactly as it always did.
+        assert _CONFIGURED.schedule_registered_at == ""
         status = derive_home_status([], _CONFIGURED, now=_NOW, store_created_at=None, schedule_status=_live_schedule())
         assert status.headline != self._MISSED_HEADLINE
+        assert status.headline == "No runs recorded yet"
+
+    def test_no_store_with_old_registration_anchor_warns_missed(self) -> None:
+        # DSYNC-26 positive twin: the nightly was registered past the window ago, still LIVE, and
+        # history.db was never created -> the nightly never recorded a run.
+        cfg = replace(_CONFIGURED, schedule_registered_at=self._ESTABLISHED)
+        status = derive_home_status([], cfg, now=_NOW, store_created_at=None, schedule_status=_live_schedule())
+        assert status.verdict is Verdict.WARNING
+        assert status.headline == self._MISSED_HEADLINE
+        assert status.fix is not None and status.fix.dest_id == "run_history"
+
+    def test_no_store_with_registration_anchor_inside_window_stays_silent(self) -> None:
+        # Day-one guard: registered 2h ago is not a miss yet.
+        young = (_NOW - timedelta(hours=2)).isoformat(timespec="seconds")
+        cfg = replace(_CONFIGURED, schedule_registered_at=young)
+        status = derive_home_status([], cfg, now=_NOW, store_created_at=None, schedule_status=_live_schedule())
+        assert status.headline != self._MISSED_HEADLINE
+
+    def test_registration_anchor_exactly_at_window_stays_silent(self) -> None:
+        exactly = (_NOW - timedelta(hours=MISSED_RUN_AFTER_HOURS)).isoformat(timespec="seconds")
+        cfg = replace(_CONFIGURED, schedule_registered_at=exactly)
+        status = derive_home_status([], cfg, now=_NOW, store_created_at=None, schedule_status=_live_schedule())
+        assert status.headline != self._MISSED_HEADLINE
+
+    def test_unparseable_registration_anchor_stays_silent(self) -> None:
+        cfg = replace(_CONFIGURED, schedule_registered_at="garbage")
+        status = derive_home_status([], cfg, now=_NOW, store_created_at=None, schedule_status=_live_schedule())
+        assert status.headline != self._MISSED_HEADLINE
+
+    def test_registration_anchor_requires_a_live_schedule(self) -> None:
+        # The anchor never asserts a miss on an unconfirmed (None/UNKNOWN) schedule.
+        unknown = derive_schedule_status(
+            ScheduleReadback(found=None, error="denied"),
+            hint_registered=True,
+            latest_record_ts=None,
+            foreign_account="",
+            shared_records=False,
+        )
+        cfg = replace(_CONFIGURED, schedule_registered_at=self._ESTABLISHED)
+        for sched in (None, unknown):
+            status = derive_home_status([], cfg, now=_NOW, store_created_at=None, schedule_status=sched)
+            assert status.headline != self._MISSED_HEADLINE
+        # Positive twin: the same config with a LIVE read-back does warn.
+        live = derive_home_status([], cfg, now=_NOW, store_created_at=None, schedule_status=_live_schedule())
+        assert live.headline == self._MISSED_HEADLINE
+
+    def test_an_existing_store_stamp_wins_over_the_registration_anchor(self) -> None:
+        # A store born 2h ago is the better witness: a stale registration stamp must not override
+        # the fresh-start guard.
+        fresh = (_NOW - timedelta(hours=2)).isoformat(timespec="seconds")
+        cfg = replace(_CONFIGURED, schedule_registered_at=self._ESTABLISHED)
+        status = derive_home_status([], cfg, now=_NOW, store_created_at=fresh, schedule_status=_live_schedule())
+        assert status.headline == "Run history starts fresh here"
+
+    def test_registration_anchor_sync_window_pause_still_wins(self) -> None:
+        # Seasonal pause precedence is unchanged: summer + stale anchor + no store -> paused.
+        anchor = (_SUMMER - timedelta(hours=MISSED_RUN_AFTER_HOURS + 48)).isoformat(timespec="seconds")
+        status = derive_home_status(
+            [],
+            _windowed(schedule_registered_at=anchor),
+            now=_SUMMER,
+            store_created_at=None,
+            schedule_status=_live_schedule(),
+        )
+        assert status.headline == _PAUSED_HEADLINE
+
+    def test_registration_anchor_confirmed_missing_still_outranks_pause(self) -> None:
+        missing = derive_schedule_status(
+            ScheduleReadback(found=False),
+            hint_registered=False,
+            latest_record_ts=None,
+            foreign_account="",
+            shared_records=False,
+        )
+        anchor = (_SUMMER - timedelta(hours=MISSED_RUN_AFTER_HOURS + 48)).isoformat(timespec="seconds")
+        status = derive_home_status(
+            [],
+            _windowed(setup_completed=True, schedule_registered=False, schedule_registered_at=anchor),
+            now=_SUMMER,
+            store_created_at=None,
+            schedule_status=missing,
+        )
+        assert status.headline != _PAUSED_HEADLINE
+        assert status.headline != _MISSED_HEADLINE
+        assert "add a nightly schedule" in status.detail
 
     def test_unparseable_created_at_stays_silent(self) -> None:
         status = derive_home_status(

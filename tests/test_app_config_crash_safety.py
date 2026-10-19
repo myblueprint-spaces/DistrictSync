@@ -717,6 +717,8 @@ class TestTheScheduleRecordFacetsAreCountedAdminChoices:
         ("field_name", "value"),
         [
             ("schedule_registered", True),
+            # DSYNC-26: WHEN it was registered - a stamp, never a password.
+            ("schedule_registered_at", "2026-07-01T03:00:00"),
             ("schedule_unattended", True),
             ("schedule_task_args", {"sis_type": "myedbc"}),
             ("schedule_run_as_user", r"CORP\svc"),

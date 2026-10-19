@@ -70,7 +70,7 @@ from pathlib import Path
 
 import flet as ft
 
-from src.config.app_config import AppConfig
+from src.config.app_config import AppConfig, registration_stamp
 from src.config.authoring import current_digest
 from src.scheduler import get_scheduler, windows
 from src.scheduler.provision_session import (
@@ -3065,6 +3065,8 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
             """
             cfg.schedule_time = run_time
             cfg.schedule_registered = True
+            # DSYNC-26: the missed-run clock for an install with no run store (fifth facet, SAME save).
+            cfg.schedule_registered_at = registration_stamp()
             # 0034 S3-a/d: record what was ACTUALLY registered — the unattended fact (a boolean
             # only; the password itself stays handler-local per I1/I3) + the task-baked args.
             # Choosing the signed-in-only path re-registers with a blank password, so this line
@@ -3465,6 +3467,7 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
                 outcome = interpret_unregister(ok, msg)
                 if outcome.success_shaped:
                     cfg.schedule_registered = False
+                    cfg.schedule_registered_at = ""
                     # 0034 S3 + 0046 B + 0049 S-4: no task exists any more — all FOUR "what was
                     # registered" facts go together (an honest record; a later register rewrites
                     # them). ``account_field.value`` and the gMSA tick box are deliberately NOT
