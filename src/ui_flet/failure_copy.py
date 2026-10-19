@@ -1229,7 +1229,7 @@ def _coerced(value: object) -> RunErrorCategory:
 
 # The two tails — ONE is appended, chosen by `failed_copy`'s `delivery_requested` (its docstring
 # says what the bool means and what each surface passes). Neither says what SpacesEDU holds. "Nothing NEW was saved" (not "your files were not changed") because
-# the write's rollback is best-effort (the ROADMAP "Three sites promise …" item; plan 0050).
+# the write's rollback is best-effort (the "Three sites promise …" item; plan 0050).
 NOTHING_SENT_TAIL: Final = "Nothing was sent to SpacesEDU this time."
 NOTHING_SAVED_TAIL: Final = "Nothing new was saved to your output folder."
 

@@ -75,7 +75,7 @@ class TransformContext:
     # StaffTransformer / ClassTransformer at the end of their transforms (both CRITICAL — P3(b));
     # read by EnrollmentTransformer, which leaves out the teacher rows of a left-out staff member
     # and every row of a left-out class. Deliberately NARROW: a teacher row whose staff member is
-    # absent from Staff.csv for any OTHER reason is untouched (ROADMAP). Empty until they run.
+    # absent from Staff.csv for any OTHER reason is untouched (open item). Empty until they run.
     left_out_staff_ids: frozenset[str] = frozenset()
     left_out_class_ids: frozenset[str] = frozenset()
 

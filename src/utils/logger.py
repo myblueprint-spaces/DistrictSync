@@ -11,6 +11,22 @@ from src.utils.paths import bundle_config_dir, user_log_file
 # (an unbounded log on a district server that runs nightly for years).
 _LOG_MAX_BYTES = 5_242_880
 _LOG_BACKUP_COUNT = 3
+_LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+_LOG_DATEFMT = "%Y-%m-%d %H:%M:%S"
+
+
+def _build_file_handler(path: Path) -> logging.handlers.RotatingFileHandler:
+    """The rotating INFO file sink, built in code (never from eval'd config text)."""
+    handler = logging.handlers.RotatingFileHandler(
+        path,
+        mode="a",
+        maxBytes=_LOG_MAX_BYTES,
+        backupCount=_LOG_BACKUP_COUNT,
+        encoding="utf-8",
+    )
+    handler.setLevel(logging.INFO)
+    handler.setFormatter(logging.Formatter(_LOG_FORMAT, datefmt=_LOG_DATEFMT))
+    return handler
 
 
 def get_logger(name: str = __name__, *, log_file: Path | None = None) -> logging.Logger:
@@ -27,32 +43,26 @@ def get_logger(name: str = __name__, *, log_file: Path | None = None) -> logging
     limits stay single-sourced here either way.
     """
     config_path = bundle_config_dir() / "logging.conf"
-    # Use forward slashes: logging.conf substitutes this into a Python
-    # literal that gets eval()'d, and Windows backslashes trigger
-    # "unicodeescape" SyntaxError (e.g. "\U" in user names). Windows
-    # APIs accept forward slashes, so this is safe on all platforms.
-    logfile = (log_file if log_file is not None else user_log_file()).as_posix()
+    # The log path is NEVER handed to fileConfig: it eval()s handler ``args`` after
+    # configparser interpolation, so an apostrophe or ``%`` in a profile path
+    # (C:\Users\O'Brien) crashed startup and a crafted name was code execution
+    # (DSYNC-10). The file handler is built in code from the Path object instead.
+    logfile = log_file if log_file is not None else user_log_file()
 
     if config_path.exists():
-        # logging.conf references %(logfile)s which we inject here so
-        # the handler writes to an absolute user-data path rather than
-        # a relative one (which would land in the exe's temp dir).
-        logging.config.fileConfig(config_path, defaults={"logfile": logfile}, disable_existing_loggers=False)
+        # logging.conf supplies levels, format and the console handler only.
+        logging.config.fileConfig(config_path, disable_existing_loggers=False)
+        file_handler = _build_file_handler(logfile)
+        # Same wiring the conf used to declare: root + the non-propagating "etl" logger.
+        logging.getLogger().addHandler(file_handler)
+        logging.getLogger("etl").addHandler(file_handler)
     else:
         # Fallback basic configuration — still absolute, not relative, and still
-        # ROTATING (same 5 MB × 3 limits as logging.conf's normal path).
+        # ROTATING (same 5 MB × 3 limits as the normal path).
         logging.basicConfig(
             level=logging.INFO,
-            format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-            handlers=[
-                logging.handlers.RotatingFileHandler(
-                    logfile,
-                    maxBytes=_LOG_MAX_BYTES,
-                    backupCount=_LOG_BACKUP_COUNT,
-                    encoding="utf-8",
-                ),
-                logging.StreamHandler(),
-            ],
+            format=_LOG_FORMAT,
+            handlers=[_build_file_handler(logfile), logging.StreamHandler()],
         )
 
     return logging.getLogger(name)

@@ -163,7 +163,7 @@ class EnrollmentTransformer(BaseTransformer):
         Students publishes its roster from the rows it kept, so the student-row filters already
         drop them. Deliberately NARROW: a teacher row whose staff member is missing from
         ``Staff.csv`` for any other reason (not exported, departed, unroled) is untouched — widening
-        the teacher zero-orphan rule changes delivered rows at measured districts (ROADMAP).
+        the teacher zero-orphan rule changes delivered rows at measured districts (open item).
 
         ONE aggregated INFO line when anything was removed (counts only, never an id). No second
         outcome note: the upstream entity's own note already says those rows were left out, and
@@ -223,7 +223,7 @@ class EnrollmentTransformer(BaseTransformer):
         (plan 0053 S10; on pandas 2.3 the ``MergeError`` arm was unreachable anyway —
         a merge-key dtype mismatch raises a plain ``ValueError`` — and the reachable
         ``KeyError`` was a missing column). An SD83 export without its teacher-id column
-        once shipped every homeroom with no teacher this way (ROADMAP, 2026-09-14).
+        once shipped every homeroom with no teacher this way (open item, 2026-09-14).
         """
         if student_demo_df.empty or artifacts.homeroom_classes_df.empty:
             return None

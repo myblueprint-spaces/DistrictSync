@@ -198,3 +198,39 @@ class TestNoRetrySurfaces:
         assert "network down" in msg
         assert mock_connect.call_count == 1
         mock_sleep.assert_not_called()
+
+
+class TestStalledPut:
+    """DSYNC-9: a stalled put (channel read timeout -> socket.timeout) is a transient
+    OSError: it retries, then fails as before (re-raised, so exit code 3)."""
+
+    def test_stalled_put_retries_then_succeeds(self, output_dir):
+        uploader = _uploader()
+        stalled_client, stalled_sftp = MagicMock(), MagicMock()
+        stalled_sftp.put.side_effect = TimeoutError("timed out")
+        healthy_client, healthy_sftp = MagicMock(), MagicMock()
+        with (
+            patch.object(
+                uploader, "_connect", side_effect=[(stalled_client, stalled_sftp), (healthy_client, healthy_sftp)]
+            ) as mock_connect,
+            patch("src.sftp.uploader.time.sleep"),
+        ):
+            uploaded = uploader.upload_csvs(output_dir, manifest={"Students.csv"})
+        assert uploaded == ["Students.csv"]
+        assert mock_connect.call_count == 2
+        assert healthy_sftp.put.call_count == 1
+        stalled_client.close.assert_called_once()
+
+    def test_stalled_put_exhausts_retries_and_raises(self, output_dir):
+        uploader = _uploader()
+        pairs = [(MagicMock(), MagicMock()) for _ in range(SFTP_RETRY_ATTEMPTS)]
+        for _client, sftp in pairs:
+            sftp.put.side_effect = TimeoutError("timed out")
+        with (
+            patch.object(uploader, "_connect", side_effect=pairs) as mock_connect,
+            patch("src.sftp.uploader.time.sleep"),
+            pytest.raises(TimeoutError, match="timed out"),
+        ):
+            uploader.upload_csvs(output_dir, manifest={"Students.csv"})
+        assert mock_connect.call_count == SFTP_RETRY_ATTEMPTS
+        assert all(client.close.call_count == 1 for client, _ in pairs)

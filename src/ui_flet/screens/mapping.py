@@ -66,7 +66,7 @@ id missing from it is treated as ``"bundled"`` — the fail-OPEN direction ``_or
 documents for itself: this exists to stop an admin MISTAKE, never to strand one).
 
 **The select-a-pre-built-config sliver, plus authoring — NOT a YAML editor.** The full
-column-mapping editor remains DEFERRED to ROADMAP (IA-8b): the panel asks the creator's four
+column-mapping editor remains DEFERRED (IA-8b): the panel asks the creator's four
 questions and its file names, and nothing here edits YAML text.
 
 **Reconciled with Setup, not duplicated.** Setup is first-run onboarding (folders + district +

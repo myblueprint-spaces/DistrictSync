@@ -246,7 +246,7 @@ GATE_STALE_BASE_NOTE = (
 #: same vocabulary collision round 2 closed at the change door and the export reveal. This
 #: button has nothing to do with the rail's Setup item or the Settings scroll it graduates
 #: into; it saves a MAPPING. The wider Setup/Settings/Mapping rail question is a separate,
-#: still-open owner decision (ROADMAP) — this is the button, not the rail.
+#: still-open owner decision (open item) — this is the button, not the rail.
 GATE_CONFIRM_LABEL = "Save district mapping"
 GATE_RERUN_LABEL = "Test it again"
 GATE_ACTIVATED_NOTE = "This computer now converts your district."
@@ -1754,7 +1754,7 @@ def _advisory_line(text: str, *, color: str, icon: str) -> ft.Control:
 
     Module-local rather than a ``components.py`` factory: ``screens/mapping.py`` has its own
     ``_note_line`` of the same shape, so the honest generalisation is one factory and two
-    migrated screens — worth doing, but not inside a review-fix round (ROADMAP). This exists
+    migrated screens — worth doing, but not inside a review-fix round (open item). This exists
     because THIS file now paints two of them (the shared note slot and the discard refusal),
     and two copies in one module is where the drift starts.
     """

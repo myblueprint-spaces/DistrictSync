@@ -51,3 +51,16 @@ mappings:
   Enrollments:
     source_files:
       student_demographic: "StudentDemographicEnh.txt"
+
+  # Family reads the district's PARENT export, not the base's emergency-contact
+  # one (DSYNC-25). SD67 sends the NON-Enhanced `EmergencyContactInformation.txt`,
+  # which has no email column, so every contact was excluded for a blank Email
+  # and Family.csv never shipped. `ParentInformation.txt` carries `Email Address`;
+  # its only header that differs from the base map is `Surname`. Same shape as
+  # sd74myedbc. No row filter: unlike SD60's contacts export this file holds
+  # parents only, with no guardian flag to key on.
+  Family:
+    source_files:
+      emergency_contacts: "ParentInformation.txt"
+    field_map:
+      "Last Name": "Surname"

@@ -9,6 +9,50 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+## [3.27.2] - 2026-10-15
+
+### Fixed
+
+- **SD45 (West Vancouver): co-teachers from the district's Class Information export are no
+  longer left out.** The district now sends `ClassInformationEnhanced.csv`; its mapping listed the
+  base's `ClassInformationEnh.txt` instead, so every night warned "co-teachers left out". The
+  mapping now reads the district's file: a co-teacher it marks as a primary teacher of a homeroom
+  section is enrolled in that homeroom class (and, with no other teaching record, now appears in
+  Staff). Blended-class detection stays off, so no Class ID changes, and a night without the file
+  still runs with the same warning. A drop without the emergency-contact file still only leaves
+  Family out.
+- **SD45 (West Vancouver): class enrollments come from the real timetable, not from dropped
+  sections.** The mapping read `StudentScheduleDrops.csv`, MyEd BC's "Drops only" extract (each
+  row is a section the student DROPPED), so subject enrollments were built from dropped sections.
+  It now reads the standard Student Schedule extract, `StudentSchedule.csv`, with the same columns
+  every other MyEd BC district uses, so class names also carry their section and primary teacher
+  again. **The district must send `StudentSchedule.csv`**: a drop without it stops at the input
+  check ("incomplete input") rather than rostering dropped sections.
+- **SFTP delivery can no longer hang forever on a half-dead network.** Only the connect step
+  was time-limited, so a connection that went silent mid-upload stalled the night until the task
+  scheduler killed it, leaving no run record. The connection now sends keepalives and every
+  read/write on the SFTP channel is time-limited; a stalled upload fails, is retried like any
+  other transient network error, and, if it still fails, ends as the usual "SFTP delivery
+  failed" (exit code 3) with the output files kept.
+- **A Windows user name with an apostrophe (for example `O'Brien`) or a `%` no longer stops
+  DistrictSync before it can log anything.** The log file path was spliced into the logging
+  configuration and evaluated as code, so such a profile path crashed startup, and a crafted one
+  could run code. The log file is now opened directly; levels, format, 5 MB x 3 rotation and the
+  console output are unchanged.
+
+### Changed
+
+- **SD67 (Okanagan Skaha): Family is built from the district's parent export.** The district's
+  emergency-contact export is the version with no email column, so every contact was left out for
+  a blank email and no `Family.csv` was produced. The mapping now reads `ParentInformation.txt`,
+  which carries each parent's email. **The district must send `ParentInformation.txt`**: without
+  it, the sync still runs but Family is left out, as before.
+- **Run history can now be upgraded safely in future releases.** The run-history database
+  gained a built-in, step-by-step upgrade mechanism so a future release that adds a field no
+  longer risks run history silently stopping. Nothing changes today: no field is added and
+  existing history is untouched. If an upgrade step ever fails, it is rolled back, logged as
+  an error naming the step, and the run itself is unaffected.
+
 ## [3.27.1] - 2026-10-10
 
 ### Fixed

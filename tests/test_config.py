@@ -460,6 +460,18 @@ class TestDistrictConfigEquivalence:
         family_fm = cfg.get_raw_field_map("Family")
         assert family_fm["Last Name"] == "Surname"
 
+    def test_sd67_family_reads_the_parent_export(self):
+        """DSYNC-25: SD67's emergency-contact export has no email column."""
+        cfg = load_config("sd67myedbc")
+        assert cfg.mappings["Family"].source_files["emergency_contacts"] == "ParentInformation.txt"
+        family_fm = cfg.get_raw_field_map("Family")
+        assert family_fm["Last Name"] == "Surname"
+        assert (family_fm["First Name"], family_fm["Email"], family_fm["Student User ID"]) == (
+            "First Name",
+            "Email Address",
+            "Student Number",
+        )
+
     def test_sd74_class_name_config(self):
         cfg = load_config("sd74myedbc")
         classes_fm = cfg.get_raw_field_map("Classes")

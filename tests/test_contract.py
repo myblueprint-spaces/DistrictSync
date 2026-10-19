@@ -509,18 +509,17 @@ def _create_sd48_inputs(d: Path) -> None:
 
 
 def _create_sd45_inputs(d: Path) -> None:
-    """sd45myedbc: the district's own `.csv` Enhanced extract names, and NO
-    ClassInformation file (the config opts out of blended detection)."""
+    """sd45myedbc: the district's own `.csv` extract names. The schedule is the standard
+    Student Schedule GDE (`StudentSchedule.csv`, the base's shape), never the Drops extract
+    (tests/test_sd45_real_schedule_headers.py). Also writes the ClassInformationEnhanced.csv the
+    district has sent since 2026-10-13. It feeds co-teachers only: the config keeps blended
+    detection off, so the file stays optional."""
     _write_student_demographic(d, "StudentDemographicEnhanced.csv")
     _write_staff(d, "StaffInformationEnhanced.csv")
-    _write_base_schedule(d, "StudentScheduleDrops.csv")
-    # The district's schedule has `Student Number` and NO `Student ID` (its first real run
-    # stopped on the missing column), so the shared shape's `Student ID` copy is dropped:
-    # leaving it would mask a config that reads it (tests/test_sd45_real_schedule_headers.py).
-    schedule = d / "StudentScheduleDrops.csv"
-    pd.read_csv(schedule, dtype=str, keep_default_na=False).drop(columns=["Student ID"]).to_csv(schedule, index=False)
+    _write_base_schedule(d, "StudentSchedule.csv")
     _write_course_info(d, "CourseInformationEnhanced.csv")
     _write_family(d, "EmergencyContactInfoEnhanced.csv")
+    _write_class_info(d, "ClassInformationEnhanced.csv")
 
 
 def _create_sd74_inputs(d: Path) -> None:
@@ -953,6 +952,72 @@ def _create_sd67_inputs(d: Path) -> None:
     _create_mbp_all_inputs(d)
     (d / "StudentDemographicInformation.txt").unlink()
     _write_student_demographic(d, "StudentDemographicEnh.txt")
+    # Family (DSYNC-25): the district's contact export is the NON-Enhanced one, with no
+    # email column; the parent export beside it is what Family reads. Leaving the
+    # email-less contacts file IN the folder is what proves the override landed — read
+    # by mistake, it would exclude every contact and Family would come out empty.
+    contacts = d / "EmergencyContactInformation.txt"
+    pd.read_csv(contacts, dtype=str).drop(columns=["Email Address"]).to_csv(contacts, index=False)
+    _write_sd67_parent_information(d)
+
+
+#: SD67's real ``ParentInformation`` header row (DSYNC-25), verbatim and in order.
+SD67_PARENT_INFORMATION_HEADER: tuple[str, ...] = (
+    "School Number",
+    "Student Number",
+    "Student Legal Last Name",
+    "Student Legal First Name",
+    "Grade",
+    "Homeroom",
+    "User Name",
+    "Surname",
+    "First Name",
+    "Prefix",
+    "Parent Type",
+    "Parent Type Description",
+    "Business Phone",
+    "Business Phone Extension",
+    "Home Phone",
+    "Cellular Phone",
+    "Email Address",
+    "Place of Employment",
+    "Apartment",
+    "Street Number",
+    "Street Name",
+    "Community",
+    "Postal Code",
+    "Rural Code",
+    "Postal Box",
+    "Lot Number",
+    "Concession Number",
+    "Mailing Address",
+    "Custody Status",
+    "Home Language",
+    "Living With Student",
+    "RR Number / PO Box",
+)
+
+
+def _write_sd67_parent_information(d: Path) -> None:
+    """The :func:`_write_family` contacts (S001 + S002) under SD67's full parent-export header.
+
+    The student's own legal names sit beside the parent's ``Surname`` / ``First Name``, so a
+    mapping that read the wrong name column would put the PUPIL's name on the family row.
+    """
+    rows = {column: ["", ""] for column in SD67_PARENT_INFORMATION_HEADER}
+    rows.update(
+        {
+            "School Number": ["100", "200"],
+            "Student Number": ["S001", "S002"],
+            "Student Legal Last Name": ["Smith", "Jones"],
+            "Student Legal First Name": ["Alice", "Bob"],
+            "Surname": ["Smith", "Wong"],
+            "First Name": ["John", "Mei"],
+            "Parent Type": ["F", "M"],
+            "Email Address": ["john@mail.com", "mei@mail.com"],
+        }
+    )
+    pd.DataFrame(rows, columns=list(SD67_PARENT_INFORMATION_HEADER)).to_csv(d / "ParentInformation.txt", index=False)
 
 
 def _create_sd75_inputs(d: Path) -> None:
@@ -1590,19 +1655,21 @@ class TestDistrictQuirks:
         }
 
     @pytest.mark.parametrize("district_output", ["sd67myedbc"], indirect=True)
-    def test_sd67_emits_family_from_the_emergency_contact_export(self, district_output):
-        """SD67 enables Family, and a canonical contact export produces it.
+    def test_sd67_emits_family_from_the_parent_information_export(self, district_output):
+        """DSYNC-25: SD67's Family comes from ``ParentInformation.txt``.
 
-        Pinned because a 2026-09-22 SD67 run shipped without `Family.csv` and the
-        config was the first suspect. It is not: given the contact file this fixture
-        writes, Family is produced. The entity is dropped only when every contact row
-        is filtered out — no email, or a student number that is not on the active
-        roster — which is a DATA question, and each of those paths logs its own
-        distinct warning.
+        The 2026-09-22 run that shipped without `Family.csv` traced to the district's
+        NON-Enhanced contact export, which has no email column, so every contact was
+        excluded. The fixture keeps that email-less file in the folder, so a populated
+        Email here can only have come from the parent export, and the parent's
+        ``Surname`` (not the pupil's legal surname beside it) is the Last Name.
         """
         _, out, _ = district_output
-        family = _read_output(out, "Family")
-        assert not family.empty
+        family = _read_output(out, "Family").sort_values("Student User ID").reset_index(drop=True)
+        assert family[["Student User ID", "First Name", "Last Name", "Email"]].to_dict("records") == [
+            {"Student User ID": "S001", "First Name": "John", "Last Name": "Smith", "Email": "john@mail.com"},
+            {"Student User ID": "S002", "First Name": "Mei", "Last Name": "Wong", "Email": "mei@mail.com"},
+        ]
         assert set(family["Student User ID"]) <= set(_read_output(out, "Students")["Student Number"])
 
     # ---- SD54: withdraw-date-only active detection + surname.firstname emails ----

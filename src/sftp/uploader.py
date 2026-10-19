@@ -65,6 +65,16 @@ _T = TypeVar("_T")
 SFTP_RETRY_ATTEMPTS = 3
 SFTP_RETRY_BACKOFF_SECONDS = 2.0
 
+# Bounds on a half-dead network (DSYNC-9). ``SFTP_CONNECT_TIMEOUT_SECONDS`` bounds the TCP
+# connect + SSH handshake; ``SFTP_CHANNEL_TIMEOUT_SECONDS`` bounds EVERY blocking read/write on
+# the SFTP channel (a stalled ``put`` raises ``socket.timeout`` -- an OSError, so the bounded
+# retry above engages and exhaustion ends as the exit-code-3 delivery failure);
+# ``SFTP_KEEPALIVE_SECONDS`` makes the transport send an SSH keepalive on that interval so a
+# silently dead peer surfaces as an error instead of an indefinite hang.
+SFTP_CONNECT_TIMEOUT_SECONDS = 30
+SFTP_CHANNEL_TIMEOUT_SECONDS = 120
+SFTP_KEEPALIVE_SECONDS = 15
+
 # Network-ish failures worth a bounded retry. ``socket.error`` is an alias of OSError.
 _TRANSIENT_EXCEPTIONS = (OSError, paramiko.SSHException)
 
@@ -408,9 +418,17 @@ class SFTPUploader:
                 port=self.port,
                 username=self.username,
                 password=password,
-                timeout=30,
+                timeout=SFTP_CONNECT_TIMEOUT_SECONDS,
             )
+            transport = client.get_transport()
+            if transport is None:
+                raise paramiko.SSHException("SFTP transport unavailable after connect")
+            transport.set_keepalive(SFTP_KEEPALIVE_SECONDS)
             sftp = client.open_sftp()
+            channel = sftp.get_channel()
+            if channel is None:
+                raise paramiko.SSHException("SFTP channel unavailable after open")
+            channel.settimeout(SFTP_CHANNEL_TIMEOUT_SECONDS)
         except paramiko.BadHostKeyException as exc:
             # Defense in depth: paramiko raises this itself (before the policy runs) for
             # a host present in the client's own key stores. We deliberately load none,

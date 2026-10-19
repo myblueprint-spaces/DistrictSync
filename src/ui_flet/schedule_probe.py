@@ -43,7 +43,7 @@ def foreign_task_account(app_config: AppConfig) -> str:
     (``task_com.TaskFacts``), but that is a DISPLAY fact and this resolver deliberately does not
     move to it: the live read legitimately answers ``None`` (an elevated-registered task under a
     filtered token, a timed-out probe), and a suppression that flickers with a probe result is
-    worse than one keyed on a value the app wrote itself. The ROADMAP item about the record being
+    worse than one keyed on a value the app wrote itself. The backlog item about the record being
     the only principal source is narrowed by S-3, not closed.
 
     **FAILS TO ``""`` ON EVERYTHING**: no record, a blank record, a case-insensitive match with the

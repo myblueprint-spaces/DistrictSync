@@ -12,7 +12,7 @@ instantiating a flet control.
 stale IA-7 "render ``docs/`` markdown" row): the canonical, always-current docs home is the
 org knowledge base (the SpacesEDU Help Centre), so this surface links there + gives a human
 support path, rather than rendering the bundled ``docs/`` markdown (a curated in-app offline
-render is a scope-locked ROADMAP follow-on gated on the deferred docs-strategy decision).
+render is a scope-locked follow-on gated on the deferred docs-strategy decision).
 
 **Offline-resilient:** an admin on an air-gapped / browserless district server would get a
 dead click from ``launch_url`` alone, so the URL + email are ALSO rendered as **selectable

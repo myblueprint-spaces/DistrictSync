@@ -359,7 +359,8 @@ run (`outcomes.source_file_may_be_absent`, the ONE predicate both the gate and
 Convert's missing-file line read; `outcomes.blended_detection_off` is the ONE
 reading of this key) and only the co-teacher enrollments are left out, with one
 `CO-TEACHERS LEFT OUT` warning naming the file and the standing amber
-`coteacher_source_unusable` note (SD45, which sends none, every night). With
+`coteacher_source_unusable` note (SD45 every night until it began sending
+`ClassInformationEnhanced.csv` on 2026-10-13). With
 detection on, a missing or row-less Class Information still stops the night.
 
 Pointing `class_info` at the non-Enhanced `ClassInformation.txt` is **not** a
@@ -800,7 +801,7 @@ calls its student column `Student Number`, a `_base: myedbc` overlay inherits th
 base's `student_id_col: Student ID`, and the timetable enrollments now require it
 (`failure-policy.md` §5 #28) where they used to ship with every timetable student
 left out. The owner kept that stop (2026-09-25); the creator cannot set
-`student_id_col` yet (ROADMAP). To see a run pass, point it at a COPY of the
+`student_id_col` yet (open backlog item). To see a run pass, point it at a COPY of the
 extract whose schedule also carries a `Student ID` column —
 `tests/test_config_authoring.snapshot_input_with_base_student_id` builds one.
 

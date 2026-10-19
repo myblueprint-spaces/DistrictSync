@@ -485,7 +485,7 @@ class TestActivateCreatorConfig:
         preserved = sorted(config_file.parent.glob("config.corrupt-*.json"))
         assert len(preserved) == 1, "settings we never read were replaced without a recoverable copy"
         assert preserved[0].read_bytes() == original_bytes
-        # The ROADMAP-acknowledged residual, asserted as a RECOVERY rather than a repair:
+        # The acknowledged residual, asserted as a RECOVERY rather than a repair:
         # the delivery host is gone from config.json but readable in the copy.
         assert reloaded.sftp_host == ""
         assert "sftp.spacesedu.com" in json.loads(preserved[0].read_text(encoding="utf-8"))["sftp_host"]
@@ -499,7 +499,7 @@ class TestActivateCreatorConfig:
         assert not list(config_file.parent.glob("config.corrupt-*.json"))
 
     def test_activating_from_the_MAPPING_HOST_quarantines_the_predecessor(self, config_file: Path, monkeypatch):
-        """Plan 0044 S6 §6.5 — the ROADMAP 2026-07-21 entry's acceptance shape, from the NEW
+        """Plan 0044 S6 §6.5 — the 2026-07-21 entry's acceptance shape, from the NEW
         writer at that entry's surface (a).
 
         Mapping's hosted creator panel is a second place ``activate_creator_config`` is
@@ -511,7 +511,7 @@ class TestActivateCreatorConfig:
         The folders are set on the loaded instance deliberately: an UNREADABLE load answers
         with DEFAULTS (that is what "we could not read it" means), and the panel's test
         conversion needs a folder to be reachable at all. It is an in-memory state, not a
-        claim about disk — and it is precisely the residual the ROADMAP entry names.
+        claim about disk — and it is precisely the residual the backlog entry names.
         """
         from unittest.mock import MagicMock
 

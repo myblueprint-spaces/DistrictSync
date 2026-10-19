@@ -175,7 +175,7 @@ def test_the_two_asks_are_never_BOTH_true_for_one_settings_state():
     is FALSE: someone who declines at the launch page stores nothing, and finishing setup
     CHANGES the settings state, so they legitimately meet the ask once more on Home — where
     it is dismissible forever. That transition is an owner-facing product judgment (tracked
-    in the ROADMAP), not something this sweep claims to prevent.
+    in the backlog), not something this sweep claims to prevent.
     """
     for state, completed, dismissed, email in itertools.product(
         (ConfigLoadState.LOADED, ConfigLoadState.ABSENT, ConfigLoadState.UNREADABLE),

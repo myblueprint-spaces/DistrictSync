@@ -381,3 +381,53 @@ class TestConnectClientLeak:
         assert client is mock_cls.return_value
         assert sftp is mock_cls.return_value.open_sftp.return_value
         client.close.assert_not_called()
+
+
+class TestConnectTimeouts:
+    """DSYNC-9: keepalive + bounded channel timeout are applied on every connect."""
+
+    def test_keepalive_channel_and_connect_timeouts_applied(self):
+        from src.sftp import uploader as up
+
+        uploader = _uploader()
+        with (
+            patch("src.sftp.uploader.paramiko.SSHClient") as mock_cls,
+            patch.object(uploader, "_get_password", return_value="pw"),
+        ):
+            client, sftp = uploader._connect()
+        mock_client = mock_cls.return_value
+        mock_client.get_transport.return_value.set_keepalive.assert_called_once_with(up.SFTP_KEEPALIVE_SECONDS)
+        sftp.get_channel.return_value.settimeout.assert_called_once_with(up.SFTP_CHANNEL_TIMEOUT_SECONDS)
+        assert mock_client.connect.call_args.kwargs["timeout"] == up.SFTP_CONNECT_TIMEOUT_SECONDS
+        client.close.assert_not_called()
+
+    def test_timeout_constants_are_positive(self):
+        from src.sftp import uploader as up
+
+        assert up.SFTP_KEEPALIVE_SECONDS > 0
+        assert up.SFTP_CHANNEL_TIMEOUT_SECONDS > 0
+        assert up.SFTP_CONNECT_TIMEOUT_SECONDS > 0
+
+    def test_missing_transport_fails_loudly_and_closes_client(self):
+        uploader = _uploader()
+        with (
+            patch("src.sftp.uploader.paramiko.SSHClient") as mock_cls,
+            patch.object(uploader, "_get_password", return_value="pw"),
+        ):
+            mock_client = mock_cls.return_value
+            mock_client.get_transport.return_value = None
+            with pytest.raises(paramiko.SSHException, match="transport unavailable"):
+                uploader._connect()
+        mock_client.close.assert_called_once()
+
+    def test_missing_channel_fails_loudly_and_closes_client(self):
+        uploader = _uploader()
+        with (
+            patch("src.sftp.uploader.paramiko.SSHClient") as mock_cls,
+            patch.object(uploader, "_get_password", return_value="pw"),
+        ):
+            mock_client = mock_cls.return_value
+            mock_client.open_sftp.return_value.get_channel.return_value = None
+            with pytest.raises(paramiko.SSHException, match="channel unavailable"):
+                uploader._connect()
+        mock_client.close.assert_called_once()

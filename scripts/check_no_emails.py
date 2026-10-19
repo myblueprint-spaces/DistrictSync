@@ -49,7 +49,7 @@ matters: a leak that was ``git add``ed and then EDITED OUT of the working copy i
 for commit yet invisible here**, so the hook passes and the leak lands in the commit. (The
 opposite direction is harmless: an unstaged leak in the working copy fails the hook early,
 which is a false alarm at worst.) Reading index blobs would close it; that is a tracked
-ROADMAP item, and CI — which runs against a clean checkout where worktree == index —
+backlog item, and CI — which runs against a clean checkout where worktree == index —
 catches this case today. Say "the hook reduces the chance of a leak"; do not say it
 prevents one.
 
@@ -80,7 +80,7 @@ PUBLISHED_ADDRESSES: dict[str, str] = {
     "support@myblueprint.ca": "myBlueprint published support address (former product contact)",
     # The product's published support + partner-enquiry address — src/ui_flet/screens/help.py's
     # SUPPORT_EMAIL (and via it Home's not-listed card), src/main.py's failure hint,
-    # docs/index.md, README.md, and the partner docs.
+    # README.md, and the partner docs.
     "hello@spacesedu.com": "SpacesEDU published support / partner-contact address",
     # pyproject.toml's `authors` package metadata — the maintainer's own work address,
     # published deliberately as part of packaging metadata.
