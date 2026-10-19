@@ -1364,6 +1364,42 @@ class TestTheGmsaRegistersAndIsRecorded:
         assert cfg.schedule_unattended is False
 
 
+class TestTheRegistrationStampIsWrittenAndCleared:
+    """DSYNC-26: ``schedule_registered_at`` rides the SAME save as the other facets."""
+
+    _STAMP = "2026-07-01T03:00:00"
+
+    def test_a_confirmed_register_stamps_it_in_the_same_save(self, tmp_path, stub_page, monkeypatch):
+        cfg = _settings(tmp_path, monkeypatch)
+        monkeypatch.setattr(setup_mod, "registration_stamp", lambda: self._STAMP)
+        saves = {"n": 0}
+        monkeypatch.setattr(AppConfig, "save", lambda self: saves.__setitem__("n", saves["n"] + 1))
+        _capture_register(monkeypatch)
+        tree, _ = _settings_schedule_section(cfg, stub_page)
+        _press_register(tree)
+        _drain(stub_page)
+
+        assert saves["n"] == 1
+        assert cfg.schedule_registered is True
+        assert cfg.schedule_registered_at == self._STAMP
+
+    def test_a_confirmed_unregister_clears_it(self, tmp_path, stub_page, monkeypatch):
+        cfg = _settings(
+            tmp_path,
+            monkeypatch,
+            schedule_registered=True,
+            schedule_registered_at=self._STAMP,
+        )
+        cfg.schedule_task_args = _registered_args(cfg)
+        monkeypatch.setattr("src.scheduler.windows.delete_task", lambda name: (True, "Schedule removed."))
+        tree, _ = _schedule_section(cfg, stub_page)
+        _button_by_content(tree, "Remove nightly sync").on_click(None)
+        _drain(stub_page)
+
+        assert cfg.schedule_registered is False
+        assert cfg.schedule_registered_at == ""
+
+
 class TestTheToggleIsSessionStateSeededFromTheRecord:
     def test_merely_toggling_persists_nothing(self, tmp_path, stub_page, monkeypatch):
         """The toggle is session state, not config: only a CONFIRMED register may write the

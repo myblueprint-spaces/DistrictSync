@@ -873,7 +873,11 @@ def derive_home_status(
     # it must beat the empty-state reassurance AND the warning-tier record rules (whose copy
     # would describe a run that is over a day old by construction), but it must NEVER mask a
     # FAILED verdict (failures above warnings — amber can't downgrade red).
-    missed_run = _is_missed_run(records, now=now, store_created_at=store_created_at, schedule_status=schedule_status)
+    # DSYNC-26: with no store stamp the clock is when the nightly was registered (``""`` for a
+    # registration older than that field → ``None`` → silent). A present stamp always wins. The
+    # anchor feeds ONLY this predicate: ``has_earlier_run_history`` keeps the raw store stamp.
+    missed_run_anchor = store_created_at or app_config.schedule_registered_at or None
+    missed_run = _is_missed_run(records, now=now, store_created_at=missed_run_anchor, schedule_status=schedule_status)
 
     # Rule: no runs yet (empty but readable, configured). Two honest sub-states — the
     # run store is fresh for EVERY install after this update (no backfill from the polluted
@@ -1293,6 +1297,10 @@ def _is_missed_run(
     - no record's timestamp falls inside the last ``MISSED_RUN_AFTER_HOURS`` — an empty,
       readable store counts (nothing ever arrived); with records, the newest must be
       POSITIVELY older than the window (unparseable → can't establish the gap → silent).
+
+    ``store_created_at`` here is the CALLER's anchor: the store's stamp, or (DSYNC-26) when
+    ``history.db`` was never created, ``AppConfig.schedule_registered_at`` — the same guard and
+    window apply. The signature is deliberately unchanged (pinned by the foreign-principal rows).
     """
     if schedule_status is None or schedule_status.state is not ScheduleState.LIVE:
         return False

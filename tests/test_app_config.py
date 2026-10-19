@@ -232,6 +232,30 @@ class TestScheduleRegistrationFacts:
         assert cfg.schedule_task_args is None
 
 
+class TestScheduleRegisteredAt:
+    """DSYNC-26: the missed-run clock for an install with no run store."""
+
+    def test_survives_save_roundtrip(self, config_dir):
+        AppConfig(schedule_registered=True, schedule_registered_at="2026-07-01T03:00:00").save()
+        loaded = AppConfig.load()
+        assert loaded.schedule_registered_at == "2026-07-01T03:00:00"
+
+    def test_old_config_file_without_the_field_loads_blank(self, config_dir):
+        cfg_dir, cfg_file = config_dir
+        cfg_dir.mkdir(parents=True, exist_ok=True)
+        cfg_file.write_text(json.dumps({"input_dir": "/in", "schedule_registered": True}), encoding="utf-8")
+        assert AppConfig.load().schedule_registered_at == ""
+
+    def test_registration_stamp_is_injectable_and_matches_the_record_shape(self):
+        from datetime import datetime
+
+        from src.config.app_config import registration_stamp
+
+        assert registration_stamp(datetime(2026, 7, 1, 3, 0, 0, 999)) == "2026-07-01T03:00:00"
+        # Positive twin: with no clock injected it is still a parseable ISO stamp.
+        assert datetime.fromisoformat(registration_stamp()).year >= 2026
+
+
 class TestWindowGeometryFields:
     """0032 T2 #8: the additive window-geometry fields (persisted on exit, restored clamped)."""
 

@@ -9,6 +9,14 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+### Fixed
+
+- **Home now warns when a nightly sync is scheduled but has never recorded a run.** If the
+  schedule was set up and the computer has no run history at all, Home used to keep saying "No
+  runs recorded yet" indefinitely. It now shows "We expected a nightly sync that didn't arrive"
+  once more than a day has passed since the schedule was created. Schedules created before this
+  update carry no creation time, so they stay quiet until the schedule is next set up.
+
 ## [3.27.2] - 2026-10-15
 
 ### Fixed
