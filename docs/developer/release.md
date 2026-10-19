@@ -179,7 +179,7 @@ Work is tracked on the **DSYNC** Jira board (kanban: To Do → In Progress → I
 
 - **What gets a ticket:** features, bugs, process or doc changes, and every release. Major themes are epics; do not ticket every small change.
 - **Key convention:** put the key in the branch name, PR title and commit message, e.g. `DSYNC-123-sftp-timeout`. The PR template has a Jira field.
-- **Status flow:** a ticket moves to In Progress when work starts, In Review when the PR opens and Done when the PR merges. **Done means merged, not released.** (Automatic once the Jira GitHub integration and PR-to-status automation are in place, requested in DIH-59 together with the Data Insights Hub; manual until then.)
+- **Status flow:** a ticket moves to In Progress when work starts, In Review when the PR opens and Done when the PR merges. **Done means merged, not released.** (GitHub for Jira is installed, so PRs, commits, builds and deployments show on the ticket; the status moves themselves stay manual until the PR-to-status automation rules exist, requested in DIH-59 together with the Data Insights Hub.)
 - **Fix versions:** each release tag `vX.Y.Z` has a matching Jira version `vX.Y.Z`. Tickets shipped in that release carry it as their fix version, so release notes are a Jira query. Mark the Jira version Released only when the GitHub Release is published with all artifacts and the Windows exe is signed. Districts install on their own schedule, so Released means available, not deployed to every district.
 - **Releases are tickets too:** one release = one version = one release ticket (template in [Release ticket](#release-ticket)), cut from `main` after CI is green and the checklist below is done.
 - **This repo holds no task list.** The board is the backlog; do not recreate one in `docs/ROADMAP.md`.
@@ -219,9 +219,10 @@ Not yet rehearsed: a first rollback drill is tracked on the board. Output-CSV sc
 
 | Item | Owner | Ticket |
 | --- | --- | --- |
-| GitHub for Jira install and PR to status automation (shared with Data Insights Hub) | Jira / GitHub administrator | DIH-59 |
-| Platform release checklist line for DistrictSync output-contract changes | Doug Topping, Engineering | to be raised |
-| Rollback rehearsal | DistrictSync | to be raised |
+| PR to status automation rules (GitHub for Jira itself is installed; shared with Data Insights Hub) | Jira / GitHub administrator | DIH-59 |
+| Rollback rehearsal | DistrictSync | DSYNC-20 |
+
+**Platform changes.** DistrictSync is not on the Engineering Release Checklist (decision: no checklist line, DSYNC-21 closed). Instead the release owner confirms with Engineering that DistrictSync is notified before any change to the SpacesEDU importer that affects the output CSVs (see [`output-contract.md`](output-contract.md)).
 
 ---
 
