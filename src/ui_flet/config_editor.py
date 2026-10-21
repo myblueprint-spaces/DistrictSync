@@ -123,21 +123,22 @@ BASE_LABELS: Mapping[str, str] = {
     "mbponly": "myBlueprint+ courses only",
 }
 
-#: A plain-language name per DISTINCT source filename across all four
-#: :data:`ALLOWED_BASES` — admin-facing copy, so DATA rather than something derived:
+#: The MyEd BC GDE export name per DISTINCT source filename across all four
+#: :data:`ALLOWED_BASES` — the name the admin picks in MyEd BC's export list, so the row
+#: reads as the file they exported (owner 2026-10-21). DATA rather than something derived:
 #: ``ClassInformationEnh.txt`` split on capitals reads "Class Information Enh", which is
-#: worse than the filename it came from. :func:`file_label` falls back to the filename, so
-#: a base that grows a new source file still renders a row (the parity test is what says
-#: it needs a label).
+#: not the export's name. :func:`file_label` falls back to the filename, so a base that
+#: grows a new source file still renders a row (the parity test is what says it needs a
+#: label).
 FILE_LABELS: Mapping[str, str] = {
-    "StudentDemographicInformation.txt": "Student details",
-    "StaffInformationEnhanced.txt": "Staff details",
-    "EmergencyContactInformation.txt": "Parent and guardian contacts",
-    "StudentSchedule.txt": "Student timetables",
-    "CourseInformation.txt": "Course list",
-    "ClassInformationEnh.txt": "Class details",
-    "StudentCourseHistory.txt": "Past courses",
-    "StudentCourseSelection.txt": "Course choices",
+    "StudentDemographicInformation.txt": "Student Demographic Information",
+    "StaffInformationEnhanced.txt": "Staff Information Enhanced",
+    "EmergencyContactInformation.txt": "Emergency Contact Information",
+    "StudentSchedule.txt": "Student Schedule",
+    "CourseInformation.txt": "Course Information",
+    "ClassInformationEnh.txt": "Class Information Enhanced",
+    "StudentCourseHistory.txt": "Student Course History",
+    "StudentCourseSelection.txt": "Student Course Selection",
 }
 
 #: The bounded categories :func:`humanize_config_error` answers with. One constant per

@@ -1,4 +1,4 @@
-"""The creator surface (plan 0044 S3): "Set up my district".
+"""The creator surface (plan 0044 S3): "My district isn't listed".
 
 An admin whose district ships no mapping answers four questions here, presses Continue
 (which WRITES an overlay into their own profile and changes nothing else), then on the
@@ -98,7 +98,14 @@ logger = logging.getLogger(__name__)
 CreatorStage = Literal["forms", "files"]
 
 # ---- the forms ----------------------------------------------------------- #
-CREATOR_ENTRY_LABEL = "Set up my district"
+CREATOR_ENTRY_LABEL = "My district isn't listed"
+#: The caption beside the creator door (owner 2026-10-21): an admin whose district IS listed
+#: opened the creator by accident, renamed every file and hit a test conversion that refused.
+#: Says who the door is for, and that a listed district's mapping needs no setup at all.
+CREATOR_ENTRY_NOTE = (
+    "Only for a district that isn't in the list. If yours is listed, choose it and press Continue — "
+    "its mapping is already built in, so there's nothing to set up."
+)
 CREATOR_START_TITLE = "Your starting point"
 CREATOR_START_PROMPT = (
     "Pick the standard MyEd BC mapping closest to what your district sends. DistrictSync fills in "

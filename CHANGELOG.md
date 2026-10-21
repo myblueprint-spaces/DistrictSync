@@ -9,6 +9,16 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+### Changed
+
+- **Setup's "Set up my district" button is now "My district isn't listed", with a note under
+  it.** The note says the button is only for a district missing from the list, and that a listed
+  district's mapping is already built in — so an admin whose district is listed no longer walks
+  into a mapping setup they never needed.
+- **The "Your files" step names each file by its MyEd BC export name** (for example "Student
+  Schedule" instead of "Student timetables"), so the rows match the exports the admin picks in
+  MyEd BC.
+
 ### Fixed
 
 - **Home now warns when a nightly sync is scheduled but has never recorded a run.** If the

@@ -126,6 +126,7 @@ from src.ui_flet.schedule_status import (
 from src.ui_flet.screens.creator import (
     CREATOR_DISCARDED_NOTE,
     CREATOR_ENTRY_LABEL,
+    CREATOR_ENTRY_NOTE,
     CREATOR_FINISH_NEEDS_GATE_NOTE,
     FILES_STEP_TITLE,
     CreatorStage,
@@ -1591,13 +1592,21 @@ def _mount_wizard(
                 refusal_slot,
                 # The creator door (plan 0044 S3): TEXT tier, so the step keeps its ONE filled
                 # primary (Continue). It sits UNDER the dropdown because picking a shipped
-                # district is the right answer for almost everyone who reaches this step.
-                ft.Row(
+                # district is the right answer for almost everyone who reaches this step. The
+                # caption under it says so, because a listed district's admin opened it by
+                # accident and walked into a mapping they never needed (owner 2026-10-21).
+                ft.Column(
+                    spacing=tokens.space_xs,
                     controls=[
-                        components.text_button(
-                            CREATOR_ENTRY_LABEL, _enter_creator, icon=ft.Icons.ADD_CIRCLE_OUTLINE_ROUNDED
-                        )
-                    ]
+                        ft.Row(
+                            controls=[
+                                components.text_button(
+                                    CREATOR_ENTRY_LABEL, _enter_creator, icon=ft.Icons.ADD_CIRCLE_OUTLINE_ROUNDED
+                                )
+                            ]
+                        ),
+                        ft.Text(CREATOR_ENTRY_NOTE, size=tokens.type_body, color=tokens.color_muted),
+                    ],
                 ),
             ],
         )

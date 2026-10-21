@@ -368,7 +368,7 @@ def _write_sd93(*, renames: dict[str, str] | None = None, name: str = "SD93 - Cr
 
 
 def _open_creator(page: MagicMock, monkeypatch: pytest.MonkeyPatch, cfg: AppConfig) -> ft.Control:
-    """Mount the wizard on its District step and press "Set up my district"."""
+    """Mount the wizard on its District step and press "My district isn't listed"."""
     _pin(monkeypatch, cfg)
     root = build_setup(page)
     _button(root, setup_screen.CREATOR_ENTRY_LABEL).on_click(None)
@@ -393,6 +393,14 @@ class TestTheCreatorBranchRenders:
         door = _button(root, setup_screen.CREATOR_ENTRY_LABEL)
 
         assert isinstance(door, ft.TextButton), "the creator door must not compete with Continue"
+
+    def test_the_creator_door_says_a_listed_district_needs_no_setup(self, page, monkeypatch) -> None:
+        """A listed district's admin must not read the door as "edit my mapping" (owner 2026-10-21)."""
+        _pin(monkeypatch, _cfg())
+        root = build_setup(page)
+
+        assert setup_screen.CREATOR_ENTRY_NOTE in _blob(root)
+        assert "already built in" in setup_screen.CREATOR_ENTRY_NOTE
         assert _dropdowns(root), "the standard district picker is still the primary answer"
 
     def test_pressing_it_renders_the_four_forms_and_no_district_picker(self, page, monkeypatch) -> None:
