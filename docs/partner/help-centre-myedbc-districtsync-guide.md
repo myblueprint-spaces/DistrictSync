@@ -76,7 +76,7 @@ You can add, change or remove this address later from **Setup → Settings**.
 
 After the initial question, DistrictSync walks you through a five-step setup wizard on the **Setup** screen:
 
-1. **Choose your district** — pick your district from a dropdown. If your email domain was recognized in the first step, your district may already be selected for you (a suggestion you can change, never a silent default) — otherwise nothing is pre-picked. If your district isn't listed, press **Set up my district** to build its mapping yourself in a few short questions (see the next section), or contact SpacesEDU support to have one built for you.
+1. **Choose your district** — pick your district from a dropdown. If your email domain was recognized in the first step, your district may already be selected for you (a suggestion you can change, never a silent default) — otherwise nothing is pre-picked. If your district isn't listed, press **My district isn't listed** to build its mapping yourself in a few short questions (see the next section), or contact SpacesEDU support to have one built for you.
 2. **Choose your folders** — the **input folder** where your MyEd BC GDE files land, and the **output folder** DistrictSync writes the converted CSV files to.
 3. **Set up delivery** — enter the SFTP details SpacesEDU provided (host, username, password, remote path) and test the connection. This step is optional and can be set up later.
 4. **Set a nightly schedule** — turn on an automatic daily run and pick a time (03:00 is a good default, after your overnight MyEd BC export finishes). This step is also optional — if you only plan to run conversions by hand from the **Convert** screen, you can skip it. This step also has an optional **seasonal pause**: pick a start and end date once, and the sync stops over the summer break and resumes on its own each fall, every year, with nothing to renew. While paused, Home says so in green — it isn't a warning.
@@ -96,7 +96,7 @@ DistrictSync ships ready-made mappings for many BC districts. If yours isn't one
 
 **Two ways in:**
 
-- During first-run setup, on the *Choose your district* step: **Set up my district**.
+- During first-run setup, on the *Choose your district* step: **My district isn't listed**.
 - On an installation that's already running, on the **Mapping** screen: **Set up a district that isn't listed**.
 
 **Four short questions:**

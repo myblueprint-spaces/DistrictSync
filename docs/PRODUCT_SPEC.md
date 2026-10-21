@@ -179,7 +179,7 @@ a starting point, the district's identity, which CSVs to produce, which grades t
 the file names this district's export actually uses.
 
 - **Flow**
-  1. Two doors onto the same surface: the first-run wizard's District step ("Set up my district"),
+  1. Two doors onto the same surface: the first-run wizard's District step ("My district isn't listed"),
      or — on an install that is already running — Mapping ("Set up a district that isn't listed",
      and "Edit mapping" on a mapping that was added here).
   2. Four short forms: a starting point (one of the four standard MyEd BC mappings), the district's
@@ -876,7 +876,7 @@ The checkable projection of the Features above. All checks are `manual` — Dist
     "feature": "Self-service district setup",
     "flow": [
       "Point DISTRICTSYNC_DATA_DIR at an empty folder and launch the app",
-      "Past the launch page, on the wizard's District step press 'Set up my district'",
+      "Past the launch page, on the wizard's District step press 'My district isn't listed'",
       "Fill the four forms (starting point, district number/name/staff domains, which files, which grades) and Continue",
       "Set the input and output folders, reach 'Your files', correct one file name and press 'Save these file names'",
       "Press 'Run a test conversion', then 'Save district mapping'",
