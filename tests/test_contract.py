@@ -854,6 +854,14 @@ def _create_mbp_all_inputs(d: Path) -> None:
     _write_course_selection(d)
 
 
+def _use_unity_enhanced_demographic(d: Path) -> None:
+    """Unity's 2026-10-21 drop (DSYNC-34): the demographic export is the ENHANCED report under its
+    own name, ``StudentDemographicEnhanced.txt``, carrying the real ``Student email address``.
+    The canonical file is removed, so a config that still read it would fail on an absent file."""
+    (d / "StudentDemographicInformation.txt").unlink()
+    _write_student_demographic(d, "StudentDemographicEnhanced.txt")
+
+
 def _create_unitychristian_inputs(d: Path) -> None:
     """Standard MyEd BC file shape, with the ENHANCED emergency-contact export.
 
@@ -870,6 +878,7 @@ def _create_unitychristian_inputs(d: Path) -> None:
     That row dropping is the only thing that proves the filter ran.
     """
     _create_myedbc_inputs(d)
+    _use_unity_enhanced_demographic(d)
     pd.DataFrame(
         {
             "Student Number": ["S001", "S002", "S002"],
@@ -924,6 +933,7 @@ def _create_unitychristian_plain_report_inputs(d: Path) -> None:
     :class:`TestUnityPlainContactReport` and the entity-isolation tests.
     """
     _create_myedbc_inputs(d)
+    _use_unity_enhanced_demographic(d)
     rows = [
         ("100", "S001", "Smith", "Alice", "3", "A1", "1", "Father", "John", "Smith"),
         ("200", "S002", "Jones", "Bob", "10", "C3", "1", "Mother", "Mei", "Wong"),
