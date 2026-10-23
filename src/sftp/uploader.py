@@ -70,13 +70,19 @@ SFTP_RETRY_BACKOFF_SECONDS = 2.0
 # the SFTP channel (a stalled ``put`` raises ``socket.timeout`` -- an OSError, so the bounded
 # retry above engages and exhaustion ends as the exit-code-3 delivery failure);
 # ``SFTP_KEEPALIVE_SECONDS`` makes the transport send an SSH keepalive on that interval so a
-# silently dead peer surfaces as an error instead of an indefinite hang.
+# silently dead peer surfaces as an error instead of an indefinite hang. The same connect bound
+# is passed as ``banner_timeout`` / ``auth_timeout`` and as the ``timeout`` of the SFTP channel
+# open: paramiko's own defaults there (15s banner, 30s auth, 3600s channel open) let a stalled
+# server hold a nightly run for an hour.
 SFTP_CONNECT_TIMEOUT_SECONDS = 30
 SFTP_CHANNEL_TIMEOUT_SECONDS = 120
 SFTP_KEEPALIVE_SECONDS = 15
 
 # Network-ish failures worth a bounded retry. ``socket.error`` is an alias of OSError.
-_TRANSIENT_EXCEPTIONS = (OSError, paramiko.SSHException)
+# ``EOFError`` is NOT an OSError: paramiko's ``BaseSFTP._read_all`` raises a bare ``EOFError()``
+# when the peer closes mid-transfer, which is the most common drop on a flaky district network
+# (SD51) -- it carries an empty message, so it must be retried by type, not by text.
+_TRANSIENT_EXCEPTIONS = (OSError, EOFError, paramiko.SSHException)
 
 # Canonical success-with-note returned by ``test_connection`` when auth succeeded but the
 # account cannot LIST the remote folder (upload-only delivery accounts, e.g. SpacesEDU-style).
@@ -227,6 +233,14 @@ _NEVER_RETRY_EXCEPTIONS = (
     paramiko.BadHostKeyException,
     HostKeyVerificationError,
 )
+
+
+def describe_sftp_error(exc: BaseException) -> str:
+    """``str(exc)``, or the exception type's name when it is empty (e.g. a bare ``EOFError``).
+
+    Keeps the delivery-failure log lines from ending in a blank after the colon.
+    """
+    return str(exc) or type(exc).__name__
 
 
 def _is_transient_sftp_error(exc: BaseException) -> bool:
@@ -419,16 +433,21 @@ class SFTPUploader:
                 username=self.username,
                 password=password,
                 timeout=SFTP_CONNECT_TIMEOUT_SECONDS,
+                banner_timeout=SFTP_CONNECT_TIMEOUT_SECONDS,
+                auth_timeout=SFTP_CONNECT_TIMEOUT_SECONDS,
             )
             transport = client.get_transport()
             if transport is None:
                 raise paramiko.SSHException("SFTP transport unavailable after connect")
             transport.set_keepalive(SFTP_KEEPALIVE_SECONDS)
-            sftp = client.open_sftp()
-            channel = sftp.get_channel()
-            if channel is None:
-                raise paramiko.SSHException("SFTP channel unavailable after open")
+            # ``client.open_sftp()`` takes no timeout and paramiko's open_session then waits
+            # up to 3600s for a stalled server, so open the channel ourselves (what
+            # ``SFTPClient.from_transport`` does) with a bound. The read timeout is set BEFORE
+            # ``SFTPClient(...)`` because its constructor already exchanges the SFTP version.
+            channel = transport.open_session(timeout=SFTP_CONNECT_TIMEOUT_SECONDS)
             channel.settimeout(SFTP_CHANNEL_TIMEOUT_SECONDS)
+            channel.invoke_subsystem("sftp")
+            sftp = paramiko.SFTPClient(channel)
         except paramiko.BadHostKeyException as exc:
             # Defense in depth: paramiko raises this itself (before the policy runs) for
             # a host present in the client's own key stores. We deliberately load none,
@@ -463,7 +482,7 @@ class SFTPUploader:
                 delay = SFTP_RETRY_BACKOFF_SECONDS * (2 ** (attempt - 1))
                 logger.warning(
                     f"{what} to {self.host} failed on attempt {attempt}/{SFTP_RETRY_ATTEMPTS} "
-                    f"({exc}); retrying in {delay:.0f}s"
+                    f"({describe_sftp_error(exc)}); retrying in {delay:.0f}s"
                 )
                 time.sleep(delay)
         raise AssertionError("unreachable: the retry loop always returns or raises")
@@ -674,5 +693,5 @@ class SFTPUploader:
             try:
                 return self._with_retry(_deliver, "SFTP upload")
             except Exception as exc:
-                logger.error(f"Failed to upload to {self.host}: {exc}")
+                logger.error(f"Failed to upload to {self.host}: {describe_sftp_error(exc)}")
                 raise
