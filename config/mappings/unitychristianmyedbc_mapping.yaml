@@ -3,10 +3,11 @@
 #
 # Built against the school's FIRST real GDE drop (2026-08-31, 6 files) and
 # revised for the 2026-09-14 drop, which swapped the emergency-contact export
-# for the ENHANCED report while KEEPING the canonical filename. All six
-# filenames AND every column name match the MyEd BC canonical set, so there are
-# no `source_files` and no column overrides here — only the three genuine
-# differences below (homeroom band, generated student email, guardian filter).
+# for the ENHANCED report while KEEPING the canonical filename, and for the
+# 2026-10-21 drop, which swapped the demographic export for the ENHANCED report
+# under its own name (`StudentDemographicEnhanced.txt`) so the student email
+# comes from the school's data. The genuine differences below: the demographic
+# file name, the homeroom band, and the guardian filter.
 _base: myedbc
 version: '1.9'
 sis: MyEducationBC
@@ -48,14 +49,29 @@ global_config:
 
 mappings:
   Students:
+    source_files:
+      student_demographic: "StudentDemographicEnhanced.txt"
     field_map:
-      # The GDE carries no student email column at all: the demographic export
-      # has none, and `User name` is populated for grades 9-12 only (155 of 978
-      # rows) as a bare login name rather than an address. Generate a unique,
-      # stable per-pupil address from the student number — the sd10/sd51/sd74
-      # pattern.
-      "Email Address":
-        format: "{student number}@unitychristian.ca"
+      # The school's REAL student address, from the Enhanced demographic export.
+      # Until 2026-10-21 this was generated as `{student number}@unitychristian.ca`
+      # (copied from the sd10/sd51/sd74 pattern) and was never confirmed with the
+      # school; students signed in by QR code, so the invented addresses went
+      # unnoticed while their accounts collected work. Never generate a student
+      # email here again without the school's written confirmation of the format.
+      #
+      # A student whose `Student email address` is blank is KEPT in Students.csv
+      # (the importer accepts one; younger students sign in by QR code — DSYNC-30)
+      # and counted in the run log. On the 2026-10-21 export that is 172 of 646
+      # Active students, almost all KF-03.
+      "Email Address": "Student email address"
+
+  Classes:
+    source_files:
+      student_demographic: "StudentDemographicEnhanced.txt"
+
+  Enrollments:
+    source_files:
+      student_demographic: "StudentDemographicEnhanced.txt"
 
   Family:
     # This is an EMERGENCY-contact list, not a guardian list: unfiltered it
@@ -96,7 +112,12 @@ mappings:
 # `Parent Auth / Guardian`, `Email Address`). No other file changed. That is
 # both of the things Family was waiting on, so it is on, filtered to guardians.
 #
-# STILL OPEN with the school (not config-fixable): the demographic export is
-# non-Enhanced and carries no `Enrollment status`, so 20 alumni (DOB 1995-96)
-# with no withdraw date still ship as active `UG`.
+# Until 2026-10-21 the demographic export was non-Enhanced and carried no
+# `Enrollment status`, so 20 alumni (DOB 1995-96) with no withdraw date shipped
+# as active `UG`. The Enhanced export carries the status column, so they are
+# filtered by status from that drop on.
+#
+# OPEN (2026-10-21): that drop's EmergencyContactInformation.txt is the PLAIN
+# report again (no `Email Address`, no `Parent Auth / Guardian`), so Family
+# fails on it until the school re-sends the Enhanced contact report.
 # ---------------------------------------------------------------------------

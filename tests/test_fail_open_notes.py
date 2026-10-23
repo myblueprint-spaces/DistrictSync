@@ -220,12 +220,12 @@ def test_a_unity_shaped_demographic_records_date_only_end_to_end(tmp_path: Path)
     inp.mkdir()
     out.mkdir()
     _create_unitychristian_inputs(inp)
-    demo = pd.read_csv(inp / "StudentDemographicInformation.txt", dtype=str)
+    demo = pd.read_csv(inp / "StudentDemographicEnhanced.txt", dtype=str)
     status_columns = [c for c in demo.columns if c.strip().lower() in ("enrollment status", "enrolment status")]
     assert status_columns, "precondition: the fixture carries a status column to remove"
     # Unity's real export: no status column, a withdraw-date column that is blank for current pupils.
     demo = demo.drop(columns=status_columns).assign(**{"Withdraw date": ""})
-    demo.to_csv(inp / "StudentDemographicInformation.txt", index=False)
+    demo.to_csv(inp / "StudentDemographicEnhanced.txt", index=False)
     run_pipeline("unitychristianmyedbc", str(inp), str(out))
     (record, *_rest) = read_run_records()
     students = record["entity_outcomes"]["Students"]

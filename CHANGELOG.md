@@ -21,6 +21,11 @@ Per-release download links and auto-generated commit notes live on the
 
 ### Fixed
 
+- **Unity Christian: student emails now come from the school's own data.** The district's setup built
+  every student address as the student number at the school's domain, which was never confirmed with the
+  school, and students signing in by QR code never noticed. It now reads the real `Student email address`
+  from the school's Enhanced demographic export (`StudentDemographicEnhanced.txt`) and never makes an
+  address up.
 - **Home now warns when a nightly sync is scheduled but has never recorded a run.** If the
   schedule was set up and the computer has no run history at all, Home used to keep saying "No
   runs recorded yet" indefinitely. It now shows "We expected a nightly sync that didn't arrive"
