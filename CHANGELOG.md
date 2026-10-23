@@ -26,6 +26,15 @@ Per-release download links and auto-generated commit notes live on the
   runs recorded yet" indefinitely. It now shows "We expected a nightly sync that didn't arrive"
   once more than a day has passed since the schedule was created. Schedules created before this
   update carry no creation time, so they stay quiet until the schedule is next set up.
+- **A nightly sync that fires but records nothing now shows the reason Windows gave.** When the
+  scheduled task ran but DistrictSync never started — most often because Windows could not sign
+  in a managed service account — Home used to suggest the app had been moved or deleted. It now
+  names the problem Windows reported, with its result code (for example `0x8007052E`, a rejected
+  sign-in), and only suggests re-registering when the scheduled program really is missing or is a
+  different copy. Home and Run History offer the log folder and a copy of the schedule's details
+  for your IT team (no account names or folder paths), and Setup shows when Windows last ran the
+  task and with what result. The managed-service-accounts guide gains a "Registered, but the
+  nightly never runs" section.
 
 ## [3.27.2] - 2026-10-15
 

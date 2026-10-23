@@ -95,8 +95,11 @@ class TestContradiction:
         # HEDGED copy — never a flat "didn't complete"/"was moved" assertion.
         lowered = status.detail.lower()
         assert "didn't report success" in lowered
-        assert "if districtsync was moved" in lowered
         assert "didn't complete" not in lowered
+        # DSYNC-32: the "moved or deleted" remedy needs POSITIVE evidence about the registered
+        # program — with none (program_moved defaults False) it is not offered. Its positive twin
+        # is TestProgramMovedSentence in tests/test_ui_flet_schedule_diagnosis.py.
+        assert "moved or deleted" not in lowered
 
     def test_exit3_run_with_a_record_is_not_a_contradiction(self) -> None:
         # An SFTP-failed run (exit 3) builds the roster + WRITES a record — Run History shows it
@@ -486,16 +489,23 @@ class TestSameAccountDetailIsByteIdentical:
         status = _derive(ScheduleReadback(found=True, next_run=None, last_result=None))
         assert status.detail == "Your nightly schedule is registered with Windows."
 
-    def test_the_record_gap_copy_is_untouched_by_the_run_result_note(self) -> None:
-        """The contradiction branch returns BEFORE the append — its copy is already about the
-        run problem, and a second sentence would restate it from weaker evidence."""
+    def test_the_record_gap_copy_leads_with_windows_reported_failure(self) -> None:
+        """DSYNC-32 inverted this row on purpose. The contradiction branch used to return BEFORE
+        the run result was read, so Windows' own failure code — the better evidence — was dropped
+        and the copy guessed "moved or deleted" instead. Now a reported failure names itself, with
+        its code, exactly once."""
+        from src.ui_flet.schedule_status import WINDOWS_REPORTED_PROBLEM_HEADLINE, run_result_verdict
+
         status = _derive(
             ScheduleReadback(found=True, next_run="2026-07-10T03:00:00", last_run="2026-07-09T04:00:00", last_result=1),
             latest_record_ts=_GAP_NEWEST_RECORD,
             foreign_account="",
         )
         assert status.contradiction is True
-        assert "Windows recorded" not in status.detail
+        assert status.headline == WINDOWS_REPORTED_PROBLEM_HEADLINE
+        note = run_result_verdict(1).coded_note or ""
+        assert "0x00000001" in note
+        assert status.detail.count(note) == 1
 
 
 class TestRunResultNoteInTheLiveDetail:
@@ -512,7 +522,9 @@ class TestRunResultNoteInTheLiveDetail:
                 ScheduleReadback(found=True, next_run="2026-07-09T03:00:00", last_result=code),
                 foreign_account="",
             )
-            note = run_result_verdict(code).note
+            # DSYNC-32: a reported problem's note carries its Windows code (``coded_note``); a
+            # calm one (never-run) carries none.
+            note = run_result_verdict(code).coded_note
             assert note is not None
             assert status.detail == f"{base} {note}"
             # Today's rule, unchanged: a same-account install never escalates on an OS result —

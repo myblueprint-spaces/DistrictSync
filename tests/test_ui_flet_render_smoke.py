@@ -3372,3 +3372,137 @@ def test_the_convert_crash_card_words_the_exceptions_category(tmp_path, monkeypa
     on_screen = " ".join(c.value for c in _iter_controls(card) if isinstance(getattr(c, "value", None), str))
     assert "input folder" not in on_screen
     assert "SENTINEL_PII" not in on_screen and "secret" not in on_screen
+
+
+# --------------------------------------------------------------------------- #
+# DSYNC-32 — the log actions and the Setup "Windows last ran this task" line    #
+# --------------------------------------------------------------------------- #
+def _dsync32_status(last_result: int, *, gap: bool):
+    """A real derived LIVE status — the SD60 shape when ``gap``, a calm-principal one otherwise."""
+    from src.scheduler.windows import ScheduleReadback
+    from src.ui_flet.schedule_status import derive_schedule_status
+
+    return derive_schedule_status(
+        ScheduleReadback(
+            found=True,
+            next_run="2026-10-24T03:00:00",
+            last_run="2026-10-23T03:00:00",
+            last_result=last_result,
+            action_path="C:\\Program Files\\DistrictSync\\DistrictSync.exe",
+        ),
+        hint_registered=True,
+        latest_record_ts="2026-10-20T03:00:00" if gap else None,
+        foreign_account="",
+        shared_records=False,
+    )
+
+
+def _log_action_labels(tree) -> list[str]:
+    from src.ui_flet.components import COPY_DETAILS_LABEL, OPEN_LOG_FOLDER_LABEL
+
+    wanted = {OPEN_LOG_FOLDER_LABEL, COPY_DETAILS_LABEL}
+    return [c.content for c in _find(tree, ft.TextButton) if c.content in wanted]
+
+
+def _drive_home(monkeypatch, status):
+    monkeypatch.setattr("src.ui_flet.screens.home.read_run_records", lambda: [])
+    monkeypatch.setattr("src.ui_flet.screens.home.store_meta", lambda: None)
+    monkeypatch.setattr("src.ui_flet.schedule_probe.probe_schedule", lambda *a, **k: status)
+    monkeypatch.setattr(sys, "platform", "win32")  # supports_read_schedule -> the probe fires
+    cfg = AppConfig(
+        input_dir="/in", output_dir="/out", sis_type="sd48myedbc", setup_completed=True, schedule_registered=True
+    )
+    captured: list = []
+    surface = build_home(_driving_page(captured), app_config=cfg, on_navigate=lambda _d: None)
+    assert captured, "the schedule probe must fire — without it this row is vacuous"
+    for coro_fn, _args in captured:
+        asyncio.run(coro_fn())
+    return surface
+
+
+def test_home_band_offers_the_log_actions_when_the_schedule_needs_attention(monkeypatch):
+    status = _dsync32_status(0x8007052E, gap=True)
+    assert status.attention
+    surface = _drive_home(monkeypatch, status)
+    assert sorted(_log_action_labels(surface)) == ["Copy details", "Open log folder"]
+    assert _has_text_containing(surface, "0x8007052E")
+
+
+def test_home_without_attention_or_problem_offers_no_log_actions(monkeypatch):
+    """The negative twin of the row above — same mount, a clean LIVE status."""
+    surface = _drive_home(monkeypatch, _dsync32_status(0, gap=False))
+    assert _has_text(surface, "Nightly sync scheduled"), "positive evidence the LIVE card rendered"
+    assert _log_action_labels(surface) == []
+
+
+def test_home_schedule_card_offers_the_log_actions_beside_a_non_escalating_problem(monkeypatch):
+    """Same-account install, Windows reported a failure, no record gap — no alarm, but the card
+    carries the note and the log actions."""
+    status = _dsync32_status(1, gap=False)
+    assert not status.attention
+    surface = _drive_home(monkeypatch, status)
+    assert _has_text(surface, "Nightly sync scheduled")
+    assert sorted(_log_action_labels(surface)) == ["Copy details", "Open log folder"]
+
+
+def test_home_keeps_one_filled_primary_with_the_log_actions(monkeypatch):
+    surface = _drive_home(monkeypatch, _dsync32_status(0x8007052E, gap=True))
+    assert len(_find(surface, ft.FilledButton)) == 1
+
+
+def _drive_history(monkeypatch, status):
+    from src.ui_flet.screens.run_history import build_run_history
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr("src.ui_flet.screens.run_history.read_run_records", lambda *a, **k: [])
+    monkeypatch.setattr("src.ui_flet.screens.run_history.store_meta", lambda: None)
+    monkeypatch.setattr("src.ui_flet.schedule_probe.probe_schedule", lambda *a, **k: status)
+    captured: list = []
+    surface = build_run_history(
+        _driving_page(captured), app_config=AppConfig(sis_type="myedbc", schedule_registered=True)
+    )
+    assert captured, "the schedule probe must fire — without it this row is vacuous"
+    for coro_fn, _args in captured:
+        asyncio.run(coro_fn())
+    return surface
+
+
+def test_run_history_banner_offers_the_log_actions_when_the_schedule_needs_attention(monkeypatch):
+    surface = _drive_history(monkeypatch, _dsync32_status(0x8007052E, gap=True))
+    assert sorted(_log_action_labels(surface)) == ["Copy details", "Open log folder"]
+
+
+def test_run_history_banner_without_attention_offers_none(monkeypatch):
+    surface = _drive_history(monkeypatch, _dsync32_status(0, gap=False))
+    assert _find(surface, ft.Container), "positive evidence the banner rendered"
+    assert _log_action_labels(surface) == []
+
+
+def test_setup_readout_shows_the_windows_last_ran_line(monkeypatch):
+    status = _dsync32_status(0x8007052E, gap=False)
+    _complete_config(monkeypatch)
+    monkeypatch.setattr("src.ui_flet.schedule_probe.probe_schedule", lambda *a, **k: status)
+    monkeypatch.setattr(sys, "platform", "win32")
+    captured: list = []
+    tree = build_setup(_driving_page(captured))
+    assert captured, "the readout probe must fire — without it this row is vacuous"
+    filled_before = len(_find(tree, ft.FilledButton))
+    for coro_fn, _args in captured:
+        asyncio.run(coro_fn())
+    assert _has_text(
+        tree, "Windows last ran this task Oct 23 at 3:00 AM — result 0x8007052E (account sign-in rejected)."
+    )
+    # Read-only: the line adds no button at all, filled or otherwise.
+    assert len(_find(tree, ft.FilledButton)) == filled_before
+
+
+def test_copy_text_button_renders_and_its_handler_confirms():
+    """Mount-smoke for the new labelled copy form: a TextButton whose click runs the SAME handler
+    as ``copy_button`` and always confirms (a copied SnackBar, or the manual fallback)."""
+    page = MagicMock()
+    page.services = []
+    button = components.copy_text_button(page, "Copy details", "Task: DistrictSync_Daily")
+    assert isinstance(button, ft.TextButton)
+    assert button.content == "Copy details"
+    asyncio.run(button.on_click(None))
+    page.show_dialog.assert_called_once()

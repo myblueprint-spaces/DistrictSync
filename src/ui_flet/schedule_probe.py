@@ -9,15 +9,20 @@ marshalling: each surface calls :func:`probe_schedule` OFF the UI thread (via
 ``page.run_thread``) and injects the returned ``ScheduleStatus`` into its render, so
 ``nav.py`` and the pure derivations stay subprocess-free.
 
-The WARNING log names only the config-controlled task name — never a path, credential, or any
-PII (the read-back itself carries none into the log). Plan 0046 C adds a Windows ACCOUNT NAME to
-this module's inputs and that posture is UNCHANGED: ``_log_divergence`` must never gain the
+The WARNING log names only the config-controlled task name plus Windows' result code and its
+verdict name (DSYNC-32) — never a path, credential, or any PII (the read-back's ``action_path`` is
+reduced to a boolean by :func:`registered_program_moved` and never reaches the log). Plan 0046 C
+adds a Windows ACCOUNT NAME to this module's inputs and that posture is UNCHANGED: ``_log_divergence`` must never gain the
 account name, which is rendered ON SCREEN only.
 """
 
 from __future__ import annotations
 
 import logging
+import os
+import sys
+from collections.abc import Callable
+from pathlib import Path
 
 from src.config.app_config import AppConfig
 from src.scheduler import get_scheduler
@@ -81,6 +86,60 @@ def foreign_task_account(app_config: AppConfig) -> str:
         return ""
 
 
+def _running_frozen_exe() -> str | None:
+    """This process's own exe, resolved — but ONLY when frozen. ``None`` from source.
+
+    From source ``sys.executable`` is ``python.exe``, which says nothing about where DistrictSync
+    lives, so no "is it this copy?" comparison is possible and none is made.
+    """
+    if not getattr(sys, "frozen", False):
+        return None
+    return str(Path(sys.executable).resolve())
+
+
+def registered_program_moved(
+    action_path: str | None,
+    *,
+    path_exists: Callable[[str], bool] = os.path.exists,
+    running_exe: Callable[[], str | None] = _running_frozen_exe,
+    case_insensitive: bool = os.name == "nt",
+) -> bool:
+    """Whether the task's registered program is POSITIVELY gone or is not this copy (DSYNC-32).
+
+    The ONE producer of ``ScheduleStatus.program_moved`` — the only fact that may put "moved or
+    deleted … re-register" on screen. True iff the read-back carried an ``action_path`` AND (that
+    file does not exist, OR this process is the frozen app and the registered path resolves to a
+    different file than ``Path(sys.executable).resolve()``). Windows paths compare
+    case-insensitively.
+
+    **Fails to ``False`` on everything** — an unknown action path, a raising existence check or
+    resolver: ``False`` claims nothing, while a wrong ``True`` walks an admin into re-registering a
+    task whose real fault is elsewhere (the SD60 incident: a gMSA logon failure, read as a moved exe).
+
+    ``path_exists`` / ``running_exe`` / ``case_insensitive`` are the injectable seams, so tests never
+    depend on the real exe, the real filesystem or the host OS. The path is used for this boolean
+    ONLY — it is never logged, displayed or copied (bounded diagnostic output).
+    """
+    registered = (action_path or "").strip().strip('"')
+    if not registered:
+        return False
+    try:
+        if not path_exists(registered):
+            return True
+        current = running_exe()
+        if not current:
+            return False
+
+        def _key(text: str) -> str:
+            normalised = os.path.normpath(str(Path(text).resolve()))
+            return normalised.casefold() if case_insensitive else normalised
+
+        return _key(registered) != _key(current)
+    except Exception:  # noqa: BLE001 - advisory: an unprovable "moved" claims nothing
+        logger.debug("Could not compare the registered program with this copy; making no claim.")
+        return False
+
+
 def probe_schedule(
     task_name: str,
     *,
@@ -105,6 +164,10 @@ def probe_schedule(
     Every view call site sources it from ``paths.is_machine_scope()`` — the pinned, once-per-process
     answer — for the same reason: a defaulted ``False`` would silently keep Slice C's suppressions
     (and their now-false copy) on exactly the installs machine scope exists to fix.
+
+    ``program_moved`` (DSYNC-32) is resolved HERE, from the read-back's ``action_path`` through
+    :func:`registered_program_moved`, so every view gets it without a new argument — and only for
+    a task that exists (a MISSING/UNKNOWN status asserts nothing about a program it cannot see).
     """
     readback = read_schedule(task_name)
     status = derive_schedule_status(
@@ -114,13 +177,24 @@ def probe_schedule(
         foreign_account=foreign_account,
         shared_records=shared_records,
         surface=surface,
+        program_moved=readback.found is True and registered_program_moved(readback.action_path),
     )
     _log_divergence(task_name, status, hint_registered=hint_registered)
     return status
 
 
 def _log_divergence(task_name: str, status: ScheduleStatus, *, hint_registered: bool) -> None:
-    """WARN when the read-back contradicts the config flag (the durable Event-141 trace)."""
+    """WARN when the read-back contradicts the config flag (the durable Event-141 trace).
+
+    DSYNC-32: the contradiction line and the foreign-principal problem line carry Windows' result
+    CODE (``0x%08X``) and the verdict NAME — the number an IT team needs, which used to be dropped.
+    Bounded: the task name, a hex code, an enum name and a fixed phrase. Never an account name,
+    never the registered path (``program_moved`` is logged as a fixed phrase, not the path).
+    """
+    verdict = status.run_result
+    code = (verdict.code_hex if verdict is not None else None) or "not reported"
+    name = verdict.result.name if verdict is not None else "UNREADABLE"
+    moved = " The registered program is missing or is not this copy of DistrictSync." if status.program_moved else ""
     if status.state is ScheduleState.MISSING and hint_registered:
         logger.warning(
             "Scheduled task '%s' is marked registered in config but was NOT found in Windows "
@@ -129,7 +203,17 @@ def _log_divergence(task_name: str, status: ScheduleStatus, *, hint_registered: 
         )
     elif status.contradiction:
         logger.warning(
-            "Scheduled task '%s' fired but DistrictSync did not record a completed run — "
-            "the app may have been moved or deleted from its registered location.",
+            "Scheduled task '%s' fired but DistrictSync did not record a completed run (Windows result %s, %s).%s",
             task_name,
+            code,
+            name,
+            moved,
+        )
+    elif status.attention and status.state is ScheduleState.LIVE:
+        logger.warning(
+            "Scheduled task '%s' last run reported a problem (Windows result %s, %s).%s",
+            task_name,
+            code,
+            name,
+            moved,
         )

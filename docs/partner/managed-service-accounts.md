@@ -41,8 +41,12 @@ The middle row is what most districts use today. Two things push a district to t
 ## The three prerequisites
 
 All three must be true **before** DistrictSync is asked to schedule the task. DistrictSync cannot
-check any of them: it validates the *shape* of the account name and nothing more, and Windows only
-answers the real questions at the moment the task is registered.
+check any of them: it validates the *shape* of the account name and nothing more. Windows answers
+**some** of the real questions when the task is registered — a name the directory does not know is
+refused there — but **not all of them**: a missing 'Log on as a batch job' right, or a computer that
+is not allowed to retrieve the account's password, can register without any error and only fail at
+3 AM, when the task first tries to run. If registration succeeded but the nightly never seems to
+run, see *Registered, but the nightly never runs* below.
 
 1. **This computer is listed in the account's PrincipalsAllowedToRetrieveManagedPassword.**
    Without it, this computer cannot retrieve the account's password from the directory.
@@ -145,3 +149,62 @@ it — the failure card on screen has an **Open log folder** button, and
 *[Where DistrictSync stores its data](troubleshooting.md#where-districtsync-stores-its-data-config-logs-run-history)*
 says where that folder is for both kinds of install. The **Help** screen has our support contact.
 Please include the code.
+
+---
+
+## Registered, but the nightly never runs
+
+The task registered without an error, Windows says it fired, but no run appears in Run History and
+nothing was delivered. This is the case where Windows could not **start** DistrictSync as the
+account — so DistrictSync itself never got a chance to write anything.
+
+**1. Read the result Windows recorded.** Windows keeps a result code for the task's last run, and
+DistrictSync shows it:
+
+- On **Home**, the warning reads **"Windows reported a problem starting or running the nightly sync"**
+  and names the code.
+- On **Setup**, under **Daily schedule**, a line starting **"Windows last ran this task"** gives the
+  time and the code.
+- **Copy details** (on the Home warning and on Run History) copies the task name, Windows' last run
+  time, the result code and the next run — no account names and no folder paths — ready to paste to
+  your IT team or to us.
+
+**2. What the code means.**
+
+| Code | What Windows is saying | What to check |
+| --- | --- | --- |
+| `0x8007052E` | It could not sign in the account — name or password rejected | For a gMSA this usually means prerequisite 1 or 2 is missing: this computer is not allowed to retrieve the password, or `Install-ADServiceAccount` / `Test-ADServiceAccount` fails on this computer |
+| `0x80070569` | The account does not have the logon type the task needs | Prerequisite 3 — 'Log on as a batch job' |
+| `0x80070532` | The account's password has expired | Not expected for a gMSA; for an ordinary account, re-register with its new password |
+| `0x80070005` | Access denied | The account's folder permissions (step 3 below) |
+| `0x80070002` | The program the task starts was not found | DistrictSync was moved, renamed or deleted after the task was registered — re-register from the copy you use now |
+| `0x8007010B` | The task's start-in folder is not usable | The folder DistrictSync lives in is missing or the account cannot open it |
+| `0x00041301` | The task is running right now | Nothing — check again once it finishes |
+
+Any other code: DistrictSync shows it as-is rather than guessing. Send it to us.
+
+**3. The three prerequisites, plus folder access.** Re-check the three prerequisites above. Then
+check that the account can reach every folder the nightly touches:
+
+- **read and execute** on DistrictSync's program file **and the folder it is in**. The standard
+  `C:\Program Files` location usually allows this already; a copy kept in somebody's own profile
+  (Desktop, Downloads) usually does not;
+- **read** on the input folder where the MyEd BC extract files land, and **write** on the output
+  folder. Network shares need these permissions for the account on the share as well.
+
+**4. Turn on Task Scheduler history** (it is off by default). In **Task Scheduler**, select **Task
+Scheduler Library** and choose **Enable All Tasks History** in the Actions pane, or run, as an
+administrator:
+
+```powershell
+wevtutil set-log Microsoft-Windows-TaskScheduler/Operational /enabled:true
+```
+
+The next run's **History** tab then shows each step Windows took and where it stopped.
+
+**5. Where the logs are.** On an install whose settings were moved to the shared folder, each account
+that runs DistrictSync writes its **own** log in `C:\ProgramData\DistrictSync\runs\`, named
+`etl_tool-<account>.log` — the account name in lower case, with `\` replaced by `_` and the trailing
+`$` dropped (for example `etl_tool-example_svc_districtsync.log`). The **Open log folder** button
+opens that folder. **If there is no log for the service account at all, the nightly never got as
+far as starting DistrictSync** — the cause is one of the Windows-side checks above, not DistrictSync.
