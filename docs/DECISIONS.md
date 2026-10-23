@@ -4,6 +4,22 @@
 
 
 
+## 2026-10-23 — DSYNC-30: a student with no email is KEPT again; the Advanced CSV spec's "Required" flag for it was not the importer's behaviour
+
+Supersedes: 2026-09-30 — plan 0053 S13d (i): a row missing a value SpacesEDU requires is left out, counted and amber … — only its Students half for `Email Address` (item 5 and the table's `Email Address` entry: a student with no email is KEPT again; every other Students required value, and Staff's and Family's email, stand) · 2026-09-02 — OWNER: a Family contact with NO email is EXCLUDED …; a Student with no email is KEPT … — restores its Students half (counted in the log, never dropped).
+
+**Decided (owner, 2026-10-22/23, after the Technical Account Manager who runs the district setups confirmed the importer behaviour).** A student whose `Email Address` is blank is emitted, with every row that points at them, and counted in ONE counts-only INFO log line (`StudentTransformer._log_students_without_email`) — no outcome note, so Home is not amber. `Student Number` and the other Students values stay Required (student-number matching depends on it).
+
+**Why the S13d rule was wrong here.** `required_fields.REQUIRED_OUTPUT_FIELDS` was copied from the "SIS/LMS Sync (AdvancedCSV) 1.0" Google Doc, which marks Students' `Email Address` Required. The importer does not enforce that: Product-Integration-Validation ACSV-006 (corrected 2026-09-10, from a code reading of release/59) records the column as parser-optional — the row imports, the student signs in another way (a QR code for young students) — and IMP-004 / the Confluence page "SpacesEDU integration gotchas (2026)" say the email requirement bites teacher, admin and parent roles only. That evidence existed before S13d and was not consulted; DECISIONS 2026-09-02 had it right. The measured harm: Unity Christian's 2026-10-21 run went 670 → 476 students, 172 of the 194 missing being Active with no email.
+
+**Built.** `"Email Address"` removed from `REQUIRED_OUTPUT_FIELDS["Students"]` and `"Students"` from `EMAIL_OUTPUT_FIELDS` (so an unmapped Students email column is no longer an `email_output_not_mapped` gap); the Students note copy no longer lists email; contract `2.11.0` (MINOR — row-set, the `Email Address` row was `pending owner confirmation`); `output-contract.md`, `failure-policy.md` (#40, #42, the note table), the partner FAQ, troubleshooting page and Help Centre guide, CHANGELOG. Tests: `tests/test_transform_students.py::TestStudentsNoEmailKept` (kept + counted once, not a data error, silent twins, and the twin that another blank required value still leaves a student out), `tests/test_required_values.py::TestEndToEnd::test_a_student_without_an_email_is_kept_linked_and_not_amber`, the table pins, and the snapshot-input tests that pinned the old stop (`test_config_authoring`, `test_ci_flet_pack_smoke`). The snapshot copies still carry a synthetic student email column; it is harmless and now optional.
+
+**Measured (local, Windows).** Full suite 9,711 passed; the drift matrix (1,155 selected cases) all conforming.
+
+**Not changed, on purpose.** DistrictSync still never invents a student email: a generated address needs a format the partner has confirmed (Product-Integration-Validation ACSV-047 — Unity Christian's invented `{student number}@` addresses were the oversight that rule records). The Family no-email exclusion and Staff's stand, as the importer drops those roles. `Student Number` stays Required (owner, 2026-10-23), though ACSV-005 reads it as parser-optional.
+
+**Process gap named.** The S13d required-value table was not cross-checked against the Product-Integration-Validation catalogue; tracked as DSYNC-31.
+
 ## 2026-09-30 — release v3.27.0: plan 0053 (ETL failure policy) ships
 
 Supersedes: nothing — records the release of PR #146 (plan 0053 S1–S13e + S15) on top of v3.26.0.

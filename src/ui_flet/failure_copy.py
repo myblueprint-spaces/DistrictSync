@@ -672,8 +672,7 @@ _NOTE_COPY: Final[Mapping[OutcomeNote, Mapping[str, str]]] = MappingProxyType(
                 "label": "students missing required values left out",
                 "sentence": (
                     "Some students were left out — with their enrollments and family contacts — because their "
-                    "record is missing a value SpacesEDU requires: a student number, first or last name, grade, "
-                    "school or email address."
+                    "record is missing a value SpacesEDU requires: a student number, first or last name, grade or school."
                 ),
                 "next_step": (
                     "Fill in those values in MyEd BC and the next sync includes those students automatically."
