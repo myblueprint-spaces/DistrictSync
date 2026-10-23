@@ -79,11 +79,11 @@ BASE_SCHEDULE_STUDENT_COLUMN = "Student ID"
 
 #: The Students email column a self-service overlay inherits from ``_base: myedbc``
 #: (``Email Address`` ← ``Student email address``). The frozen SD74 demographic has none — SD74's
-#: own mapping GENERATES the address (an email ``format:``, which the creator cannot set) — and
-#: since plan 0053 S13d a student missing an email address, a value SpacesEDU's import requires,
-#: is LEFT OUT: over the unmodified snapshot every student is, Students comes out empty and the
-#: night stops (owner ruling 2026-09-28 — the rule working; pinned by
-#: ``TestEndToEndAgainstSnapshotInputs.test_an_overlay_over_a_demographic_without_the_base_email_stops_on_students``).
+#: own mapping GENERATES the address (an email ``format:``, which the creator cannot set). A
+#: student's email is OPTIONAL (DSYNC-30: the importer takes a student with no address), so the
+#: unmodified snapshot still converts; the copies below carry the column anyway, so their students
+#: ship an address like a real feed's (pinned by
+#: ``TestEndToEndAgainstSnapshotInputs.test_an_overlay_over_a_demographic_without_the_base_email_keeps_its_students``).
 BASE_STUDENT_EMAIL_COLUMN = "Student email address"
 
 #: The Family last-name column the overlay inherits from ``_base: myedbc`` (``Last Name`` ←
@@ -164,8 +164,7 @@ def snapshot_input_for_the_base_mapping(dest: Path) -> Path:
 def snapshot_input_with_base_student_email(dest: Path) -> Path:
     """The snapshot copy with the base's student email and family last-name columns added but
     NOT its ``Student ID`` (the schedule keeps ``Student Number``) — for the test that pins the
-    Student ID stop, which the email-less extract would otherwise pre-empt with the Students
-    stop (plan 0053 S13d)."""
+    Student ID stop."""
     import shutil
 
     shutil.copytree(SNAPSHOT_INPUT, dest)
@@ -821,30 +820,30 @@ class TestEndToEndAgainstSnapshotInputs:
             _spec(district_name="SD93 - Snapshot filenames", source_file_renames=SD74_RENAMES),
             overwrite=False,
         )
-        # The copy carries the base's student email (plan 0053 S13d): without it every student is
-        # left out and Students stops the night first — the test below.
         source = snapshot_input_with_base_student_email(tmp_path / "input")
         with pytest.raises(SourceSchemaError) as exc:
             run_pipeline("sd93custom", str(source), str(tmp_path / "out"), dry_run=True)
         assert exc.value.entity == "Enrollments"
         assert exc.value.columns == (BASE_SCHEDULE_STUDENT_COLUMN,)
 
-    def test_an_overlay_over_a_demographic_without_the_base_email_stops_on_students(self, tmp_path):
-        """Plan 0053 S13d (owner 2026-09-28): the UNMODIFIED snapshot demographic carries no
-        ``Student email address`` — the overlay's base reads one; SD74's own mapping generates it —
-        so every student is missing a value SpacesEDU requires, every one is left out, and the
-        night stops on Students with the required-values wording, nothing written. The positive
-        twin is the renamed run above, over the copy that carries the column."""
-        from src.etl.errors import EmptyRequiredOutputError
+    def test_an_overlay_over_a_demographic_without_the_base_email_keeps_its_students(self, tmp_path):
+        """DSYNC-30: the UNMODIFIED snapshot demographic carries no ``Student email address`` — the
+        overlay's base reads one; SD74's own mapping generates it. A student's email is OPTIONAL,
+        so every student still ships (blank address), where plan 0053 S13d stopped the night on an
+        empty Students. The copy carries the other base columns, so the run is otherwise the
+        positive twin above."""
+        import shutil
 
         write_overlay(
             _spec(district_name="SD93 - Snapshot filenames", source_file_renames=SD74_RENAMES),
             overwrite=False,
         )
-        out = tmp_path / "out"
-        with pytest.raises(EmptyRequiredOutputError) as exc:
-            run_pipeline("sd93custom", str(SNAPSHOT_INPUT), str(out), dry_run=True)
-        assert exc.value.entity == "Students" and exc.value.required_values_left_out is True
+        source = tmp_path / "input"
+        shutil.copytree(SNAPSHOT_INPUT, source)
+        _add_base_student_id(source)
+        _add_base_family_last_name(source)
+        result = run_pipeline("sd93custom", str(source), str(tmp_path / "out"), dry_run=True)
+        assert result.entity_counts["Students"] > 0
 
 
 # ---------------------------------------------------------------------------

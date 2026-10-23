@@ -8,7 +8,9 @@ catalogue #42; policy P5 (c)).
 
 **Source.** "SIS/LMS Sync (AdvancedCSV) for SpacesEDU - 1.0" (Google Doc
 ``1BePvuk5rg-YjUUvdwjb3X3Z0JWEUc5AtVjDfR3nub0U``, the ``published_reference`` of
-``docs/developer/output-contract.md``). It covers the five SpacesEDU rostering files ONLY; the
+``docs/developer/output-contract.md``), corrected where the importer disagrees with it
+(Product-Integration-Validation ``checklist.md``: ACSV-006 — a student's email is parser-OPTIONAL,
+so Students' ``Email Address`` is not in this table, DSYNC-30). It covers the five SpacesEDU rostering files ONLY; the
 course and attendance feeds (CourseInfo, StudentCourses, StudentAttendance) follow the
 myBlueprint+ docs and are deliberately out of this table — a lookup for them raises. Spelled in
 DistrictSync's OUTPUT column names, which are uniform across every bundled config (pinned:
@@ -42,7 +44,6 @@ REQUIRED_OUTPUT_FIELDS: Final[Mapping[str, tuple[str, ...]]] = MappingProxyType(
             "Grade",
             "EnrollStatus",
             "SchoolCode",
-            "Email Address",
         ),
         "Staff": ("User ID", "First Name", "Last Name", "Email", "Role", "School ID"),
         "Family": ("First Name", "Last Name", "Email", "Student User ID"),
@@ -51,12 +52,13 @@ REQUIRED_OUTPUT_FIELDS: Final[Mapping[str, tuple[str, ...]]] = MappingProxyType(
     }
 )
 
-#: The email column of each output that carries one — the column whose absence from the frame is
-#: ``OutcomeNote.EMAIL_OUTPUT_NOT_MAPPED`` rather than the generic
-#: ``OutcomeNote.REQUIRED_OUTPUT_NOT_MAPPED`` (§5 #20/#40 vs #43).
-EMAIL_OUTPUT_FIELDS: Final[Mapping[str, str]] = MappingProxyType(
-    {"Students": "Email Address", "Staff": "Email", "Family": "Email"}
-)
+#: The REQUIRED email column of each output that carries one — the column whose absence from the
+#: frame is ``OutcomeNote.EMAIL_OUTPUT_NOT_MAPPED`` rather than the generic
+#: ``OutcomeNote.REQUIRED_OUTPUT_NOT_MAPPED`` (§5 #20/#40 vs #43). Students is deliberately absent:
+#: the importer accepts a student with no address (they sign in another way, e.g. a QR code), so
+#: Students' ``Email Address`` is OPTIONAL — a blank one keeps the row (DSYNC-30; Product-Integration-
+#: Validation ACSV-006).
+EMAIL_OUTPUT_FIELDS: Final[Mapping[str, str]] = MappingProxyType({"Staff": "Email", "Family": "Email"})
 
 #: The note each rostering output records when rows are left out for a blank required value —
 #: one member per output, because the copy is note-keyed and dedupes by note (a shared member
