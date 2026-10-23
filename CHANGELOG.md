@@ -21,6 +21,12 @@ Per-release download links and auto-generated commit notes live on the
 
 ### Fixed
 
+- **Nightly SFTP uploads now retry a connection that drops mid-transfer, and no longer hang for
+  an hour opening the transfer channel.** A dropped connection used to fail the whole run at once
+  with a blank error; it is now retried (up to 3 attempts) like other network errors, and the
+  log names the error type. Opening the channel, the SSH banner and sign-in are each limited to
+  30 seconds. Wrong-password and unrecognised-server failures are still never retried.
+
 - **Home now warns when a nightly sync is scheduled but has never recorded a run.** If the
   schedule was set up and the computer has no run history at all, Home used to keep saying "No
   runs recorded yet" indefinitely. It now shows "We expected a nightly sync that didn't arrive"
