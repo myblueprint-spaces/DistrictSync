@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import contextlib
 from collections.abc import Callable
+from typing import Any
 
 import flet as ft
 
@@ -306,6 +307,21 @@ def copy_button(page: ft.Page, text: str, *, tooltip: str = "Copy") -> ft.IconBu
 
     ``text`` is app-owned copy (a version / support address / docs URL) — never PII.
     """
+    return ft.IconButton(
+        icon=ft.Icons.CONTENT_COPY_ROUNDED,
+        icon_color=tokens.color_action_primary,
+        icon_size=tokens.type_section,
+        tooltip=tooltip,
+        on_click=_copy_handler(page, text),
+    )
+
+
+def _copy_handler(page: ft.Page, text: str) -> Callable[[ft.ControlEvent], Any]:
+    """The ONE clipboard click handler — shared by :func:`copy_button` and :func:`copy_text_button`.
+
+    Async because ``ft.Clipboard.set`` is a coroutine on 0.85.3; a SnackBar confirms, and a failure
+    shows the calm manual fallback rather than raising.
+    """
 
     async def _copy(_e: ft.ControlEvent) -> None:
         note = "Copied."
@@ -320,12 +336,50 @@ def copy_button(page: ft.Page, text: str, *, tooltip: str = "Copy") -> ft.IconBu
             )
         )
 
-    return ft.IconButton(
-        icon=ft.Icons.CONTENT_COPY_ROUNDED,
-        icon_color=tokens.color_action_primary,
-        icon_size=tokens.type_section,
-        tooltip=tooltip,
-        on_click=_copy,
+    return _copy
+
+
+def copy_text_button(
+    page: ft.Page, label: str, text: str, *, color: str = tokens.color_action_primary
+) -> ft.TextButton:
+    """A LABELLED text-tier copy action (DSYNC-32 "Copy details") — :func:`copy_button`'s twin.
+
+    The icon form suits a row beside a visible value; a verdict band's trailing slot needs a word
+    an admin can read, painted in the band's on-tint colour (``color``). Same handler, same
+    SnackBar, same "never PII" contract: ``text`` must be app-composed and bounded.
+    """
+    return text_button(label, _copy_handler(page, text), icon=ft.Icons.CONTENT_COPY_ROUNDED, color=color)
+
+
+#: The two log-action labels (DSYNC-32), spelled once: the Home band, the Home schedule card and
+#: Run History's banner all render them, and the partner gMSA guide tells an admin to press them.
+OPEN_LOG_FOLDER_LABEL = "Open log folder"
+COPY_DETAILS_LABEL = "Copy details"
+
+
+def on_tint_color(verdict: Verdict) -> str:
+    """The deep on-tint text colour of ``verdict``'s band — the AA-gated colour a band's
+    ``trailing`` text button must be painted in (see :func:`HealthVerdictBanner`)."""
+    return _VERDICT_TINTS[verdict][2]
+
+
+def log_actions(page: ft.Page, details: str, *, color: str = tokens.color_action_primary) -> ft.Control:
+    """The two log actions, "Open log folder" + "Copy details", as one text-tier row (DSYNC-32).
+
+    For a surface whose schedule needs diagnosing: the log holds what the band deliberately does
+    not show, and "Copy details" hands IT the bounded facts (``schedule_status.diagnostic_details``
+    — no account, no path). Text tier on purpose: it never competes with the screen's one filled
+    primary. Pass ``color=on_tint_color(verdict)`` inside a verdict band.
+    """
+    return ft.Row(
+        spacing=tokens.space_xs,
+        tight=True,
+        wrap=True,
+        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        controls=[
+            text_button(OPEN_LOG_FOLDER_LABEL, open_log_folder, icon=ft.Icons.FOLDER_OPEN_ROUNDED, color=color),
+            copy_text_button(page, COPY_DETAILS_LABEL, details, color=color),
+        ],
     )
 
 
@@ -942,7 +996,7 @@ def ErrorCard(  # noqa: N802 - a view-factory named like a component
     if action is not None:
         body.append(action)
     if log_folder:
-        body.append(text_button("Open log folder", open_log_folder, icon=ft.Icons.FOLDER_OPEN_ROUNDED))
+        body.append(text_button(OPEN_LOG_FOLDER_LABEL, open_log_folder, icon=ft.Icons.FOLDER_OPEN_ROUNDED))
 
     return ft.Container(
         bgcolor=tokens.color_surface,

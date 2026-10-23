@@ -92,7 +92,7 @@ from src.ui_flet.identity_gate import (
     unmapped_sd_number,
 )
 from src.ui_flet.mapping_catalog import active_output_entities, district_domain_index
-from src.ui_flet.schedule_status import ScheduleState, ScheduleStatus
+from src.ui_flet.schedule_status import ScheduleState, ScheduleStatus, diagnostic_details, needs_diagnosis
 from src.ui_flet.screens import identity as identity_screen
 from src.ui_flet.screens import setup as setup_screen
 from src.ui_flet.screens.help import SUPPORT_EMAIL
@@ -139,7 +139,9 @@ def _header(app_config: AppConfig, on_refresh: Callable[[], None] | None) -> ft.
     return components.page_header("Home", "Your nightly roster sync to SpacesEDU", trailing=trailing)
 
 
-def _schedule_card(status: ScheduleStatus, on_navigate: Callable[[str], None]) -> ft.Control:
+def _schedule_card(
+    page: ft.Page, status: ScheduleStatus, on_navigate: Callable[[str], None], *, task_name: str
+) -> ft.Control:
     """A calm "nightly sync scheduled — Confirmed" row-card (Direction B), LIVE state only.
 
     Surfaces the already-fetched schedule read-back in the mockup's schedule row idiom: a
@@ -147,7 +149,17 @@ def _schedule_card(status: ScheduleStatus, on_navigate: Callable[[str], None]) -
     text-tier "Change schedule" that hops to Setup. Rendered ONLY on a clean LIVE schedule — a
     MISSING/contradicted schedule is already the dominant WARNING routed to Setup by the verdict
     band above (never both), so this card never competes with an attention state.
+
+    DSYNC-32: when Windows reported a problem with the last run that does not escalate (a
+    same-account install — the run store owns that narrative), the card also offers the two log
+    actions, text tier, so the admin can reach the log and hand IT the bounded details.
     """
+    actions: list[ft.Control] = [
+        components.status_pill("Confirmed", Verdict.HEALTHY),
+        components.text_button("Change schedule", lambda _e: on_navigate("setup")),
+    ]
+    if needs_diagnosis(status):
+        actions.append(components.log_actions(page, diagnostic_details(status, task_name=task_name)))
     return components.card(
         content=ft.Row(
             spacing=tokens.space_md + 2,
@@ -180,10 +192,7 @@ def _schedule_card(status: ScheduleStatus, on_navigate: Callable[[str], None]) -
                     spacing=tokens.space_md + 2,
                     tight=True,
                     vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                    controls=[
-                        components.status_pill("Confirmed", Verdict.HEALTHY),
-                        components.text_button("Change schedule", lambda _e: on_navigate("setup")),
-                    ],
+                    controls=actions,
                 ),
             ],
         ),
@@ -1031,7 +1040,21 @@ def _dashboard(
         # lose it to `take()`'s clear.
         if handover is not None:
             controls.append(setup_screen.handover_banner(handover))
-        controls.append(components.HealthVerdictBanner(status.verdict, headline=status.headline, detail=status.detail))
+        # DSYNC-32: while the SCHEDULE needs attention the band carries the two log actions in its
+        # trailing slot — text tier in the band's own on-tint colour (AA-gated; the screen's one
+        # filled primary stays the fix CTA below). "Copy details" is bounded: no account, no path.
+        band_trailing: ft.Control | None = None
+        if schedule_status is not None and schedule_status.attention:
+            band_trailing = components.log_actions(
+                page,
+                diagnostic_details(schedule_status, task_name=app_config.schedule_task_name),
+                color=components.on_tint_color(status.verdict),
+            )
+        controls.append(
+            components.HealthVerdictBanner(
+                status.verdict, headline=status.headline, detail=status.detail, trailing=band_trailing
+            )
+        )
         if status.fix is not None:
             controls.append(_fix_button(status.fix, on_navigate))
         # 0038 S4b: the identity cards ride HERE — anchored to the verdict block, never to
@@ -1072,7 +1095,7 @@ def _dashboard(
                 shared_records=paths.is_machine_scope(),
             )
         ):
-            controls.append(_schedule_card(schedule_status, on_navigate))
+            controls.append(_schedule_card(page, schedule_status, on_navigate, task_name=app_config.schedule_task_name))
         # 0049 S-2a.4: LAST, and muted. Verdict-first is the rule this surface is built on, and
         # a provenance footnote is the quietest true thing on the page — it may not precede the
         # verdict, and it may not be wedged between a fault and its fix (the same argument the

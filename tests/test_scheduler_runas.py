@@ -1463,8 +1463,8 @@ class TestValidateGmsaAccount:
 
     def test_the_docstring_says_it_is_only_a_shape_check(self):
         """A shape check that read as an existence check would be worse than none: an admin
-        would take a green field for a working configuration. Windows answers the real
-        questions at registration time, as HRESULTs."""
+        would take a green field for a working configuration. Windows answers some of the real
+        questions at registration time, as HRESULTs, and others only when the task first runs."""
         from src.utils.validators import validate_gmsa_account
 
         assert "SHAPE CHECK" in (validate_gmsa_account.__doc__ or "")

@@ -262,3 +262,174 @@ class TestNoAccountNameEverReachesTheLog:
         source = inspect.getsource(schedule_probe._log_divergence)
         assert "foreign_account" not in source
         assert "run_as_user" not in source
+
+
+# --------------------------------------------------------------------------- #
+# DSYNC-32 — the registered-program seam, and the code on the log line           #
+# --------------------------------------------------------------------------- #
+_EXE = "C:\\Program Files\\DistrictSync\\DistrictSync.exe"
+
+
+def _moved(action_path, *, exists=True, running=_EXE, case_insensitive=True) -> bool:
+    return schedule_probe.registered_program_moved(
+        action_path,
+        path_exists=lambda _p: exists,
+        running_exe=lambda: running,
+        case_insensitive=case_insensitive,
+    )
+
+
+class TestRegisteredProgramMoved:
+    def test_a_missing_program_is_moved(self) -> None:
+        assert _moved(_EXE, exists=False) is True
+
+    def test_a_different_copy_while_frozen_is_moved(self) -> None:
+        assert _moved(_EXE, running="C:\\Users\\admin\\Downloads\\DistrictSync.exe") is True
+
+    def test_positive_twin_the_same_copy_is_not_moved(self) -> None:
+        assert _moved(_EXE) is False
+
+    def test_windows_paths_compare_case_insensitively(self) -> None:
+        assert _moved(_EXE.upper(), running=_EXE.lower()) is False
+
+    def test_case_sensitive_hosts_compare_exactly(self) -> None:
+        """Positive twin of the case-fold: the flag really decides the comparison."""
+        assert _moved("/opt/ds/DistrictSync", running="/opt/ds/districtsync", case_insensitive=False) is True
+
+    def test_a_quoted_registered_path_is_unquoted(self) -> None:
+        assert _moved(f'"{_EXE}"') is False
+
+    def test_from_source_only_existence_is_checked(self) -> None:
+        """Not frozen -> no "is it this copy?" comparison (sys.executable is python.exe)."""
+        assert _moved(_EXE, running=None) is False
+        assert _moved(_EXE, exists=False, running=None) is True
+
+    @pytest.mark.parametrize("action_path", [None, "", "   "])
+    def test_an_unknown_action_path_claims_nothing(self, action_path) -> None:
+        assert _moved(action_path, exists=False) is False
+
+    def test_a_raising_check_claims_nothing(self) -> None:
+        def _boom(_p: str) -> bool:
+            raise OSError("share offline")
+
+        assert schedule_probe.registered_program_moved(_EXE, path_exists=_boom, running_exe=lambda: _EXE) is False
+
+    def test_the_default_running_exe_is_none_from_source(self, monkeypatch) -> None:
+        monkeypatch.delattr("sys.frozen", raising=False)
+        assert schedule_probe._running_frozen_exe() is None
+
+    def test_the_default_running_exe_is_resolved_when_frozen(self, monkeypatch, tmp_path) -> None:
+        exe = tmp_path / "DistrictSync.exe"
+        exe.write_bytes(b"")
+        monkeypatch.setattr("sys.frozen", True, raising=False)
+        monkeypatch.setattr("sys.executable", str(exe))
+        assert schedule_probe._running_frozen_exe() == str(exe.resolve())
+
+
+def _gap_readback(last_result, action_path=_EXE) -> ScheduleReadback:
+    return ScheduleReadback(
+        found=True,
+        next_run="2026-10-24T03:00:00",
+        last_run="2026-10-23T03:00:00",
+        last_result=last_result,
+        action_path=action_path,
+    )
+
+
+class TestProbeWiresTheSeam:
+    def test_probe_feeds_program_moved_into_the_status(self, monkeypatch) -> None:
+        _patch_readback(monkeypatch, _gap_readback(0))
+        monkeypatch.setattr(schedule_probe, "registered_program_moved", lambda path: path == _EXE)
+        status = schedule_probe.probe_schedule(
+            "DistrictSync_Daily",
+            hint_registered=True,
+            latest_record_ts="2026-10-20T03:00:00",
+            foreign_account="",
+            shared_records=False,
+        )
+        assert status.program_moved is True
+        assert "moved or deleted" in status.detail
+
+    def test_positive_twin_no_evidence_no_sentence(self, monkeypatch) -> None:
+        _patch_readback(monkeypatch, _gap_readback(0))
+        monkeypatch.setattr(schedule_probe, "registered_program_moved", lambda _path: False)
+        status = schedule_probe.probe_schedule(
+            "DistrictSync_Daily",
+            hint_registered=True,
+            latest_record_ts="2026-10-20T03:00:00",
+            foreign_account="",
+            shared_records=False,
+        )
+        assert status.contradiction is True
+        assert "moved or deleted" not in status.detail
+
+    def test_a_missing_task_is_never_checked(self, monkeypatch) -> None:
+        calls: list = []
+        _patch_readback(monkeypatch, ScheduleReadback(found=False, action_path=_EXE))
+        monkeypatch.setattr(schedule_probe, "registered_program_moved", lambda p: calls.append(p) or True)
+        status = schedule_probe.probe_schedule(
+            "DistrictSync_Daily", hint_registered=True, foreign_account="", shared_records=False
+        )
+        assert calls == []
+        assert status.program_moved is False
+
+
+class TestTheLogLineCarriesTheCode:
+    """The SD60 log line used to say "may have been moved or deleted" and drop the code."""
+
+    def _probe(self, monkeypatch, caplog, readback, *, foreign_account="", shared_records=False, moved=False):
+        _patch_readback(monkeypatch, readback)
+        monkeypatch.setattr(schedule_probe, "registered_program_moved", lambda _p: moved)
+        with caplog.at_level(logging.WARNING, logger="src.ui_flet.schedule_probe"):
+            schedule_probe.probe_schedule(
+                "DistrictSync_Daily",
+                hint_registered=True,
+                latest_record_ts="2026-10-20T03:00:00",
+                foreign_account=foreign_account,
+                shared_records=shared_records,
+            )
+        return [r.getMessage() for r in caplog.records]
+
+    def test_the_sd60_contradiction_logs_hex_code_and_verdict_name(self, monkeypatch, caplog) -> None:
+        messages = self._probe(
+            monkeypatch, caplog, _gap_readback(-2147023570), foreign_account=_SERVICE, shared_records=True
+        )
+        assert len(messages) == 1
+        assert "fired but DistrictSync did not record a completed run" in messages[0]
+        assert "0x8007052E" in messages[0]
+        assert "LOGON_FAILURE" in messages[0]
+        assert "moved or deleted" not in messages[0]
+
+    def test_no_account_and_no_path_reach_the_line(self, monkeypatch, caplog) -> None:
+        seen = 0
+        for moved in (False, True):
+            caplog.clear()
+            for message in self._probe(
+                monkeypatch,
+                caplog,
+                _gap_readback(0x8007052E),
+                foreign_account=_SERVICE,
+                shared_records=True,
+                moved=moved,
+            ):
+                seen += 1
+                assert _SERVICE not in message
+                assert "svc_districtsync" not in message
+                assert _EXE not in message
+                assert "Program Files" not in message
+        assert seen == 2, "non-vacuity: both probes must have logged a line"
+
+    def test_positive_twin_the_moved_fact_is_logged_as_a_fixed_phrase(self, monkeypatch, caplog) -> None:
+        messages = self._probe(monkeypatch, caplog, _gap_readback(0), moved=True)
+        assert any("registered program is missing or is not this copy" in m for m in messages)
+        assert any("(Windows result 0x00000000, OK)" in m for m in messages)
+
+    def test_a_foreign_per_user_problem_logs_its_code_too(self, monkeypatch, caplog) -> None:
+        """The record gap is suppressed there (A5), so the attention arm owns the line."""
+        messages = self._probe(monkeypatch, caplog, _gap_readback(0x80070005), foreign_account=_SERVICE)
+        assert len(messages) == 1
+        assert "0x80070005" in messages[0] and "ACCESS_DENIED" in messages[0]
+        assert _SERVICE not in messages[0]
+
+    def test_a_running_task_logs_nothing(self, monkeypatch, caplog) -> None:
+        assert self._probe(monkeypatch, caplog, _gap_readback(0x00041301)) == []

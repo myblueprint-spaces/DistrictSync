@@ -38,7 +38,7 @@ from src.ui_flet import components, tokens
 from src.ui_flet.home_status import verdict_latest_timestamp
 from src.ui_flet.humanize import friendly_district_name
 from src.ui_flet.run_history import derive_history_banner, run_as_summary_line, to_run_rows
-from src.ui_flet.schedule_status import ScheduleStatus
+from src.ui_flet.schedule_status import ScheduleStatus, diagnostic_details
 from src.utils import paths
 from src.utils.accounts import process_account
 
@@ -127,9 +127,21 @@ def _surface(page: ft.Page, app_config: AppConfig, on_refresh: Callable[[], None
         banner = derive_history_banner(
             records, app_config, store_created_at=store_created_at, schedule_status=schedule_status
         )
+        # DSYNC-32: when the schedule needs attention the banner offers the two log actions — text
+        # tier in the band's on-tint colour. Still read-only: they open a folder and copy bounded
+        # text (no account, no path); neither changes anything.
+        trailing: ft.Control | None = None
+        if schedule_status is not None and schedule_status.attention:
+            trailing = components.log_actions(
+                page,
+                diagnostic_details(schedule_status, task_name=app_config.schedule_task_name),
+                color=components.on_tint_color(banner.verdict),
+            )
         controls: list[ft.Control] = [
             _greeting_header(app_config),
-            components.HealthVerdictBanner(banner.verdict, headline=banner.headline, detail=banner.detail),
+            components.HealthVerdictBanner(
+                banner.verdict, headline=banner.headline, detail=banner.detail, trailing=trailing
+            ),
         ]
         # None (unavailable) / [] (no runs) → banner alone (nothing to tabulate). Otherwise the table.
         if records:

@@ -59,9 +59,12 @@ from src.scheduler.task_com import (
     PrincipalKind,
     format_hresult,
 )
+from src.scheduler.windows import ScheduleReadback
+from src.ui_flet.components import COPY_DETAILS_LABEL, OPEN_LOG_FOLDER_LABEL
 from src.ui_flet.failure_copy import error_card_copy, partial_copy
 from src.ui_flet.home_status import MACHINE_SCOPE_LINE_LEAD, derive_home_status, machine_scope_line
 from src.ui_flet.run_history import derive_history_banner, to_run_row
+from src.ui_flet.schedule_status import WINDOWS_REPORTED_PROBLEM_HEADLINE, derive_schedule_status, last_run_line
 from src.ui_flet.setup_errors import classify_schedule_error
 from src.ui_flet.setup_flow import GMSA_IT_DOC_TITLE, GMSA_PREREQUISITES
 from src.utils.diagnostics import SCOPE_PER_USER, SCOPE_SHARED
@@ -184,6 +187,20 @@ def _partial_row_label(*, delivered: bool, outcomes: tuple = ()) -> str:
         ),
     }
     return to_run_row(record, prior_build=None).status_label
+
+
+#: DSYNC-32 — the SD60 shape: a gMSA nightly on a machine-scoped install, firing after the newest
+#: record, with Windows' logon-failure result. The "Registered, but the nightly never runs" section
+#: tells an admin which words on Home and Setup mean this, so each is proved against the derivation.
+_SD60_STATUS = derive_schedule_status(
+    ScheduleReadback(
+        found=True, next_run="2026-10-24T03:00:00", last_run="2026-10-23T03:00:00", last_result=0x8007052E
+    ),
+    hint_registered=True,
+    latest_record_ts="2026-10-20T03:00:00",
+    foreign_account="SD60\\svc$",
+    shared_records=True,
+)
 
 
 #: name -> (the quoted string, the classifier output it must also appear in). ``None`` as the
@@ -352,6 +369,12 @@ _PINNED: dict[str, tuple[str, str | None]] = {
         _partial_row_label(delivered=True, outcomes=_COTEACHERS_LEFT_OUT),
     ),
     "coteacher_anchor": (COTEACHERS_LEFT_OUT_LOG_ANCHOR, None),
+    # DSYNC-32 — "Registered, but the nightly never runs": the Home headline, the Setup line's
+    # lead and the two log-action labels the gMSA page sends an admin to.
+    "nightly_windows_problem_headline": (WINDOWS_REPORTED_PROBLEM_HEADLINE, _SD60_STATUS.headline),
+    "nightly_last_ran_lead": ("Windows last ran this task", last_run_line(_SD60_STATUS) or ""),
+    "copy_details_label": (COPY_DETAILS_LABEL, None),
+    "open_log_folder_label": (OPEN_LOG_FOLDER_LABEL, None),
 }
 
 #: doc -> the strings that doc is DECLARED to quote. Anything not listed must be ABSENT.
@@ -360,12 +383,17 @@ _PINNED: dict[str, tuple[str, str | None]] = {
 #: The plan-0049 family: strings an admin READS OFF THE APP to decide which kind of install
 #: they have. They belong to the two install/service-account guides, not to the failure page.
 _SCOPE_PINS: frozenset[str] = frozenset({"machine_scope_lead", "diagnose_scope_shared", "diagnose_scope_per_user"})
+#: DSYNC-32: the run-time diagnosis family. It belongs to the hand-to-IT gMSA page, whose new
+#: section walks a nightly that registered but never ran — not to the registration-failure page.
+_NIGHTLY_RUN_PINS: frozenset[str] = frozenset(
+    {"nightly_windows_problem_headline", "nightly_last_ran_lead", "copy_details_label", "open_log_folder_label"}
+)
 
 _DOC_QUOTES: dict[str, frozenset[str]] = {
     # Everything EXCEPT the scope family: the troubleshooting page is about schedule FAILURES,
     # and this row deliberately stays "all of them" for that family so a new classifier quote
     # lands pinned by default rather than arriving unnoticed.
-    _TROUBLESHOOTING: frozenset(_PINNED) - _SCOPE_PINS,
+    _TROUBLESHOOTING: frozenset(_PINNED) - _SCOPE_PINS - _NIGHTLY_RUN_PINS,
     # The developer docs describe the log line's shape, so they legitimately carry the anchor.
     # Plan 0053 S15 moved both of CLAUDE.md's log-line descriptions out VERBATIM — the
     # `windows.py` bullet into the scheduler guide, the gMSA (S-4) span into the machine-scope
@@ -387,15 +415,26 @@ _DOC_QUOTES: dict[str, frozenset[str]] = {
     # Plan 0049 S-4: the hand-to-IT page opens with its own title, names the failure an admin
     # will see, and explains the storage policy that pushes a district here in the first place
     # — so it legitimately carries the policy family and the MSA lead, and nothing else.
-    _GMSA: frozenset({"gmsa_doc_title", "msa_headline", "policy_headline", "policy_setting_name", "policy_code"}),
+    # DSYNC-32 adds the run-time diagnosis family for its "Registered, but the nightly never runs"
+    # section (and pins the "Open log folder" label its failure section already named).
+    _GMSA: frozenset({"gmsa_doc_title", "msa_headline", "policy_headline", "policy_setting_name", "policy_code"})
+    | _NIGHTLY_RUN_PINS,
     # The release notes announce the line by name (but not the terminal report's two scope
     # words). Plan 0049 S-4 adds two: the entry names the hand-to-IT page so a district can
     # ask for it, and quotes the policy CODE so an admin can recognise their own situation
     # from the release notes. It still carries no failure sentence.
     # Plan 0053 S13c's entry quotes the two headlines a stopped night shows, so a district can
     # recognise it from the release notes (no log anchor, no failure sentence).
+    # It also names the "Open log folder" button (an older entry), pinned since DSYNC-32.
     "CHANGELOG.md": frozenset(
-        {"machine_scope_lead", "gmsa_doc_title", "policy_code", "input_stop_headline", "empty_output_headline"}
+        {
+            "machine_scope_lead",
+            "gmsa_doc_title",
+            "policy_code",
+            "input_stop_headline",
+            "empty_output_headline",
+            "open_log_folder_label",
+        }
     ),
     "docs/partner/faq.md": frozenset(),
     "docs/partner/help-centre-myedbc-districtsync-guide.md": frozenset(),

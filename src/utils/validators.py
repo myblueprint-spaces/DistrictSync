@@ -224,10 +224,11 @@ def validate_gmsa_account(value: str) -> str:
     does not ask the directory whether the account exists, whether this computer is allowed
     to retrieve its password, or whether it holds "Log on as a batch job". None of that is
     knowable without a domain, and a shape check that implied otherwise would be worse than
-    none: the admin would read a green field as a working configuration. Windows answers the
-    real questions at registration time, and those answers arrive as HRESULTs (a name the
-    directory cannot resolve is the measured ``0x80070534`` —
-    ``task_com.MSG_ACCOUNT_NOT_RECOGNIZED``).
+    none: the admin would read a green field as a working configuration. Windows answers SOME of
+    the real questions at registration time, as HRESULTs (a name the directory cannot resolve is
+    the measured ``0x80070534`` — ``task_com.MSG_ACCOUNT_NOT_RECOGNIZED``); others — a missing
+    'Log on as a batch job' right, a computer not allowed to retrieve the password — can register
+    cleanly and surface only as the task's run-time ``LastTaskResult`` (DSYNC-32).
 
     Accepted: ``DOMAIN\\name$`` or a bare ``name$`` — letters, digits, ``.``, ``_``, ``-``, at
     most one backslash domain separator, and a MANDATORY single trailing ``$``. Length is

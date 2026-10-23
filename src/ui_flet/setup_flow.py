@@ -542,7 +542,9 @@ SCHEDULE_GMSA_TOGGLE_LABEL = "This is a managed service account (gMSA)"
 #: tied back by ``tests/test_partner_doc_schedule_copy_parity.py``.
 #:
 #: None of the three is knowable from here: ``validators.validate_gmsa_account`` is a SHAPE
-#: check by design, and Windows answers the real questions only at registration time. So this is
+#: check by design, and Windows does not answer all three at registration either — a missing
+#: 'Log on as a batch job' right registers cleanly and surfaces only as the task's run-time
+#: ``LastTaskResult`` (``task_com.RESULT_BATCH_LOGON_PROBLEM``). So this is
 #: a list to hand to somebody, never a state this app can verify — which is also why the
 #: failure arm offers no "try again" and the disclosure renders them as read-only glyphs rather
 #: than tick boxes.

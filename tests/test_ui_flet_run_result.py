@@ -79,13 +79,17 @@ class TestRunResultVerdictTable:
         verdict = run_result_verdict(2)
         assert verdict.result is RunResult.UNRECOGNISED
 
-    @pytest.mark.parametrize("code", [2, 5, 267009, 0x80070005, -1, 4294967295])
+    # DSYNC-32 moved 267009 (SCHED_S_TASK_RUNNING) and 0x80070005 (access denied) to named rows,
+    # so the sweep now uses neighbours that stay unmapped (267010, 0x80070057).
+    @pytest.mark.parametrize("code", [2, 5, 267010, 0x80070057, -1, 4294967295])
     def test_arbitrary_non_zero_is_unrecognised_with_a_cause_free_note(self, code: int) -> None:
         """A code we will not guess at still yields a true statement, with no cause attached."""
         verdict = run_result_verdict(code)
         assert verdict.result is RunResult.UNRECOGNISED
         assert verdict.note
         assert "a problem" in verdict.note
+        # DSYNC-32: it names the code Windows recorded, normalised to unsigned 32 bits.
+        assert f"Windows recorded result 0x{code & 0xFFFFFFFF:08X}" in verdict.note
 
     def test_is_total_over_every_probed_code_without_raising(self) -> None:
         """No raise path: a wide sweep of plausible LastTaskResult values all classify."""
@@ -98,27 +102,33 @@ class TestRunResultVerdictTable:
 class TestReportedAProblem:
     """The escalation predicate — only these rows may raise `attention`, and only when foreign."""
 
-    @pytest.mark.parametrize(
-        "result",
-        [RunResult.FAILED, RunResult.DELIVERY_FAILED, RunResult.BATCH_LOGON_SUSPECTED, RunResult.UNRECOGNISED],
-    )
+    _PROBLEMS = [
+        RunResult.FAILED,
+        RunResult.DELIVERY_FAILED,
+        RunResult.BATCH_LOGON_SUSPECTED,
+        RunResult.LOGON_FAILURE,
+        RunResult.PASSWORD_EXPIRED,
+        RunResult.ACCESS_DENIED,
+        RunResult.PROGRAM_NOT_FOUND,
+        RunResult.BAD_START_FOLDER,
+        RunResult.UNRECOGNISED,
+    ]
+    _CALM = [RunResult.OK, RunResult.NEVER_RUN, RunResult.RUNNING, RunResult.UNREADABLE]
+
+    @pytest.mark.parametrize("result", _PROBLEMS)
     def test_true_for_every_non_zero_reported_result(self, result: RunResult) -> None:
         assert RunResultVerdict(result=result).reported_a_problem is True
 
-    @pytest.mark.parametrize("result", [RunResult.OK, RunResult.NEVER_RUN, RunResult.UNREADABLE])
-    def test_false_for_success_never_run_and_unreadable(self, result: RunResult) -> None:
-        """UNREADABLE is a failed PROBE, NEVER_RUN is a task that hasn't fired — neither is a fault."""
+    @pytest.mark.parametrize("result", _CALM)
+    def test_false_for_success_never_run_running_and_unreadable(self, result: RunResult) -> None:
+        """UNREADABLE is a failed PROBE, NEVER_RUN is a task that hasn't fired, RUNNING has not
+        finished — none of them is a fault."""
         assert RunResultVerdict(result=result).reported_a_problem is False
 
     def test_every_member_is_covered_by_exactly_one_of_the_two_sets(self) -> None:
         """Totality of the predicate itself — a new member cannot be silently un-classified."""
-        problems = {
-            RunResult.FAILED,
-            RunResult.DELIVERY_FAILED,
-            RunResult.BATCH_LOGON_SUSPECTED,
-            RunResult.UNRECOGNISED,
-        }
-        calm = {RunResult.OK, RunResult.NEVER_RUN, RunResult.UNREADABLE}
+        problems = set(self._PROBLEMS)
+        calm = set(self._CALM)
         assert problems | calm == set(RunResult)
         assert not (problems & calm)
 
@@ -164,3 +174,116 @@ class TestCopyMakesNoCausalClaim:
     def test_no_note_asserts_a_cause_the_sources_do_not_support(self, code: int) -> None:
         note = run_result_verdict(code).note or ""
         assert not re.search(r"\bbecause\b|\bis caused by\b|\bwas caused by\b", note)
+
+
+# --------------------------------------------------------------------------- #
+# DSYNC-32 — the run-time codes a scheduled nightly actually fails with         #
+# --------------------------------------------------------------------------- #
+from src.scheduler.task_com import (  # noqa: E402
+    RESULT_ACCESS_DENIED,
+    RESULT_BAD_DIRECTORY,
+    RESULT_FILE_NOT_FOUND,
+    RESULT_LOGON_FAILURE,
+    RESULT_PASSWORD_EXPIRED,
+    RESULT_RUNNING,
+)
+from src.ui_flet.schedule_status import CALM_RESULTS, RESULT_LABELS  # noqa: E402
+
+#: (code, member, a phrase the note must carry, its hex spelling)
+_DSYNC32_ROWS = [
+    (RESULT_LOGON_FAILURE, RunResult.LOGON_FAILURE, "account name or password was rejected", "0x8007052E"),
+    (RESULT_PASSWORD_EXPIRED, RunResult.PASSWORD_EXPIRED, "has expired", "0x80070532"),
+    (RESULT_ACCESS_DENIED, RunResult.ACCESS_DENIED, "access denied", "0x80070005"),
+    (RESULT_FILE_NOT_FOUND, RunResult.PROGRAM_NOT_FOUND, "couldn't find the program", "0x80070002"),
+    (RESULT_BAD_DIRECTORY, RunResult.BAD_START_FOLDER, "start-in folder", "0x8007010B"),
+]
+
+
+class TestDsync32Rows:
+    @pytest.mark.parametrize(("code", "member", "phrase", "hex_code"), _DSYNC32_ROWS)
+    def test_each_code_classifies_with_its_meaning_and_exposes_its_code(
+        self, code: int, member: RunResult, phrase: str, hex_code: str
+    ) -> None:
+        verdict = run_result_verdict(code)
+        assert verdict.result is member
+        assert phrase in (verdict.note or "")
+        assert verdict.code_hex == hex_code
+        assert verdict.reported_a_problem is True
+        assert verdict.coded_note == f"{verdict.note} (Windows result {hex_code}.)"
+
+    @pytest.mark.parametrize(("code", "member", "_phrase", "hex_code"), _DSYNC32_ROWS)
+    def test_a_signed_int_from_pywin32_classifies_identically(
+        self, code: int, member: RunResult, _phrase: str, hex_code: str
+    ) -> None:
+        """pywin32 can hand back LastTaskResult as a NEGATIVE int; the sign must never demote a
+        named code to UNRECOGNISED."""
+        signed = code - (1 << 32)
+        assert signed < 0
+        verdict = run_result_verdict(signed)
+        assert verdict.result is member
+        assert verdict.code == code
+        assert verdict.code_hex == hex_code
+
+    def test_logon_failure_names_the_managed_service_account_cause_hedged(self) -> None:
+        note = run_result_verdict(RESULT_LOGON_FAILURE).note or ""
+        assert "managed service account" in note
+        assert "usually" in note  # hedged — Windows' code, not an observed cause on this server
+        assert "retrieve the account's password" in note
+
+    def test_two_and_its_hresult_form_are_different_facts(self) -> None:
+        """Bare 2 stays UNRECOGNISED (our own exit 2 collides); 0x80070002 cannot be our exit code."""
+        assert run_result_verdict(2).result is RunResult.UNRECOGNISED
+        assert run_result_verdict(RESULT_FILE_NOT_FOUND).result is RunResult.PROGRAM_NOT_FOUND
+
+    def test_running_is_not_a_failure(self) -> None:
+        verdict = run_result_verdict(RESULT_RUNNING)
+        assert verdict.result is RunResult.RUNNING
+        assert verdict.reported_a_problem is False
+        assert "running right now" in (verdict.note or "")
+        # A calm verdict carries no code suffix; its code is still EXPOSED for diagnostics.
+        assert verdict.coded_note == verdict.note
+        assert verdict.code_hex == "0x00041301"
+
+    def test_unrecognised_leads_with_its_code_once(self) -> None:
+        verdict = run_result_verdict(0x8007FFFF)
+        assert verdict.result is RunResult.UNRECOGNISED
+        assert verdict.coded_note == verdict.note
+        assert (verdict.note or "").count("0x8007FFFF") == 1
+        assert not re.search(r"\bbecause\b|\bis caused by\b|\bwas caused by\b", verdict.note or "")
+
+    @pytest.mark.parametrize("code", [c for c, *_ in _DSYNC32_ROWS])
+    def test_no_new_note_asserts_a_cause(self, code: int) -> None:
+        note = run_result_verdict(code).note or ""
+        assert not re.search(r"\bbecause\b|\bis caused by\b|\bwas caused by\b", note)
+        assert "moved or deleted" not in note  # that remedy needs evidence about the program itself
+
+    def test_every_non_ok_verdict_exposes_a_hex_code(self) -> None:
+        for code in (1, 2, 3, RESULT_HAS_NOT_RUN, RESULT_BATCH_LOGON_PROBLEM, *(c for c, *_ in _DSYNC32_ROWS), -5):
+            verdict = run_result_verdict(code)
+            assert verdict.result is not RunResult.OK
+            assert re.fullmatch(r"0x[0-9A-F]{8}", verdict.code_hex or ""), verdict
+
+    def test_unreadable_has_no_code_and_ok_has_zero(self) -> None:
+        assert run_result_verdict(None).code_hex is None
+        assert run_result_verdict(0).code_hex == "0x00000000"
+
+    def test_every_member_has_a_label_and_the_calm_set_is_the_documented_four(self) -> None:
+        assert set(RESULT_LABELS) == set(RunResult)
+        assert all(label.strip() for label in RESULT_LABELS.values())
+        assert {RunResult.OK, RunResult.NEVER_RUN, RunResult.RUNNING, RunResult.UNREADABLE} == CALM_RESULTS
+
+    def test_the_new_codes_stay_out_of_the_registration_channel_by_name(self) -> None:
+        """Several share a NUMBER with an HR_* registration constant; the RESULT_* names must
+        still never be read by the registration-error classifier."""
+        from src.ui_flet import setup_errors
+
+        source = inspect.getsource(setup_errors)
+        for name in (
+            "RESULT_LOGON_FAILURE",
+            "RESULT_PASSWORD_EXPIRED",
+            "RESULT_ACCESS_DENIED",
+            "RESULT_FILE_NOT_FOUND",
+            "RESULT_BAD_DIRECTORY",
+            "RESULT_RUNNING",
+        ):
+            assert name not in source
