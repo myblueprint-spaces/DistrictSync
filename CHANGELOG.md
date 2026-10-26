@@ -21,6 +21,11 @@ Per-release download links and auto-generated commit notes live on the
 
 ### Fixed
 
+- **Unity Christian: student emails now come from the school's own data.** The district's setup built
+  every student address as the student number at the school's domain, which was never confirmed with the
+  school, and students signing in by QR code never noticed. It now reads the real `Student email address`
+  from the school's Enhanced demographic export (`StudentDemographicEnhanced.txt`) and never makes an
+  address up.
 - **Students with no email address are sent again.** Since v3.27.0 a student whose email was blank
   was left out of the sync, along with their family contacts and class enrollments, and the run showed
   amber. SpacesEDU accepts a student with no address — younger students often have none and sign in
