@@ -48,7 +48,8 @@ from src.etl.errors import EmptyRequiredOutputError, IncompleteInputError, RunEr
 from src.etl.outcomes import OUTCOMES_RECORD_KEY, EntityOutcome, OutcomeNote, OutcomeReason, outcomes_to_record
 from src.etl.transformers.enrollments import COTEACHERS_LEFT_OUT_LOG_ANCHOR
 from src.etl.transformers.required_values import REQUIRED_VALUES_LOG_ANCHOR
-from src.scheduler import windows
+from src.scheduler import provision_session, windows
+from src.scheduler.schedule_check import CheckVerdict, ScheduleCheck
 from src.scheduler.task_com import (
     HR_NO_SUCH_LOGON_SESSION,
     MSG_ACCOUNT_INFO_NOT_SET,
@@ -64,7 +65,9 @@ from src.ui_flet.components import COPY_DETAILS_LABEL, OPEN_LOG_FOLDER_LABEL
 from src.ui_flet.failure_copy import error_card_copy, partial_copy
 from src.ui_flet.home_status import MACHINE_SCOPE_LINE_LEAD, derive_home_status, machine_scope_line
 from src.ui_flet.run_history import derive_history_banner, to_run_row
+from src.ui_flet.schedule_check_copy import check_band
 from src.ui_flet.schedule_status import WINDOWS_REPORTED_PROBLEM_HEADLINE, derive_schedule_status, last_run_line
+from src.ui_flet.screens.setup import _REGISTER_REFUSED_HEADLINE
 from src.ui_flet.setup_errors import classify_schedule_error
 from src.ui_flet.setup_flow import GMSA_IT_DOC_TITLE, GMSA_PREREQUISITES
 from src.utils.diagnostics import SCOPE_PER_USER, SCOPE_SHARED
@@ -201,6 +204,17 @@ _SD60_STATUS = derive_schedule_status(
     foreign_account="SD60\\svc$",
     shared_records=True,
 )
+
+
+#: DSYNC-33 — the check the gMSA page's "The check DistrictSync runs when you schedule" section
+#: walks through: its three band headlines (proved against the band builder for a real result of
+#: each kind), the pre-UAC refusal's headline, and the check's one log line's opening words,
+#: DERIVED from the one format string that writes it.
+_CHECK_LOG_ANCHOR = provision_session.CHECK_LOG_FORMAT.split(" %s", 1)[0]
+
+
+def _check_headline(verdict: CheckVerdict) -> str:
+    return check_band(ScheduleCheck(verdict, 0x8007052E), task_name="DistrictSync_Daily").headline
 
 
 #: name -> (the quoted string, the classifier output it must also appear in). ``None`` as the
@@ -375,6 +389,22 @@ _PINNED: dict[str, tuple[str, str | None]] = {
     "nightly_last_ran_lead": ("Windows last ran this task", last_run_line(_SD60_STATUS) or ""),
     "copy_details_label": (COPY_DETAILS_LABEL, None),
     "open_log_folder_label": (OPEN_LOG_FOLDER_LABEL, None),
+    # DSYNC-33 — the schedule check. Each headline is proved against the band a REAL result of that
+    # kind produces, so the page's three-row table cannot drift from what Setup and Home paint.
+    "check_ok_headline": (
+        "Windows started DistrictSync as the nightly sync's account",
+        _check_headline(CheckVerdict.OK),
+    ),
+    "check_failed_headline": (
+        "Windows couldn't start DistrictSync as that account",
+        _check_headline(CheckVerdict.LOGON_FAILURE),
+    ),
+    "check_inconclusive_headline": (
+        "DistrictSync couldn't finish checking the nightly sync",
+        _check_headline(CheckVerdict.TIMEOUT),
+    ),
+    "check_lookup_refused_headline": ("We didn't make that change", _REGISTER_REFUSED_HEADLINE),
+    "check_log_anchor": (_CHECK_LOG_ANCHOR, None),
 }
 
 #: doc -> the strings that doc is DECLARED to quote. Anything not listed must be ABSENT.
@@ -388,12 +418,23 @@ _SCOPE_PINS: frozenset[str] = frozenset({"machine_scope_lead", "diagnose_scope_s
 _NIGHTLY_RUN_PINS: frozenset[str] = frozenset(
     {"nightly_windows_problem_headline", "nightly_last_ran_lead", "copy_details_label", "open_log_folder_label"}
 )
+#: DSYNC-33: the schedule-check family. It belongs to the hand-to-IT gMSA page (the CHANGELOG names
+#: the failure headline), not to the registration-failure page.
+_SCHEDULE_CHECK_PINS: frozenset[str] = frozenset(
+    {
+        "check_ok_headline",
+        "check_failed_headline",
+        "check_inconclusive_headline",
+        "check_lookup_refused_headline",
+        "check_log_anchor",
+    }
+)
 
 _DOC_QUOTES: dict[str, frozenset[str]] = {
     # Everything EXCEPT the scope family: the troubleshooting page is about schedule FAILURES,
     # and this row deliberately stays "all of them" for that family so a new classifier quote
     # lands pinned by default rather than arriving unnoticed.
-    _TROUBLESHOOTING: frozenset(_PINNED) - _SCOPE_PINS - _NIGHTLY_RUN_PINS,
+    _TROUBLESHOOTING: frozenset(_PINNED) - _SCOPE_PINS - _NIGHTLY_RUN_PINS - _SCHEDULE_CHECK_PINS,
     # The developer docs describe the log line's shape, so they legitimately carry the anchor.
     # Plan 0053 S15 moved both of CLAUDE.md's log-line descriptions out VERBATIM — the
     # `windows.py` bullet into the scheduler guide, the gMSA (S-4) span into the machine-scope
@@ -417,8 +458,11 @@ _DOC_QUOTES: dict[str, frozenset[str]] = {
     # — so it legitimately carries the policy family and the MSA lead, and nothing else.
     # DSYNC-32 adds the run-time diagnosis family for its "Registered, but the nightly never runs"
     # section (and pins the "Open log folder" label its failure section already named).
+    # DSYNC-33 adds the schedule-check family for its "The check DistrictSync runs when you
+    # schedule" section.
     _GMSA: frozenset({"gmsa_doc_title", "msa_headline", "policy_headline", "policy_setting_name", "policy_code"})
-    | _NIGHTLY_RUN_PINS,
+    | _NIGHTLY_RUN_PINS
+    | _SCHEDULE_CHECK_PINS,
     # The release notes announce the line by name (but not the terminal report's two scope
     # words). Plan 0049 S-4 adds two: the entry names the hand-to-IT page so a district can
     # ask for it, and quotes the policy CODE so an admin can recognise their own situation
@@ -434,6 +478,8 @@ _DOC_QUOTES: dict[str, frozenset[str]] = {
             "input_stop_headline",
             "empty_output_headline",
             "open_log_folder_label",
+            # DSYNC-33: the entry names the failure band a district will see.
+            "check_failed_headline",
         }
     ),
     "docs/partner/faq.md": frozenset(),
@@ -483,6 +529,9 @@ def test_the_derived_rows_are_really_derived() -> None:
     assert _OUTPUT_STOP_ANCHOR == "REQUIRED OUTPUT EMPTY", f"the empty-output line now opens {_OUTPUT_STOP_ANCHOR!r}"
     assert REQUIRED_VALUES_LOG_ANCHOR == "REQUIRED VALUES MISSING", "the required-value rule's line moved"
     assert COTEACHERS_LEFT_OUT_LOG_ANCHOR == "CO-TEACHERS LEFT OUT", "the co-teacher warnings' anchor moved"
+    assert _CHECK_LOG_ANCHOR == "Schedule check after registration:", (
+        f"the check's log line now opens {_CHECK_LOG_ANCHOR!r}"
+    )
 
 
 def test_the_stop_anchors_are_what_the_pipeline_really_logs(caplog) -> None:

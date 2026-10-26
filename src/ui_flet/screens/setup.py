@@ -76,10 +76,14 @@ from src.scheduler import get_scheduler, windows
 from src.scheduler.provision_session import (
     ProvisionAttempt,
     ProvisionOutcome,
+    RevokeOutcome,
     complete_handover,
     delivery_secret_unreadable,
     request_provision,
+    request_removal_with_revoke,
 )
+from src.scheduler.provisioning import ProvisionStep
+from src.scheduler.schedule_check import ScheduleCheck
 from src.scheduler.task_com import Principal, PrincipalKind
 from src.sftp.uploader import LISTING_DENIED_NOTE, SFTPUploader
 from src.ui_flet import components, handover_result, tokens
@@ -116,6 +120,7 @@ from src.ui_flet.mapping_catalog import (
     filtered_catalog,
 )
 from src.ui_flet.picker_field import PickerField
+from src.ui_flet.schedule_check_copy import check_band
 from src.ui_flet.schedule_probe import foreign_task_account
 from src.ui_flet.schedule_status import (
     ScheduleState,
@@ -140,7 +145,12 @@ from src.ui_flet.screens.creator import (
 )
 from src.ui_flet.screens.identity import NOT_LISTED_NOTE_TAIL as UNMATCHED_DISTRICT_NOTE
 from src.ui_flet.screens.identity import log_resolve, matched_headline
-from src.ui_flet.setup_errors import classify_provision_step, classify_schedule_error
+from src.ui_flet.setup_errors import (
+    ACCOUNT_LOOKUP_FAILED_COPY,
+    ACCOUNT_NOT_FOUND_COPY,
+    classify_provision_step,
+    classify_schedule_error,
+)
 from src.ui_flet.setup_flow import (
     GMSA_IT_DOC_TITLE,
     GMSA_PREREQUISITES,
@@ -422,8 +432,29 @@ HANDOVER_UNCONFIRMED_LEAD = (
 )
 
 
-def handover_banner(result: handover_result.HandoverResult) -> ft.Control:
+def schedule_check_band(page: ft.Page, check: ScheduleCheck, *, task_name: str) -> ft.Control:
+    """The schedule check's band (DSYNC-33) — every word from ``schedule_check_copy.check_band``.
+
+    A passing check is a calm HEALTHY confirmation with no action. Anything else is a toned
+    band (FAILED for a finding, WARNING when the check could not reach an answer) carrying the
+    DSYNC-32 log actions in its trailing slot: text tier, in the band's own on-tint colour, so
+    the screen's ONE filled primary stays wherever it already was. "Copy details" is bounded —
+    the task name, the verdict's name, the code and the two advisory facts.
+    """
+    band = check_band(check, task_name=task_name)
+    trailing: ft.Control | None = None
+    if band.offers_log_actions:
+        trailing = components.log_actions(page, band.details, color=components.on_tint_color(band.verdict))
+    return components.HealthVerdictBanner(band.verdict, headline=band.headline, detail=band.detail, trailing=trailing)
+
+
+def handover_banner(result: handover_result.HandoverResult, *, page: ft.Page, task_name: str) -> ft.Control:
     """The one-shot post-handover surface. TOTAL over :class:`HandoverBanner`.
+
+    DSYNC-33: a handover whose nightly runs as a managed service account also carries the
+    schedule check's result, painted directly under the handover band by
+    :func:`schedule_check_band` — re-entry lands on Home, so this one-shot is the only place
+    the admin can read it. ``page`` (for "Copy details") and ``task_name`` are required for it.
 
     ``HandoverBanner.REFUSED`` is normally painted on the Setup surface instead — that outcome
     leaves ``complete_handover`` returning BEFORE re-entry, so Setup is still mounted — but the
@@ -436,8 +467,14 @@ def handover_banner(result: handover_result.HandoverResult) -> ft.Control:
     completeness test) drops the clause rather than rendering an enum value.
     """
     if result.banner is HandoverBanner.HANDED_OVER:
-        return components.HealthVerdictBanner(
+        done = components.HealthVerdictBanner(
             Verdict.HEALTHY, headline=HANDOVER_DONE_HEADLINE, detail=HANDOVER_DONE_DETAIL
+        )
+        if result.check is None:
+            return done
+        return ft.Column(
+            spacing=tokens.space_md,
+            controls=[done, schedule_check_band(page, result.check, task_name=task_name)],
         )
     if result.banner is HandoverBanner.HANDED_OVER_NIGHTLY_UNCONFIRMED:
         return components.HealthVerdictBanner(
@@ -446,6 +483,25 @@ def handover_banner(result: handover_result.HandoverResult) -> ft.Control:
             detail=f"{HANDOVER_UNCONFIRMED_LEAD} {result.detail}".strip(),
         )
     return components.ErrorCard(SCOPE_REFUSED_HEADLINE, _scope_refusal_detail(result.refused_reason))
+
+
+#: DSYNC-33 — the Remove band's second sentence when the account's folder access went with it.
+REVOKE_DONE_NOTE = "The account it ran as no longer has access to this computer's shared settings folder."
+
+
+def _revoke_detail(detail: str, revoke: RevokeOutcome | None) -> str:
+    """The Remove success detail plus what happened to the account's folder access (DSYNC-33).
+
+    ``None`` (no revoke was attempted — not a managed service account, or not a shared-settings
+    computer) leaves the detail untouched. A revoke that did not happen, or was not confirmed,
+    says so with the provisioning PRUNE copy — the same sentence the step id already owns — so
+    an admin is never told an account lost access it may still have.
+    """
+    if revoke is None:
+        return detail
+    if revoke is RevokeOutcome.REVOKED:
+        return f"{detail} {REVOKE_DONE_NOTE}"
+    return f"{detail} {classify_provision_step(ProvisionStep.PRUNE)}"
 
 
 def _scope_refusal_detail(reason: paths.MachineScopeRefusedReason | None) -> str:
@@ -502,6 +558,12 @@ def _machine_scope_now() -> bool:
     except Exception:  # noqa: BLE001 - see the docstring; a note may never break the surface
         return False
 
+
+#: DSYNC-33: the managed service account did not resolve BEFORE the prompt — nothing was asked of
+#: Windows, so the headline is the refusal's ("We didn't make that change"), not a failed attempt's.
+_PRE_PROMPT_REFUSALS: frozenset[ProvisionOutcome] = frozenset(
+    {ProvisionOutcome.ACCOUNT_NOT_FOUND, ProvisionOutcome.ACCOUNT_LOOKUP_FAILED}
+)
 
 #: A provisioning outcome that is not ``PROVISIONED``, ``REFUSED`` or ``FAILED`` maps onto the
 #: SAME canonical the ordinary register path produces for the same event, so ``setup_errors``
@@ -3280,6 +3342,10 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
             code, sometimes a rollback clause), so it could never match a branch. The icacls
             exit code is appended HERE because the copy table deliberately carries no code.
             """
+            if attempt.outcome is ProvisionOutcome.ACCOUNT_NOT_FOUND:
+                return ACCOUNT_NOT_FOUND_COPY
+            if attempt.outcome is ProvisionOutcome.ACCOUNT_LOOKUP_FAILED:
+                return ACCOUNT_LOOKUP_FAILED_COPY
             if attempt.outcome is ProvisionOutcome.REFUSED and attempt.step is not None:
                 detail = classify_provision_step(attempt.step)
                 if attempt.icacls_exit is not None:
@@ -3393,7 +3459,7 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
             if result is not None:
                 # Handed over, but nothing rebuilt (no ``on_reenter``, or the rebuild raised).
                 # The SAME banner Home would have shown — one renderer, one wording.
-                result_slot.controls = [handover_banner(result)]
+                result_slot.controls = [handover_banner(result, page=page, task_name=cfg.schedule_task_name)]
                 if attempt.outcome is ProvisionOutcome.PROVISIONED and on_schedule_changed is not None:
                     # The rail badge is re-probed by ``build_app_body``'s own tail on the
                     # re-entry path, so this fires only where no rebuild happened.
@@ -3410,6 +3476,11 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
                         detail=SCOPE_SWITCH_UNCONFIRMED_DETAIL,
                     )
                 ]
+                if attempt.check is not None:
+                    # DSYNC-33: the nightly exists here too, so its check result is shown.
+                    result_slot.controls.append(
+                        schedule_check_band(page, attempt.check, task_name=cfg.schedule_task_name)
+                    )
                 if on_schedule_changed is not None:
                     with contextlib.suppress(Exception):
                         on_schedule_changed()
@@ -3421,6 +3492,9 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
                 headline = (
                     SCOPE_UNCONFIRMED_HEADLINE
                     if attempt.outcome is ProvisionOutcome.UNCONFIRMED
+                    # DSYNC-33: a pre-UAC lookup refusal never asked Windows for anything.
+                    else _REGISTER_REFUSED_HEADLINE
+                    if attempt.outcome in _PRE_PROMPT_REFUSALS
                     else SCOPE_ATTEMPT_FAILED_HEADLINE
                 )
                 result_slot.controls = [components.ErrorCard(headline, nightly)]
@@ -3514,7 +3588,7 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
         # the copy it selects is today's, so an unproven record reads exactly as it does now.
         removed_kind = _removed_record.run_as_kind or PrincipalKind.PASSWORD
 
-        async def _apply_unregister(ok: bool, msg: str) -> None:
+        async def _apply_unregister(ok: bool, msg: str, revoke: RevokeOutcome | None = None) -> None:
             _set_busy(False)
             _repaint_register_gate()
             unregister_btn.disabled = False
@@ -3571,7 +3645,7 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
                             on_schedule_changed()
                     result_slot.controls = [
                         components.HealthVerdictBanner(
-                            Verdict.HEALTHY, headline=outcome.headline, detail=outcome.detail
+                            Verdict.HEALTHY, headline=outcome.headline, detail=_revoke_detail(outcome.detail, revoke)
                         )
                     ]
                 else:
@@ -3582,14 +3656,36 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
             page.update()
             _refresh_readout()
 
+        # DSYNC-33: a managed service account on a shared-settings computer is removed WITH its
+        # folder access, in ONE elevated op (``prune_principal``: delete, confirm MISSING, then
+        # prune). Read from the RECORD, before the clear, for the same reason ``removed_kind`` is.
+        revoke_account = (
+            (_removed_record.run_as_user or "").strip()
+            if removed_kind is PrincipalKind.MANAGED_SERVICE_ACCOUNT
+            and scheduler.supports_unattended_password
+            and _machine_scope_now()
+            else ""
+        )
+
         def _work() -> None:  # runs OFF the UI thread (an elevated delete can block on UAC)
+            revoke: RevokeOutcome | None = None
             try:
-                # The Windows adapter owns the access-denied → one-UAC-prompt elevated retry.
-                ok, msg = scheduler.delete(cfg.schedule_task_name)
+                if revoke_account:
+                    attempt = request_removal_with_revoke(
+                        cfg.schedule_task_name, user=revoke_account, kind=PrincipalKind.MANAGED_SERVICE_ACCOUNT
+                    )
+                    revoke = attempt.revoke
+                    ok, msg = attempt.ok, attempt.message
+                if revoke is None or revoke is RevokeOutcome.FALL_BACK:
+                    # The Windows adapter owns the access-denied → one-UAC-prompt elevated retry.
+                    ok, msg = scheduler.delete(cfg.schedule_task_name)
             except Exception as exc:  # noqa: BLE001 - a worker crash must not strand the spinner
                 logger.error("Removing the nightly sync raised unexpectedly: %s", type(exc).__name__)
                 ok, msg = False, _WORKER_ERROR_UNREGISTER
-            page.run_task(_apply_unregister, ok, msg)
+            if revoke is None:
+                page.run_task(_apply_unregister, ok, msg)
+            else:
+                page.run_task(_apply_unregister, ok, msg, revoke)
 
         register_btn.disabled = True
         unregister_btn.disabled = True

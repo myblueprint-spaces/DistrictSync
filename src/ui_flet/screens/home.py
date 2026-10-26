@@ -920,7 +920,7 @@ def _wizard_host(
         line = welcome_band(app_config, records=read_run_records(), store_created_at=_store_created_at())
         controls: list[ft.Control] = []
         if handover is not None:
-            controls.append(setup_screen.handover_banner(handover))
+            controls.append(setup_screen.handover_banner(handover, page=page, task_name=app_config.schedule_task_name))
         controls += [
             # Calm caption tier, NOT a heading: the wizard's own step header owns the
             # title ramp — and the step COUNT, which is why this line carries none.
@@ -960,7 +960,13 @@ def _wizard_host(
         # already happened, and `SETUP_UNAVAILABLE_DETAIL` ("Nothing has been changed") is
         # false while one is pending. It goes above the floor.
         with contextlib.suppress(Exception):
-            return ft.Column(spacing=tokens.space_xl, controls=[setup_screen.handover_banner(handover), floor])
+            return ft.Column(
+                spacing=tokens.space_xl,
+                controls=[
+                    setup_screen.handover_banner(handover, page=page, task_name=app_config.schedule_task_name),
+                    floor,
+                ],
+            )
         return floor
 
 
@@ -1039,7 +1045,7 @@ def _dashboard(
         # by `build_home`, so `_render` (which runs again when the schedule probe lands) cannot
         # lose it to `take()`'s clear.
         if handover is not None:
-            controls.append(setup_screen.handover_banner(handover))
+            controls.append(setup_screen.handover_banner(handover, page=page, task_name=app_config.schedule_task_name))
         # DSYNC-32: while the SCHEDULE needs attention the band carries the two log actions in its
         # trailing slot — text tier in the band's own on-tint colour (AA-gated; the screen's one
         # filled primary stays the fix CTA below). "Copy details" is bounded: no account, no path.
@@ -1217,5 +1223,11 @@ def build_home(
         # that was meant to carry it. Suppressed rather than nested in the same try: a banner
         # that cannot be built must not cost the admin the floor as well.
         with contextlib.suppress(Exception):
-            return ft.Column(spacing=tokens.space_xl, controls=[setup_screen.handover_banner(handover), floor])
+            return ft.Column(
+                spacing=tokens.space_xl,
+                controls=[
+                    setup_screen.handover_banner(handover, page=page, task_name=app_config.schedule_task_name),
+                    floor,
+                ],
+            )
         return floor

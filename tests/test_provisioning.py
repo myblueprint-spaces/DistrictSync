@@ -206,6 +206,7 @@ class TestOverrideIsRefusedInBothHalves:
                 user="CORP\\svc",
                 kind=PrincipalKind.PASSWORD,
                 run_highest=True,
+                schedule_check=False,
                 wake_to_run=True,
             )
         assert exc.value.step is Step.OVERRIDE
@@ -220,6 +221,7 @@ class TestOverrideIsRefusedInBothHalves:
             user="CORP\\svc",
             kind=PrincipalKind.PASSWORD,
             run_highest=True,
+            schedule_check=False,
             wake_to_run=False,
         )
         assert payload["op"] == "provision"

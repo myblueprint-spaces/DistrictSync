@@ -451,6 +451,19 @@ def _cli(argv: list[str] | None) -> int:
 
         return run_elevated_apply(args_list[1:])
 
+    # --schedule-check <token>: the schedule check (DSYNC-33) — run by a one-shot task the
+    # elevated child registers under the NIGHTLY's own account, to prove Windows can start
+    # DistrictSync as that account. Recognised HERE, above the preamble, for the same reasons
+    # as the two modes around it: it must pin the data dir itself (the thing it is testing) and
+    # report a refusal as an EXIT CODE rather than through a log sink, and it must not migrate a
+    # profile, attach a console, open a log, sweep handshake files — or reach argparse, ETL,
+    # delivery or the run store. It writes one marker and exits. Absent from --help: no human
+    # caller.
+    if args_list and args_list[0] == "--schedule-check":
+        from src.scheduler.schedule_check import run_check_mode
+
+        return run_check_mode(args_list[1:])
+
     # --diagnose: the read-only support report (plan 0049 D7). Recognised HERE, beside
     # --elevated-apply, and that position is the whole point: the preamble below PINS the
     # data dir and RETURNS the refusal before argparse is even built, so a normally-parsed
