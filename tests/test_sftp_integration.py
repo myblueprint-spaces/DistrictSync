@@ -22,7 +22,7 @@ import pytest
 
 pytest_sftpserver = pytest.importorskip("pytest_sftpserver.plugin", reason="pytest-sftpserver not installed")
 
-from src.sftp.uploader import SFTPUploader  # noqa: E402
+from src.sftp.uploader import INTERACTIVE_RETRY, SFTPUploader  # noqa: E402
 
 _PATCHED_HOSTS = frozenset({"127.0.0.1", "sftp.ca.spacesedu.com", "sftp.app.spacesedu.com", "sftp.myblueprint.ca"})
 
@@ -72,7 +72,7 @@ class TestSFTPRealUpload:
             patch.object(uploader, "_get_password", return_value="pass"),
             sftpserver.serve_content({"upload": {}}),
         ):
-            uploaded = uploader.upload_csvs(tmp_path, manifest={"Students.csv", "Staff.csv"})
+            uploaded = uploader.upload_csvs(tmp_path, manifest={"Students.csv", "Staff.csv"}, retry=INTERACTIVE_RETRY)
 
         assert sorted(uploaded) == ["Staff.csv", "Students.csv"]
 
@@ -104,7 +104,10 @@ class TestSFTPRealUpload:
 
             with patch.object(uploader, "_connect", side_effect=patched_connect):
                 uploader.upload_csvs(
-                    tmp_path, zip_name="test.zip", manifest={"Students.csv", "Staff.csv", "Family.csv"}
+                    tmp_path,
+                    zip_name="test.zip",
+                    manifest={"Students.csv", "Staff.csv", "Family.csv"},
+                    retry=INTERACTIVE_RETRY,
                 )
 
         assert sorted(captured_zip_names) == ["Family.csv", "Staff.csv", "Students.csv"]
@@ -138,7 +141,9 @@ class TestSFTPRealUpload:
                 return client, sftp
 
             with patch.object(uploader, "_connect", side_effect=patched_connect):
-                uploaded = uploader.upload_csvs(tmp_path, zip_name="test.zip", manifest={"Students.csv"})
+                uploaded = uploader.upload_csvs(
+                    tmp_path, zip_name="test.zip", manifest={"Students.csv"}, retry=INTERACTIVE_RETRY
+                )
 
         assert captured_zip_names == ["Students.csv"]
         assert uploaded == ["Students.csv"]
@@ -153,7 +158,7 @@ class TestSFTPRealUpload:
             sftpserver.serve_content({"upload": {}}),
             pytest.raises(RuntimeError, match="No CSV files found to upload"),
         ):
-            uploader.upload_csvs(tmp_path, manifest={"Students.csv"})
+            uploader.upload_csvs(tmp_path, manifest={"Students.csv"}, retry=INTERACTIVE_RETRY)
 
     def test_upload_zip_name_includes_today(self, sftpserver, tmp_path, pinned_local_server):
         """Default ZIP name must match districtsync_YYYY-MM-DD.zip."""
@@ -180,7 +185,7 @@ class TestSFTPRealUpload:
                 return client, sftp
 
             with patch.object(uploader, "_connect", side_effect=patched_connect):
-                uploader.upload_csvs(tmp_path, manifest={"Students.csv"})
+                uploader.upload_csvs(tmp_path, manifest={"Students.csv"}, retry=INTERACTIVE_RETRY)
 
         assert len(remote_paths) == 1
         expected = f"/upload/districtsync_{date.today().isoformat()}.zip"

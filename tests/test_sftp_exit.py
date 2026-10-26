@@ -27,6 +27,7 @@ import pandas as pd
 import pytest
 
 from src.etl.pipeline import PipelineResult, run_pipeline
+from src.sftp.uploader import INTERACTIVE_RETRY
 from tests.test_pipeline_required_input import _write_class_info_rows
 
 # ---------------------------------------------------------------------------
@@ -383,7 +384,7 @@ class TestSftpEmptyOutputDirExit3:
 
         uploader = SFTPUploader("sftp.ca.spacesedu.com", 22, "user", "/files")
         with pytest.raises(RuntimeError, match="No CSV files found to upload"):
-            uploader.upload_csvs(tmp_path, manifest={"Students.csv"})
+            uploader.upload_csvs(tmp_path, manifest={"Students.csv"}, retry=INTERACTIVE_RETRY)
 
     def test_sftp_upload_seam_empty_dir_returns_false(self, tmp_path: Path) -> None:
         """The pipeline seam catches the fail-loud raise and reports False.

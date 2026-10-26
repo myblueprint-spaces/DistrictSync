@@ -136,7 +136,7 @@ from src.etl.pipeline import (
 )
 from src.history.store import write_run_record
 from src.quality.report import DataQualityReport, declared_blank_fields
-from src.sftp.uploader import SFTPUploader
+from src.sftp.uploader import INTERACTIVE_RETRY, SFTPUploader
 from src.ui_flet import components, tokens
 from src.ui_flet.convert_output import (
     DeliverableFiles,
@@ -543,6 +543,7 @@ def convert_job(
                 # THIS build's committed CSVs — never the folder's *.csv glob (a stray
                 # admin backup/spreadsheet in the output folder must not reach SpacesEDU).
                 manifest=DataLoader.output_filenames(outputs),
+                retry=INTERACTIVE_RETRY,  # a person is waiting on this screen
             )
         except Exception:  # noqa: BLE001 - exit-3: a failed delivery is a RESULT, not on_error
             # A RESULT on screen, but still a failure worth a trace: this is the branch where
@@ -661,7 +662,7 @@ def deliver_job(sis_type: str) -> ConvertResult:
             port=cfg.sftp_port,
             username=cfg.sftp_username,
             remote_path=cfg.sftp_remote_path,
-        ).upload_csvs(Path(output_dir_value), sis_type=district, manifest=manifest)
+        ).upload_csvs(Path(output_dir_value), sis_type=district, manifest=manifest, retry=INTERACTIVE_RETRY)
     except Exception:  # noqa: BLE001 - exit-3 shape: a failed delivery is a RESULT, not on_error
         logger.error("Delivery-only run failed (district %r).", district, exc_info=True)
         failed = ConvertResult(

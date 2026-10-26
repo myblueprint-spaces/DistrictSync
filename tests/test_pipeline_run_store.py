@@ -553,6 +553,8 @@ def _fake_uploader(calls: list[tuple[Path, str | None, set[str]]], *, fail: bool
             sis_type: str | None = None,
             *,
             manifest: Collection[str],
+            retry: object,
+            staging_dir: Path | None = None,
         ) -> list:
             calls.append((output_dir, sis_type, set(manifest)))
             if fail:
