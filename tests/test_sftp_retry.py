@@ -20,6 +20,7 @@ from src.sftp.uploader import (
     SFTP_RETRY_BACKOFF_SECONDS,
     HostKeyVerificationError,
     SFTPUploader,
+    describe_sftp_error,
 )
 
 
@@ -234,3 +235,71 @@ class TestStalledPut:
             uploader.upload_csvs(output_dir, manifest={"Students.csv"})
         assert mock_connect.call_count == SFTP_RETRY_ATTEMPTS
         assert all(client.close.call_count == 1 for client, _ in pairs)
+
+
+class TestEOFErrorDrop:
+    """DSYNC-35: a mid-``put`` peer close surfaces as a bare ``EOFError()`` (paramiko's
+    ``BaseSFTP._read_all``) -- not an OSError, empty message. It must retry like any drop."""
+
+    def test_eof_error_from_put_retries_then_succeeds(self, output_dir):
+        uploader = _uploader()
+        dropped_client, dropped_sftp = MagicMock(), MagicMock()
+        dropped_sftp.put.side_effect = EOFError()
+        healthy_client, healthy_sftp = MagicMock(), MagicMock()
+        with (
+            patch.object(
+                uploader, "_connect", side_effect=[(dropped_client, dropped_sftp), (healthy_client, healthy_sftp)]
+            ) as mock_connect,
+            patch("src.sftp.uploader.time.sleep"),
+        ):
+            uploaded = uploader.upload_csvs(output_dir, manifest={"Students.csv"})
+        assert uploaded == ["Students.csv"]
+        assert mock_connect.call_count == 2
+        assert healthy_sftp.put.call_count == 1
+        dropped_client.close.assert_called_once()
+
+    def test_retry_log_names_exception_type_when_message_empty(self, output_dir, caplog):
+        uploader = _uploader()
+        dropped = (MagicMock(), MagicMock())
+        dropped[1].put.side_effect = EOFError()
+        with (
+            patch.object(uploader, "_connect", side_effect=[dropped, (MagicMock(), MagicMock())]),
+            patch("src.sftp.uploader.time.sleep"),
+            caplog.at_level("WARNING", logger="src.sftp.uploader"),
+        ):
+            uploader.upload_csvs(output_dir, manifest={"Students.csv"})
+        assert "attempt 1/3 (EOFError)" in caplog.text
+
+    def test_exhausted_eof_errors_propagate_and_log_the_type(self, output_dir, caplog):
+        """Exhaustion is still a delivery failure (re-raised -> exit code 3) with a non-blank log."""
+        uploader = _uploader()
+        pairs = [(MagicMock(), MagicMock()) for _ in range(SFTP_RETRY_ATTEMPTS)]
+        for _client, sftp in pairs:
+            sftp.put.side_effect = EOFError()
+        with (
+            patch.object(uploader, "_connect", side_effect=pairs) as mock_connect,
+            patch("src.sftp.uploader.time.sleep"),
+            caplog.at_level("ERROR", logger="src.sftp.uploader"),
+            pytest.raises(EOFError),
+        ):
+            uploader.upload_csvs(output_dir, manifest={"Students.csv"})
+        assert mock_connect.call_count == SFTP_RETRY_ATTEMPTS
+        assert "Failed to upload to sftp.ca.spacesedu.com: EOFError" in caplog.text
+
+    def test_describe_sftp_error_falls_back_to_type_name(self):
+        assert describe_sftp_error(EOFError()) == "EOFError"
+        assert describe_sftp_error(OSError("reset")) == "reset"
+
+    def test_auth_failure_is_still_not_retried(self, output_dir):
+        """Positive twin: widening the transient set to EOFError must not touch auth."""
+        uploader = _uploader()
+        with (
+            patch.object(
+                uploader, "_connect", side_effect=paramiko.AuthenticationException("bad password")
+            ) as mock_connect,
+            patch("src.sftp.uploader.time.sleep") as mock_sleep,
+            pytest.raises(paramiko.AuthenticationException),
+        ):
+            uploader.upload_csvs(output_dir, manifest={"Students.csv"})
+        assert mock_connect.call_count == 1
+        mock_sleep.assert_not_called()
