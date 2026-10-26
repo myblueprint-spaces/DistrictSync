@@ -4,7 +4,7 @@ Source of truth for the Jira automation rules in project **DSYNC** and for how a
 
 The DIH repo keeps the equivalent file at `docs/jira-automation/README.md` (data-insights-hub). DSYNC is a desktop tool with no deploy pipeline, so it uses the plain four-status board and three rules, not DIH's release-pipeline statuses. A shared cross-repo standard is later work.
 
-**State:** the three rules were created on 2026-10-26. Confirm each fired correctly in its audit log after the first real ticket (see [Verify and troubleshoot](#verify-and-troubleshoot)) and update this line.
+**State:** the three rules were created on 2026-10-26. Rules 1 and 2 were confirmed the same day on DSYNC-40 (the status history shows both moves made by Automation for Jira, seconds after the branch push and the PR opening). Rule 3 is confirmed once the first PR merges (see [Verify and troubleshoot](#verify-and-troubleshoot)); update this line then.
 
 ## Status order
 
