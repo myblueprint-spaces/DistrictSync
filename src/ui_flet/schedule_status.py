@@ -29,7 +29,17 @@ from datetime import datetime
 from enum import Enum
 
 from src.scheduler.messages import ABSENT_TASK_MARKERS as _ABSENT_DELETE_MARKERS
-from src.scheduler.task_com import RESULT_BATCH_LOGON_PROBLEM, RESULT_HAS_NOT_RUN
+from src.scheduler.task_com import (
+    RESULT_ACCESS_DENIED,
+    RESULT_BAD_DIRECTORY,
+    RESULT_BATCH_LOGON_PROBLEM,
+    RESULT_FILE_NOT_FOUND,
+    RESULT_HAS_NOT_RUN,
+    RESULT_LOGON_FAILURE,
+    RESULT_PASSWORD_EXPIRED,
+    RESULT_RUNNING,
+    format_hresult,
+)
 from src.scheduler.windows import ScheduleReadback
 
 #: The single-source sentence for "the nightly's run records are in ANOTHER account's profile"
@@ -78,7 +88,7 @@ _TRANSIENT_DIR_PARTS: frozenset[str] = frozenset({"downloads", "temp", "tmp"})
 
 
 class RunResult(Enum):
-    """What Windows reported for the task's LAST run (plan 0046 C / A4).
+    """What Windows reported for the task's LAST run (plan 0046 C / A4; widened by DSYNC-32).
 
     A channel deliberately distinct from ``setup_errors``' registration-exception classifier:
     that one classifies what a register/remove call RAISED, this one classifies the task's
@@ -89,39 +99,140 @@ class RunResult(Enum):
     deliberately SEPARATE members: "we could not read a result" and "Windows reported a result we
     cannot name" are different facts, and collapsing them would let a failed probe present as a
     reported problem — or a reported problem present as a failed probe.
+
+    ``RUNNING`` (DSYNC-32) is a success-class status and NOT a problem: Windows moves
+    ``LastRunTime`` to a run's START, while DistrictSync writes its record at the END, so a run in
+    progress looks exactly like "fired but recorded nothing" to the record-gap comparison.
     """
 
     OK = "ok"
     NEVER_RUN = "never_run"
+    RUNNING = "running"
     FAILED = "failed"
     DELIVERY_FAILED = "delivery_failed"
     BATCH_LOGON_SUSPECTED = "batch_logon_suspected"
+    LOGON_FAILURE = "logon_failure"
+    PASSWORD_EXPIRED = "password_expired"  # nosec B105 - an enum tag naming a Windows result, not a credential
+    ACCESS_DENIED = "access_denied"
+    PROGRAM_NOT_FOUND = "program_not_found"
+    BAD_START_FOLDER = "bad_start_folder"
     UNRECOGNISED = "unrecognised"
     UNREADABLE = "unreadable"
 
 
+#: The members that are NOT a reported problem. Every other member is — by DEFINITION of
+#: ``LastTaskResult`` (non-zero and not informational), independent of whether we can name a cause.
+CALM_RESULTS: frozenset[RunResult] = frozenset(
+    {RunResult.OK, RunResult.NEVER_RUN, RunResult.RUNNING, RunResult.UNREADABLE}
+)
+
+#: A short plain-language name per member — the parenthetical beside a code on the Setup
+#: "Windows last ran this task" line. The SENTENCE an admin reads lives in ``_RESULT_ROWS``.
+#: Total over the enum (pinned by tests), so a new member cannot render as a blank.
+RESULT_LABELS: dict[RunResult, str] = {
+    RunResult.OK: "OK",
+    RunResult.NEVER_RUN: "hasn't run yet",
+    RunResult.RUNNING: "running now",
+    RunResult.FAILED: "ended with an error",
+    RunResult.DELIVERY_FAILED: "delivery failed",
+    RunResult.BATCH_LOGON_SUSPECTED: "logon type not granted",
+    RunResult.LOGON_FAILURE: "account sign-in rejected",
+    RunResult.PASSWORD_EXPIRED: "password expired",
+    RunResult.ACCESS_DENIED: "access denied",
+    RunResult.PROGRAM_NOT_FOUND: "program not found",
+    RunResult.BAD_START_FOLDER: "start-in folder not usable",
+    RunResult.UNRECOGNISED: "not a result DistrictSync recognises",
+    RunResult.UNREADABLE: "couldn't be read",
+}
+
+
 @dataclass(frozen=True)
 class RunResultVerdict:
-    """A classified ``LastTaskResult`` — the member plus the ONE sentence that may be shown."""
+    """A classified ``LastTaskResult`` — the member, the ONE sentence that may be shown, the code.
+
+    ``code`` is the UNSIGNED 32-bit value — pywin32 can hand back a signed int, so the classifier
+    masks once and every consumer formats the same number. ``None`` only for ``UNREADABLE``.
+    """
 
     result: RunResult
     note: str | None = None
+    code: int | None = None
 
     @property
     def reported_a_problem(self) -> bool:
         """The last run did NOT report success — true by DEFINITION of ``LastTaskResult`` for
-        every non-zero code, INDEPENDENT of whether we can name the cause.
+        every non-zero, non-informational code, INDEPENDENT of whether we can name the cause.
 
-        ``NEVER_RUN`` is not a problem (a freshly-registered task has simply not fired yet) and
-        neither ``UNREADABLE`` nor ``OK`` is. Only these rows may raise ``attention``, and only
-        on a foreign principal — see :func:`_live_status`.
+        ``NEVER_RUN`` is not a problem (a freshly-registered task has simply not fired yet),
+        ``RUNNING`` is not one (the run has not finished), and neither ``UNREADABLE`` nor ``OK``
+        is. Only the other rows may raise ``attention`` on a foreign principal, or name the cause
+        of a record-gap contradiction — see :func:`_live_status`.
         """
-        return self.result in (
-            RunResult.FAILED,
-            RunResult.DELIVERY_FAILED,
-            RunResult.BATCH_LOGON_SUSPECTED,
-            RunResult.UNRECOGNISED,
-        )
+        return self.result not in CALM_RESULTS
+
+    @property
+    def code_hex(self) -> str | None:
+        """The code as ``0x%08X`` through ``task_com.format_hresult`` — the ONE hex spelling, shared
+        with the registration log line, so an IT team reads one form everywhere. ``None`` when no
+        value was read."""
+        return None if self.code is None else format_hresult(self.code)
+
+    @property
+    def coded_note(self) -> str | None:
+        """The note with its Windows result code attached — the form a SURFACE renders for a
+        reported problem, so an admin can quote the number to IT without opening a log.
+
+        ``UNRECOGNISED`` already leads with its code, so it is not repeated; a calm verdict carries
+        no code suffix (a "hasn't run yet" with a hex number beside it reads as a fault).
+        """
+        if self.note is None or not self.reported_a_problem or self.result is RunResult.UNRECOGNISED:
+            return self.note
+        return f"{self.note} (Windows result {self.code_hex}.)"
+
+
+#: code -> (member, note). Every key is an UNSIGNED 32-bit value — the classifier masks first.
+_RESULT_ROWS: dict[int, tuple[RunResult, str]] = {
+    RESULT_HAS_NOT_RUN: (RunResult.NEVER_RUN, "Windows reports this task hasn't run yet."),
+    RESULT_RUNNING: (RunResult.RUNNING, "Windows reports the nightly sync is running right now."),
+    1: (RunResult.FAILED, "Windows recorded that the last nightly run ended with an error."),
+    3: (
+        RunResult.DELIVERY_FAILED,
+        "The last nightly run ended with the result DistrictSync uses for a delivery "
+        "failure — if delivery is turned on, check that this account has its own saved "
+        "SFTP credential.",
+    ),
+    RESULT_BATCH_LOGON_PROBLEM: (
+        RunResult.BATCH_LOGON_SUSPECTED,
+        "Windows reported a logon-type failure for this task. That is what Windows "
+        "returns when an account has not been granted the 'Log on as a batch job' "
+        "right — your IT team can confirm and grant it.",
+    ),
+    RESULT_LOGON_FAILURE: (
+        RunResult.LOGON_FAILURE,
+        "Windows reported that it couldn't sign in the account the nightly task runs as — the "
+        "account name or password was rejected. For a managed service account that usually "
+        "means this computer isn't allowed to retrieve the account's password; your IT team "
+        "can check.",
+    ),
+    RESULT_PASSWORD_EXPIRED: (
+        RunResult.PASSWORD_EXPIRED,
+        "Windows reported that the password of the account the nightly task runs as has expired.",
+    ),
+    RESULT_ACCESS_DENIED: (
+        RunResult.ACCESS_DENIED,
+        "Windows reported 'access denied' for the last nightly run — the account it runs as may "
+        "not be able to open DistrictSync's program folder or its input and output folders.",
+    ),
+    RESULT_FILE_NOT_FOUND: (
+        RunResult.PROGRAM_NOT_FOUND,
+        "Windows reported that it couldn't find the program the nightly task starts.",
+    ),
+    RESULT_BAD_DIRECTORY: (
+        RunResult.BAD_START_FOLDER,
+        "Windows reported that the nightly task's start-in folder isn't usable — it may be "
+        "missing, or the account the task runs as may not be able to open it.",
+    ),
+}
 
 
 def run_result_verdict(last_result: int | None) -> RunResultVerdict:
@@ -132,55 +243,49 @@ def run_result_verdict(last_result: int | None) -> RunResultVerdict:
     nightly actually run?" signal — the only one unaffected by which profile the run records land
     in (A5 silences the record-gap inference exactly there).
 
-    Honesty rules baked into the table:
+    The value is normalised to UNSIGNED 32 bits first (``code & 0xFFFFFFFF``): ``task_com`` already
+    masks, but a signed int from any producer must classify identically and never fall to
+    ``UNRECOGNISED`` because of its sign.
+
+    Honesty rules baked into the table (``_RESULT_ROWS``):
 
     * ``2`` is deliberately NOT mapped, against an earlier draft's "bad arguments" row. Our exit 2
       is *stdin empty or mutually-exclusive flags* — structurally unreachable for a task whose args
       DistrictSync itself baked — while ``ERROR_FILE_NOT_FOUND`` is also 2. Naming it would be more
-      likely wrong than right, so it falls to ``UNRECOGNISED``.
+      likely wrong than right, so it falls to ``UNRECOGNISED``. Its HRESULT form ``0x80070002`` IS
+      mapped (DSYNC-32): no DistrictSync exit code can take that value, so it can only be Windows
+      reporting that the program the task starts was not found.
     * ``1`` and ``3`` are worded to be TRUE under both readings (our own exit code, or a bare Win32
       code). ``1`` says only "ended with an error"; ``3`` names the result as the one *DistrictSync
       uses* for a delivery failure and never claims files were built.
-    * ``RESULT_BATCH_LOGON_PROBLEM`` is COMMUNITY-SOURCED. The copy states what Windows reported
-      and what the code means in general, offers no in-app remedy, and routes to IT — it never
-      claims a district's policy-blocked sync is fixable here.
-    * An unmapped code still yields a TRUE statement without a guessed cause.
+    * ``RESULT_BATCH_LOGON_PROBLEM`` is COMMUNITY-SOURCED and UNMEASURED on this codebase's COM
+      path. The copy states what Windows reported and what the code means in general, offers no
+      in-app remedy, and routes to IT — it never claims a district's policy-blocked sync is fixable
+      here.
+    * The DSYNC-32 rows (logon failure, expired password, access denied, program not found, bad
+      start-in folder) each state the documented GENERAL meaning of the Win32 error and hedge any
+      application to this install ("usually", "may") — the code is Windows' fact; the cause on a
+      particular district server is not something this app has observed.
+    * ``SCHED_S_TASK_RUNNING`` is a run IN PROGRESS, never a failure.
+    * An unmapped code still yields a TRUE statement — "Windows recorded result 0x…" — without a
+      guessed cause.
     """
     if last_result is None:
         return RunResultVerdict(result=RunResult.UNREADABLE)
-    if last_result == 0:
-        return RunResultVerdict(result=RunResult.OK)
-    if last_result == RESULT_HAS_NOT_RUN:
-        return RunResultVerdict(
-            result=RunResult.NEVER_RUN,
-            note="Windows reports this task hasn't run yet.",
-        )
-    if last_result == 1:
-        return RunResultVerdict(
-            result=RunResult.FAILED,
-            note="Windows recorded that the last nightly run ended with an error.",
-        )
-    if last_result == 3:
-        return RunResultVerdict(
-            result=RunResult.DELIVERY_FAILED,
-            note=(
-                "The last nightly run ended with the result DistrictSync uses for a delivery "
-                "failure — if delivery is turned on, check that this account has its own saved "
-                "SFTP credential."
-            ),
-        )
-    if last_result == RESULT_BATCH_LOGON_PROBLEM:
-        return RunResultVerdict(
-            result=RunResult.BATCH_LOGON_SUSPECTED,
-            note=(
-                "Windows reported a logon-type failure for this task. That is what Windows "
-                "returns when an account has not been granted the 'Log on as a batch job' "
-                "right — your IT team can confirm and grant it."
-            ),
-        )
+    code = last_result & 0xFFFFFFFF
+    if code == 0:
+        return RunResultVerdict(result=RunResult.OK, code=code)
+    row = _RESULT_ROWS.get(code)
+    if row is not None:
+        result, note = row
+        return RunResultVerdict(result=result, note=note, code=code)
     return RunResultVerdict(
         result=RunResult.UNRECOGNISED,
-        note="Windows recorded a problem with the last nightly run.",
+        note=(
+            f"Windows recorded result {format_hresult(code)} for the last nightly run, which means it reported "
+            "a problem DistrictSync can't name."
+        ),
+        code=code,
     )
 
 
@@ -265,6 +370,48 @@ class ScheduleStatus:
     plan exists to fix.
     """
 
+    run_result: RunResultVerdict | None = None
+    """Windows' own ``LastTaskResult``, classified (DSYNC-32) — LIVE only; ``None`` otherwise.
+
+    Carried so the Setup "Windows last ran this task" line, the probe's log line and the "Copy
+    details" text all read the SAME classification the copy was composed from, never a second one.
+    """
+
+    last_run: str | None = None
+    """The OS-reported ``LastRunTime`` (ISO, as read back) — LIVE only. A DIAGNOSTIC fact for the
+    Setup line and "Copy details"; never an input to any alarm here (that is ``_is_contradiction``'s
+    job, which reads the readback directly)."""
+
+    next_run: str | None = None
+    """The OS-reported ``NextRunTime`` (ISO, as read back) — LIVE only. Unlike
+    ``next_run_display`` it is kept on the contradiction branch too, because "Copy details" is a
+    report of what Windows said, not a reassurance."""
+
+    program_moved: bool = False
+    """The registered action's program is POSITIVELY missing or is not this copy (DSYNC-32).
+
+    Resolved by the impure ``schedule_probe.registered_program_moved`` and the ONLY thing that may
+    put "moved or deleted … re-register" on screen. ``False`` means "no evidence", never "checked
+    and fine" — the conservative value, because the sentence is a claim and an unproven claim
+    walks an admin into re-registering a task whose real fault is elsewhere (the SD60 incident).
+    """
+
+
+#: The ONE spelling of the "moved or deleted" remedy (DSYNC-32). Rendered only on POSITIVE evidence
+#: that the registered program is gone or is a different copy (``ScheduleStatus.program_moved``).
+PROGRAM_MOVED_NOTE = (
+    "The program this task starts is missing or isn't this copy of DistrictSync — if DistrictSync "
+    "was moved or deleted from its scheduled location, re-register the schedule."
+)
+
+#: Where to look next when Windows reported a problem starting the nightly (DSYNC-32). Points at
+#: the log folder — on a machine-scoped install that folder holds every account's log.
+LOG_POINTER_NOTE = "DistrictSync's log folder may have more detail."
+
+#: The headline when the record gap is EXPLAINED by a Windows-reported failure (DSYNC-32): a
+#: different, better class of evidence than the bare gap, so it gets its own words.
+WINDOWS_REPORTED_PROBLEM_HEADLINE = "Windows reported a problem starting or running the nightly sync"
+
 
 def derive_schedule_status(
     readback: ScheduleReadback,
@@ -274,6 +421,7 @@ def derive_schedule_status(
     foreign_account: str,
     shared_records: bool,
     surface: str = "home",
+    program_moved: bool = False,
 ) -> ScheduleStatus:
     """Derive the tri-state ``ScheduleStatus`` from a read-back + the config hint (pure, TOTAL).
 
@@ -301,6 +449,11 @@ def derive_schedule_status(
     threaded to all three builders too — the pure consumers read it off the status. See the field
     docstring for the one rule it serves: suppress only when ``foreign_account and not
     shared_records``.
+
+    ``program_moved`` (DSYNC-32) is the one fact here that DEFAULTS, and in the direction that
+    claims nothing: it only ever ADDS the "moved or deleted" sentence, never suppresses an alarm,
+    so an omitted value costs a remedy sentence and can never silence a signal. Its one producer is
+    ``schedule_probe.probe_schedule`` (via ``registered_program_moved``), the seam every view calls.
     """
     if readback.found is True:
         return _live_status(
@@ -309,6 +462,7 @@ def derive_schedule_status(
             expected=hint_registered,
             foreign_account=foreign_account,
             shared_records=shared_records,
+            program_moved=program_moved,
         )
     if readback.found is False:
         return _missing_status(
@@ -327,16 +481,27 @@ def _live_status(
     expected: bool,
     foreign_account: str,
     shared_records: bool,
+    program_moved: bool,
 ) -> ScheduleStatus:
     """Build the LIVE status — a registered task, with next-run copy + contradiction detection.
 
-    Composition order is load-bearing (plan 0046 C):
+    Composition order is load-bearing (plan 0046 C; DSYNC-32 step 0):
 
-    1. the record-gap contradiction, which a foreign principal SUPPRESSES (A5);
+    0. Windows' own ``LastTaskResult`` is classified FIRST — every branch below reads it. A run
+       IN PROGRESS (``RUNNING``) is never a contradiction: ``LastRunTime`` moves at a run's start
+       and the record lands at its end, so the gap is the run itself, not a fault;
+    1. the record-gap contradiction, which a foreign principal SUPPRESSES (A5). Its copy now says
+       what the evidence supports (DSYNC-32): when Windows reported a FAILURE, the headline names
+       that and the detail carries the verdict sentence + its code + the log pointer; otherwise
+       (``OK`` / ``UNREADABLE``) the hedged "didn't report success" copy stands. The "moved or
+       deleted" remedy is appended ONLY on ``program_moved`` — it used to be unconditional, and on
+       the SD60 install (a gMSA whose logon Windows rejected) it sent the admin hunting for an
+       exe that had never moved;
     2. otherwise today's detail, BYTE FOR BYTE;
     3. then, and only when non-empty, ``FOREIGN_RECORDS_NOTE`` (foreign only) followed by the
        run-result note — the foreign note first, because it explains why the ledger is silent
-       before the OS result speaks about the run itself;
+       before the OS result speaks about the run itself. A reported problem's note carries its
+       code (``coded_note``), so the number an IT team needs is on screen;
     4. ``attention`` iff the contradiction fired (today's rule) OR the principal is foreign AND
        Windows reported a problem. The second arm carries a DIFFERENT headline, because it rests
        on a different — and better — class of evidence than an inference from an empty ledger.
@@ -352,27 +517,36 @@ def _live_status(
     the record went, so narrowing an alarm there would be the one direction this plan must never
     move.
     """
-    contradiction = _is_contradiction(
+    verdict = run_result_verdict(readback.last_result)
+    contradiction = verdict.result is not RunResult.RUNNING and _is_contradiction(
         readback, latest_record_ts, foreign_account=foreign_account, shared_records=shared_records
     )
     if contradiction:
-        # HEDGED copy (honesty): the evidence is only that a run fired without a store record —
-        # it does NOT establish the run failed, or that the app was moved. Name what we can see
-        # (no success reported) + the actionable IF, never a flat "didn't complete"/"was moved".
+        # HEDGED copy (honesty): the record gap alone does NOT establish the run failed, or that the
+        # app was moved. Windows' own result is the better evidence, so it leads when it reports a
+        # failure; the "moved" remedy rides only on positive evidence that the program is gone.
+        if verdict.reported_a_problem:
+            headline = WINDOWS_REPORTED_PROBLEM_HEADLINE
+            sentences = [verdict.coded_note or "", LOG_POINTER_NOTE]
+        else:
+            headline = "Your last scheduled run reported a problem"
+            sentences = ["The last nightly run didn't report success — open Run History for details."]
+        if program_moved:
+            sentences.append(PROGRAM_MOVED_NOTE)
         return ScheduleStatus(
             state=ScheduleState.LIVE,
-            headline="Your last scheduled run reported a problem",
-            detail=(
-                "The last nightly run didn't report success — open Run History for details. "
-                "If DistrictSync was moved or deleted from its scheduled location, re-register "
-                "the schedule."
-            ),
-            expected=expected,
+            headline=headline,
+            detail=" ".join(s for s in sentences if s),
             contradiction=True,
             next_run_display=None,
             attention=True,
+            expected=expected,
             foreign_account=foreign_account,
             shared_records=shared_records,
+            run_result=verdict,
+            last_run=readback.last_run,
+            next_run=readback.next_run,
+            program_moved=program_moved,
         )
 
     # The next-run time comes ONLY from the OS-reported NextRunTime — never the config hint
@@ -387,23 +561,30 @@ def _live_status(
     # where the record WENT), so say plainly where it went — a permanently empty Run History with
     # no explanation is itself read as evidence the sync never ran — and let Windows' own result
     # take over the alarm. Sentences are appended in fixed order and only when non-empty.
-    verdict = run_result_verdict(readback.last_result)
     if foreign_account:
         note = FOREIGN_RECORDS_SHARED_NOTE if shared_records else FOREIGN_RECORDS_NOTE
         detail = f"{detail} {note.format(account=foreign_account)}"
-    if verdict.note:
-        detail = f"{detail} {verdict.note}"
+    if verdict.coded_note:
+        detail = f"{detail} {verdict.coded_note}"
+    # The remedy is offered beside a reported problem only — a clean run from a different copy of
+    # the program is a working schedule, and telling its admin to re-register would be noise.
+    if program_moved and verdict.reported_a_problem:
+        detail = f"{detail} {PROGRAM_MOVED_NOTE}"
     reported_problem = bool(foreign_account) and verdict.reported_a_problem
     return ScheduleStatus(
         state=ScheduleState.LIVE,
         headline=("Your last nightly run reported a problem" if reported_problem else "Nightly sync is scheduled"),
         detail=detail,
-        expected=expected,
         contradiction=False,
         next_run_display=next_display,
         attention=reported_problem,
+        expected=expected,
         foreign_account=foreign_account,
         shared_records=shared_records,
+        run_result=verdict,
+        last_run=readback.last_run,
+        next_run=readback.next_run,
+        program_moved=program_moved,
     )
 
 
@@ -541,6 +722,72 @@ def needs_setup_badge(status: ScheduleStatus | None, *, paused: bool = False, se
     return status.attention
 
 
+def needs_diagnosis(status: ScheduleStatus | None) -> bool:
+    """Whether a surface should offer the log actions ("Open log folder" / "Copy details") (DSYNC-32).
+
+    True when the schedule needs ``attention`` (an expected-but-gone task, a record-gap
+    contradiction, a foreign principal's reported problem) OR when a LIVE task's last run reported
+    a problem that does not escalate (a same-account install — Home's schedule card carries that
+    note without an alarm). Never for ``None``/UNKNOWN-without-attention: nothing to diagnose.
+    """
+    if status is None:
+        return False
+    if status.attention:
+        return True
+    return status.run_result is not None and status.run_result.reported_a_problem
+
+
+def last_run_line(status: ScheduleStatus | None) -> str | None:
+    """The Setup readout's "Windows last ran this task …" line (DSYNC-32); ``None`` unless LIVE.
+
+    Read-only and built from the SAME classification the status copy was composed from. It names
+    a time, a code and a short verdict label — never an account or a path. A last-run time the OS
+    did not report (or that does not parse) is said to be unreported, never guessed.
+    """
+    if status is None or status.state is not ScheduleState.LIVE or status.run_result is None:
+        return None
+    verdict = status.run_result
+    if verdict.result is RunResult.NEVER_RUN:
+        return "Windows hasn't run this task yet."
+    when = _friendly_when(status.last_run)
+    lead = f"Windows last ran this task {when}" if when else "Windows didn't report when it last ran this task"
+    if verdict.result is RunResult.OK:
+        return f"{lead} — OK."
+    if verdict.result is RunResult.RUNNING:
+        return f"{lead} — it's running now."
+    if verdict.result is RunResult.UNREADABLE:
+        return f"{lead} — its result couldn't be read."
+    return f"{lead} — result {verdict.code_hex} ({RESULT_LABELS[verdict.result]})."
+
+
+def diagnostic_details(status: ScheduleStatus | None, *, task_name: str) -> str:
+    """The "Copy details" text an admin pastes to IT or support (DSYNC-32). Pure and TOTAL.
+
+    BOUNDED by construction (CLAUDE.md "Bounded diagnostic output"): the task name (config
+    controlled, already in every probe log line), Windows' last-run time, the result code + the
+    verdict's NAME, the next run, and — only on positive evidence — that the registered program is
+    missing or not this copy. It never reads ``foreign_account``, never a path, never an address:
+    the only free text it carries is the task name, and that is not PII.
+    """
+    lines = ["DistrictSync nightly schedule", f"Task: {task_name or 'not set'}"]
+    if status is None:
+        lines.append("Schedule state: not checked")
+        return "\n".join(lines)
+    lines.append(f"Schedule state: {status.state.value}")
+    verdict = status.run_result
+    lines.append(f"Windows last run: {_plain_dt(status.last_run)}")
+    if verdict is None or verdict.code_hex is None:
+        lines.append("Windows result: not reported")
+    else:
+        lines.append(f"Windows result: {verdict.code_hex} ({verdict.result.name})")
+    lines.append(f"Next run: {_plain_dt(status.next_run)}")
+    if status.contradiction:
+        lines.append("Run record: none for the last run")
+    if status.program_moved:
+        lines.append("Registered program: missing or not this copy of DistrictSync")
+    return "\n".join(lines)
+
+
 @dataclass(frozen=True)
 class UnregisterOutcome:
     """The presentation of an Unregister attempt (idempotent — an absent task is success-shaped)."""
@@ -596,6 +843,20 @@ def _time_of_day(iso: str) -> str | None:
     if parsed is None:
         return None
     return parsed.strftime("%I:%M %p").lstrip("0")
+
+
+def _friendly_when(iso: str | None) -> str | None:
+    """``"Oct 23 at 3:00 AM"`` from an ISO datetime; ``None`` if absent/unparseable. Total."""
+    parsed = _parse_dt(iso)
+    if parsed is None:
+        return None
+    return f"{parsed.strftime('%b')} {parsed.day} at {parsed.strftime('%I:%M %p').lstrip('0')}"
+
+
+def _plain_dt(iso: str | None) -> str:
+    """``"2026-10-23 03:00:00"`` (wall clock, as Windows reported it) or ``"not reported"``. Total."""
+    parsed = _parse_dt(iso)
+    return parsed.strftime("%Y-%m-%d %H:%M:%S") if parsed is not None else "not reported"
 
 
 def _parse_dt(text: str | None) -> datetime | None:

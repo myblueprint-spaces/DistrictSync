@@ -122,6 +122,7 @@ from src.ui_flet.schedule_status import (
     ScheduleStatus,
     interpret_unregister,
     is_transient_location,
+    last_run_line,
 )
 from src.ui_flet.screens.creator import (
     CREATOR_DISCARDED_NOTE,
@@ -717,6 +718,19 @@ def _schedule_readout_line(status: ScheduleStatus) -> ft.Control:
         vertical_alignment=ft.CrossAxisAlignment.CENTER,
         controls=[ft.Icon(icon, size=18, color=color), ft.Text(status.detail, size=13, color=color)],
     )
+
+
+def _last_run_caption(status: ScheduleStatus) -> list[ft.Control]:
+    """The read-only "Windows last ran this task …" caption under the readout (DSYNC-32).
+
+    Muted caption tier, no button (this section's one filled action stays Register). SELECTABLE,
+    because the admin's next step is often to read the result code to IT. Empty unless LIVE — the
+    copy itself is ``schedule_status.last_run_line``'s, never composed here.
+    """
+    line = last_run_line(status)
+    if line is None:
+        return []
+    return [ft.Text(line, size=tokens.type_caption, color=tokens.color_muted, selectable=True)]
 
 
 def _finish_summary_row_control(row: FinishSummaryRow) -> ft.Control:  # pragma: no cover - Flet view glue
@@ -2537,7 +2551,7 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
             )
 
             async def _apply() -> None:
-                readout_slot.controls = [_schedule_readout_line(status)]
+                readout_slot.controls = [_schedule_readout_line(status), *_last_run_caption(status)]
                 # 0049 S-2a.2: the seasonal-window note asserts the pause only on a CONFIRMED-LIVE
                 # task, so it can only be painted honestly once the read-back has landed.
                 _last_schedule_state["state"] = status.state
@@ -2687,8 +2701,10 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
 
         The prerequisites render as READ-ONLY tick glyphs, deliberately not ``check_row``: none
         of the three is knowable from here (``validate_gmsa_account`` is a shape check, and
-        Windows answers the real questions only at registration), so a control an admin could
-        tick would be recording a claim this app cannot check.
+        Windows does not answer them all at registration — a missing 'Log on as a batch job'
+        right registers cleanly and only fails when the task first RUNS, see
+        ``task_com.RESULT_BATCH_LOGON_PROBLEM``), so a control an admin could tick would be
+        recording a claim this app cannot check.
 
         There is no clickable document link and that is not an omission: the MkDocs site was
         removed, so a partner doc has no URL, and a bare one would be the dead click

@@ -112,6 +112,29 @@ RESULT_HAS_NOT_RUN = 267011
 # Its one consumer is ui_flet.schedule_status.run_result_verdict.
 RESULT_BATCH_LOGON_PROBLEM = 0x80070569
 
+# --- More run-time LastTaskResult codes (DSYNC-32) ------------------------------------
+# The SAME channel rule applies to every RESULT_* below: each is what Task Scheduler recorded
+# as the task's LAST RUN result, read back by `read_schedule`, consumed ONLY by
+# `ui_flet.schedule_status.run_result_verdict`, and never a key in the registration tables
+# above or below — several share a numeric value with an HR_* registration constant
+# (0x8007052E, 0x80070005, 0x80070002), and that is exactly why they are SEPARATE names: the
+# same number means "registration raised this" in one channel and "the nightly could not start"
+# in the other, and the copy for one is wrong for the other.
+#
+# Every value is the mechanical HRESULT_FROM_WIN32 form of a documented Win32 error (or, for the
+# running sentinel, a documented SCHED_S_* status) — that much is arithmetic. What it means for
+# THIS install is hedged in the consuming copy, exactly as for RESULT_BATCH_LOGON_PROBLEM.
+RESULT_LOGON_FAILURE = 0x8007052E  # ERROR_LOGON_FAILURE (1326) — account name or password rejected
+RESULT_PASSWORD_EXPIRED = 0x80070532  # ERROR_PASSWORD_EXPIRED (1330)
+RESULT_ACCESS_DENIED = 0x80070005  # ERROR_ACCESS_DENIED (5)
+# ERROR_FILE_NOT_FOUND (2) in its HRESULT form. Unambiguous where a bare `2` is not: our own exit
+# code 2 is a small positive int, never 0x80070002, so this cannot be DistrictSync's exit status.
+RESULT_FILE_NOT_FOUND = 0x80070002
+RESULT_BAD_DIRECTORY = 0x8007010B  # ERROR_DIRECTORY (267) — the action's start-in folder is invalid
+# SCHED_S_TASK_RUNNING — the task is running NOW. A success-class status, never a failure: the
+# LastRunTime has already moved to this run's start while its record is not written until it ends.
+RESULT_RUNNING = 0x00041301
+
 # Canonical, secret-free, locale-independent text per HRESULT — DESCRIPTIVE of the status
 # Windows returned, never a cause. `setup_errors.classify_schedule_error` keys on these by
 # EXACT equality and IMPORTS them (plan 0047 A2) — any edit here must be mirrored there,
@@ -749,7 +772,9 @@ def task_facts(task: Any) -> TaskFacts:
         actions = task.Definition.Actions
         if actions.Count >= 1:
             # 1-indexed COM collection; the FIRST action's Execute is the read-back
-            # contract (`action_path`) Home's moved-exe detection keys on (row 11).
+            # contract (`action_path`). Its one consumer is `ui_flet.schedule_probe.
+            # registered_program_moved` (DSYNC-32), which gates the "moved or deleted"
+            # sentence on it — read for that boolean only, never logged or displayed.
             action_path = str(actions.Item(1).Path or "").strip() or None
         principal = task.Definition.Principal
         return TaskFacts(
