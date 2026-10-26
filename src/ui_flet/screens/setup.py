@@ -123,6 +123,7 @@ from src.ui_flet.schedule_status import (
     interpret_unregister,
     is_transient_location,
     last_run_line,
+    wake_line,
 )
 from src.ui_flet.screens.creator import (
     CREATOR_DISCARDED_NOTE,
@@ -145,6 +146,8 @@ from src.ui_flet.setup_flow import (
     GMSA_PREREQUISITES,
     SCHEDULE_ACCOUNT_FIELD_LABEL,
     SCHEDULE_GMSA_TOGGLE_LABEL,
+    SCHEDULE_WAKE_HELPER,
+    SCHEDULE_WAKE_TOGGLE_LABEL,
     TRANSITION_CUE,
     DeliveryFact,
     DowngradeInterrupt,
@@ -178,6 +181,7 @@ from src.ui_flet.setup_flow import (
     task_args_from_persisted,
     task_args_to_persisted,
     total_steps,
+    wake_to_run_initial,
 )
 from src.ui_flet.setup_gates import (
     RegisterBlock,
@@ -733,6 +737,19 @@ def _last_run_caption(status: ScheduleStatus) -> list[ft.Control]:
     return [ft.Text(line, size=tokens.type_caption, color=tokens.color_muted, selectable=True)]
 
 
+def _wake_caption(status: ScheduleStatus) -> list[ft.Control]:
+    """The read-only "does Windows wake this computer for this task?" caption (DSYNC-37).
+
+    Same muted caption tier as the last-run line and no button. Read off the LIVE task
+    (``schedule_status.wake_line``), so an install whose task predates DSYNC-37 sees that it does
+    not wake; empty unless LIVE and Windows reported the setting.
+    """
+    line = wake_line(status)
+    if line is None:
+        return []
+    return [ft.Text(line, size=tokens.type_caption, color=tokens.color_muted)]
+
+
 def _finish_summary_row_control(row: FinishSummaryRow) -> ft.Control:  # pragma: no cover - Flet view glue
     """One checked-summary row: a green ✓ for a configured step, else a subdued "later" cue.
 
@@ -892,7 +909,8 @@ class _ScheduleHandle:
     app never re-points in place.
     ``run_as_user_value`` is the live run-as field, so the reconcile compares the PENDING
     principal against the recorded one (a principal move with unchanged task args is still a
-    re-register). ``persist_run_time`` is the S3-b seam: persist a valid run-time edit as plain
+    re-register). ``wake_to_run_value`` is the wake-to-run tick box (DSYNC-37), compared the
+    same way. ``persist_run_time`` is the S3-b seam: persist a valid run-time edit as plain
     config when no schedule is registered (invalid → the section's inline error, nothing
     persisted).
     ``last_schedule_state`` is the last CONFIRMED read-back (``None`` until one lands), which
@@ -911,6 +929,7 @@ class _ScheduleHandle:
     trigger_register: Callable[[], ReconcileOutcome]
     run_time_value: Callable[[], str]
     run_as_user_value: Callable[[], str]
+    wake_to_run_value: Callable[[], bool]
     persist_run_time: Callable[[], bool]
     is_busy: Callable[[], bool]
     last_schedule_state: Callable[[], ScheduleState | None]
@@ -1911,7 +1930,7 @@ def _walk_controls(control: ft.Control | None):  # pragma: no cover - view glue
 def _registered_schedule(cfg: AppConfig) -> RegisteredSchedule:  # pragma: no cover - AppConfig→pure adapter
     """The durable "what the live task actually carries" record (the ONE resolution point).
 
-    A thin adapter over the pure ``setup_flow.registered_schedule``: it only supplies the four
+    A thin adapter over the pure ``setup_flow.registered_schedule``: it only supplies the five
     persisted facets plus the running platform's unattended-logon capability. Both reconcile
     consumers (the task-args comparison and the logon-downgrade guard) read the record from HERE,
     so neither can re-derive a baseline from the *current* config (the W3-C silent no-op).
@@ -1921,6 +1940,7 @@ def _registered_schedule(cfg: AppConfig) -> RegisteredSchedule:  # pragma: no co
         unattended_flag=cfg.schedule_unattended,
         raw_run_as_user=cfg.schedule_run_as_user,
         raw_run_as_kind=cfg.schedule_run_as_kind,
+        raw_wake_to_run=cfg.schedule_wake_to_run,
         supports_unattended=get_scheduler().supports_unattended_password,
     )
 
@@ -1999,6 +2019,9 @@ def _mount_settings(  # pragma: no cover - Flet view glue
             pending=pending,
             pending_run_as_user=sched_handle.run_as_user_value(),
             current_account=_keyring_owner_account(),
+            # DSYNC-37: the tick box, which opens on the record's own value for a live task — so
+            # an untouched box never turns a folders/delivery Save into a re-register.
+            pending_wake_to_run=sched_handle.wake_to_run_value(),
         )
         if action is ScheduleReconcile.REREGISTER:
             # May pause on the explicit downgrade choice first (S3-a). Returns DISPATCHED
@@ -2551,7 +2574,11 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
             )
 
             async def _apply() -> None:
-                readout_slot.controls = [_schedule_readout_line(status), *_last_run_caption(status)]
+                readout_slot.controls = [
+                    _schedule_readout_line(status),
+                    *_last_run_caption(status),
+                    *_wake_caption(status),
+                ]
                 # 0049 S-2a.2: the seasonal-window note asserts the pause only on a CONFIRMED-LIVE
                 # task, so it can only be painted honestly once the read-back has landed.
                 _last_schedule_state["state"] = status.state
@@ -2669,6 +2696,30 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
                 )
             )
             section_controls.append(gmsa_disclosure_slot)
+
+    # DSYNC-37: wake-to-run. The SESSION answer, seeded by ``wake_to_run_initial`` — the record's
+    # own value for a live task (so an upgraded install's task, which does not wake, reads OFF and
+    # an untouched Save stays up to date), the new-registration default (on) otherwise. A dict for
+    # the same shared-cell reason as ``_gmsa``. Read ONCE per press at click time, like the kind.
+    # Shown only where the scheduler can honour it (``supports_wake_to_run``); elsewhere the cell
+    # keeps the record's value, so the reconcile never sees a change nobody could make.
+    _wake = {
+        "on": wake_to_run_initial(schedule_registered=bool(cfg.schedule_registered), record=_registered_schedule(cfg))
+    }
+
+    def _on_wake_toggled(on: bool) -> None:
+        _wake["on"] = bool(on)
+
+    if scheduler.supports_wake_to_run:
+        section_controls.append(
+            ft.Column(
+                spacing=tokens.space_xs,
+                controls=[
+                    components.check_row(SCHEDULE_WAKE_TOGGLE_LABEL, value=_wake["on"], on_toggle=_on_wake_toggled),
+                    ft.Text(SCHEDULE_WAKE_HELPER, size=tokens.type_caption, color=tokens.color_muted),
+                ],
+            )
+        )
 
     def _elevated_now() -> bool:
         return scheduler.is_elevated()  # always False where elevation has no meaning (cron)
@@ -3029,6 +3080,10 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
             else _declared_kind()
         )
 
+        # DSYNC-37: captured at click time for the same reason as ``declared_kind`` — the value
+        # Windows is asked for and the value the record persists must be one read, not two.
+        wake_to_run = bool(_wake["on"])
+
         def _declared_principal() -> Principal:
             """WHO this press asks the nightly to run as — DECLARED, not inferred (0049 S-3).
 
@@ -3080,7 +3135,7 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
         )
 
         def _persist_registered_record() -> None:
-            """The four-facet register record — the ONE spelling, both dispatch paths.
+            """The five-facet register record (DSYNC-37 added wake-to-run) — the ONE spelling, both dispatch paths.
 
             Extracted at 0049 S-2b.3 because the provisioning path needs exactly this and
             nothing else: ``complete_handover`` takes it as ``persist`` and runs it strictly
@@ -3113,6 +3168,8 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
             # fact nothing else can recover — the kind cannot be read back off the name without
             # re-introducing the ``$`` inference S-3 deleted.
             cfg.schedule_run_as_kind = declared_kind.value
+            # DSYNC-37: the FIFTH facet, same save — whether the registered task wakes the computer.
+            cfg.schedule_wake_to_run = wake_to_run
             cfg.save()
 
         def _on_register_success(headline: str, detail: str, *, verdict: Verdict = Verdict.HEALTHY) -> None:
@@ -3273,7 +3330,7 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
             reentry = {"requested": False}
 
             def _persist() -> None:
-                """The four-facet save — bound to the SUCCESS path and nothing else.
+                """The five-facet save — bound to the SUCCESS path and nothing else.
 
                 ``complete_handover`` calls this on every outcome, including a declined UAC and
                 a launch failure, because its own gate is the parent's switch read. Writing the
@@ -3387,6 +3444,7 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
                     # and it is not a field of the ``ProvisionAttempt`` that comes back. Built
                     # INSIDE the worker for the same reason the register twin is (below).
                     principal=_declared_principal(),
+                    wake_to_run=wake_to_run,
                 )
             except Exception as exc:  # noqa: BLE001 - it contracts never to raise; belt anyway
                 logger.error("The shared-settings change raised unexpectedly: %s", type(exc).__name__)
@@ -3416,6 +3474,7 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
                     run_time=run_time,
                     sftp=cfg.sftp_enabled,
                     principal=_declared_principal(),
+                    wake_to_run=wake_to_run,
                 )
             except ValueError:
                 # validate_run_as_user, raised inside register_task or the elevated child. The
@@ -3502,6 +3561,9 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
                     cfg.schedule_task_args = None
                     cfg.schedule_run_as_user = ""
                     cfg.schedule_run_as_kind = ""
+                    # DSYNC-37: the fifth facet goes with them. The tick box is left as it is,
+                    # like the account field, so Remove → Schedule keeps the admin's choice.
+                    cfg.schedule_wake_to_run = None
                     cfg.save()
                     if on_schedule_changed is not None:
                         # 0032 T1 #8: a confirmed removal invalidates the boot-time rail badge too.
@@ -3994,6 +4056,7 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
         trigger_register=_trigger_register_reconciled,
         run_time_value=lambda: run_time_field.value or "",
         run_as_user_value=lambda: "" if account_field is None else (account_field.value or "").strip(),
+        wake_to_run_value=lambda: bool(_wake["on"]),
         persist_run_time=_persist_run_time_if_edited,
         is_busy=lambda: bool(_flight["busy"]),
         last_schedule_state=lambda: _last_schedule_state["state"],

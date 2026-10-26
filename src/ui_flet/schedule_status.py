@@ -396,6 +396,13 @@ class ScheduleStatus:
     walks an admin into re-registering a task whose real fault is elsewhere (the SD60 incident).
     """
 
+    wake_to_run: bool | None = None
+    """The live task's own ``Settings.WakeToRun`` as Windows reported it (DSYNC-37) — LIVE only.
+
+    ``None`` = not reported (or not LIVE), which asserts nothing. A DISPLAY fact for the Setup
+    readout's :func:`wake_line` and "Copy details"; never an input to any alarm.
+    """
+
 
 #: The ONE spelling of the "moved or deleted" remedy (DSYNC-32). Rendered only on POSITIVE evidence
 #: that the registered program is gone or is a different copy (``ScheduleStatus.program_moved``).
@@ -547,6 +554,7 @@ def _live_status(
             last_run=readback.last_run,
             next_run=readback.next_run,
             program_moved=program_moved,
+            wake_to_run=readback.wake_to_run,
         )
 
     # The next-run time comes ONLY from the OS-reported NextRunTime — never the config hint
@@ -585,6 +593,7 @@ def _live_status(
         last_run=readback.last_run,
         next_run=readback.next_run,
         program_moved=program_moved,
+        wake_to_run=readback.wake_to_run,
     )
 
 
@@ -760,6 +769,29 @@ def last_run_line(status: ScheduleStatus | None) -> str | None:
     return f"{lead} — result {verdict.code_hex} ({RESULT_LABELS[verdict.result]})."
 
 
+#: The Setup readout's wake-to-run line (DSYNC-37), one per reported state. Neither promises a
+#: wake: Windows can only wake a sleeping or hibernating computer whose power plan allows it.
+WAKE_ON_LINE = "Windows is set to wake this computer from sleep to run this task."
+WAKE_OFF_LINE = (
+    "Windows is not set to wake this computer for this task — if it's asleep at the run time, "
+    "the sync may not run that night."
+)
+
+
+def wake_line(status: ScheduleStatus | None) -> str | None:
+    """The Setup readout's "does this task wake the computer?" line (DSYNC-37); ``None`` unless known.
+
+    Read from the LIVE task, never from the record or the tick box: it reports what Windows holds,
+    so an admin can see that a task registered before DSYNC-37 does not wake. The OFF line is
+    hedged ("may not run") rather than asserting a skip: ``StartWhenAvailable`` is False
+    (DECISIONS 2026-06-15), so a missed trigger is not caught up, but whether the computer was
+    asleep at the run time is not something this app can see.
+    """
+    if status is None or status.state is not ScheduleState.LIVE or status.wake_to_run is None:
+        return None
+    return WAKE_ON_LINE if status.wake_to_run else WAKE_OFF_LINE
+
+
 def diagnostic_details(status: ScheduleStatus | None, *, task_name: str) -> str:
     """The "Copy details" text an admin pastes to IT or support (DSYNC-32). Pure and TOTAL.
 
@@ -781,6 +813,8 @@ def diagnostic_details(status: ScheduleStatus | None, *, task_name: str) -> str:
     else:
         lines.append(f"Windows result: {verdict.code_hex} ({verdict.result.name})")
     lines.append(f"Next run: {_plain_dt(status.next_run)}")
+    if status.wake_to_run is not None:
+        lines.append(f"Wake computer to run: {'yes' if status.wake_to_run else 'no'}")
     if status.contradiction:
         lines.append("Run record: none for the last run")
     if status.program_moved:

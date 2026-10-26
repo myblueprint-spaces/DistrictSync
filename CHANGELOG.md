@@ -9,6 +9,16 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+### Added
+
+- **The nightly sync can wake the computer to run.** Setup's schedule section has a new tick box,
+  "Wake this computer to run the sync", on by default for a new schedule. With it on, Windows
+  wakes a sleeping or hibernating computer at the run time instead of missing the sync. It can't
+  start a computer that is shut down, and it only works while "Allow wake timers" is turned on in
+  the Windows power plan. A schedule set up with an earlier version keeps working as it did (it
+  does not wake the computer) until it is scheduled again from Setup, and Setup now shows whether
+  the current schedule wakes the computer.
+
 ### Changed
 
 - **Setup's "Set up my district" button is now "My district isn't listed", with a note under

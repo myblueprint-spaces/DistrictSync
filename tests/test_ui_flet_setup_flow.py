@@ -1023,6 +1023,7 @@ class TestRegisteredSchedule:
             unattended_flag=True,
             supports_unattended=True,
             raw_run_as_kind="",
+            raw_wake_to_run=None,
         )
         assert record == RegisteredSchedule(
             args=_task_args(),
@@ -1031,6 +1032,8 @@ class TestRegisteredSchedule:
             # 0049 S-4: a blank recorded kind beside a BLANK user resolves to the signed-in
             # account's logged-on-only logon — the other half of the absent-value rule.
             run_as_kind=PrincipalKind.INTERACTIVE_TOKEN,
+            # DSYNC-37: an unrecorded wake flag beside a usable record is the EVIDENCED False.
+            wake_to_run=False,
         )
 
     @pytest.mark.parametrize("raw", [None, "not a dict", {}, {"input_dir": "/in"}])
@@ -1044,6 +1047,7 @@ class TestRegisteredSchedule:
             unattended_flag=False,
             supports_unattended=True,
             raw_run_as_kind="",
+            raw_wake_to_run=None,
         )
         assert record.args is None
         assert record.unattended is None
@@ -1057,6 +1061,7 @@ class TestRegisteredSchedule:
             unattended_flag=False,
             supports_unattended=False,
             raw_run_as_kind="",
+            raw_wake_to_run=None,
         )
         assert record.unattended is False
 
@@ -1069,6 +1074,7 @@ class TestRegisteredSchedule:
             unattended_flag=True,
             supports_unattended=False,
             raw_run_as_kind="",
+            raw_wake_to_run=None,
         )
         assert record.unattended is True
 
@@ -1080,11 +1086,13 @@ class TestScheduleReconcile:
             raw_task_args=task_args_to_persisted(_task_args()),
             unattended_flag=False,
             raw_run_as_kind="",
+            raw_wake_to_run=None,
         )
         assert (
             schedule_reconcile(
                 pending_run_as_user="",
                 current_account=_CURRENT_ACCOUNT,
+                pending_wake_to_run=False,
                 schedule_registered=False,
                 record=record,
                 pending=_task_args(sis_type="sd48myedbc"),
@@ -1098,11 +1106,13 @@ class TestScheduleReconcile:
             raw_task_args=task_args_to_persisted(_task_args()),
             unattended_flag=False,
             raw_run_as_kind="",
+            raw_wake_to_run=None,
         )
         assert (
             schedule_reconcile(
                 pending_run_as_user="",
                 current_account=_CURRENT_ACCOUNT,
+                pending_wake_to_run=False,
                 schedule_registered=True,
                 record=record,
                 pending=_task_args(),
@@ -1116,11 +1126,13 @@ class TestScheduleReconcile:
             raw_task_args=task_args_to_persisted(_task_args()),
             unattended_flag=False,
             raw_run_as_kind="",
+            raw_wake_to_run=None,
         )
         assert (
             schedule_reconcile(
                 pending_run_as_user="",
                 current_account=_CURRENT_ACCOUNT,
+                pending_wake_to_run=False,
                 schedule_registered=True,
                 record=record,
                 pending=_task_args(output_dir="  /out  "),
@@ -1134,11 +1146,13 @@ class TestScheduleReconcile:
             raw_task_args=task_args_to_persisted(_task_args()),
             unattended_flag=False,
             raw_run_as_kind="",
+            raw_wake_to_run=None,
         )
         assert (
             schedule_reconcile(
                 pending_run_as_user="",
                 current_account=_CURRENT_ACCOUNT,
+                pending_wake_to_run=False,
                 schedule_registered=True,
                 record=record,
                 pending=_task_args(sis_type="sd48myedbc"),
@@ -1151,11 +1165,14 @@ class TestScheduleReconcile:
         # the new district, so any baseline derived from the current config equals `pending` and
         # the reconcile silently does nothing — while the live task still bakes the OLD district.
         # With no durable record the app cannot know what the task carries, so it must act.
-        record = registered_schedule(raw_run_as_user="", raw_task_args=None, unattended_flag=False, raw_run_as_kind="")
+        record = registered_schedule(
+            raw_run_as_user="", raw_task_args=None, unattended_flag=False, raw_run_as_kind="", raw_wake_to_run=None
+        )
         assert (
             schedule_reconcile(
                 pending_run_as_user="",
                 current_account=_CURRENT_ACCOUNT,
+                pending_wake_to_run=False,
                 schedule_registered=True,
                 record=record,
                 pending=_task_args(sis_type="sd48myedbc"),
@@ -1164,11 +1181,14 @@ class TestScheduleReconcile:
         )
 
     def test_an_absent_record_with_no_task_registered_is_still_NO_TASK(self):
-        record = registered_schedule(raw_run_as_user="", raw_task_args=None, unattended_flag=False, raw_run_as_kind="")
+        record = registered_schedule(
+            raw_run_as_user="", raw_task_args=None, unattended_flag=False, raw_run_as_kind="", raw_wake_to_run=None
+        )
         assert (
             schedule_reconcile(
                 pending_run_as_user="",
                 current_account=_CURRENT_ACCOUNT,
+                pending_wake_to_run=False,
                 schedule_registered=False,
                 record=record,
                 pending=_task_args(),
@@ -1448,6 +1468,7 @@ class TestRecordedPrincipal:
             unattended_flag=True,
             raw_run_as_user="CORP\\svc_x",
             raw_run_as_kind="",
+            raw_wake_to_run=None,
         )
         assert record.run_as_user == "CORP\\svc_x"
 
@@ -1455,7 +1476,11 @@ class TestRecordedPrincipal:
         # The three facets are written and cleared TOGETHER, so an absent record makes all
         # three unknown — `""` would be an unchecked assertion, and the gate keys on it.
         record = registered_schedule(
-            raw_task_args=None, unattended_flag=False, raw_run_as_user="CORP\\svc_x", raw_run_as_kind=""
+            raw_task_args=None,
+            unattended_flag=False,
+            raw_run_as_user="CORP\\svc_x",
+            raw_run_as_kind="",
+            raw_wake_to_run=None,
         )
         assert record.args is None
         assert record.run_as_user is None
@@ -1470,6 +1495,7 @@ class TestRecordedPrincipal:
             unattended_flag=False,
             raw_run_as_user=persisted.get("schedule_run_as_user", ""),
             raw_run_as_kind="",
+            raw_wake_to_run=None,
         )
         assert record.run_as_user == ""
 
@@ -1481,6 +1507,7 @@ class TestRecordedPrincipal:
             unattended_flag=False,
             raw_run_as_user=raw,
             raw_run_as_kind="",
+            raw_wake_to_run=None,
         )
         assert record.run_as_user == ""
 
@@ -1490,6 +1517,7 @@ class TestRecordedPrincipal:
                 raw_task_args=task_args_to_persisted(_task_args()),
                 unattended_flag=False,
                 raw_run_as_kind="",
+                raw_wake_to_run=None,
             )
 
 
@@ -1500,6 +1528,7 @@ class TestReconcileOnThePrincipal:
             unattended_flag=True,
             raw_run_as_user=run_as_user,
             raw_run_as_kind="",
+            raw_wake_to_run=None,
         )
 
     def test_an_account_only_change_reregisters(self):
@@ -1512,6 +1541,7 @@ class TestReconcileOnThePrincipal:
                 pending=_task_args(),
                 pending_run_as_user="CORP\\svc_x",
                 current_account=_CURRENT_ACCOUNT,
+                pending_wake_to_run=False,
             )
             is ScheduleReconcile.REREGISTER
         )
@@ -1525,6 +1555,7 @@ class TestReconcileOnThePrincipal:
                 pending=_task_args(),
                 pending_run_as_user=pending_account,
                 current_account=_CURRENT_ACCOUNT,
+                pending_wake_to_run=False,
             )
             is ScheduleReconcile.UP_TO_DATE
         )
@@ -1539,6 +1570,7 @@ class TestReconcileOnThePrincipal:
                 pending=_task_args(),
                 pending_run_as_user=_CURRENT_ACCOUNT,
                 current_account=_CURRENT_ACCOUNT,
+                pending_wake_to_run=False,
             )
             is ScheduleReconcile.UP_TO_DATE
         )
@@ -1952,6 +1984,7 @@ class TestTheRecordedKind:
             "unattended_flag": True,
             "raw_run_as_user": "CORP\\svc_x",
             "raw_run_as_kind": PrincipalKind.PASSWORD.value,
+            "raw_wake_to_run": None,
         }
         kwargs.update(over)
         return registered_schedule(**kwargs)  # type: ignore[arg-type]
@@ -1976,7 +2009,7 @@ class TestTheRecordedKind:
         """The upgrade path, evidenced: before S-4 the engine could register exactly ONE
         foreign principal and it required a password to do it (``register_task`` refuses a
         foreign interactive-token request), so no deployed install can mean anything else."""
-        assert self._record(raw_run_as_kind="").run_as_kind is PrincipalKind.PASSWORD
+        assert self._record(raw_run_as_kind="", raw_wake_to_run=None).run_as_kind is PrincipalKind.PASSWORD
 
     def test_the_absent_value_rule_with_a_blank_user_means_INTERACTIVE_TOKEN(self):
         """The other direction, and the one that matters for the 20 shipped districts: ``""``

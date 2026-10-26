@@ -67,6 +67,7 @@ class Scheduler(Protocol):
 
     supports_unattended_password: bool
     supports_read_schedule: bool
+    supports_wake_to_run: bool
 
     def register(
         self,
@@ -80,12 +81,18 @@ class Scheduler(Protocol):
         sftp: bool = False,
         principal: Principal,
         run_highest: bool = True,
+        wake_to_run: bool,
     ) -> tuple[bool, str]:
         """Create or replace the daily scheduled run; returns ``(success, message)``.
 
         ``principal`` is REQUIRED and undefaulted on BOTH adapters (plan 0049 S-3): WHO the
         nightly runs as is declared by the caller, and a platform that cannot express the
         declared kind must say so rather than register something else.
+
+        ``wake_to_run`` (DSYNC-37) is REQUIRED and undefaulted on both adapters too. Windows
+        sets ``Settings.WakeToRun`` from it; cron has no wake concept and ACCEPTS AND IGNORES
+        it (the way it ignores ``run_highest``), so callers gate the affordance on
+        ``supports_wake_to_run`` rather than on the platform.
         """
         ...
 
@@ -116,6 +123,7 @@ class WindowsTaskScheduler:
 
     supports_unattended_password = True
     supports_read_schedule = True
+    supports_wake_to_run = True
 
     def register(
         self,
@@ -129,6 +137,7 @@ class WindowsTaskScheduler:
         sftp: bool = False,
         principal: Principal,
         run_highest: bool = True,
+        wake_to_run: bool,
     ) -> tuple[bool, str]:
         """Register via :func:`src.scheduler.windows.register_task` (all kwargs pass through)."""
         return windows.register_task(
@@ -141,6 +150,7 @@ class WindowsTaskScheduler:
             sftp=sftp,
             principal=principal,
             run_highest=run_highest,
+            wake_to_run=wake_to_run,
         )
 
     def delete(self, task_name: str) -> tuple[bool, str]:
@@ -185,6 +195,8 @@ class CronScheduler:
 
     supports_unattended_password = False
     supports_read_schedule = False
+    # A cron line runs when the machine is awake; there is nothing to ask the OS to wake for.
+    supports_wake_to_run = False
 
     def register(
         self,
@@ -198,6 +210,7 @@ class CronScheduler:
         sftp: bool = False,
         principal: Principal,
         run_highest: bool = True,
+        wake_to_run: bool,
     ) -> tuple[bool, str]:
         """Register via :func:`src.scheduler.linux.register_cron`; a foreign principal fails loud.
 
@@ -214,8 +227,10 @@ class CronScheduler:
         because cron's own principal is the crontab owner — the same account. Its
         ``principal.user`` and ``run_highest`` are Windows logon concepts with no cron
         equivalent and are ignored, mirroring ``register_task``'s own no-password path.
+        ``wake_to_run`` (DSYNC-37) is ignored for the same reason: cron cannot wake a
+        computer, which ``supports_wake_to_run = False`` states up front.
         """
-        del task_name, run_highest  # no cron equivalent (see docstring)
+        del task_name, run_highest, wake_to_run  # no cron equivalent (see docstring)
         if principal.kind is not PrincipalKind.INTERACTIVE_TOKEN:
             raise ValueError(_CRON_FOREIGN_PRINCIPAL_REFUSAL)
         return linux.register_cron(exe_path, sis_type, input_dir, output_dir, run_time, sftp=sftp)

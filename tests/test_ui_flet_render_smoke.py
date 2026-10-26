@@ -1191,6 +1191,7 @@ class TestWizardStepsRender:
                 trigger_register=lambda: ReconcileOutcome.NONE,
                 run_time_value=lambda: "03:00",
                 run_as_user_value=lambda: "",
+                wake_to_run_value=lambda: True,
                 persist_run_time=lambda: False,
                 is_busy=lambda: False,
                 # 0049 S-2a.3: the stub has no read-back, and ``None`` asserts nothing — the
@@ -1252,6 +1253,7 @@ class TestScheduleStepMidFlight:
                 trigger_register=lambda: ReconcileOutcome.NONE,
                 run_time_value=lambda: "03:00",
                 run_as_user_value=lambda: "",
+                wake_to_run_value=lambda: True,
                 persist_run_time=lambda: False,
                 is_busy=lambda: False,
                 # 0049 S-2a.3: the stub has no read-back, and ``None`` asserts nothing — the
