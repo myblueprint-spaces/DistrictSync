@@ -9,6 +9,8 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+## [3.27.4] - 2026-10-26
+
 ### Added
 
 - **Scheduling the nightly sync as a managed service account (gMSA) now checks that Windows can
@@ -41,6 +43,19 @@ Per-release download links and auto-generated commit notes live on the
   permission prompt. If the removal cannot be confirmed, the access is left in place and Setup
   says so.
 
+### Fixed
+
+- **Nightly SFTP uploads now wait out a short network outage instead of giving up within a
+  minute.** Scheduled runs that cannot reach the server now retry up to 5 times, waiting 30
+  seconds, 2, 5 and then 10 minutes between tries (about 17 minutes in all, well inside the
+  task's 2-hour limit). Runs started by hand, from the Convert screen or a terminal, still retry
+  quickly so nobody waits. Wrong-password and unrecognised-server failures are still never
+  retried, and a delivery that still fails is reported the same way as before.
+
+## [3.27.3] - 2026-10-26
+
+### Changed
+
 - **Setup's "Set up my district" button is now "My district isn't listed", with a note under
   it.** The note says the button is only for a district missing from the list, and that a listed
   district's mapping is already built in — so an admin whose district is listed no longer walks
@@ -51,18 +66,11 @@ Per-release download links and auto-generated commit notes live on the
 
 ### Fixed
 
-- **Nightly SFTP uploads now wait out a short network outage instead of giving up within a
-  minute.** Scheduled runs that cannot reach the server now retry up to 5 times, waiting 30
-  seconds, 2, 5 and then 10 minutes between tries (about 17 minutes in all, well inside the
-  task's 2-hour limit). Runs started by hand, from the Convert screen or a terminal, still retry
-  quickly so nobody waits. Wrong-password and unrecognised-server failures are still never
-  retried, and a delivery that still fails is reported the same way as before.
 - **Nightly SFTP uploads now retry a connection that drops mid-transfer, and no longer hang for
   an hour opening the transfer channel.** A dropped connection used to fail the whole run at once
   with a blank error; it is now retried (up to 3 attempts) like other network errors, and the
   log names the error type. Opening the channel, the SSH banner and sign-in are each limited to
   30 seconds. Wrong-password and unrecognised-server failures are still never retried.
-
 - **Unity Christian: student emails now come from the school's own data.** The district's setup built
   every student address as the student number at the school's domain, which was never confirmed with the
   school, and students signing in by QR code never noticed. It now reads the real `Student email address`
