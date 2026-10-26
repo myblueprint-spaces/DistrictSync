@@ -165,8 +165,8 @@ python -m src.main --version
 
 Use [semantic versioning](https://semver.org/) for the tag itself:
 
-- **Patch** (`v1.0.1`) — bug fix, no behaviour change
-- **Minor** (`v1.1.0`) — new feature, backward compatible (new district config, new CLI flag)
+- **Patch** (`v1.0.1`) — bug fix, no behaviour change (no `contract_version` change)
+- **Minor** (`v1.1.0`) — new feature, backward compatible (new district config, new CLI flag), or a `contract_version` MINOR bump (a row-set or row-value change; v3.27.0 shipped contract `2.10.0` this way — a bug fix that changes which rows are emitted is a minor tag, not a patch)
 - **Major** (`v2.0.0`) — breaking change (output CSV schema change, renamed flags)
 
 > **"Output CSV schema change" is judged against [`output-contract.md`](output-contract.md)** — the emitted column set, column order, per-entity encoding, filenames and delivery envelope. That document also names the re-confirmation trigger: a change to any of those requires fresh confirmation against the live SpacesEDU importer **before merge**, not before tag.
@@ -180,6 +180,9 @@ Work is tracked on the **DSYNC** Jira board (kanban: To Do → In Progress → I
 - **What gets a ticket:** features, bugs, process or doc changes, and every release. Major themes are epics; do not ticket every small change.
 - **Key convention:** put the key in the branch name, PR title and commit message, e.g. `DSYNC-123-sftp-timeout`. The PR template has a Jira field.
 - **Status flow:** a ticket moves to In Progress when work starts, In Review when the PR opens and Done when the PR merges. **Done means merged, not released.** (GitHub for Jira is installed, so PRs, commits, builds and deployments show on the ticket; the status moves themselves stay manual until the PR-to-status automation rules exist, requested in DIH-59 together with the Data Insights Hub.)
+- **Ticket body:** write the description in four parts, as the board's tickets already do: **Problem** (what is wrong, who it hurts, with counts where there are any), **Fix** (what changes), **Acceptance criteria** (what a reviewer can check, each pinned by a test where code is involved) and **Open questions** (non-blocking only). A fix that reverses an earlier decision names the DECISIONS entry it supersedes.
+- **Move the ticket yourself:** until the PR-to-status automation exists (DSYNC-22), move the ticket to Done when its PR merges. A merged PR with a ticket still in To Do is a gap, not a state.
+- **Cross-check the knowledge repo:** before a ticket decides that a column is Required or that a file gains or loses rows, check Product-Integration-Validation (`checklist.md`, `rules/`) for the rule that already covers it and cite its id in the ticket. The Advanced CSV Google Doc is outdated; [`output-contract.md`](output-contract.md) and that repo are the knowledge sources. If they disagree, say so in the ticket.
 - **Fix versions:** each release tag `vX.Y.Z` has a matching Jira version `vX.Y.Z`. Tickets shipped in that release carry it as their fix version, so release notes are a Jira query. Mark the Jira version Released only when the GitHub Release is published with all artifacts and the Windows exe is signed. Districts install on their own schedule, so Released means available, not deployed to every district.
 - **Releases are tickets too:** one release = one version = one release ticket (template in [Release ticket](#release-ticket)), cut from `main` after CI is green and the checklist below is done.
 - **This repo holds no task list.** The board is the backlog; do not recreate one in `docs/ROADMAP.md`.

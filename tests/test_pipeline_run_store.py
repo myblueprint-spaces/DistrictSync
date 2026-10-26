@@ -1105,7 +1105,10 @@ class TestTypedCategoriesReachTheRecord:
 
     @staticmethod
     def _plain_emergency_report(d: Path, *, first_header: str = "Student Number", guardian: bool = False) -> None:
-        """The 2026-09-22 shape: the PLAIN report under the Enhanced report's filename."""
+        """The 2026-09-22 shape: the PLAIN report under the Enhanced report's filename.
+
+        Also Unity's 2026-10-21 demographic: the Enhanced report under its own name (DSYNC-34)."""
+        (d / "StudentDemographicInformation.txt").rename(d / "StudentDemographicEnhanced.txt")
         columns: dict[str, list[str]] = {
             first_header: ["S001"],
             "First Name": ["John"],
