@@ -886,7 +886,7 @@ class TestHomeRendersTheOneShot:
         """A deliberate one-paint exception to verdict-first: the admin has just pressed a button
         that permanently moved this computer's settings, and that outranks "did last night's
         roster sync?" exactly once."""
-        handover_result.remember(HandoverResult.handed_over())
+        handover_result.remember(HandoverResult.handed_over(check=None))
         tree = self._home(stub_page, monkeypatch)
 
         assert _has_text(tree, "Home"), "the page header still leads"
@@ -902,7 +902,7 @@ class TestHomeRendersTheOneShot:
         it would show the banner for one frame and then lose it."""
         from src.ui_flet.schedule_status import ScheduleState, ScheduleStatus
 
-        handover_result.remember(HandoverResult.handed_over())
+        handover_result.remember(HandoverResult.handed_over(check=None))
         probe = ScheduleStatus(state=ScheduleState.UNKNOWN, headline="", detail="")
         tree = self._home(stub_page, monkeypatch, probe=probe)
 
@@ -911,7 +911,7 @@ class TestHomeRendersTheOneShot:
     def test_a_second_mount_does_not_re_announce_it(self, stub_page, monkeypatch):
         """One-shot by construction: a result that survived would reappear days later announcing
         a change that happened once."""
-        handover_result.remember(HandoverResult.handed_over())
+        handover_result.remember(HandoverResult.handed_over(check=None))
         self._home(stub_page, monkeypatch)
         again = self._home(stub_page, monkeypatch)
 
@@ -920,7 +920,7 @@ class TestHomeRendersTheOneShot:
     def test_the_wizard_hosting_branch_takes_it_too(self, stub_page, monkeypatch):
         """A first-run admin dispatches the handover from the HOSTED wizard's Schedule step, and
         re-entry lands them back on this branch while ``setup_completed`` is still false."""
-        handover_result.remember(HandoverResult.handed_over())
+        handover_result.remember(HandoverResult.handed_over(check=None))
         fresh = AppConfig(identity_email="")
         tree = self._home(stub_page, monkeypatch, cfg=fresh)
 
@@ -938,7 +938,7 @@ class TestHomeRendersTheOneShot:
         """Home's floor says "Your nightly sync keeps running in the background", which is not
         about this computer's settings — and the wizard floor claims nothing was changed, which
         a handover makes false. Neither may swallow the report."""
-        handover_result.remember(HandoverResult.handed_over())
+        handover_result.remember(HandoverResult.handed_over(check=None))
         monkeypatch.setattr(home_mod, "_dashboard", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
         cfg = AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc", setup_completed=True, identity_email="")
         monkeypatch.setattr(home_mod, "read_run_records", lambda: [])

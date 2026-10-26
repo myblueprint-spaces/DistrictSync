@@ -110,7 +110,7 @@ from pathlib import Path
 # the scheduler spawns no child process at all now (the elevated child is launched by
 # elevation.py's ShellExecuteExW, not subprocess). Pinned by the transport-absence
 # tests in tests/test_schedulers.py.
-from src.scheduler import elevation, task_com
+from src.scheduler import elevation, schedule_check, task_com
 from src.scheduler.elevated_apply import DIFFERENT_ACCOUNT_SENTINEL as _DIFFERENT_ACCOUNT_SENTINEL
 from src.scheduler.elevation import ElevationOutcome, ElevationResult
 from src.scheduler.messages import SECRET_SENTINEL_PREFIX
@@ -124,10 +124,23 @@ from src.utils.validators import (
 logger = logging.getLogger(__name__)
 
 # Bounded wait for the elevated child (D5) — never INFINITE. WaitForSingleObject waits
-# for the elevated DistrictSync child to finish registering (the UAC-consent delay happens
-# inside ShellExecuteEx, which the OS bounds by its own prompt timeout), so 120s is
-# generous headroom for a slow RegisterTaskDefinition without ever freezing the flow.
-_ELEV_TIMEOUT_S = 120.0
+# for the elevated DistrictSync child to finish (the UAC-consent delay happens inside
+# ShellExecuteEx, which the OS bounds by its own prompt timeout). A child that hits this bound
+# is KILLED and runs no ``finally`` — so the bound must cover the slowest op the child can do,
+# not a typical one. The arithmetic, part by part (pinned >= the sum by a test):
+#
+#   _ELEV_PROVISION_BUDGET_S   120s  the provision op — what this wait alone used to be sized
+#                                    for: RegisterTaskDefinition, or a full history.db backup
+#                                    on an AV-scanned server
+# + schedule_check.TOTAL_BUDGET_S 110s  DSYNC-33's gMSA check after it: two bounded advisory
+#                                    reads (2 x 10s) + ONE check deadline (90s) that every
+#                                    register/run/poll step respects, with the cleanup delete's
+#                                    15s RESERVED inside it
+# + _ELEV_MARGIN_S             20s   process start-up, the result write, scheduling jitter
+# = 250s. Still bounded; only a HUNG child ever waits this long.
+_ELEV_PROVISION_BUDGET_S = 120.0
+_ELEV_MARGIN_S = 20.0
+_ELEV_TIMEOUT_S = _ELEV_PROVISION_BUDGET_S + schedule_check.TOTAL_BUDGET_S + _ELEV_MARGIN_S
 
 # Elevation outcome message contract (D5) — the canonical, secret-free strings
 # register_task returns on the self-elevated register/unregister path. The wizard's
@@ -308,6 +321,16 @@ def is_elevated() -> bool:
         return bool(ctypes.windll.shell32.IsUserAnAdmin())  # type: ignore[attr-defined]
     except Exception:
         return False
+
+
+def module_prefix(exe_path: Path) -> str:
+    """``"-m src.main "`` when ``exe_path`` is a Python interpreter (a source run), else ``""``.
+
+    The ONE spelling of how DistrictSync invokes itself: the elevated child's command line,
+    the nightly's action and (DSYNC-33) the schedule-check task's action all need it, and a
+    check task built with a different rule from the nightly's would prove nothing about it.
+    """
+    return "-m src.main " if exe_path.name.lower().startswith("python") else ""
 
 
 def _build_action_args(
@@ -625,8 +648,7 @@ def _run_elevated_child(req_path: Path, res_path: Path) -> ElevationOutcome:
     shape districts run) has no cwd dependency.
     """
     exe = Path(sys.executable)
-    prefix = "-m src.main " if exe.name.lower().startswith("python") else ""
-    params = f'{prefix}--elevated-apply "{req_path}" "{res_path}"'
+    params = f'{module_prefix(exe)}--elevated-apply "{req_path}" "{res_path}"'
     return elevation.run_elevated(str(exe), params, timeout_s=_ELEV_TIMEOUT_S)
 
 

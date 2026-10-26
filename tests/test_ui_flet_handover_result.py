@@ -134,14 +134,14 @@ class TestCompose:
 
 class TestResultShapes:
     def test_the_three_factories_pair_a_banner_with_its_payload(self) -> None:
-        assert HandoverResult.handed_over() == HandoverResult(banner=HandoverBanner.HANDED_OVER)
+        assert HandoverResult.handed_over(check=None) == HandoverResult(banner=HandoverBanner.HANDED_OVER)
         assert HandoverResult.nightly_unconfirmed(_DETAIL).detail == _DETAIL
         assert HandoverResult.after_refusal(MachineScopeRefusedReason.MISSING).refused_reason is (
             MachineScopeRefusedReason.MISSING
         )
 
     def test_a_clean_handover_carries_no_failure_detail(self) -> None:
-        clean = HandoverResult.handed_over()
+        clean = HandoverResult.handed_over(check=None)
         assert clean.detail == ""
         assert clean.refused_reason is None
 
@@ -152,11 +152,11 @@ class TestResultShapes:
 
 class TestOneShot:
     def test_remember_then_take(self) -> None:
-        handover_result.remember(HandoverResult.handed_over())
-        assert handover_result.take() == HandoverResult.handed_over()
+        handover_result.remember(HandoverResult.handed_over(check=None))
+        assert handover_result.take() == HandoverResult.handed_over(check=None)
 
     def test_take_clears_so_a_later_navigation_never_re_announces_it(self) -> None:
-        handover_result.remember(HandoverResult.handed_over())
+        handover_result.remember(HandoverResult.handed_over(check=None))
         assert handover_result.take() is not None
         assert handover_result.take() is None
         assert handover_result.take() is None
@@ -165,28 +165,28 @@ class TestOneShot:
         assert handover_result.take() is None
 
     def test_the_newer_report_wins(self) -> None:
-        handover_result.remember(HandoverResult.handed_over())
+        handover_result.remember(HandoverResult.handed_over(check=None))
         handover_result.remember(HandoverResult.nightly_unconfirmed(_DETAIL))
         taken = handover_result.take()
         assert taken is not None and taken.banner is HandoverBanner.HANDED_OVER_NIGHTLY_UNCONFIRMED
 
     def test_reset_drops_a_pending_result(self) -> None:
-        handover_result.remember(HandoverResult.handed_over())
+        handover_result.remember(HandoverResult.handed_over(check=None))
         handover_result.reset()
         assert handover_result.take() is None
 
     def test_a_worker_thread_can_hand_a_result_to_the_ui_thread(self) -> None:
         """Setup dispatches the register through ``page.run_thread``, so ``remember`` runs
         off the UI thread while ``take`` runs on it — the reason the slot is locked."""
-        worker = threading.Thread(target=lambda: handover_result.remember(HandoverResult.handed_over()))
+        worker = threading.Thread(target=lambda: handover_result.remember(HandoverResult.handed_over(check=None)))
         worker.start()
         worker.join()
-        assert handover_result.take() == HandoverResult.handed_over()
+        assert handover_result.take() == HandoverResult.handed_over(check=None)
 
     def test_exactly_one_of_many_takers_gets_the_result(self) -> None:
         """Read-and-clear is ONE locked step, so a rebuild racing a second dispatch cannot
         hand the same result to two surfaces."""
-        handover_result.remember(HandoverResult.handed_over())
+        handover_result.remember(HandoverResult.handed_over(check=None))
         taken: list[HandoverResult | None] = []
         lock = threading.Lock()
 

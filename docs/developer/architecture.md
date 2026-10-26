@@ -194,6 +194,7 @@ mappings:
 | `src/history/store.py` | SQLite run store (`history.db`) — sole run-record writer/reader; source of Run History (replaces the retired log parser) |
 | `src/sftp/uploader.py` | `SFTPUploader` — paramiko SFTP + OS keyring credential retrieval |
 | `src/scheduler/windows.py` | Windows Task Scheduler: PowerShell `Register-ScheduledTask` register + tri-state `read_schedule` read-back + `delete_task`; per-op elevation via `elevation.py` |
+| `src/scheduler/schedule_check.py` | The gMSA schedule check (DSYNC-33): the hidden `--schedule-check` mode, the check-task flow run inside the provision op's elevated child, the advisory rights/install reads, and the bounded `ScheduleCheck` result |
 | `src/scheduler/elevation.py` | Windows per-operation elevation IPC primitive (UAC `runas`, DPAPI handshake) so the app itself never runs elevated |
 | `src/scheduler/linux.py` | `crontab` wrapper for Linux cron |
 | `src/quality/report.py` | `DataQualityReport` — missing fields, duplicates, orphaned enrollments |
@@ -217,7 +218,7 @@ All UI code lives under `src/ui_flet/`:
 | `nav_rail.py` / `nav.py` | Navigation rail widget + route definitions |
 | `components.py` | Shared Flet UI components/widgets |
 | `tokens.py` / `theme.py` | Design tokens and theme (colors, spacing, typography) |
-| `verdict.py`, `humanize.py`, `home_status.py`, `schedule_status.py`, `schedule_probe.py`, `convert_result.py`, `convert_output.py`, `run_history.py`, `mapping_catalog.py`, `setup_errors.py`, `setup_gates.py`, `sftp_copy.py`, `setup_flow.py`, `job_runner.py` | Pure logic modules (no Flet imports) backing each screen — kept separate from rendering for testability (run records are read from `src/history/store.py`, the SQLite run store; `schedule_status`/`schedule_probe` own the tri-state schedule read-back; `setup_flow` is the wizard state machine) |
+| `verdict.py`, `humanize.py`, `home_status.py`, `schedule_status.py`, `schedule_probe.py`, `schedule_check_copy.py`, `convert_result.py`, `convert_output.py`, `run_history.py`, `mapping_catalog.py`, `setup_errors.py`, `setup_gates.py`, `sftp_copy.py`, `setup_flow.py`, `job_runner.py` | Pure logic modules (no Flet imports) backing each screen — kept separate from rendering for testability (run records are read from `src/history/store.py`, the SQLite run store; `schedule_status`/`schedule_probe` own the tri-state schedule read-back; `setup_flow` is the wizard state machine) |
 
 Six surfaces, one per module under `src/ui_flet/screens/`:
 

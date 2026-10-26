@@ -9,7 +9,24 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+### Added
+
+- **Scheduling the nightly sync as a managed service account (gMSA) now checks that Windows can
+  actually start it.** Straight after it registers the nightly task — inside the same Windows
+  permission prompt — DistrictSync runs a one-off test as the account and then removes it. Setup
+  confirms when it worked, or shows "Windows couldn't start DistrictSync as that account" with the
+  reason and the Windows code, so a missing 'Log on as a batch job' right or a computer that
+  cannot retrieve the account's password shows up at setup time instead of as a 3 AM run that
+  never starts. The nightly task stays scheduled either way. DistrictSync also looks the account
+  up before the permission prompt and stops, changing nothing, when Windows cannot find it or
+  cannot reach a domain controller to ask.
+
 ### Changed
+
+- **Removing a nightly sync that runs as a managed service account also removes that account's
+  access to the shared settings folder**, once Windows confirms the task is gone — in the same
+  permission prompt. If the removal cannot be confirmed, the access is left in place and Setup
+  says so.
 
 - **Setup's "Set up my district" button is now "My district isn't listed", with a note under
   it.** The note says the button is only for a district missing from the list, and that a listed

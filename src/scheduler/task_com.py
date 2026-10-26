@@ -491,24 +491,17 @@ class RegisterParams:
             _assert_is_the_current_account(self.user)
 
 
-def apply_definition(service: Any, folder: Any, params: RegisterParams) -> None:
-    """Build + register one task definition against LIVE or FAKE COM objects.
+def _new_definition(service: Any, params: RegisterParams, *, arguments: str) -> Any:
+    """A task definition with the settings quintet, the action and the RunLevel — NO trigger.
 
-    The testable core (plan 0041 rows 1–2, 11–12): tests drive it with MagicMocks and
-    assert the exact settings/principal/trigger/action values; the apartment entry point
-    below drives it with the real service. Keeping it separate is what lets the contract
-    rows be pinned as COM-object asserts instead of retired script-text asserts.
+    Shared by the nightly (:func:`apply_definition`) and the DSYNC-33 schedule check
+    (:func:`apply_check_definition`), which must run with the IDENTICAL settings, program,
+    start-in folder and run level as the nightly or it proves nothing about it. Only the
+    action's ``arguments`` differ, so they are the one thing passed separately.
 
     Every value set here is explicit because **COM defaults differ on all five settings**
     (row 1): a naive registration would get PT72H, battery-disallowed, parallel instances —
     silently breaking laptop/UPS districts and the no-catch-up guarantee.
-
-    **There is ONE registration call and no branch on the password** (plan 0049 S-3). The
-    logon type comes from ``params.kind`` through :func:`logon_type_for` and the RunLevel from
-    :func:`honours_run_highest`; the password is passed through as it arrives, already
-    normalised and already checked against the kind by ``RegisterParams.__post_init__``. The
-    two-armed ``if params.password is not None`` this replaced could express only two of the
-    three principal shapes, and it decided a security principal from the presence of a value.
     """
     definition = service.NewTask(0)
 
@@ -520,15 +513,9 @@ def apply_definition(service: Any, folder: Any, params: RegisterParams) -> None:
     settings.DisallowStartIfOnBatteries = False  # battery operation ENABLED (COM default disallows)
     settings.StopIfGoingOnBatteries = False
 
-    trigger = definition.Triggers.Create(TASK_TRIGGER_DAILY)
-    # Invariant ISO-8601, composed by US — never a locale-formatted string (row 4). The
-    # validated "HH:mm" slots straight in; seconds fixed at 00.
-    trigger.StartBoundary = f"{TRIGGER_BOUNDARY_DATE}T{params.run_time}:00"
-    trigger.DaysInterval = 1
-
     action = definition.Actions.Create(TASK_ACTION_EXEC)
     action.Path = params.exe
-    action.Arguments = params.arguments
+    action.Arguments = arguments
     action.WorkingDirectory = params.working_dir
 
     # Highest only where the kind honours it; the interactive-token path is ALWAYS Limited
@@ -536,14 +523,209 @@ def apply_definition(service: Any, folder: Any, params: RegisterParams) -> None:
     definition.Principal.RunLevel = (
         TASK_RUNLEVEL_HIGHEST if (params.run_highest and honours_run_highest(params.kind)) else TASK_RUNLEVEL_LUA
     )
+    return definition
+
+
+def _register_definition(folder: Any, task_name: str, definition: Any, params: RegisterParams) -> None:
+    """THE one ``RegisterTaskDefinition`` call in this module (AST-pinned, module-wide).
+
+    **There is ONE registration call and no branch on the password** (plan 0049 S-3). The
+    logon type comes from ``params.kind`` through :func:`logon_type_for`; the password is
+    passed through as it arrives, already normalised and already checked against the kind by
+    ``RegisterParams.__post_init__``. The two-armed ``if params.password is not None`` this
+    replaced could express only two of the three principal shapes, and it decided a security
+    principal from the presence of a value. DSYNC-33's check task goes through this SAME call
+    with the SAME ``params`` — that identity is what makes the check a proof about the nightly.
+    """
     folder.RegisterTaskDefinition(
-        params.task_name,
+        task_name,
         definition,
         TASK_CREATE_OR_UPDATE,
         params.user,
         params.password,
         logon_type_for(params.kind),
     )
+
+
+def apply_definition(service: Any, folder: Any, params: RegisterParams) -> None:
+    """Build + register one task definition against LIVE or FAKE COM objects.
+
+    The testable core (plan 0041 rows 1–2, 11–12): tests drive it with MagicMocks and
+    assert the exact settings/principal/trigger/action values; the apartment entry point
+    below drives it with the real service. Keeping it separate is what lets the contract
+    rows be pinned as COM-object asserts instead of retired script-text asserts.
+
+    Branch-free (AST-pinned): the settings, action and run level come from
+    :func:`_new_definition`, the registration from :func:`_register_definition`.
+    """
+    definition = _new_definition(service, params, arguments=params.arguments)
+
+    trigger = definition.Triggers.Create(TASK_TRIGGER_DAILY)
+    # Invariant ISO-8601, composed by US — never a locale-formatted string (row 4). The
+    # validated "HH:mm" slots straight in; seconds fixed at 00.
+    trigger.StartBoundary = f"{TRIGGER_BOUNDARY_DATE}T{params.run_time}:00"
+    trigger.DaysInterval = 1
+
+    _register_definition(folder, params.task_name, definition, params)
+
+
+# --- The schedule check task (DSYNC-33) ---------------------------------------------
+# A ONE-SHOT task registered beside the nightly, under the nightly's own principal, program
+# and start-in folder, and started on demand to PROVE Windows can start DistrictSync as that
+# account. Its consumer is ``src/scheduler/schedule_check.py``; everything COM-shaped stays
+# here, like every other Task Scheduler call.
+TASK_TRIGGER_TIME = 1
+# IRegisteredTask.State values the check polls (TASK_STATE enumeration).
+TASK_STATE_QUEUED = 2
+TASK_STATE_READY = 3
+TASK_STATE_RUNNING = 4
+# The check task is killed by Task Scheduler itself if it outlives this — a backstop for a
+# hung check process, far shorter than the nightly's PT2H.
+CHECK_EXECUTION_LIMIT = "PT5M"
+# Delete the check task as soon as its one trigger EXPIRES. The trigger's start boundary is in
+# the past (it never fires — StartWhenAvailable is False) and its END boundary is minutes ahead,
+# so if the elevated child is killed before its own ``finally`` deletes the task, Task Scheduler
+# removes it shortly after. A BACKSTOP only: unmeasured on a live server, and the check's own
+# delete is the primary cleanup.
+CHECK_DELETE_EXPIRED_AFTER = "PT0S"
+
+
+@dataclass(frozen=True)
+class CheckTaskFacts:
+    """Plain-data state of the check task — what :func:`read_check_task` returns.
+
+    ``last_run`` (naive-local ISO, ``None`` under the never-run rule) lets the poll refuse a
+    result older than its own ``Run`` call; ``arguments`` (the first action's) lets the check
+    tell its OWN leftover task from somebody else's task that happens to share the name.
+    """
+
+    state: int | None
+    last_result: int | None
+    last_run: str | None = None
+    arguments: str | None = None
+
+
+def apply_check_definition(
+    service: Any,
+    folder: Any,
+    params: RegisterParams,
+    *,
+    check_name: str,
+    arguments: str,
+    start_boundary: str,
+    end_boundary: str,
+) -> None:
+    """Register the DSYNC-33 check task against LIVE or FAKE COM objects.
+
+    ``params`` is the NIGHTLY's own command — same principal, password, program, start-in
+    folder and run level — so a run of this task answers "can Windows start DistrictSync as
+    that account, from there?" for the nightly itself. Only the arguments (the hidden
+    ``--schedule-check`` mode), the name and the trigger differ. The trigger is a single
+    expired-on-arrival time trigger whose only job is to carry the ``EndBoundary`` that
+    :data:`CHECK_DELETE_EXPIRED_AFTER` needs; the task never fires on its own.
+    """
+    definition = _new_definition(service, params, arguments=arguments)
+    settings = definition.Settings
+    settings.ExecutionTimeLimit = CHECK_EXECUTION_LIMIT
+    settings.DeleteExpiredTaskAfter = CHECK_DELETE_EXPIRED_AFTER
+
+    trigger = definition.Triggers.Create(TASK_TRIGGER_TIME)
+    trigger.StartBoundary = start_boundary
+    trigger.EndBoundary = end_boundary
+
+    _register_definition(folder, check_name, definition, params)
+
+
+def register_check_task(
+    params: RegisterParams, *, check_name: str, arguments: str, start_boundary: str, end_boundary: str
+) -> None:
+    """Register the check task at the root folder. Raises :class:`TaskComError` / ``ImportError``."""
+    import pythoncom  # noqa: PLC0415 - lazy: Windows-only
+
+    error: TaskComError | None = None
+    with _apartment() as service:
+        folder = None
+        try:
+            folder = service.GetFolder(ROOT_FOLDER)
+            apply_check_definition(
+                service,
+                folder,
+                params,
+                check_name=check_name,
+                arguments=arguments,
+                start_boundary=start_boundary,
+                end_boundary=end_boundary,
+            )
+        except pythoncom.com_error as exc:
+            error = _as_task_com_error(exc)  # raised OUTSIDE the handler — see read_task
+        finally:
+            folder = service = None  # noqa: F841 - releases THIS frame's COM refs pre-teardown
+    if error is not None:
+        raise error
+
+
+def run_task_now(task_name: str) -> None:
+    """``IRegisteredTask.Run`` — start one task on demand. Raises :class:`TaskComError` / ``ImportError``."""
+    import pythoncom  # noqa: PLC0415 - lazy: Windows-only
+
+    error: TaskComError | None = None
+    with _apartment() as service:
+        folder = task = running = None
+        try:
+            folder = service.GetFolder(ROOT_FOLDER)
+            task = folder.GetTask(task_name)
+            running = task.Run(None)  # no parameters (VT_NULL); the IRunningTask is not needed
+        except pythoncom.com_error as exc:
+            error = _as_task_com_error(exc)
+        finally:
+            folder = task = running = service = None  # noqa: F841 - releases COM refs pre-teardown
+    if error is not None:
+        raise error
+
+
+def check_task_facts(task: Any) -> CheckTaskFacts:
+    """Reduce a live-or-fake task to plain data. Total on shape; owns its COM-ref release.
+
+    Like :func:`task_facts` it re-binds its own COM locals in ``finally`` (a caller's
+    ``finally`` cannot release another frame's). ``State`` goes through the small-int
+    reducer (rejects ``bool``), ``LastTaskResult`` through the unsigned one.
+    """
+    actions = None
+    try:
+        arguments: str | None = None
+        actions = getattr(getattr(task, "Definition", None), "Actions", None)
+        count = getattr(actions, "Count", 0)
+        if isinstance(count, int) and not isinstance(count, bool) and count >= 1:
+            raw = getattr(actions.Item(1), "Arguments", None)  # type: ignore[union-attr]
+            arguments = raw.strip() if isinstance(raw, str) else None
+        return CheckTaskFacts(
+            state=_logon_or_none(getattr(task, "State", None)),
+            last_result=_unsigned_or_none(getattr(task, "LastTaskResult", None)),
+            last_run=_iso_or_none(getattr(task, "LastRunTime", None)),
+            arguments=arguments,
+        )
+    finally:
+        actions = None  # noqa: F841 - releases THIS frame's COM refs pre-teardown
+
+
+def read_check_task(task_name: str) -> CheckTaskFacts:
+    """Read the check task's State + LastTaskResult. Raises :class:`TaskComError` / ``ImportError``."""
+    import pythoncom  # noqa: PLC0415 - lazy: Windows-only
+
+    error: TaskComError | None = None
+    with _apartment() as service:
+        folder = task = None
+        try:
+            folder = service.GetFolder(ROOT_FOLDER)
+            task = folder.GetTask(task_name)
+            return check_task_facts(task)
+        except pythoncom.com_error as exc:
+            error = _as_task_com_error(exc)
+        finally:
+            folder = task = service = None  # noqa: F841 - releases COM refs pre-teardown
+    if error is None:  # pragma: no cover - unreachable: every with-body path returns or sets error
+        error = TaskComError(None, MSG_OPERATION_FAILED)
+    raise error
 
 
 def register_task_definition(params: RegisterParams) -> None:

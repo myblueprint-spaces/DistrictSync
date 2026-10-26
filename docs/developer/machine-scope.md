@@ -48,7 +48,7 @@ Developer reference for where DistrictSync keeps its profile — the per-user ap
 
 ## The named hole
 
-**THE NAMED HOLE:** `prune_principal` has a handler and an implementation but **no producer in `src/`** — Remove still sends only `{"op": "delete"}`, so a retired principal keeps its aces on the shared folder (open backlog item; needs a decision on the unconfirmed-delete case).
+**THE NAMED HOLE (narrowed by DSYNC-33):** `prune_principal` had a handler and an implementation but no producer in `src/`. Since DSYNC-33 Setup's Remove produces it for a recorded MANAGED_SERVICE_ACCOUNT principal on a machine-scoped install (`provision_session.request_removal_with_revoke` — one prompt; the child deletes, confirms MISSING, then prunes). The unconfirmed-delete case is decided: the child prunes NOTHING (`ProvisionStep.DELETE`) and the parent resolves the removal by its own read-back; a refusal before the delete falls back to the plain remove. A retired PASSWORD principal is still removed with `{"op": "delete"}` and keeps its aces (open backlog item). The flow and its guarantees: [scheduler.md](scheduler.md#the-schedule-check-proving-the-nightly-can-start-dsync-33).
 
 ## `--diagnose` — the support report (plan 0049 D7)
 

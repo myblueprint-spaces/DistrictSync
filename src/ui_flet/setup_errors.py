@@ -458,3 +458,26 @@ def classify_provision_step(step: ProvisionStep) -> str:
     if copy is None:
         return _unclassified_copy(str(getattr(step, "value", step)))
     return copy
+
+
+# --------------------------------------------------------------------------- #
+# DSYNC-33 — the managed service account did not resolve BEFORE the prompt     #
+# --------------------------------------------------------------------------- #
+# ``provision_session.request_provision`` resolves a gMSA name to a SID before it asks for the
+# UAC prompt. Two sentences, because the two facts need different advice: ``ACCOUNT_NOT_FOUND``
+# is the directory ANSWERING "no such account" (and even then hedged — an out-of-reach domain
+# controller can answer the same way), ``ACCOUNT_LOOKUP_FAILED`` is the question never being
+# answered, which must not be called a typo. Both say up front that nothing changed and no
+# prompt was shown, and neither echoes the account name.
+ACCOUNT_NOT_FOUND_COPY = (
+    "Windows didn't recognise that managed service account, so nothing was changed and no permission "
+    "prompt was shown. Check the name — the domain, a backslash, the account name and the trailing $ — "
+    "and that it's a domain account rather than one on this computer. If the name is right, this "
+    "computer may not be able to reach a domain controller right now; try again once it's on the "
+    "domain network."
+)
+ACCOUNT_LOOKUP_FAILED_COPY = (
+    "Windows couldn't look up that managed service account right now — this computer may not be able "
+    "to reach a domain controller. Nothing was changed and no permission prompt was shown. Try again "
+    "once it's connected to the domain network; if it keeps happening, ask your IT team."
+)

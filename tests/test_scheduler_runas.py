@@ -1242,21 +1242,33 @@ class TestLogonAndRunLevelPerKind:
         shape inexpressible; wrapping the old `if` in a kind check would have left the same
         two arms behind a new name. Asserted over the AST rather than the text, because the
         docstrings in that module legitimately quote the inference they replaced.
+
+        DSYNC-33 widened the pin rather than loosening it: the schedule-check task registers
+        through the SAME call, so the rule is now "ONE ``RegisterTaskDefinition`` call in the
+        whole MODULE, inside ``_register_definition``, and none of the three functions on the
+        nightly's path (``apply_definition``, ``_new_definition``, ``_register_definition``)
+        contains an ``if``" — a second call site anywhere in ``task_com`` is red.
         """
         import ast
         import pathlib
 
         tree = ast.parse(pathlib.Path(task_com.__file__).read_text(encoding="utf-8"))
-        body = next(
-            node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == "apply_definition"
-        )
-        assert [n for n in ast.walk(body) if isinstance(n, ast.If)] == []
-        registrations = [
-            n
-            for n in ast.walk(body)
-            if isinstance(n, ast.Call) and getattr(n.func, "attr", "") == "RegisterTaskDefinition"
-        ]
-        assert len(registrations) == 1
+        functions = {node.name: node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)}
+        for name in ("apply_definition", "_new_definition", "_register_definition"):
+            assert [n for n in ast.walk(functions[name]) if isinstance(n, ast.If)] == [], name
+
+        def _registrations(node: ast.AST) -> list[ast.Call]:
+            return [
+                n
+                for n in ast.walk(node)
+                if isinstance(n, ast.Call) and getattr(n.func, "attr", "") == "RegisterTaskDefinition"
+            ]
+
+        assert len(_registrations(tree)) == 1, "exactly ONE RegisterTaskDefinition call in task_com"
+        assert len(_registrations(functions["_register_definition"])) == 1
+        # …and the nightly really reaches it (a positive twin: the pin is not about dead code).
+        calls = {getattr(n.func, "id", "") for n in ast.walk(functions["apply_definition"]) if isinstance(n, ast.Call)}
+        assert {"_new_definition", "_register_definition"} <= calls
 
 
 class TestElevationPredicateIsTheKind:
