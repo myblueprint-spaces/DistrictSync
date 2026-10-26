@@ -865,7 +865,7 @@ def _sd67_observed(observed: dict[str, tuple[str, ...]]) -> dict[str, tuple[str,
     from tests.test_contract import SD67_PARENT_INFORMATION_HEADER
 
     renamed = dict(observed)
-    renamed["StudentDemographicEnh.txt"] = renamed.pop("StudentDemographicInformation.txt")
+    renamed["StudentDemographicEnhanced.txt"] = renamed.pop("StudentDemographicInformation.txt")
     del renamed["EmergencyContactInformation.txt"]
     renamed[_SD67_PARENTS] = tuple(c.lower() for c in SD67_PARENT_INFORMATION_HEADER)
     return renamed

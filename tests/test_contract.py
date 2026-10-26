@@ -951,7 +951,7 @@ def _create_unitychristian_plain_report_inputs(d: Path) -> None:
 def _create_sd67_inputs(d: Path) -> None:
     """sd67myedbc: the mbp_all file set with SD67's ENHANCED demographic export.
 
-    The district sends ``StudentDemographicEnh.txt`` rather than the base's
+    The district sends ``StudentDemographicEnhanced.txt`` (DSYNC-38) rather than the base's
     ``StudentDemographicInformation.txt``; everything else is canonical MyEd BC.
     Writing the file under the district's OWN name — rather than reusing the
     canonical one — is what proves the config's three ``source_files`` overrides
@@ -961,7 +961,7 @@ def _create_sd67_inputs(d: Path) -> None:
     """
     _create_mbp_all_inputs(d)
     (d / "StudentDemographicInformation.txt").unlink()
-    _write_student_demographic(d, "StudentDemographicEnh.txt")
+    _write_student_demographic(d, "StudentDemographicEnhanced.txt")
     # Family (DSYNC-25): the district's contact export is the NON-Enhanced one, with no
     # email column; the parent export beside it is what Family reads. Leaving the
     # email-less contacts file IN the folder is what proves the override landed — read

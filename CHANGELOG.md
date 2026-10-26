@@ -11,6 +11,12 @@ Per-release download links and auto-generated commit notes live on the
 
 ### Changed
 
+- **SD67 (Okanagan Skaha): student demographics are read from `StudentDemographicEnhanced.txt`.**
+  This is the name the district's enhanced demographic export arrives under; the mapping looked for
+  `StudentDemographicEnh.txt`. Students, Classes and Enrollments all read the new name. Student
+  emails are still generated as `<student number>@sd67.bc.ca`, and Family still comes from
+  `ParentInformation.txt`. **The district must send `StudentDemographicEnhanced.txt`**: a folder
+  holding only the old name stops at the input check ("incomplete input").
 - **Setup's "Set up my district" button is now "My district isn't listed", with a note under
   it.** The note says the button is only for a district missing from the list, and that a listed
   district's mapping is already built in — so an admin whose district is listed no longer walks
