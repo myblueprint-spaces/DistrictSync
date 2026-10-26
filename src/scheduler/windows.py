@@ -103,7 +103,7 @@ import logging
 import os
 import sys
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 # NOTE (plan 0041 S1b): `subprocess`, `base64`, `re`, `system_binary` and
 # `subprocess_no_window_flags` all left this module WITH the PowerShell transport —
@@ -330,7 +330,8 @@ def module_prefix(exe_path: Path) -> str:
     the nightly's action and (DSYNC-33) the schedule-check task's action all need it, and a
     check task built with a different rule from the nightly's would prove nothing about it.
     """
-    return "-m src.main " if exe_path.name.lower().startswith("python") else ""
+    # PureWindowsPath: the path is a Windows one even when the tests run on POSIX CI.
+    return "-m src.main " if PureWindowsPath(exe_path).name.lower().startswith("python") else ""
 
 
 def _build_action_args(

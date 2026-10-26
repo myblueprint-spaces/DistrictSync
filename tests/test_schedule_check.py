@@ -671,6 +671,29 @@ class TestStaleMarkerSweep:
         assert seen["sweep_stale"] is trusted
         assert check.verdict is CheckVerdict.OK
 
+    def test_a_trust_check_that_cannot_run_here_skips_the_sweep_never_the_check(self, tmp_path, monkeypatch):
+        # e.g. the Windows security read on a POSIX runner raises AttributeError, not OSError.
+        root = tmp_path / "ProgramData" / "DistrictSync"
+        (root / "runs").mkdir(parents=True)
+        monkeypatch.setattr(paths, "machine_data_dir", lambda: root)
+
+        def _unavailable(path: Path) -> None:
+            raise AttributeError("no windll here")
+
+        monkeypatch.setattr(paths, "assert_machine_dir_trusted", _unavailable)
+        seen: dict = {}
+
+        def _fake_run_check(params, **kwargs):
+            seen.update(kwargs)
+            return CheckVerdict.OK, CHECK_EXIT_OK
+
+        monkeypatch.setattr(schedule_check, "run_check", _fake_run_check)
+        check = schedule_check.run_for_payload(
+            _provision_payload(), com=_FakeCom(), account_sid=lambda n: "S-1", install_query=lambda n: 5
+        )
+        assert seen["sweep_stale"] is False
+        assert check.verdict is CheckVerdict.OK
+
 
 # --------------------------------------------------------------------------- #
 # The advisory facts                                                          #

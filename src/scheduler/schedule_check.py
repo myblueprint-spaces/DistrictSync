@@ -782,7 +782,7 @@ def _sweep_allowed(root: Path) -> bool:
     """May the ELEVATED child sweep ``root/runs``? Only once the folder passes the trust check."""
     try:
         paths.assert_machine_dir_trusted(root)
-    except (paths.MachineScopeRefused, OSError):
+    except Exception:  # noqa: BLE001 - the sweep is optional: ANY failure to prove trust skips it, never the check
         return False
     return True
 
