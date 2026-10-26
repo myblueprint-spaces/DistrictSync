@@ -160,6 +160,7 @@ def _payload(source: Path, **overrides: Any) -> dict[str, Any]:
         # it grants that principal anything on disk.
         "kind": PrincipalKind.PASSWORD.value,
         "run_highest": True,
+        "wake_to_run": True,
     }
     payload.update(overrides)
     return payload
@@ -205,6 +206,7 @@ class TestOverrideIsRefusedInBothHalves:
                 user="CORP\\svc",
                 kind=PrincipalKind.PASSWORD,
                 run_highest=True,
+                wake_to_run=True,
             )
         assert exc.value.step is Step.OVERRIDE
 
@@ -218,8 +220,12 @@ class TestOverrideIsRefusedInBothHalves:
             user="CORP\\svc",
             kind=PrincipalKind.PASSWORD,
             run_highest=True,
+            wake_to_run=False,
         )
         assert payload["op"] == "provision"
+        # DSYNC-37: a JSON boolean on the wire, exactly as declared (False here; the child's
+        # strict check refuses anything that is not a real bool).
+        assert payload["wake_to_run"] is False
         assert payload["source_data_dir"] == str(source_profile)
         # The kind travels as the enum's stable string VALUE: this dict is JSON, sealed and
         # unsealed across a process boundary.

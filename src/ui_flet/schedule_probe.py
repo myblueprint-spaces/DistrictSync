@@ -70,6 +70,7 @@ def foreign_task_account(app_config: AppConfig) -> str:
             unattended_flag=bool(app_config.schedule_unattended),
             raw_run_as_user=app_config.schedule_run_as_user,
             raw_run_as_kind=app_config.schedule_run_as_kind,
+            raw_wake_to_run=app_config.schedule_wake_to_run,
         )
         recorded = record.run_as_user
         if not recorded:

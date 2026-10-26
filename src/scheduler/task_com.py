@@ -473,6 +473,10 @@ class RegisterParams:
     why ``__post_init__`` can refuse the fifth unrepresentable state — an interactive-token
     registration for somebody else — which :class:`Principal` deliberately allows so the
     boundary can answer it in words.
+
+    ``wake_to_run`` (DSYNC-37) is REQUIRED and undefaulted too: whether Windows wakes a
+    sleeping computer for the nightly is the admin's choice on the Setup screen, and a default
+    at this layer would decide it for every caller that forgot to pass it.
     """
 
     task_name: str
@@ -484,6 +488,7 @@ class RegisterParams:
     password: str | None
     kind: PrincipalKind
     run_highest: bool
+    wake_to_run: bool
 
     def __post_init__(self) -> None:
         _assert_declared_principal(self.kind, self.user, self.password)
@@ -501,7 +506,9 @@ def apply_definition(service: Any, folder: Any, params: RegisterParams) -> None:
 
     Every value set here is explicit because **COM defaults differ on all five settings**
     (row 1): a naive registration would get PT72H, battery-disallowed, parallel instances —
-    silently breaking laptop/UPS districts and the no-catch-up guarantee.
+    silently breaking laptop/UPS districts and the no-catch-up guarantee. ``WakeToRun``
+    (DSYNC-37) is the sixth and is set explicitly in BOTH directions, from the caller's
+    declared ``params.wake_to_run``.
 
     **There is ONE registration call and no branch on the password** (plan 0049 S-3). The
     logon type comes from ``params.kind`` through :func:`logon_type_for` and the RunLevel from
@@ -519,6 +526,13 @@ def apply_definition(service: Any, folder: Any, params: RegisterParams) -> None:
     settings.ExecutionTimeLimit = "PT2H"
     settings.DisallowStartIfOnBatteries = False  # battery operation ENABLED (COM default disallows)
     settings.StopIfGoingOnBatteries = False
+    # DSYNC-37: wake a SLEEPING (or hibernating) computer at the trigger time. Explicit like
+    # the five above — the COM default is False, which is what every task registered before
+    # DSYNC-37 carries. It cannot start a computer that is shut down, and Windows honours it
+    # only while the power plan's "Allow wake timers" is enabled. It does not interact with
+    # the no-catch-up guarantee: StartWhenAvailable stays False, so a run the computer still
+    # missed is skipped, never started late.
+    settings.WakeToRun = bool(params.wake_to_run)
 
     trigger = definition.Triggers.Create(TASK_TRIGGER_DAILY)
     # Invariant ISO-8601, composed by US — never a locale-formatted string (row 4). The
@@ -610,6 +624,9 @@ class TaskFacts:
     action_path: str | None
     run_as: str | None = None
     logon_type: int | None = None
+    #: ``Definition.Settings.WakeToRun`` (DSYNC-37), for display and "Copy details" only;
+    #: ``None`` when the settings could not be read as a boolean.
+    wake_to_run: bool | None = None
 
 
 def com_error_scode(exc: BaseException) -> int | None:
@@ -748,6 +765,16 @@ def _logon_or_none(value: Any) -> int | None:
     return int(value)
 
 
+def _bool_or_none(value: Any) -> bool | None:
+    """A COM ``VARIANT_BOOL`` → a plain ``bool``, or ``None`` for anything else. Total.
+
+    Strict on purpose: only a real ``bool`` is an answer. A MagicMock attribute, an int or a
+    string is a shape this module does not understand, and reporting it as "on" or "off"
+    would put a guess on the Setup screen.
+    """
+    return value if isinstance(value, bool) else None
+
+
 def task_facts(task: Any) -> TaskFacts:
     """Reduce ONE live-or-fake COM task object to plain data (the read side's testable core).
 
@@ -766,7 +793,7 @@ def task_facts(task: Any) -> TaskFacts:
     reduction is total: a shape this cannot make sense of yields ``None``, never a raise and
     never a guess.
     """
-    actions = principal = None
+    actions = principal = settings = None
     try:
         action_path: str | None = None
         actions = task.Definition.Actions
@@ -777,6 +804,7 @@ def task_facts(task: Any) -> TaskFacts:
             # sentence on it — read for that boolean only, never logged or displayed.
             action_path = str(actions.Item(1).Path or "").strip() or None
         principal = task.Definition.Principal
+        settings = task.Definition.Settings
         return TaskFacts(
             next_run=_iso_or_none(task.NextRunTime),
             last_run=_iso_or_none(task.LastRunTime),
@@ -784,9 +812,10 @@ def task_facts(task: Any) -> TaskFacts:
             action_path=action_path,
             run_as=str(getattr(principal, "UserId", "") or "").strip() or None,
             logon_type=_logon_or_none(getattr(principal, "LogonType", None)),
+            wake_to_run=_bool_or_none(getattr(settings, "WakeToRun", None)),
         )
     finally:
-        actions = principal = None  # noqa: F841 - releases THIS frame's COM refs pre-teardown
+        actions = principal = settings = None  # noqa: F841 - releases THIS frame's COM refs pre-teardown
 
 
 def read_task(task_name: str) -> TaskFacts:

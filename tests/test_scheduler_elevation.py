@@ -427,6 +427,7 @@ class TestRegisterElevatedFlow:
             output_dir=Path("C:/output"),
             run_time="03:00",
             principal=Principal(kind=PrincipalKind.PASSWORD, user="CORP\\jane", password=_SECRET),
+            wake_to_run=True,
         )
 
     def test_ok_confirmed_via_readback(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -840,6 +841,7 @@ class TestElevatedFailuresAreLogged:
             output_dir=Path("C:/output"),
             run_time="03:00",
             principal=Principal(kind=PrincipalKind.PASSWORD, user=self.ACCOUNT, password=self.SECRET),
+            wake_to_run=True,
         )
 
     def test_a_child_canonical_failure_carries_its_code(

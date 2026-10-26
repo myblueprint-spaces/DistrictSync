@@ -54,7 +54,7 @@ _MAX_REQUEST_BYTES = 64 * 1024
 DIFFERENT_ACCOUNT_SENTINEL = "DSYNC_DIFFERENT_ACCOUNT"
 
 _REQUIRED_REGISTER_FIELDS = frozenset(
-    {"op", "task_name", "exe", "arguments", "working_dir", "run_time", "user", "kind", "run_highest"}
+    {"op", "task_name", "exe", "arguments", "working_dir", "run_time", "user", "kind", "run_highest", "wake_to_run"}
 )
 
 # ``provision`` registers the nightly as its last step, so it carries every register field
@@ -208,6 +208,7 @@ def _do_register(payload: dict[str, object]) -> None:
 
     if not set(payload) >= _REQUIRED_REGISTER_FIELDS:
         raise ValueError("missing fields")
+    wake_to_run = _strict_bool(payload["wake_to_run"])
     task_name = validate_task_name(str(payload["task_name"]))
     run_time = str(payload["run_time"])
     validate_run_time(run_time)
@@ -230,8 +231,21 @@ def _do_register(payload: dict[str, object]) -> None:
             password=str(password) if password is not None else None,
             kind=kind,
             run_highest=bool(payload["run_highest"]),
+            wake_to_run=wake_to_run,
         )
     )
+
+
+def _strict_bool(value: object) -> bool:
+    """A payload flag that must be a JSON boolean — anything else is refused (DSYNC-37).
+
+    ``bool(value)`` would read the string ``"false"`` as True and wake a computer the admin
+    asked us not to. The parent always writes a real boolean, so a non-boolean here is a
+    request this build did not write; the ``ValueError`` maps to ``_MSG_REQUEST_INVALID``.
+    """
+    if not isinstance(value, bool):
+        raise ValueError("not a boolean")
+    return value
 
 
 def _do_delete(payload: dict[str, object]) -> None:
@@ -275,6 +289,7 @@ def _do_provision(payload: dict[str, object]) -> None:
     validate_task_name(str(payload["task_name"]))
     validate_run_time(str(payload["run_time"]))
     task_com.PrincipalKind(str(payload["kind"]))  # an unknown kind refuses the whole op
+    _strict_bool(payload["wake_to_run"])  # DSYNC-37: refused BEFORE the HKLM commit, like run_time
     provisioning.apply_provision(payload, register=lambda: _do_register({**payload, "op": "register"}))
 
 
