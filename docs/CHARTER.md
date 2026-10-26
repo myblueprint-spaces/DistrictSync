@@ -118,6 +118,23 @@ another).* Both tracks held again; hosting adds two rules, both learned the hard
    the work), not by presence. Found by a falsification probe going green, and fixed on the
    assertion side.
 
+### Elevated Win32/COM orchestration flows behind injected seams (register → run → poll → clean up)
+_Recorded 2026-10-23 (DSYNC-33 — `src/scheduler/schedule_check.py`, `provision_session.request_removal_with_revoke`)._
+
+**Approach: TEST-ALONGSIDE against scripted fakes, then falsify the cleanup and the gates.**
+Put every OS call behind one seam (a small Protocol for the COM operations, a callable for each
+advisory API, injected clock/sleep), script the fakes per state, and assert on the ORDER of
+calls as well as the verdict. Then perturb each guard — the `finally` deletes, the
+success-needs-proof rule, the ask-gate, the fall-back — and watch the suite go red.
+
+*Rationale:* red-first buys little here, because the acceptance criteria are mostly about
+side-effect ORDER and cleanup under failure, which only exist once the flow's shape does;
+what matters is that a fake can drive every path (including a raise mid-poll) and that each
+"always cleaned up" claim is falsified rather than assumed. The real APIs cannot be exercised
+on a dev box (no domain, no unattended UAC), so the honest output names what is verified by
+fakes and what is reasoned from documentation. 13/13 scheduler-half and 9/9 UI probes went red;
+the one green probe exposed a dead constant, which was removed.
+
 ### Documentation + its enforcing gate
 _Recorded 2026-07-29 (plan 0038 S2b — `docs/developer/output-contract.md` + its drift test)._
 

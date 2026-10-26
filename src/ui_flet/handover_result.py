@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from src.scheduler.provision_session import HandoverOutcome, ProvisionAttempt, ProvisionOutcome
+from src.scheduler.schedule_check import ScheduleCheck
 from src.utils.paths import MachineScopeRefusedReason
 
 
@@ -73,16 +74,25 @@ class HandoverResult:
         refused_reason: the bounded refusal, for :attr:`~HandoverBanner.REFUSED` only —
             ``launcher._MACHINE_SCOPE_CAUSES`` already owns one plain-language cause per
             member, so the surface has copy for it without inventing any.
+        check: the schedule check's result (DSYNC-33), for :attr:`~HandoverBanner.HANDED_OVER`
+            only — the nightly registered, and the elevated child then proved (or could not
+            prove) that Windows can start DistrictSync as its account. It rides the one-shot
+            because re-entry destroys Setup before the admin could read it there.
     """
 
     banner: HandoverBanner
     detail: str = ""
     refused_reason: MachineScopeRefusedReason | None = None
+    check: ScheduleCheck | None = None
 
     @classmethod
-    def handed_over(cls) -> HandoverResult:
-        """The clean case: the scope changed and the nightly is registered."""
-        return cls(banner=HandoverBanner.HANDED_OVER)
+    def handed_over(cls, *, check: ScheduleCheck | None) -> HandoverResult:
+        """The clean case: the scope changed and the nightly is registered.
+
+        ``check`` is REQUIRED (``None`` = no check ran, e.g. a password principal): a
+        defaulted ``None`` would let the one caller that HAS a result drop it silently.
+        """
+        return cls(banner=HandoverBanner.HANDED_OVER, check=check)
 
     @classmethod
     def nightly_unconfirmed(cls, detail: str) -> HandoverResult:
@@ -130,7 +140,7 @@ def compose(attempt: ProvisionAttempt, handover: HandoverOutcome, *, nightly_det
     if not handover.handed_over:
         return None
     if attempt.outcome is ProvisionOutcome.PROVISIONED:
-        return HandoverResult.handed_over()
+        return HandoverResult.handed_over(check=attempt.check)
     return HandoverResult.nightly_unconfirmed(nightly_detail)
 
 

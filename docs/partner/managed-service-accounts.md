@@ -40,13 +40,14 @@ The middle row is what most districts use today. Two things push a district to t
 
 ## The three prerequisites
 
-All three must be true **before** DistrictSync is asked to schedule the task. DistrictSync cannot
-check any of them: it validates the *shape* of the account name and nothing more. Windows answers
+All three must be true **before** DistrictSync is asked to schedule the task. Windows answers
 **some** of the real questions when the task is registered — a name the directory does not know is
 refused there — but **not all of them**: a missing 'Log on as a batch job' right, or a computer that
 is not allowed to retrieve the account's password, can register without any error and only fail at
-3 AM, when the task first tries to run. If registration succeeded but the nightly never seems to
-run, see *Registered, but the nightly never runs* below.
+3 AM, when the task first tries to run. That is why DistrictSync now **runs a test as the account
+straight after scheduling** — see *The check DistrictSync runs when you schedule* below. The test
+tells you whether the nightly will start; it does not fix anything, so the three prerequisites are
+still yours to put in place first.
 
 1. **This computer is listed in the account's PrincipalsAllowedToRetrieveManagedPassword.**
    Without it, this computer cannot retrieve the account's password from the directory.
@@ -86,7 +87,11 @@ Assignment**, or by Group Policy for the OU the computer sits in.
    managed service account.
 3. Tick **This is a managed service account (gMSA)**.
 4. The Windows password box disappears. That is correct: there is nothing for you to type.
-5. Choose **Schedule nightly sync** and approve the Windows permission prompt.
+5. Choose **Schedule nightly sync** and approve the Windows permission prompt. Before the prompt
+   appears, DistrictSync asks Windows to look the account up; if it cannot, it stops there and says
+   so — nothing is changed and no prompt is shown.
+6. Leave DistrictSync open for up to a minute after you approve the prompt: it is running the check
+   described below.
 
 ---
 
@@ -103,16 +108,50 @@ Assignment**, or by Group Policy for the OU the computer sits in.
   before any of it happens.
 - **Ask for permission once.** Registering an unattended task requires administrator rights.
   DistrictSync raises a single Windows permission prompt and the application itself never runs
-  elevated.
+  elevated. The check below runs inside that same permission — there is no second prompt.
+- **Run a check as the account** (next section), then remove every trace of it.
+- **Take the account's access away when you remove the nightly.** Choosing **Remove nightly sync**
+  deletes the scheduled task and, once Windows confirms it is gone, removes the account's
+  permissions on `C:\ProgramData\DistrictSync` — in the same single permission prompt. If the
+  task's removal cannot be confirmed, the permissions are deliberately left alone (a live task whose
+  account lost access would fail every night). DistrictSync says on screen when the access stayed;
+  you can then remove it with `icacls` or the folder's Security tab.
 
-## What DistrictSync does not do yet
+## The check DistrictSync runs when you schedule
 
-- **Removing the nightly sync does not yet take the account's access away.** Choosing **Remove
-  nightly sync** deletes the scheduled task. The permissions that were granted on
-  `C:\ProgramData\DistrictSync` stay. The mechanism to revoke them exists and is deliberately
-  ordered — it would run only after Windows confirms the task is gone — but nothing in this
-  version calls it, so treat revocation as a manual step for now: if the account should not keep
-  access to that folder, remove it with `icacls` or the folder's Security tab.
+Straight after it registers the nightly task, DistrictSync proves the task can actually start. Using
+the same account, the same program and the same start-in folder as the nightly, it creates a
+one-off test task (named after the nightly with `_Check` on the end), asks Windows to run it, and
+waits up to a minute. The test starts DistrictSync in a special check mode that does nothing but
+open this computer's shared settings folder and leave a small note in its `runs` folder — it does
+not read your extract files, build or send anything, or touch the run history. DistrictSync then
+**deletes the test task and the note**, whatever the result. If this computer already has a task by
+the test task's name that DistrictSync did not create, DistrictSync leaves it alone and reports
+that the check couldn't run.
+
+It also reads two things from this computer to help explain a failure: whether the account is
+granted or denied 'Log on as a batch job' **directly** in the local security policy, and whether
+Windows reports the account as installed here. Neither of these can stop the nightly from being
+scheduled, and if Windows cannot answer, DistrictSync says nothing about it rather than guess.
+
+The nightly task stays scheduled whatever the check finds. What you see on screen:
+
+| On screen | What it means | What to do |
+| --- | --- | --- |
+| **"Windows started DistrictSync as the nightly sync's account"** | The test ran as the account and DistrictSync started correctly. | Nothing. |
+| **"Windows couldn't start DistrictSync as that account"** | Windows could not start the test (it names the reason and the Windows code), or DistrictSync started but could not use the shared settings folder. | Read the reason on screen. A sign-in or logon-type failure is almost always one of the three prerequisites above; the codes are the same ones the table under *Registered, but the nightly never runs* explains. Once it is fixed, choose **Schedule nightly sync** again to repeat the check. |
+| **"DistrictSync couldn't finish checking the nightly sync"** | The test did not finish within a minute, or Windows would not create or start it. This is **not** a finding about the account. | The nightly may well run. Check Home after its first scheduled time, and see *Registered, but the nightly never runs* if it does not. |
+
+The two failure bands carry **Open log folder** and **Copy details**. The details are the task name,
+the result's name, the Windows code and the two advisory answers — no account names and no folder
+paths. DistrictSync's log carries one line for the check, with the same result and code — it
+starts `Schedule check after registration:`.
+
+If the account cannot be looked up **before** the permission prompt, DistrictSync stops there with
+*"We didn't make that change"*: either Windows did not recognise the name (check the domain, the
+backslash, the name and the trailing `$`), or it could not reach a domain controller to ask — in
+which case the name may be right, and you should try again once this computer is on the domain
+network.
 
 ## What DistrictSync cannot undo
 
@@ -124,8 +163,9 @@ Assignment**, or by Group Policy for the OU the computer sits in.
   settings** — and an account that is not an administrator cannot open it at all. That is a real
   change in who can do what, which is why DistrictSync says so in the confirmation before you
   agree to it.
-- **DistrictSync never grants, revokes or checks anything in the directory.** All three
-  prerequisites above are yours; DistrictSync only asks Windows to register a task.
+- **DistrictSync never grants or revokes anything in the directory.** All three prerequisites
+  above are yours; DistrictSync asks Windows to register a task, runs the test described above,
+  and reads — never changes — this computer's answers about the account.
 
 ---
 

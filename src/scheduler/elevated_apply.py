@@ -12,8 +12,10 @@ recognises ``--elevated-apply`` by an argv check ABOVE its CLI preamble, so this
 runs with NONE of the preamble's side effects: no legacy-profile migration, no console
 attach, no log-sink configuration, no orphan sweep. An elevated process performing
 best-effort filesystem work in user-writable directories is an EoP surface; this child
-touches exactly two files — the DPAPI request it reads and the result it writes — and
-diagnostics ride the result file's message, never a log sink it would have to configure.
+touches the DPAPI request it reads and the result it writes — plus, for a ``provision`` that
+asked for it (DSYNC-33), the schedule check's one-shot task and its marker in the shared
+``runs`` folder, both deleted before it exits (``schedule_check.run_check``) — and diagnostics
+ride the result file, never a log sink it would have to configure.
 
 **Fail-closed ladder** (mirrors the retired PS bootstrap, pinned by the refusal table in
 ``tests/test_elevated_apply.py``):
@@ -27,7 +29,9 @@ diagnostics ride the result file's message, never a log sink it would have to co
   one, or the cross-account case surfaces as "the request was missing" (defect A8);
 * malformed payload / unknown op / invalid field values → a refusal result, exit 0;
 * the ``task_com`` call raises → ``{ok: False, message: <canonical>}``;
-* success → ``{ok: True}``.
+* success → ``{ok: True}`` — and, after a ``provision`` whose payload asked for the schedule
+  check (DSYNC-33), ``{ok: True, check: {verdict, code, batch_right, installed}}``: three
+  enum values and one integer, never free text, a path or an account.
 
 The child ALWAYS exits 0 on a written result: the parent's verdict comes from the result
 file plus the read-back confirm (D5 — a child exit code is never trusted as success).
@@ -54,7 +58,7 @@ _MAX_REQUEST_BYTES = 64 * 1024
 DIFFERENT_ACCOUNT_SENTINEL = "DSYNC_DIFFERENT_ACCOUNT"
 
 _REQUIRED_REGISTER_FIELDS = frozenset(
-    {"op", "task_name", "exe", "arguments", "working_dir", "run_time", "user", "kind", "run_highest"}
+    {"op", "task_name", "exe", "arguments", "working_dir", "run_time", "user", "kind", "run_highest", "wake_to_run"}
 )
 
 # ``provision`` registers the nightly as its last step, so it carries every register field
@@ -81,13 +85,18 @@ CHILD_REFUSALS: tuple[str, ...] = (
 )
 
 
-def _write_result(res_path: Path, ok: bool, message: str = "") -> None:
+def _write_result(res_path: Path, ok: bool, message: str = "", *, check: dict[str, object] | None = None) -> None:
     """Atomic plaintext result — temp + ``os.replace`` so the parent never sees a partial.
 
     The result carries NO secret by design (the parent's ``read_result`` cap and the D5
-    handshake both assume that), so plain UTF-8 JSON is correct here.
+    handshake both assume that), so plain UTF-8 JSON is correct here. ``check`` is the
+    schedule check's BOUNDED wire form (``ScheduleCheck.to_wire``) and is present only when a
+    check ran — every other result keeps its exact pre-DSYNC-33 shape.
     """
-    payload = json.dumps({"ok": ok, "message": message})
+    result: dict[str, object] = {"ok": ok, "message": message}
+    if check is not None:
+        result["check"] = check
+    payload = json.dumps(result)
     tmp = res_path.with_name(res_path.name + ".tmp")
     tmp.write_text(payload, encoding="utf-8")
     os.replace(tmp, res_path)
@@ -150,6 +159,7 @@ def _apply(req_path: Path, res_path: Path) -> int:
 
     # --- dispatch (re-validating EVERYTHING in the privileged half) ------------------
     op = payload.get("op")
+    check: dict[str, object] | None = None
     try:
         if op == "register":
             _do_register(payload)
@@ -157,6 +167,7 @@ def _apply(req_path: Path, res_path: Path) -> int:
             _do_delete(payload)
         elif op == "provision":
             _do_provision(payload)
+            check = _schedule_check(payload)
         elif op == "grant_current_user":
             _do_grant_current_user(payload)
         elif op == "prune_principal":
@@ -182,8 +193,23 @@ def _apply(req_path: Path, res_path: Path) -> int:
         _write_result(res_path, False, _MSG_REQUEST_INVALID)
         return 0
 
-    _write_result(res_path, True)
+    _write_result(res_path, True, check=check)
     return 0
+
+
+def _schedule_check(payload: dict[str, object]) -> dict[str, object] | None:
+    """Prove the nightly can start, when the parent asked (DSYNC-33). ``None`` = not asked.
+
+    Runs only AFTER ``_do_provision`` returned — i.e. the nightly is registered — and inside
+    this same elevated process, so the admin answers ONE UAC prompt for both. The check is
+    advisory and total (``schedule_check.run_for_payload`` never raises): whatever it finds,
+    the op still reports ``ok`` and the nightly stays registered.
+    """
+    from src.scheduler import schedule_check
+
+    if not schedule_check.requested(payload):
+        return None
+    return schedule_check.run_for_payload(payload).to_wire()
 
 
 def _do_register(payload: dict[str, object]) -> None:
@@ -208,6 +234,7 @@ def _do_register(payload: dict[str, object]) -> None:
 
     if not set(payload) >= _REQUIRED_REGISTER_FIELDS:
         raise ValueError("missing fields")
+    wake_to_run = _strict_bool(payload["wake_to_run"])
     task_name = validate_task_name(str(payload["task_name"]))
     run_time = str(payload["run_time"])
     validate_run_time(run_time)
@@ -230,8 +257,21 @@ def _do_register(payload: dict[str, object]) -> None:
             password=str(password) if password is not None else None,
             kind=kind,
             run_highest=bool(payload["run_highest"]),
+            wake_to_run=wake_to_run,
         )
     )
+
+
+def _strict_bool(value: object) -> bool:
+    """A payload flag that must be a JSON boolean — anything else is refused (DSYNC-37).
+
+    ``bool(value)`` would read the string ``"false"`` as True and wake a computer the admin
+    asked us not to. The parent always writes a real boolean, so a non-boolean here is a
+    request this build did not write; the ``ValueError`` maps to ``_MSG_REQUEST_INVALID``.
+    """
+    if not isinstance(value, bool):
+        raise ValueError("not a boolean")
+    return value
 
 
 def _do_delete(payload: dict[str, object]) -> None:
@@ -275,6 +315,7 @@ def _do_provision(payload: dict[str, object]) -> None:
     validate_task_name(str(payload["task_name"]))
     validate_run_time(str(payload["run_time"]))
     task_com.PrincipalKind(str(payload["kind"]))  # an unknown kind refuses the whole op
+    _strict_bool(payload["wake_to_run"])  # DSYNC-37: refused BEFORE the HKLM commit, like run_time
     provisioning.apply_provision(payload, register=lambda: _do_register({**payload, "op": "register"}))
 
 

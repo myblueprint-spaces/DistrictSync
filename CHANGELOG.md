@@ -9,6 +9,25 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+### Added
+
+- **Scheduling the nightly sync as a managed service account (gMSA) now checks that Windows can
+  actually start it.** Straight after it registers the nightly task — inside the same Windows
+  permission prompt — DistrictSync runs a one-off test as the account and then removes it. Setup
+  confirms when it worked, or shows "Windows couldn't start DistrictSync as that account" with the
+  reason and the Windows code, so a missing 'Log on as a batch job' right or a computer that
+  cannot retrieve the account's password shows up at setup time instead of as a 3 AM run that
+  never starts. The nightly task stays scheduled either way. DistrictSync also looks the account
+  up before the permission prompt and stops, changing nothing, when Windows cannot find it or
+  cannot reach a domain controller to ask.
+- **The nightly sync can wake the computer to run.** Setup's schedule section has a new tick box,
+  "Wake this computer to run the sync", on by default for a new schedule. With it on, Windows
+  wakes a sleeping or hibernating computer at the run time instead of missing the sync. It can't
+  start a computer that is shut down, and it only works while "Allow wake timers" is turned on in
+  the Windows power plan. A schedule set up with an earlier version keeps working as it did (it
+  does not wake the computer) until it is scheduled again from Setup, and Setup now shows whether
+  the current schedule wakes the computer.
+
 ### Changed
 
 - **SD67 (Okanagan Skaha): student demographics are read from `StudentDemographicEnhanced.txt`.**
@@ -17,6 +36,11 @@ Per-release download links and auto-generated commit notes live on the
   emails are still generated as `<student number>@sd67.bc.ca`, and Family still comes from
   `ParentInformation.txt`. **The district must send `StudentDemographicEnhanced.txt`**: a folder
   holding only the old name stops at the input check ("incomplete input").
+- **Removing a nightly sync that runs as a managed service account also removes that account's
+  access to the shared settings folder**, once Windows confirms the task is gone — in the same
+  permission prompt. If the removal cannot be confirmed, the access is left in place and Setup
+  says so.
+
 - **Setup's "Set up my district" button is now "My district isn't listed", with a note under
   it.** The note says the button is only for a district missing from the list, and that a listed
   district's mapping is already built in — so an admin whose district is listed no longer walks
@@ -27,6 +51,12 @@ Per-release download links and auto-generated commit notes live on the
 
 ### Fixed
 
+- **Nightly SFTP uploads now wait out a short network outage instead of giving up within a
+  minute.** Scheduled runs that cannot reach the server now retry up to 5 times, waiting 30
+  seconds, 2, 5 and then 10 minutes between tries (about 17 minutes in all, well inside the
+  task's 2-hour limit). Runs started by hand, from the Convert screen or a terminal, still retry
+  quickly so nobody waits. Wrong-password and unrecognised-server failures are still never
+  retried, and a delivery that still fails is reported the same way as before.
 - **Nightly SFTP uploads now retry a connection that drops mid-transfer, and no longer hang for
   an hour opening the transfer channel.** A dropped connection used to fail the whole run at once
   with a blank error; it is now retried (up to 3 attempts) like other network errors, and the

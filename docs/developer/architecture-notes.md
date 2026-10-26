@@ -126,7 +126,8 @@ Each guide below holds a narrative moved VERBATIM out of CLAUDE.md by plan 0053 
 - `src/scheduler/provisioning.py` is the ONLY registry writer and uses the exported `MACHINE_SCOPE_KEY_ACCESS` mask (a 32-bit view answers about a different key); SID strings, never localised names; every `icacls` non-zero exit there is FATAL.
 - A new `MachineScopeRefused` reason needs a plain-language cause in `launcher._MACHINE_SCOPE_CAUSES` (a completeness test makes it RED). `dpapi_call(..., *, flags)` — `flags` is required.
 - The scope words the partner docs quote (`MACHINE_SCOPE_LINE_LEAD`, `diagnostics.SCOPE_SHARED`/`SCOPE_PER_USER`) are single-sourced and pinned by `tests/test_partner_doc_schedule_copy_parity.py` — the wrong answer there is SILENT.
-- Open hole: `prune_principal` has no producer in `src/` (open backlog item).
+- `prune_principal` has ONE producer since DSYNC-33 — Setup's Remove for a recorded MANAGED_SERVICE_ACCOUNT principal on a machine-scoped install (`provision_session.request_removal_with_revoke`); it prunes only after a read-back proves the task MISSING, and a refusal before the delete falls back to the plain remove. A retired PASSWORD principal still keeps its aces (open backlog item).
+- The gMSA schedule check (DSYNC-33, `scheduler/schedule_check.py`) rides the provision op's ONE elevated child; it is advisory and the nightly is never rolled back on its verdict; its channel back is `{verdict, code, batch_right, installed}` only. Full text: `docs/developer/scheduler.md`.
 
 ## Configuration-Driven Design
 

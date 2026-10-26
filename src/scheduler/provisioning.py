@@ -1,9 +1,11 @@
 """Turning this computer into a machine-scoped install — the elevated engine (0049 S-1b-i).
 
 Three operations run behind ONE UAC prompt, dispatched by
-:mod:`src.scheduler.elevated_apply`. **Nothing in the app calls them yet** — Schedule-time
-dispatch is S-2. That is deliberate: the riskiest code in the plan lands and gets tested
-before any surface can reach it.
+:mod:`src.scheduler.elevated_apply`. They landed INERT (S-1b-i) so the riskiest code was
+tested before any surface could reach it; ``provision`` has been reached from Setup's Schedule
+press since S-2b and ``grant_current_user`` from the launcher's grant window, and since DSYNC-33
+``prune_principal`` is reached from Setup's Remove for a managed-service-account principal
+(``provision_session.request_removal_with_revoke``).
 
 * ``provision`` — create ``C:\\ProgramData\\DistrictSync``, migrate the admin's per-user
   profile into it, seal the delivery secret, VERIFY, then commit the HKLM switch.
@@ -213,15 +215,46 @@ def _create_directory_with_sddl(path: Path, sddl: str) -> None:  # pragma: no co
         kernel32.LocalFree(descriptor)
 
 
+#: ``ERROR_NONE_MAPPED`` — ``LookupAccountNameW`` reached an answer and the answer was "no
+#: such account". Every OTHER failure (no logon servers, a broken trust, an RPC timeout) means
+#: the question could not be asked, which is why :class:`AccountLookupError` carries the code.
+ERROR_NONE_MAPPED = 1332
+
+
+class AccountLookupError(LookupError):
+    """``LookupAccountNameW`` could not resolve an account. Carries the Win32 error and nothing else.
+
+    A ``LookupError`` subclass so every existing ``except LookupError`` (``_sid_for``) keeps
+    refusing exactly as before. ``winerror`` is ``None`` off Windows. It never carries the
+    account name: the pre-UAC refusal it feeds (DSYNC-33) is logged, and a log line names no
+    account.
+    """
+
+    def __init__(self, winerror: int | None) -> None:
+        super().__init__(f"Windows could not resolve the account (error {winerror}).")
+        self.winerror = winerror
+
+
+def account_sid(name: str) -> str:
+    """Resolve an account to its SID string — the public face of :func:`_account_sid`.
+
+    Used UNELEVATED by ``provision_session.request_provision`` to refuse an unresolvable
+    managed service account BEFORE the UAC prompt (DSYNC-33), and by the elevated schedule
+    check for its rights lookup. One wrapper, so the two halves cannot resolve a name two
+    different ways. Raises :class:`AccountLookupError`.
+    """
+    return _account_sid(name)
+
+
 def _account_sid(name: str) -> str:  # pragma: no cover - Windows-only ctypes
     """Resolve ``DOMAIN\\user`` (or a bare name) to its SID string.
 
-    Raises ``LookupError`` when Windows cannot resolve it — which is a REFUSAL, not a
-    fallback: a DACL built around an unresolvable principal would either fail to apply or
-    grant the wrong trustee.
+    Raises :class:`AccountLookupError` (a ``LookupError``) when Windows cannot resolve it —
+    which is a REFUSAL, not a fallback: a DACL built around an unresolvable principal would
+    either fail to apply or grant the wrong trustee.
     """
     if sys.platform != "win32":
-        raise LookupError("Account SIDs can only be resolved on Windows.")
+        raise AccountLookupError(None)
 
     advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)  # type: ignore[attr-defined]
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
@@ -247,15 +280,16 @@ def _account_sid(name: str) -> str:  # pragma: no cover - Windows-only ctypes
     advapi32.LookupAccountNameW(
         None, name, None, ctypes.byref(sid_size), None, ctypes.byref(domain_size), ctypes.byref(use)
     )
-    if ctypes.get_last_error() != _ERROR_INSUFFICIENT_BUFFER or sid_size.value == 0:  # type: ignore[attr-defined]
-        raise LookupError(f"Windows did not recognise the account (error {ctypes.get_last_error()}).")  # type: ignore[attr-defined]
+    first_error = ctypes.get_last_error()  # type: ignore[attr-defined]
+    if first_error != _ERROR_INSUFFICIENT_BUFFER or sid_size.value == 0:
+        raise AccountLookupError(first_error)
 
     sid = ctypes.create_string_buffer(sid_size.value)
     domain = ctypes.create_unicode_buffer(domain_size.value)
     if not advapi32.LookupAccountNameW(
         None, name, sid, ctypes.byref(sid_size), domain, ctypes.byref(domain_size), ctypes.byref(use)
     ):
-        raise LookupError(f"Windows did not recognise the account (error {ctypes.get_last_error()}).")  # type: ignore[attr-defined]
+        raise AccountLookupError(ctypes.get_last_error())  # type: ignore[attr-defined]
 
     text = ctypes.c_wchar_p()
     if not advapi32.ConvertSidToStringSidW(ctypes.cast(sid, ctypes.c_void_p), ctypes.byref(text)):
@@ -595,6 +629,8 @@ def build_provision_payload(
     user: str,
     kind: task_com.PrincipalKind,
     run_highest: bool,
+    schedule_check: bool,
+    wake_to_run: bool,
     password: str | None = None,
     sftp_host: str = "",
     sftp_username: str = "",
@@ -618,12 +654,19 @@ def build_provision_payload(
     clothes. It travels as the enum's stable string value: this dict is JSON, sealed and
     unsealed across a process boundary.
 
+    ``schedule_check`` (DSYNC-33) is REQUIRED and undefaulted: it asks the child to PROVE,
+    after registering, that Windows can start DistrictSync as the principal (the elevated
+    half runs it only for a kind ``schedule_check.applies_to``). It is the caller's
+    DECLARATION that the result will be read; a request without the key (an older parent)
+    gets no check, never a guessed one.
+
     Raises:
         ProvisionRefused: with :attr:`ProvisionStep.OVERRIDE`.
     """
     _refuse_under_override()
     return {
         "op": "provision",
+        "schedule_check": schedule_check,
         "source_data_dir": str(paths.per_user_data_dir()),
         "task_name": task_name,
         "exe": exe,
@@ -633,6 +676,7 @@ def build_provision_payload(
         "user": user,
         "kind": kind.value,
         "run_highest": run_highest,
+        "wake_to_run": wake_to_run,
         "password": password or "",
         "sftp_host": sftp_host,
         "sftp_username": sftp_username,
@@ -755,7 +799,7 @@ def _resume_or_refuse(root: Path) -> bool:
     ``SE_DACL_PROTECTED`` directory with no open-group ace, so a directory that passes the
     app's own trust predicate is provably OURS. Re-running the remaining steps against it is
     what stops a kill between the secret write and the commit — the child IS killed, the
-    120 s ``run_elevated`` budget has to cover UAC dwell plus a full ``history.db`` backup
+    bounded ``run_elevated`` wait (``windows._ELEV_TIMEOUT_S``) has to cover a full ``history.db`` backup
     on an AV-scanned server — from stranding a sealed credential in a directory every future
     attempt refuses forever.
 

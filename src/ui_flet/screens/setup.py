@@ -76,10 +76,14 @@ from src.scheduler import get_scheduler, windows
 from src.scheduler.provision_session import (
     ProvisionAttempt,
     ProvisionOutcome,
+    RevokeOutcome,
     complete_handover,
     delivery_secret_unreadable,
     request_provision,
+    request_removal_with_revoke,
 )
+from src.scheduler.provisioning import ProvisionStep
+from src.scheduler.schedule_check import ScheduleCheck
 from src.scheduler.task_com import Principal, PrincipalKind
 from src.sftp.uploader import LISTING_DENIED_NOTE, SFTPUploader
 from src.ui_flet import components, handover_result, tokens
@@ -116,6 +120,7 @@ from src.ui_flet.mapping_catalog import (
     filtered_catalog,
 )
 from src.ui_flet.picker_field import PickerField
+from src.ui_flet.schedule_check_copy import check_band
 from src.ui_flet.schedule_probe import foreign_task_account
 from src.ui_flet.schedule_status import (
     ScheduleState,
@@ -123,6 +128,7 @@ from src.ui_flet.schedule_status import (
     interpret_unregister,
     is_transient_location,
     last_run_line,
+    wake_line,
 )
 from src.ui_flet.screens.creator import (
     CREATOR_DISCARDED_NOTE,
@@ -139,12 +145,19 @@ from src.ui_flet.screens.creator import (
 )
 from src.ui_flet.screens.identity import NOT_LISTED_NOTE_TAIL as UNMATCHED_DISTRICT_NOTE
 from src.ui_flet.screens.identity import log_resolve, matched_headline
-from src.ui_flet.setup_errors import classify_provision_step, classify_schedule_error
+from src.ui_flet.setup_errors import (
+    ACCOUNT_LOOKUP_FAILED_COPY,
+    ACCOUNT_NOT_FOUND_COPY,
+    classify_provision_step,
+    classify_schedule_error,
+)
 from src.ui_flet.setup_flow import (
     GMSA_IT_DOC_TITLE,
     GMSA_PREREQUISITES,
     SCHEDULE_ACCOUNT_FIELD_LABEL,
     SCHEDULE_GMSA_TOGGLE_LABEL,
+    SCHEDULE_WAKE_HELPER,
+    SCHEDULE_WAKE_TOGGLE_LABEL,
     TRANSITION_CUE,
     DeliveryFact,
     DowngradeInterrupt,
@@ -178,6 +191,7 @@ from src.ui_flet.setup_flow import (
     task_args_from_persisted,
     task_args_to_persisted,
     total_steps,
+    wake_to_run_initial,
 )
 from src.ui_flet.setup_gates import (
     RegisterBlock,
@@ -418,8 +432,29 @@ HANDOVER_UNCONFIRMED_LEAD = (
 )
 
 
-def handover_banner(result: handover_result.HandoverResult) -> ft.Control:
+def schedule_check_band(page: ft.Page, check: ScheduleCheck, *, task_name: str) -> ft.Control:
+    """The schedule check's band (DSYNC-33) — every word from ``schedule_check_copy.check_band``.
+
+    A passing check is a calm HEALTHY confirmation with no action. Anything else is a toned
+    band (FAILED for a finding, WARNING when the check could not reach an answer) carrying the
+    DSYNC-32 log actions in its trailing slot: text tier, in the band's own on-tint colour, so
+    the screen's ONE filled primary stays wherever it already was. "Copy details" is bounded —
+    the task name, the verdict's name, the code and the two advisory facts.
+    """
+    band = check_band(check, task_name=task_name)
+    trailing: ft.Control | None = None
+    if band.offers_log_actions:
+        trailing = components.log_actions(page, band.details, color=components.on_tint_color(band.verdict))
+    return components.HealthVerdictBanner(band.verdict, headline=band.headline, detail=band.detail, trailing=trailing)
+
+
+def handover_banner(result: handover_result.HandoverResult, *, page: ft.Page, task_name: str) -> ft.Control:
     """The one-shot post-handover surface. TOTAL over :class:`HandoverBanner`.
+
+    DSYNC-33: a handover whose nightly runs as a managed service account also carries the
+    schedule check's result, painted directly under the handover band by
+    :func:`schedule_check_band` — re-entry lands on Home, so this one-shot is the only place
+    the admin can read it. ``page`` (for "Copy details") and ``task_name`` are required for it.
 
     ``HandoverBanner.REFUSED`` is normally painted on the Setup surface instead — that outcome
     leaves ``complete_handover`` returning BEFORE re-entry, so Setup is still mounted — but the
@@ -432,8 +467,14 @@ def handover_banner(result: handover_result.HandoverResult) -> ft.Control:
     completeness test) drops the clause rather than rendering an enum value.
     """
     if result.banner is HandoverBanner.HANDED_OVER:
-        return components.HealthVerdictBanner(
+        done = components.HealthVerdictBanner(
             Verdict.HEALTHY, headline=HANDOVER_DONE_HEADLINE, detail=HANDOVER_DONE_DETAIL
+        )
+        if result.check is None:
+            return done
+        return ft.Column(
+            spacing=tokens.space_md,
+            controls=[done, schedule_check_band(page, result.check, task_name=task_name)],
         )
     if result.banner is HandoverBanner.HANDED_OVER_NIGHTLY_UNCONFIRMED:
         return components.HealthVerdictBanner(
@@ -442,6 +483,25 @@ def handover_banner(result: handover_result.HandoverResult) -> ft.Control:
             detail=f"{HANDOVER_UNCONFIRMED_LEAD} {result.detail}".strip(),
         )
     return components.ErrorCard(SCOPE_REFUSED_HEADLINE, _scope_refusal_detail(result.refused_reason))
+
+
+#: DSYNC-33 — the Remove band's second sentence when the account's folder access went with it.
+REVOKE_DONE_NOTE = "The account it ran as no longer has access to this computer's shared settings folder."
+
+
+def _revoke_detail(detail: str, revoke: RevokeOutcome | None) -> str:
+    """The Remove success detail plus what happened to the account's folder access (DSYNC-33).
+
+    ``None`` (no revoke was attempted — not a managed service account, or not a shared-settings
+    computer) leaves the detail untouched. A revoke that did not happen, or was not confirmed,
+    says so with the provisioning PRUNE copy — the same sentence the step id already owns — so
+    an admin is never told an account lost access it may still have.
+    """
+    if revoke is None:
+        return detail
+    if revoke is RevokeOutcome.REVOKED:
+        return f"{detail} {REVOKE_DONE_NOTE}"
+    return f"{detail} {classify_provision_step(ProvisionStep.PRUNE)}"
 
 
 def _scope_refusal_detail(reason: paths.MachineScopeRefusedReason | None) -> str:
@@ -498,6 +558,12 @@ def _machine_scope_now() -> bool:
     except Exception:  # noqa: BLE001 - see the docstring; a note may never break the surface
         return False
 
+
+#: DSYNC-33: the managed service account did not resolve BEFORE the prompt — nothing was asked of
+#: Windows, so the headline is the refusal's ("We didn't make that change"), not a failed attempt's.
+_PRE_PROMPT_REFUSALS: frozenset[ProvisionOutcome] = frozenset(
+    {ProvisionOutcome.ACCOUNT_NOT_FOUND, ProvisionOutcome.ACCOUNT_LOOKUP_FAILED}
+)
 
 #: A provisioning outcome that is not ``PROVISIONED``, ``REFUSED`` or ``FAILED`` maps onto the
 #: SAME canonical the ordinary register path produces for the same event, so ``setup_errors``
@@ -733,6 +799,19 @@ def _last_run_caption(status: ScheduleStatus) -> list[ft.Control]:
     return [ft.Text(line, size=tokens.type_caption, color=tokens.color_muted, selectable=True)]
 
 
+def _wake_caption(status: ScheduleStatus) -> list[ft.Control]:
+    """The read-only "does Windows wake this computer for this task?" caption (DSYNC-37).
+
+    Same muted caption tier as the last-run line and no button. Read off the LIVE task
+    (``schedule_status.wake_line``), so an install whose task predates DSYNC-37 sees that it does
+    not wake; empty unless LIVE and Windows reported the setting.
+    """
+    line = wake_line(status)
+    if line is None:
+        return []
+    return [ft.Text(line, size=tokens.type_caption, color=tokens.color_muted)]
+
+
 def _finish_summary_row_control(row: FinishSummaryRow) -> ft.Control:  # pragma: no cover - Flet view glue
     """One checked-summary row: a green ✓ for a configured step, else a subdued "later" cue.
 
@@ -892,7 +971,8 @@ class _ScheduleHandle:
     app never re-points in place.
     ``run_as_user_value`` is the live run-as field, so the reconcile compares the PENDING
     principal against the recorded one (a principal move with unchanged task args is still a
-    re-register). ``persist_run_time`` is the S3-b seam: persist a valid run-time edit as plain
+    re-register). ``wake_to_run_value`` is the wake-to-run tick box (DSYNC-37), compared the
+    same way. ``persist_run_time`` is the S3-b seam: persist a valid run-time edit as plain
     config when no schedule is registered (invalid → the section's inline error, nothing
     persisted).
     ``last_schedule_state`` is the last CONFIRMED read-back (``None`` until one lands), which
@@ -911,6 +991,7 @@ class _ScheduleHandle:
     trigger_register: Callable[[], ReconcileOutcome]
     run_time_value: Callable[[], str]
     run_as_user_value: Callable[[], str]
+    wake_to_run_value: Callable[[], bool]
     persist_run_time: Callable[[], bool]
     is_busy: Callable[[], bool]
     last_schedule_state: Callable[[], ScheduleState | None]
@@ -1911,7 +1992,7 @@ def _walk_controls(control: ft.Control | None):  # pragma: no cover - view glue
 def _registered_schedule(cfg: AppConfig) -> RegisteredSchedule:  # pragma: no cover - AppConfig→pure adapter
     """The durable "what the live task actually carries" record (the ONE resolution point).
 
-    A thin adapter over the pure ``setup_flow.registered_schedule``: it only supplies the four
+    A thin adapter over the pure ``setup_flow.registered_schedule``: it only supplies the five
     persisted facets plus the running platform's unattended-logon capability. Both reconcile
     consumers (the task-args comparison and the logon-downgrade guard) read the record from HERE,
     so neither can re-derive a baseline from the *current* config (the W3-C silent no-op).
@@ -1921,6 +2002,7 @@ def _registered_schedule(cfg: AppConfig) -> RegisteredSchedule:  # pragma: no co
         unattended_flag=cfg.schedule_unattended,
         raw_run_as_user=cfg.schedule_run_as_user,
         raw_run_as_kind=cfg.schedule_run_as_kind,
+        raw_wake_to_run=cfg.schedule_wake_to_run,
         supports_unattended=get_scheduler().supports_unattended_password,
     )
 
@@ -1999,6 +2081,9 @@ def _mount_settings(  # pragma: no cover - Flet view glue
             pending=pending,
             pending_run_as_user=sched_handle.run_as_user_value(),
             current_account=_keyring_owner_account(),
+            # DSYNC-37: the tick box, which opens on the record's own value for a live task — so
+            # an untouched box never turns a folders/delivery Save into a re-register.
+            pending_wake_to_run=sched_handle.wake_to_run_value(),
         )
         if action is ScheduleReconcile.REREGISTER:
             # May pause on the explicit downgrade choice first (S3-a). Returns DISPATCHED
@@ -2551,7 +2636,11 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
             )
 
             async def _apply() -> None:
-                readout_slot.controls = [_schedule_readout_line(status), *_last_run_caption(status)]
+                readout_slot.controls = [
+                    _schedule_readout_line(status),
+                    *_last_run_caption(status),
+                    *_wake_caption(status),
+                ]
                 # 0049 S-2a.2: the seasonal-window note asserts the pause only on a CONFIRMED-LIVE
                 # task, so it can only be painted honestly once the read-back has landed.
                 _last_schedule_state["state"] = status.state
@@ -2669,6 +2758,30 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
                 )
             )
             section_controls.append(gmsa_disclosure_slot)
+
+    # DSYNC-37: wake-to-run. The SESSION answer, seeded by ``wake_to_run_initial`` — the record's
+    # own value for a live task (so an upgraded install's task, which does not wake, reads OFF and
+    # an untouched Save stays up to date), the new-registration default (on) otherwise. A dict for
+    # the same shared-cell reason as ``_gmsa``. Read ONCE per press at click time, like the kind.
+    # Shown only where the scheduler can honour it (``supports_wake_to_run``); elsewhere the cell
+    # keeps the record's value, so the reconcile never sees a change nobody could make.
+    _wake = {
+        "on": wake_to_run_initial(schedule_registered=bool(cfg.schedule_registered), record=_registered_schedule(cfg))
+    }
+
+    def _on_wake_toggled(on: bool) -> None:
+        _wake["on"] = bool(on)
+
+    if scheduler.supports_wake_to_run:
+        section_controls.append(
+            ft.Column(
+                spacing=tokens.space_xs,
+                controls=[
+                    components.check_row(SCHEDULE_WAKE_TOGGLE_LABEL, value=_wake["on"], on_toggle=_on_wake_toggled),
+                    ft.Text(SCHEDULE_WAKE_HELPER, size=tokens.type_caption, color=tokens.color_muted),
+                ],
+            )
+        )
 
     def _elevated_now() -> bool:
         return scheduler.is_elevated()  # always False where elevation has no meaning (cron)
@@ -3029,6 +3142,10 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
             else _declared_kind()
         )
 
+        # DSYNC-37: captured at click time for the same reason as ``declared_kind`` — the value
+        # Windows is asked for and the value the record persists must be one read, not two.
+        wake_to_run = bool(_wake["on"])
+
         def _declared_principal() -> Principal:
             """WHO this press asks the nightly to run as — DECLARED, not inferred (0049 S-3).
 
@@ -3080,7 +3197,7 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
         )
 
         def _persist_registered_record() -> None:
-            """The four-facet register record — the ONE spelling, both dispatch paths.
+            """The five-facet register record (DSYNC-37 added wake-to-run) — the ONE spelling, both dispatch paths.
 
             Extracted at 0049 S-2b.3 because the provisioning path needs exactly this and
             nothing else: ``complete_handover`` takes it as ``persist`` and runs it strictly
@@ -3113,6 +3230,8 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
             # fact nothing else can recover — the kind cannot be read back off the name without
             # re-introducing the ``$`` inference S-3 deleted.
             cfg.schedule_run_as_kind = declared_kind.value
+            # DSYNC-37: the FIFTH facet, same save — whether the registered task wakes the computer.
+            cfg.schedule_wake_to_run = wake_to_run
             cfg.save()
 
         def _on_register_success(headline: str, detail: str, *, verdict: Verdict = Verdict.HEALTHY) -> None:
@@ -3223,6 +3342,10 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
             code, sometimes a rollback clause), so it could never match a branch. The icacls
             exit code is appended HERE because the copy table deliberately carries no code.
             """
+            if attempt.outcome is ProvisionOutcome.ACCOUNT_NOT_FOUND:
+                return ACCOUNT_NOT_FOUND_COPY
+            if attempt.outcome is ProvisionOutcome.ACCOUNT_LOOKUP_FAILED:
+                return ACCOUNT_LOOKUP_FAILED_COPY
             if attempt.outcome is ProvisionOutcome.REFUSED and attempt.step is not None:
                 detail = classify_provision_step(attempt.step)
                 if attempt.icacls_exit is not None:
@@ -3273,7 +3396,7 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
             reentry = {"requested": False}
 
             def _persist() -> None:
-                """The four-facet save — bound to the SUCCESS path and nothing else.
+                """The five-facet save — bound to the SUCCESS path and nothing else.
 
                 ``complete_handover`` calls this on every outcome, including a declined UAC and
                 a launch failure, because its own gate is the parent's switch read. Writing the
@@ -3336,7 +3459,7 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
             if result is not None:
                 # Handed over, but nothing rebuilt (no ``on_reenter``, or the rebuild raised).
                 # The SAME banner Home would have shown — one renderer, one wording.
-                result_slot.controls = [handover_banner(result)]
+                result_slot.controls = [handover_banner(result, page=page, task_name=cfg.schedule_task_name)]
                 if attempt.outcome is ProvisionOutcome.PROVISIONED and on_schedule_changed is not None:
                     # The rail badge is re-probed by ``build_app_body``'s own tail on the
                     # re-entry path, so this fires only where no rebuild happened.
@@ -3353,6 +3476,11 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
                         detail=SCOPE_SWITCH_UNCONFIRMED_DETAIL,
                     )
                 ]
+                if attempt.check is not None:
+                    # DSYNC-33: the nightly exists here too, so its check result is shown.
+                    result_slot.controls.append(
+                        schedule_check_band(page, attempt.check, task_name=cfg.schedule_task_name)
+                    )
                 if on_schedule_changed is not None:
                     with contextlib.suppress(Exception):
                         on_schedule_changed()
@@ -3364,6 +3492,9 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
                 headline = (
                     SCOPE_UNCONFIRMED_HEADLINE
                     if attempt.outcome is ProvisionOutcome.UNCONFIRMED
+                    # DSYNC-33: a pre-UAC lookup refusal never asked Windows for anything.
+                    else _REGISTER_REFUSED_HEADLINE
+                    if attempt.outcome in _PRE_PROMPT_REFUSALS
                     else SCOPE_ATTEMPT_FAILED_HEADLINE
                 )
                 result_slot.controls = [components.ErrorCard(headline, nightly)]
@@ -3387,6 +3518,7 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
                     # and it is not a field of the ``ProvisionAttempt`` that comes back. Built
                     # INSIDE the worker for the same reason the register twin is (below).
                     principal=_declared_principal(),
+                    wake_to_run=wake_to_run,
                 )
             except Exception as exc:  # noqa: BLE001 - it contracts never to raise; belt anyway
                 logger.error("The shared-settings change raised unexpectedly: %s", type(exc).__name__)
@@ -3416,6 +3548,7 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
                     run_time=run_time,
                     sftp=cfg.sftp_enabled,
                     principal=_declared_principal(),
+                    wake_to_run=wake_to_run,
                 )
             except ValueError:
                 # validate_run_as_user, raised inside register_task or the elevated child. The
@@ -3455,7 +3588,7 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
         # the copy it selects is today's, so an unproven record reads exactly as it does now.
         removed_kind = _removed_record.run_as_kind or PrincipalKind.PASSWORD
 
-        async def _apply_unregister(ok: bool, msg: str) -> None:
+        async def _apply_unregister(ok: bool, msg: str, revoke: RevokeOutcome | None = None) -> None:
             _set_busy(False)
             _repaint_register_gate()
             unregister_btn.disabled = False
@@ -3502,6 +3635,9 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
                     cfg.schedule_task_args = None
                     cfg.schedule_run_as_user = ""
                     cfg.schedule_run_as_kind = ""
+                    # DSYNC-37: the fifth facet goes with them. The tick box is left as it is,
+                    # like the account field, so Remove → Schedule keeps the admin's choice.
+                    cfg.schedule_wake_to_run = None
                     cfg.save()
                     if on_schedule_changed is not None:
                         # 0032 T1 #8: a confirmed removal invalidates the boot-time rail badge too.
@@ -3509,7 +3645,7 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
                             on_schedule_changed()
                     result_slot.controls = [
                         components.HealthVerdictBanner(
-                            Verdict.HEALTHY, headline=outcome.headline, detail=outcome.detail
+                            Verdict.HEALTHY, headline=outcome.headline, detail=_revoke_detail(outcome.detail, revoke)
                         )
                     ]
                 else:
@@ -3520,14 +3656,36 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
             page.update()
             _refresh_readout()
 
+        # DSYNC-33: a managed service account on a shared-settings computer is removed WITH its
+        # folder access, in ONE elevated op (``prune_principal``: delete, confirm MISSING, then
+        # prune). Read from the RECORD, before the clear, for the same reason ``removed_kind`` is.
+        revoke_account = (
+            (_removed_record.run_as_user or "").strip()
+            if removed_kind is PrincipalKind.MANAGED_SERVICE_ACCOUNT
+            and scheduler.supports_unattended_password
+            and _machine_scope_now()
+            else ""
+        )
+
         def _work() -> None:  # runs OFF the UI thread (an elevated delete can block on UAC)
+            revoke: RevokeOutcome | None = None
             try:
-                # The Windows adapter owns the access-denied → one-UAC-prompt elevated retry.
-                ok, msg = scheduler.delete(cfg.schedule_task_name)
+                if revoke_account:
+                    attempt = request_removal_with_revoke(
+                        cfg.schedule_task_name, user=revoke_account, kind=PrincipalKind.MANAGED_SERVICE_ACCOUNT
+                    )
+                    revoke = attempt.revoke
+                    ok, msg = attempt.ok, attempt.message
+                if revoke is None or revoke is RevokeOutcome.FALL_BACK:
+                    # The Windows adapter owns the access-denied → one-UAC-prompt elevated retry.
+                    ok, msg = scheduler.delete(cfg.schedule_task_name)
             except Exception as exc:  # noqa: BLE001 - a worker crash must not strand the spinner
                 logger.error("Removing the nightly sync raised unexpectedly: %s", type(exc).__name__)
                 ok, msg = False, _WORKER_ERROR_UNREGISTER
-            page.run_task(_apply_unregister, ok, msg)
+            if revoke is None:
+                page.run_task(_apply_unregister, ok, msg)
+            else:
+                page.run_task(_apply_unregister, ok, msg, revoke)
 
         register_btn.disabled = True
         unregister_btn.disabled = True
@@ -3994,6 +4152,7 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
         trigger_register=_trigger_register_reconciled,
         run_time_value=lambda: run_time_field.value or "",
         run_as_user_value=lambda: "" if account_field is None else (account_field.value or "").strip(),
+        wake_to_run_value=lambda: bool(_wake["on"]),
         persist_run_time=_persist_run_time_if_edited,
         is_busy=lambda: bool(_flight["busy"]),
         last_schedule_state=lambda: _last_schedule_state["state"],

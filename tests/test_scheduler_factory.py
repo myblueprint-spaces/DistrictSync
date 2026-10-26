@@ -71,11 +71,13 @@ class TestCapabilities:
         scheduler = WindowsTaskScheduler()
         assert scheduler.supports_unattended_password is True
         assert scheduler.supports_read_schedule is True
+        assert scheduler.supports_wake_to_run is True  # DSYNC-37
 
     def test_cron_supports_neither(self):
         scheduler = CronScheduler()
         assert scheduler.supports_unattended_password is False
         assert scheduler.supports_read_schedule is False
+        assert scheduler.supports_wake_to_run is False  # DSYNC-37: cron cannot wake a computer
 
 
 # --------------------------------------------------------------------------- #
@@ -91,11 +93,28 @@ class TestWindowsAdapter:
 
         monkeypatch.setattr(windows_mod, "register_task", fake_register)
         principal = Principal(kind=PrincipalKind.PASSWORD, user="DOMAIN\\admin", password="pw")
-        ok, msg = WindowsTaskScheduler().register(**_REGISTER_KWARGS, principal=principal, run_highest=False)
+        ok, msg = WindowsTaskScheduler().register(
+            **_REGISTER_KWARGS, principal=principal, run_highest=False, wake_to_run=False
+        )
         assert (ok, msg) == (True, "ok")
         # The DECLARED principal passes through as ONE object (plan 0049 S-3): the adapter may
         # not unpack it, re-derive a logon type from it, or reconstruct it field by field.
-        assert recorded == {**_REGISTER_KWARGS, "principal": principal, "run_highest": False}
+        # DSYNC-37: ``wake_to_run`` passes through too — False here, so a hard-coded True in
+        # the adapter could not pass this; its twin below forwards True.
+        assert recorded == {**_REGISTER_KWARGS, "principal": principal, "run_highest": False, "wake_to_run": False}
+
+    def test_register_forwards_wake_to_run_true(self, monkeypatch):
+        recorded: dict = {}
+
+        def fake_register(**kwargs):
+            recorded.update(kwargs)
+            return True, "ok"
+
+        monkeypatch.setattr(windows_mod, "register_task", fake_register)
+        WindowsTaskScheduler().register(
+            **_REGISTER_KWARGS, principal=Principal(kind=PrincipalKind.INTERACTIVE_TOKEN), wake_to_run=True
+        )
+        assert recorded["wake_to_run"] is True
 
     def test_delete_success_never_elevates(self, monkeypatch):
         elevated_calls: list = []
@@ -154,8 +173,10 @@ class TestCronAdapter:
             return True, "Cron entry registered."
 
         monkeypatch.setattr(linux_mod, "register_cron", fake_cron)
+        # DSYNC-37: cron accepts ``wake_to_run`` and ignores it — the crontab line below is
+        # byte-identical to what it was before the flag existed.
         ok, msg = CronScheduler().register(
-            **_REGISTER_KWARGS, principal=Principal(kind=PrincipalKind.INTERACTIVE_TOKEN)
+            **_REGISTER_KWARGS, principal=Principal(kind=PrincipalKind.INTERACTIVE_TOKEN), wake_to_run=True
         )
         assert (ok, msg) == (True, "Cron entry registered.")
         assert recorded == {
@@ -191,7 +212,7 @@ class TestCronAdapter:
             lambda *a, **k: pytest.fail("must not touch crontab for an unattended principal"),
         )
         with pytest.raises(ValueError, match="not supported on this platform"):
-            CronScheduler().register(**_REGISTER_KWARGS, principal=principal)
+            CronScheduler().register(**_REGISTER_KWARGS, principal=principal, wake_to_run=True)
 
     def test_the_refusal_says_what_cron_can_and_cannot_do(self):
         """Plain language, and it names BOTH unattended shapes: an admin who reads this must
