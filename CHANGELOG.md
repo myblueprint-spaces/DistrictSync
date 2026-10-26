@@ -30,6 +30,12 @@ Per-release download links and auto-generated commit notes live on the
 
 ### Changed
 
+- **SD67 (Okanagan Skaha): student demographics are read from `StudentDemographicEnhanced.txt`.**
+  This is the name the district's enhanced demographic export arrives under; the mapping looked for
+  `StudentDemographicEnh.txt`. Students, Classes and Enrollments all read the new name. Student
+  emails are still generated as `<student number>@sd67.bc.ca`, and Family still comes from
+  `ParentInformation.txt`. **The district must send `StudentDemographicEnhanced.txt`**: a folder
+  holding only the old name stops at the input check ("incomplete input").
 - **Removing a nightly sync that runs as a managed service account also removes that account's
   access to the shared settings folder**, once Windows confirms the task is gone — in the same
   permission prompt. If the removal cannot be confirmed, the access is left in place and Setup

@@ -24,8 +24,9 @@ global_config:
     - StudentCourses
 
 # The district's demographic extract is the ENHANCED export, named
-# `StudentDemographicEnh.txt` rather than the base's
-# `StudentDemographicInformation.txt`. Restated at all THREE enabled sites that
+# `StudentDemographicEnhanced.txt` rather than the base's
+# `StudentDemographicInformation.txt` (the name the district delivers, DSYNC-38;
+# it read `StudentDemographicEnh.txt` until then). Restated at all THREE enabled sites that
 # read this role (Students, Classes, Enrollments) — `source_files` is a dict, so
 # deep merge would happily take a partial override and leave the other two
 # entities silently reading a filename this district never delivers (→ an empty
@@ -33,7 +34,7 @@ global_config:
 mappings:
   Students:
     source_files:
-      student_demographic: "StudentDemographicEnh.txt"
+      student_demographic: "StudentDemographicEnhanced.txt"
     field_map:
       # The district's own address scheme, generated rather than read: their
       # demographic export's email entry is inconsistent, so the source column
@@ -46,11 +47,11 @@ mappings:
 
   Classes:
     source_files:
-      student_demographic: "StudentDemographicEnh.txt"
+      student_demographic: "StudentDemographicEnhanced.txt"
 
   Enrollments:
     source_files:
-      student_demographic: "StudentDemographicEnh.txt"
+      student_demographic: "StudentDemographicEnhanced.txt"
 
   # Family reads the district's PARENT export, not the base's emergency-contact
   # one (DSYNC-25). SD67 sends the NON-Enhanced `EmergencyContactInformation.txt`,
