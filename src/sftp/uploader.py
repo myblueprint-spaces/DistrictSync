@@ -34,6 +34,7 @@ import logging
 import re
 import time
 from collections.abc import Callable, Collection
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import TypeVar
@@ -59,11 +60,54 @@ logger = logging.getLogger(__name__)
 
 _T = TypeVar("_T")
 
-# Bounded retry for the transient-failure surface of connect+upload (delivery only —
-# ``test_connection`` never retries: a Setup "Test" click must answer fast). 3 attempts
-# total; the wait doubles after each failed attempt: 2s, then 4s.
-SFTP_RETRY_ATTEMPTS = 3
-SFTP_RETRY_BACKOFF_SECONDS = 2.0
+# Bounded retry for the transient-failure surface of connect+upload (delivery only --
+# ``test_connection`` never retries: a Setup "Test" click must answer fast). The CALLER picks the
+# schedule (``upload_csvs(..., *, retry)`` is required keyword-only, no default):
+#
+# * ``INTERACTIVE_RETRY`` -- a person is watching (Convert screen, ``--sftp`` from a terminal):
+#   3 attempts, waits 2s then 4s. Fails fast.
+# * ``UNATTENDED_RETRY`` -- the scheduled nightly (DSYNC-36): 5 attempts, waits 30s, 2min, 5min,
+#   10min (17.5 min of waiting). Three attempts inside a minute hit the same short outage (SD51's
+#   network resets/DNS failures around 03:00); nobody is waiting, so ride it out.
+#
+# Total run time must stay far inside the scheduled task's ``ExecutionTimeLimit = PT2H``
+# (``src/scheduler/task_com.py``). A per-attempt worst case is bounded in the CONNECT phase only
+# (``SFTP_ATTEMPT_CONNECT_WORST_SECONDS``); a ``put`` is bounded per blocking read, not in total.
+# So the retry loop also carries a wall-clock budget: no further attempt STARTS once
+# ``elapsed + wait`` would reach ``SFTP_RETRY_BUDGET_SECONDS``. Worst case for the delivery leg is
+# therefore budget + one last attempt's connect phase + its transfer (small zips: minutes),
+# comfortably under 2h. ``tests/test_sftp_retry.TestWorstCaseBound`` pins the arithmetic.
+SFTP_RETRY_BUDGET_SECONDS = 3600.0
+
+
+@dataclass(frozen=True)
+class RetrySchedule:
+    """How long delivery waits between attempts: ``waits[i]`` follows failed attempt ``i + 1``."""
+
+    name: str
+    waits: tuple[float, ...]
+
+    @property
+    def attempts(self) -> int:
+        return len(self.waits) + 1
+
+    @property
+    def total_wait_seconds(self) -> float:
+        return sum(self.waits)
+
+
+INTERACTIVE_RETRY = RetrySchedule(name="interactive", waits=(2.0, 4.0))
+UNATTENDED_RETRY = RetrySchedule(name="unattended", waits=(30.0, 120.0, 300.0, 600.0))
+
+
+def retry_schedule_for_source(source: str | None) -> RetrySchedule:
+    """The schedule for a run's resolved ``source`` tag: ``scheduled`` -> unattended, all else short.
+
+    ``None`` ("the caller did not say") and ``manual``/``cli``/``unknown`` take the short
+    schedule: the conservative branch is the one that never makes a person wait.
+    """
+    return UNATTENDED_RETRY if source == "scheduled" else INTERACTIVE_RETRY
+
 
 # Bounds on a half-dead network (DSYNC-9). ``SFTP_CONNECT_TIMEOUT_SECONDS`` bounds the TCP
 # connect + SSH handshake; ``SFTP_CHANNEL_TIMEOUT_SECONDS`` bounds EVERY blocking read/write on
@@ -77,6 +121,10 @@ SFTP_RETRY_BACKOFF_SECONDS = 2.0
 SFTP_CONNECT_TIMEOUT_SECONDS = 30
 SFTP_CHANNEL_TIMEOUT_SECONDS = 120
 SFTP_KEEPALIVE_SECONDS = 15
+
+# Worst case of ONE attempt's connect phase: TCP connect + banner + auth + channel open (each
+# bounded at SFTP_CONNECT_TIMEOUT_SECONDS) plus the SFTP version exchange (one channel read).
+SFTP_ATTEMPT_CONNECT_WORST_SECONDS = 4 * SFTP_CONNECT_TIMEOUT_SECONDS + SFTP_CHANNEL_TIMEOUT_SECONDS
 
 # Network-ish failures worth a bounded retry. ``socket.error`` is an alias of OSError.
 # ``EOFError`` is NOT an OSError: paramiko's ``BaseSFTP._read_all`` raises a bare ``EOFError()``
@@ -464,24 +512,32 @@ class SFTPUploader:
             raise
         return client, sftp
 
-    def _with_retry(self, operation: Callable[[], _T], what: str) -> _T:
-        """Run *operation* with a bounded retry on transient failures.
+    def _with_retry(self, operation: Callable[[], _T], what: str, retry: RetrySchedule) -> _T:
+        """Run *operation* with a bounded retry on transient failures, per *retry*.
 
-        At most ``SFTP_RETRY_ATTEMPTS`` attempts, waiting ``SFTP_RETRY_BACKOFF_SECONDS``
-        doubled after each failed attempt (2s, 4s). Only network-ish errors are retried
-        (see ``_is_transient_sftp_error``); authentication failures and host-key rejects
-        raise immediately, and the final failure re-raises the original exception so the
-        caller's error contract (pipeline exit code 3) is untouched.
+        ``retry.attempts`` attempts, waiting ``retry.waits[i]`` after failed attempt ``i + 1``.
+        Only network-ish errors are retried (see ``_is_transient_sftp_error``); authentication
+        failures and host-key rejects raise immediately, and the final failure re-raises the
+        original exception so the caller's error contract (pipeline exit code 3) is untouched.
+        A retry is also abandoned (original exception re-raised) when waiting would carry the
+        delivery past ``SFTP_RETRY_BUDGET_SECONDS`` since the first attempt began.
         """
-        for attempt in range(1, SFTP_RETRY_ATTEMPTS + 1):
+        started = time.monotonic()
+        for attempt in range(1, retry.attempts + 1):
             try:
                 return operation()
             except Exception as exc:
-                if attempt >= SFTP_RETRY_ATTEMPTS or not _is_transient_sftp_error(exc):
+                if attempt >= retry.attempts or not _is_transient_sftp_error(exc):
                     raise
-                delay = SFTP_RETRY_BACKOFF_SECONDS * (2 ** (attempt - 1))
+                delay = retry.waits[attempt - 1]
+                if (time.monotonic() - started) + delay >= SFTP_RETRY_BUDGET_SECONDS:
+                    logger.warning(
+                        f"{what} to {self.host} failed on attempt {attempt}/{retry.attempts} "
+                        f"({describe_sftp_error(exc)}); giving up: the retry time budget is spent"
+                    )
+                    raise
                 logger.warning(
-                    f"{what} to {self.host} failed on attempt {attempt}/{SFTP_RETRY_ATTEMPTS} "
+                    f"{what} to {self.host} failed on attempt {attempt}/{retry.attempts} "
                     f"({describe_sftp_error(exc)}); retrying in {delay:.0f}s"
                 )
                 time.sleep(delay)
@@ -544,6 +600,7 @@ class SFTPUploader:
         sis_type: str | None = None,
         *,
         manifest: Collection[str],
+        retry: RetrySchedule,
         staging_dir: Path | None = None,
     ) -> list[str]:
         """Zip the *manifested* rostering CSVs in *output_dir* and upload via SFTP.
@@ -578,6 +635,10 @@ class SFTPUploader:
             manifest: The exact CSV filenames authorized for this delivery
                 (e.g. ``DataLoader.output_filenames(outputs)``). Files in
                 *output_dir* outside this set are NOT uploaded.
+            retry: The transient-failure retry schedule — REQUIRED keyword-only so every
+                caller chooses: :data:`UNATTENDED_RETRY` for the scheduled nightly,
+                :data:`INTERACTIVE_RETRY` when a person is waiting
+                (:func:`retry_schedule_for_source` maps a run's source tag).
             staging_dir: Where to build the transient ZIP. ``None`` (the default, and
                 every install in the field) means the system temp dir, byte-identical to
                 what this has always done. Only the scheduled nightly on a machine-scoped
@@ -661,7 +722,12 @@ class SFTPUploader:
 
                 Each attempt reconnects fresh (a dead transport can't be reused), and
                 the date-stamped zip name makes a re-put idempotent: a retry overwrites
-                the same remote name rather than duplicating the delivery.
+                the same remote name rather than duplicating the delivery. That holds for
+                EVERY file in the envelope: ``zip_name`` is fixed once, before the retry loop
+                (a retry crossing midnight cannot mint a second name), and each standalone
+                feed (StudentAttendance/CourseInfo/StudentCourses) is put under its own
+                fixed filename. A retry re-sends files an earlier attempt already delivered;
+                it never adds a differently-named one.
                 """
                 delivered: list[str] = []
                 client, sftp = self._connect()
@@ -691,7 +757,7 @@ class SFTPUploader:
                     client.close()
 
             try:
-                return self._with_retry(_deliver, "SFTP upload")
+                return self._with_retry(_deliver, "SFTP upload", retry)
             except Exception as exc:
                 logger.error(f"Failed to upload to {self.host}: {describe_sftp_error(exc)}")
                 raise

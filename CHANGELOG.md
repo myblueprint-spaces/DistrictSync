@@ -21,6 +21,12 @@ Per-release download links and auto-generated commit notes live on the
 
 ### Fixed
 
+- **Nightly SFTP uploads now wait out a short network outage instead of giving up within a
+  minute.** Scheduled runs that cannot reach the server now retry up to 5 times, waiting 30
+  seconds, 2, 5 and then 10 minutes between tries (about 17 minutes in all, well inside the
+  task's 2-hour limit). Runs started by hand, from the Convert screen or a terminal, still retry
+  quickly so nobody waits. Wrong-password and unrecognised-server failures are still never
+  retried, and a delivery that still fails is reported the same way as before.
 - **Nightly SFTP uploads now retry a connection that drops mid-transfer, and no longer hang for
   an hour opening the transfer channel.** A dropped connection used to fail the whole run at once
   with a blank error; it is now retried (up to 3 attempts) like other network errors, and the

@@ -61,7 +61,7 @@ from src.etl.transformers.columns import reset_run_notices as reset_column_notic
 from src.etl.transformers.dates import SchoolYearDetermination
 from src.history.store import VALID_SOURCES, write_run_record
 from src.quality.report import DataQualityReport, declared_blank_fields
-from src.sftp.uploader import SFTPUploader, describe_sftp_error
+from src.sftp.uploader import SFTPUploader, describe_sftp_error, retry_schedule_for_source
 from src.utils import paths
 from src.utils.accounts import process_account
 
@@ -1669,6 +1669,7 @@ def _sftp_upload(
             sis_type=sis_type,
             manifest=manifest,
             staging_dir=_delivery_staging_dir(source),
+            retry=retry_schedule_for_source(source),
         )
         if uploaded:
             logger.info(f"SFTP upload complete: {len(uploaded)} file(s) — {uploaded}")
