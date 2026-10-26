@@ -821,6 +821,7 @@ def run_for_payload(
             password=str(password) if password is not None else None,
             kind=kind,
             run_highest=bool(payload["run_highest"]),
+            wake_to_run=bool(payload["wake_to_run"]),
         )
     except (KeyError, ValueError, TypeError):
         return ScheduleCheck(verdict=CheckVerdict.UNAVAILABLE)

@@ -98,6 +98,7 @@ class TestBuildActionArgs:
                     output_dir=Path("o"),
                     run_time="03:00",
                     principal=Principal(kind=PrincipalKind.INTERACTIVE_TOKEN),
+                    wake_to_run=True,
                 )
                 base.update(kwargs)
                 with pytest.raises(ValueError):

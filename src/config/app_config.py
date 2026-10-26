@@ -260,6 +260,15 @@ class AppConfig:
     # That is why no migration is needed. Same ``schedule_`` NAMING CONTRACT as the third
     # facet, and NEVER a password — a KIND only.
     schedule_run_as_kind: str = ""
+    # Whether the registered task WAKES the computer to run (DSYNC-37, Task Scheduler's
+    # ``Settings.WakeToRun``) — the FIFTH facet of the same atomic record, written and cleared in
+    # the SAME save as the four above. ``None`` means "not recorded", and its meaning is EVIDENCED
+    # by ``setup_flow.registered_schedule``: beside a usable record it is ``False``, because no
+    # build before DSYNC-37 set WakeToRun and the COM default is False; with no task at all the
+    # Setup tick box falls back to ``setup_flow.WAKE_TO_RUN_DEFAULT`` (on) for a NEW registration.
+    # So an existing task changes only when the admin schedules again — never on upgrade.
+    # Same ``schedule_`` NAMING CONTRACT: counted by ``_carries_chosen_settings``.
+    schedule_wake_to_run: bool | None = None
 
     # Seasonal sync window (owner decision 2026-07-21) — an OPT-IN recurring
     # school-year window that governs the app's OWN automatic nightly run only. The

@@ -46,7 +46,7 @@ def _fake_com():
     return service, folder
 
 
-def _params(password="s3cret!", run_highest=True, user=None, kind=None):
+def _params(password="s3cret!", run_highest=True, user=None, kind=None, wake_to_run=True):
     """A ``RegisterParams`` for the COM boundary, with the principal DECLARED (0049 S-3).
 
     ``kind`` is a required field now, so this helper derives the one today's two shipped
@@ -73,6 +73,7 @@ def _params(password="s3cret!", run_highest=True, user=None, kind=None):
         password=password,
         kind=kind,
         run_highest=run_highest,
+        wake_to_run=wake_to_run,
     )
 
 
@@ -198,6 +199,7 @@ class TestRegisterTaskOrchestration:
             output_dir=Path(r"C:\data\out"),
             run_time="03:00",
             principal=Principal(kind=PrincipalKind.PASSWORD, password="pw"),
+            wake_to_run=True,
         )
         assert ok is True
         assert "registered" in msg.lower()
@@ -220,6 +222,7 @@ class TestRegisterTaskOrchestration:
             output_dir=Path("o"),
             run_time="03:00",
             principal=Principal(kind=PrincipalKind.INTERACTIVE_TOKEN),
+            wake_to_run=True,
         )
         assert ok is True
         mock_confirm.assert_called_once()
@@ -240,6 +243,7 @@ class TestRegisterTaskOrchestration:
             output_dir=Path("o"),
             run_time="03:00",
             principal=Principal(kind=PrincipalKind.PASSWORD, password="wrong"),
+            wake_to_run=True,
         )
         assert ok is False
         assert msg == "The user name or password is incorrect."
@@ -257,6 +261,7 @@ class TestRegisterTaskOrchestration:
             output_dir=Path("o"),
             run_time="03:00",
             principal=Principal(kind=PrincipalKind.INTERACTIVE_TOKEN),
+            wake_to_run=True,
         )
         assert ok is False
         assert msg == task_com.MSG_COM_UNAVAILABLE
@@ -274,6 +279,7 @@ class TestRegisterTaskOrchestration:
                     output_dir=Path("o"),
                     run_time="03:00",
                     principal=Principal(kind=PrincipalKind.PASSWORD, user="jane && calc", password="pw"),
+                    wake_to_run=True,
                 )
             mock_bounded.assert_not_called()
 
@@ -292,6 +298,7 @@ class TestRegisterTaskOrchestration:
             output_dir=Path("o"),
             run_time="03:00",
             principal=Principal(kind=PrincipalKind.PASSWORD, password="pw"),
+            wake_to_run=True,
         )
         assert ok is True
         mock_elevated.assert_called_once()
@@ -319,6 +326,7 @@ class TestPasswordLeakClosure:
                 output_dir=Path("o"),
                 run_time="03:00",
                 principal=Principal(kind=PrincipalKind.PASSWORD, password=self.SECRET),
+                wake_to_run=True,
             )
         assert ok is True
         assert self.SECRET not in caplog.text
@@ -338,6 +346,7 @@ class TestPasswordLeakClosure:
                 output_dir=Path("o"),
                 run_time="03:00",
                 principal=Principal(kind=PrincipalKind.PASSWORD, password=self.SECRET),
+                wake_to_run=True,
             )
         assert ok is False
         assert self.SECRET not in caplog.text
@@ -496,6 +505,7 @@ def _register(**overrides):
         "output_dir": Path("o"),
         "run_time": "03:00",
         "principal": Principal(kind=kind, user=run_as_user or "", password=run_as_password),
+        "wake_to_run": True,
     }
     kwargs.update(overrides)
     return register_task(**kwargs)
@@ -971,9 +981,9 @@ class TestFailLogLineCarriesNoSecret:
 _GMSA = r"CORP\svc_sync$"
 
 
-def _params_for(kind, *, user, password=None, run_highest=True):
+def _params_for(kind, *, user, password=None, run_highest=True, wake_to_run=True):
     """``RegisterParams`` for an explicitly named kind (``_params`` derives the other two)."""
-    return _params(password=password, run_highest=run_highest, user=user, kind=kind)
+    return _params(password=password, run_highest=run_highest, user=user, kind=kind, wake_to_run=wake_to_run)
 
 
 class TestPrincipalKindVocabulary:
@@ -1188,6 +1198,7 @@ class TestRegisterParamsCarriesTheShapeFloorToo:
                 user=_SERVICE_ACCOUNT,
                 password="pw",
                 run_highest=True,
+                wake_to_run=True,
             )
 
 

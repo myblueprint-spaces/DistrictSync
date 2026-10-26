@@ -446,6 +446,7 @@ def request_provision(
     sftp_username: str,
     principal: Principal,
     run_highest: bool = True,
+    wake_to_run: bool,
 ) -> ProvisionAttempt:
     """Provision this computer for shared settings and register the nightly — one UAC prompt.
 
@@ -516,6 +517,7 @@ def request_provision(
             kind=principal.kind,
             run_highest=run_highest,
             schedule_check=wants_check,
+            wake_to_run=wake_to_run,
             password=principal.password,
             sftp_host=sftp_host,
             sftp_username=sftp_username,

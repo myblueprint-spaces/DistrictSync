@@ -682,6 +682,7 @@ def _provision(**over: object) -> provision_session.ProvisionAttempt:
         "sftp_host": "sftp.example.com",
         "sftp_username": "sd74",
         "principal": Principal(kind=PrincipalKind.PASSWORD, user="CORP\\svc_districtsync", password=_PASSWORD),
+        "wake_to_run": True,
     }
     kwargs.update(over)
     return provision_session.request_provision(**kwargs)  # type: ignore[arg-type]

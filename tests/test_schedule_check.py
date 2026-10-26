@@ -69,6 +69,7 @@ def _params(**over: object) -> RegisterParams:
         "password": None,
         "kind": PrincipalKind.MANAGED_SERVICE_ACCOUNT,
         "run_highest": True,
+        "wake_to_run": True,
     }
     fields.update(over)
     return RegisterParams(**fields)  # type: ignore[arg-type]
@@ -844,6 +845,7 @@ def _provision_payload(**over: object) -> dict[str, object]:
         "user": _GMSA,
         "kind": PrincipalKind.MANAGED_SERVICE_ACCOUNT.value,
         "run_highest": True,
+        "wake_to_run": True,
         "password": "",
     }
     payload.update(over)

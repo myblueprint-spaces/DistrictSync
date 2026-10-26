@@ -44,6 +44,7 @@ def _valid_register_payload(**overrides) -> dict:
         "user": "CORP\\jane",
         "password": "pw",
         "run_highest": True,
+        "wake_to_run": True,
     }
     payload.update(overrides)
     payload.setdefault(
@@ -207,6 +208,7 @@ class TestSuccessPaths:
         assert params.task_name == "DistrictSync_Daily"
         assert params.password == "pw"
         assert params.run_highest is True
+        assert params.wake_to_run is True
 
     def test_delete_dispatches_to_the_shared_task_com_function(self, tmp_path: Path) -> None:
         req, res = _sealed(tmp_path, None)

@@ -217,6 +217,7 @@ class TestConnectHostKeyWiring:
         uploader = _uploader()
         with (
             patch("src.sftp.uploader.paramiko.SSHClient") as mock_cls,
+            patch("src.sftp.uploader.paramiko.SFTPClient"),
             patch.object(uploader, "_get_password", return_value="pw"),
         ):
             uploader._connect()
@@ -327,6 +328,7 @@ class TestConnectDoesNotConsultSystemKnownHosts:
         uploader = _uploader()
         with (
             patch("src.sftp.uploader.paramiko.SSHClient") as mock_cls,
+            patch("src.sftp.uploader.paramiko.SFTPClient"),
             patch.object(uploader, "_get_password", return_value="pw"),
         ):
             uploader._connect()
@@ -337,6 +339,7 @@ class TestConnectDoesNotConsultSystemKnownHosts:
         uploader = _uploader()
         with (
             patch("src.sftp.uploader.paramiko.SSHClient") as mock_cls,
+            patch("src.sftp.uploader.paramiko.SFTPClient"),
             patch.object(uploader, "_get_password", return_value="pw"),
         ):
             uploader._connect()
@@ -366,7 +369,7 @@ class TestConnectClientLeak:
             patch.object(uploader, "_get_password", return_value="pw"),
         ):
             mock_client = mock_cls.return_value
-            mock_client.open_sftp.side_effect = paramiko.SSHException("no session")
+            mock_client.get_transport.return_value.open_session.side_effect = paramiko.SSHException("no session")
             with pytest.raises(paramiko.SSHException, match="no session"):
                 uploader._connect()
         mock_client.close.assert_called_once()
@@ -375,11 +378,12 @@ class TestConnectClientLeak:
         uploader = _uploader()
         with (
             patch("src.sftp.uploader.paramiko.SSHClient") as mock_cls,
+            patch("src.sftp.uploader.paramiko.SFTPClient") as mock_sftp_cls,
             patch.object(uploader, "_get_password", return_value="pw"),
         ):
             client, sftp = uploader._connect()
         assert client is mock_cls.return_value
-        assert sftp is mock_cls.return_value.open_sftp.return_value
+        assert sftp is mock_sftp_cls.return_value
         client.close.assert_not_called()
 
 
@@ -392,14 +396,51 @@ class TestConnectTimeouts:
         uploader = _uploader()
         with (
             patch("src.sftp.uploader.paramiko.SSHClient") as mock_cls,
+            patch("src.sftp.uploader.paramiko.SFTPClient") as mock_sftp_cls,
             patch.object(uploader, "_get_password", return_value="pw"),
         ):
             client, sftp = uploader._connect()
         mock_client = mock_cls.return_value
-        mock_client.get_transport.return_value.set_keepalive.assert_called_once_with(up.SFTP_KEEPALIVE_SECONDS)
-        sftp.get_channel.return_value.settimeout.assert_called_once_with(up.SFTP_CHANNEL_TIMEOUT_SECONDS)
-        assert mock_client.connect.call_args.kwargs["timeout"] == up.SFTP_CONNECT_TIMEOUT_SECONDS
+        transport = mock_client.get_transport.return_value
+        channel = transport.open_session.return_value
+        transport.set_keepalive.assert_called_once_with(up.SFTP_KEEPALIVE_SECONDS)
+        channel.settimeout.assert_called_once_with(up.SFTP_CHANNEL_TIMEOUT_SECONDS)
+        channel.invoke_subsystem.assert_called_once_with("sftp")
+        mock_sftp_cls.assert_called_once_with(channel)
+        connect_kwargs = mock_client.connect.call_args.kwargs
+        assert connect_kwargs["timeout"] == up.SFTP_CONNECT_TIMEOUT_SECONDS
+        assert connect_kwargs["banner_timeout"] == up.SFTP_CONNECT_TIMEOUT_SECONDS
+        assert connect_kwargs["auth_timeout"] == up.SFTP_CONNECT_TIMEOUT_SECONDS
         client.close.assert_not_called()
+
+    def test_channel_open_is_bounded(self):
+        """DSYNC-35: ``open_session`` defaults to a 3600s wait; the connect must bound it."""
+        from src.sftp import uploader as up
+
+        uploader = _uploader()
+        with (
+            patch("src.sftp.uploader.paramiko.SSHClient") as mock_cls,
+            patch("src.sftp.uploader.paramiko.SFTPClient"),
+            patch.object(uploader, "_get_password", return_value="pw"),
+        ):
+            uploader._connect()
+        open_session = mock_cls.return_value.get_transport.return_value.open_session
+        open_session.assert_called_once_with(timeout=up.SFTP_CONNECT_TIMEOUT_SECONDS)
+        mock_cls.return_value.open_sftp.assert_not_called()
+
+    def test_channel_open_timeout_fails_loudly_and_closes_client(self):
+        uploader = _uploader()
+        with (
+            patch("src.sftp.uploader.paramiko.SSHClient") as mock_cls,
+            patch.object(uploader, "_get_password", return_value="pw"),
+        ):
+            mock_client = mock_cls.return_value
+            mock_client.get_transport.return_value.open_session.side_effect = paramiko.SSHException(
+                "Timeout opening channel."
+            )
+            with pytest.raises(paramiko.SSHException, match="Timeout opening channel"):
+                uploader._connect()
+        mock_client.close.assert_called_once()
 
     def test_timeout_constants_are_positive(self):
         from src.sftp import uploader as up
@@ -417,17 +458,5 @@ class TestConnectTimeouts:
             mock_client = mock_cls.return_value
             mock_client.get_transport.return_value = None
             with pytest.raises(paramiko.SSHException, match="transport unavailable"):
-                uploader._connect()
-        mock_client.close.assert_called_once()
-
-    def test_missing_channel_fails_loudly_and_closes_client(self):
-        uploader = _uploader()
-        with (
-            patch("src.sftp.uploader.paramiko.SSHClient") as mock_cls,
-            patch.object(uploader, "_get_password", return_value="pw"),
-        ):
-            mock_client = mock_cls.return_value
-            mock_client.open_sftp.return_value.get_channel.return_value = None
-            with pytest.raises(paramiko.SSHException, match="channel unavailable"):
                 uploader._connect()
         mock_client.close.assert_called_once()

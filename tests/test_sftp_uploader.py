@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from src.sftp.uploader import (
+    INTERACTIVE_RETRY,
     KEYRING_SERVICE,
     LISTING_DENIED_NOTE,
     STANDALONE_CSV_FILENAMES,
@@ -203,6 +204,7 @@ class TestPasswordOverride:
         uploader = SFTPUploader("sftp.ca.spacesedu.com", 22, "user", "/upload")
         with (
             patch("src.sftp.uploader.paramiko.SSHClient") as mock_cls,
+            patch("src.sftp.uploader.paramiko.SFTPClient"),
             patch("src.sftp.uploader.keyring.get_password") as mock_get,
         ):
             mock_client = mock_cls.return_value
@@ -218,6 +220,7 @@ class TestPasswordOverride:
         uploader = SFTPUploader("sftp.ca.spacesedu.com", 22, "user", "/upload")
         with (
             patch("src.sftp.uploader.paramiko.SSHClient") as mock_cls,
+            patch("src.sftp.uploader.paramiko.SFTPClient"),
             patch("src.sftp.uploader.keyring.get_password", return_value="stored-pw") as mock_get,
         ):
             mock_client = mock_cls.return_value
@@ -260,7 +263,7 @@ class TestUploadCsvs:
         mock_sftp = MagicMock()
         mock_client = MagicMock()
         with patch.object(uploader, "_connect", return_value=(mock_client, mock_sftp)):
-            uploaded = uploader.upload_csvs(tmp_path, manifest={"Students.csv", "Staff.csv"})
+            uploaded = uploader.upload_csvs(tmp_path, manifest={"Students.csv", "Staff.csv"}, retry=INTERACTIVE_RETRY)
 
         # Returns the list of CSV filenames inside the ZIP
         assert len(uploaded) == 2
@@ -280,7 +283,9 @@ class TestUploadCsvs:
         mock_sftp = MagicMock()
         mock_client = MagicMock()
         with patch.object(uploader, "_connect", return_value=(mock_client, mock_sftp)):
-            uploaded = uploader.upload_csvs(tmp_path, zip_name="custom.zip", manifest={"Students.csv"})
+            uploaded = uploader.upload_csvs(
+                tmp_path, zip_name="custom.zip", manifest={"Students.csv"}, retry=INTERACTIVE_RETRY
+            )
 
         assert len(uploaded) == 1
         remote_path = mock_sftp.put.call_args[0][1]
@@ -292,7 +297,7 @@ class TestUploadCsvs:
         """
         uploader = SFTPUploader("sftp.ca.spacesedu.com", 22, "user", "/upload")
         with pytest.raises(RuntimeError, match="No CSV files found to upload"):
-            uploader.upload_csvs(tmp_path, manifest={"Students.csv"})
+            uploader.upload_csvs(tmp_path, manifest={"Students.csv"}, retry=INTERACTIVE_RETRY)
 
     def test_upload_raises_on_sftp_error(self, tmp_path):
         (tmp_path / "Students.csv").write_text("id\n1\n", encoding="utf-8")
@@ -305,7 +310,7 @@ class TestUploadCsvs:
             patch.object(uploader, "_connect", return_value=(mock_client, mock_sftp)),
             pytest.raises(Exception, match="disk full"),
         ):
-            uploader.upload_csvs(tmp_path, manifest={"Students.csv"})
+            uploader.upload_csvs(tmp_path, manifest={"Students.csv"}, retry=INTERACTIVE_RETRY)
         mock_client.close.assert_called_once()
 
     def test_uploaded_zip_contains_all_csvs(self, tmp_path):
@@ -330,7 +335,7 @@ class TestUploadCsvs:
         mock_sftp.put.side_effect = capture_put
 
         with patch.object(uploader, "_connect", return_value=(mock_client, mock_sftp)):
-            uploader.upload_csvs(tmp_path, manifest={"Students.csv", "Staff.csv"})
+            uploader.upload_csvs(tmp_path, manifest={"Students.csv", "Staff.csv"}, retry=INTERACTIVE_RETRY)
 
         assert sorted(captured_local) == ["Staff.csv", "Students.csv"]
 
@@ -360,7 +365,7 @@ class TestDeliveryManifest:
 
         mock_sftp.put.side_effect = _capture_put
         with patch.object(uploader, "_connect", return_value=(MagicMock(), mock_sftp)):
-            uploaded = uploader.upload_csvs(tmp_path, manifest=manifest)
+            uploaded = uploader.upload_csvs(tmp_path, manifest=manifest, retry=INTERACTIVE_RETRY)
         return uploaded, zipped, remote_names
 
     def test_foreign_csv_in_the_folder_is_not_uploaded(self, tmp_path):
@@ -422,7 +427,7 @@ class TestDeliveryManifest:
             patch.object(uploader, "_connect", return_value=(MagicMock(), mock_sftp)),
             pytest.raises(RuntimeError, match="Enrollments.csv"),
         ):
-            uploader.upload_csvs(tmp_path, manifest={"Students.csv", "Enrollments.csv"})
+            uploader.upload_csvs(tmp_path, manifest={"Students.csv", "Enrollments.csv"}, retry=INTERACTIVE_RETRY)
         mock_sftp.put.assert_not_called()  # nothing half-shipped
 
     def test_empty_manifest_refuses_to_invent_a_payload(self, tmp_path):
@@ -430,7 +435,7 @@ class TestDeliveryManifest:
 
         uploader = SFTPUploader("sftp.ca.spacesedu.com", 22, "user", "/upload")
         with pytest.raises(RuntimeError, match="nominated for delivery"):
-            uploader.upload_csvs(tmp_path, manifest=set())
+            uploader.upload_csvs(tmp_path, manifest=set(), retry=INTERACTIVE_RETRY)
 
     def test_manifest_is_required(self):
         """Keyword-only and REQUIRED: no caller can silently fall back to globbing."""
@@ -493,7 +498,7 @@ class TestUploadStandaloneFeeds:
 
         with patch.object(uploader, "_connect", return_value=(mock_client, mock_sftp)):
             uploaded = uploader.upload_csvs(
-                tmp_path, manifest={"Students.csv", "Enrollments.csv", "StudentAttendance.csv"}
+                tmp_path, manifest={"Students.csv", "Enrollments.csv", "StudentAttendance.csv"}, retry=INTERACTIVE_RETRY
             )
 
         # The zip contains the rostering CSVs but NOT the attendance file.
@@ -532,7 +537,7 @@ class TestUploadStandaloneFeeds:
         mock_sftp.put.side_effect = capture_put
 
         with patch.object(uploader, "_connect", return_value=(mock_client, mock_sftp)):
-            uploaded = uploader.upload_csvs(tmp_path, manifest={"Students.csv", "Staff.csv"})
+            uploaded = uploader.upload_csvs(tmp_path, manifest={"Students.csv", "Staff.csv"}, retry=INTERACTIVE_RETRY)
 
         # Single put (the zip), and the zip holds every rostering CSV.
         assert mock_sftp.put.call_count == 1
@@ -552,7 +557,7 @@ class TestUploadStandaloneFeeds:
         mock_client = MagicMock()
 
         with patch.object(uploader, "_connect", return_value=(mock_client, mock_sftp)):
-            uploaded = uploader.upload_csvs(tmp_path, manifest={"StudentAttendance.csv"})
+            uploaded = uploader.upload_csvs(tmp_path, manifest={"StudentAttendance.csv"}, retry=INTERACTIVE_RETRY)
 
         # Exactly one put — the standalone attendance file, no empty zip.
         assert mock_sftp.put.call_count == 1
@@ -577,7 +582,7 @@ class TestUploadStandaloneFeeds:
         mock_sftp = MagicMock()
         mock_sftp.put.side_effect = capture_put
         with patch.object(uploader, "_connect", return_value=(MagicMock(), mock_sftp)):
-            uploaded = uploader.upload_csvs(output_dir, manifest=manifest)
+            uploaded = uploader.upload_csvs(output_dir, manifest=manifest, retry=INTERACTIVE_RETRY)
         return uploaded, zipped_names, [call.args[1] for call in mock_sftp.put.call_args_list]
 
     def test_course_files_delivered_standalone_and_excluded_from_zip(self, tmp_path):
@@ -669,7 +674,7 @@ class TestStagingDir:
 
         mock_sftp.put.side_effect = _put
         with patch.object(uploader, "_connect", return_value=(mock_client, mock_sftp)):
-            uploader.upload_csvs(output_dir, manifest=manifest, **kwargs)
+            uploader.upload_csvs(output_dir, manifest=manifest, **kwargs, retry=INTERACTIVE_RETRY)
         return seen
 
     def test_default_stages_outside_the_output_folder(self, tmp_path):

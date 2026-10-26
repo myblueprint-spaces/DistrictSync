@@ -34,7 +34,8 @@ DECISIONS 2026-06-25 — consult git history for the scripts themselves.
     the unrepresentable kind/account/password combinations are refused by
     ``RegisterParams.__post_init__`` rather than defaulted away.
   - The settings quintet (no catch-up, IgnoreNew, PT2H, both battery flags) is set
-    explicitly in ``task_com.apply_definition`` — COM defaults differ on all five.
+    explicitly in ``task_com.apply_definition`` — COM defaults differ on all five — and
+    so is ``WakeToRun`` (DSYNC-37), from the caller's declared ``wake_to_run``.
   - Failure messages are the ``task_com`` HRESULT-keyed canonicals
     (``task_com.MSG_ACCESS_DENIED`` / ``MSG_LOGON_FAILURE`` / ``MSG_ACCOUNT_INFO_NOT_SET``
     / ``MSG_NO_LOGON_SESSION`` / ``MSG_NOT_FOUND``, or Windows' own description plus its
@@ -92,6 +93,7 @@ Usage::
         run_time="03:00",
         sftp=True,
         principal=Principal(kind=PrincipalKind.INTERACTIVE_TOKEN),
+        wake_to_run=True,
     )
 """
 
@@ -406,6 +408,7 @@ def register_task(
     *,
     principal: Principal,
     run_highest: bool = True,
+    wake_to_run: bool,
 ) -> tuple[bool, str]:
     """Create or replace a Windows scheduled task — in-process COM (plan 0041 S1b).
 
@@ -442,6 +445,10 @@ def register_task(
         run_highest: When True and the kind honours it (both unattended kinds), run
                    with highest privileges (``TASK_RUNLEVEL_HIGHEST``). Ignored on
                    the interactive-token path, which is always Limited.
+        wake_to_run: Whether Windows wakes a sleeping or hibernating computer to run the
+                   task (``Settings.WakeToRun``, DSYNC-37). REQUIRED and undefaulted: it
+                   is the admin's choice on the Setup screen, honoured on every
+                   principal kind and on both the direct and the elevated path.
 
     Returns:
         (success, message). Failure messages are the ``task_com`` canonical
@@ -523,6 +530,7 @@ def register_task(
             working_dir=working_dir,
             run_as_password=run_as_password,
             run_highest=run_highest,
+            wake_to_run=wake_to_run,
         )
 
     logger.info(f"Registering Windows scheduled task: {task_name} at {run_time}")
@@ -536,6 +544,7 @@ def register_task(
         password=run_as_password,
         kind=kind,
         run_highest=run_highest,
+        wake_to_run=wake_to_run,
     )
     try:
         task_com.bounded(
@@ -822,6 +831,7 @@ def _register_elevated(
     working_dir: Path,
     run_as_password: str | None,
     run_highest: bool,
+    wake_to_run: bool,
 ) -> tuple[bool, str]:
     """Register the unattended task behind ONE UAC prompt; confirm via read-back.
 
@@ -851,6 +861,8 @@ def _register_elevated(
         "working_dir": str(working_dir),
         "password": run_as_password,
         "run_highest": run_highest,
+        # DSYNC-37: a JSON boolean, validated as one in the child (``elevated_apply``).
+        "wake_to_run": wake_to_run,
     }
     logger.info("Registering scheduled task '%s' via one-time elevation (UAC).", task_name)
     # req_path/res_path are None until write_request succeeds so the finally cleans the
@@ -1027,6 +1039,8 @@ class ScheduleReadback:
     action_path: str | None = None
     run_as: str | None = None
     logon_type: int | None = None
+    #: The live task's ``Settings.WakeToRun`` (DSYNC-37) — display and "Copy details" only.
+    wake_to_run: bool | None = None
     error: str | None = None
 
 
@@ -1090,4 +1104,5 @@ def read_schedule(task_name: str) -> ScheduleReadback:
         action_path=facts.action_path,
         run_as=facts.run_as,
         logon_type=facts.logon_type,
+        wake_to_run=facts.wake_to_run,
     )

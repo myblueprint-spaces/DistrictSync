@@ -26,6 +26,7 @@ from src.main import (
     _sftp_upload,
     extract_required_files,
 )
+from src.sftp.uploader import INTERACTIVE_RETRY, UNATTENDED_RETRY
 from src.utils import paths as paths_module
 
 # -----------------------------------------------------------------------
@@ -772,8 +773,9 @@ class TestDeliveryStagingDir:
             def __init__(self, **kwargs):
                 pass
 
-            def upload_csvs(self, output_dir, sis_type=None, *, manifest, staging_dir=None):
+            def upload_csvs(self, output_dir, sis_type=None, *, manifest, retry, staging_dir=None):
                 seen["staging_dir"] = staging_dir
+                seen["retry"] = retry
                 return ["Students.csv"]
 
         cfg = MagicMock()
@@ -787,6 +789,7 @@ class TestDeliveryStagingDir:
 
         assert _sftp_upload(str(tmp_path), manifest={"Students.csv"}, source="scheduled") is True
         assert seen["staging_dir"] == shared / "runs" / "tmp"
+        assert seen["retry"] is UNATTENDED_RETRY
 
     def test_a_manual_run_reaches_upload_csvs_with_no_staging_dir(self, monkeypatch, tmp_path):
         """Positive twin — the wiring above is a real decision, not a constant."""
@@ -797,8 +800,9 @@ class TestDeliveryStagingDir:
             def __init__(self, **kwargs):
                 pass
 
-            def upload_csvs(self, output_dir, sis_type=None, *, manifest, staging_dir=None):
+            def upload_csvs(self, output_dir, sis_type=None, *, manifest, retry, staging_dir=None):
                 seen["staging_dir"] = staging_dir
+                seen["retry"] = retry
                 return ["Students.csv"]
 
         cfg = MagicMock()
@@ -812,3 +816,4 @@ class TestDeliveryStagingDir:
 
         assert _sftp_upload(str(tmp_path), manifest={"Students.csv"}, source="manual") is True
         assert seen["staging_dir"] is None
+        assert seen["retry"] is INTERACTIVE_RETRY
