@@ -177,7 +177,6 @@ class TestTheStudentStatusNotes:
         assert dict(ctx.outcome_notes_for("Students")) == {
             _N.STATUS_COLUMN_ABSENT_DATE_ONLY: 3,
             _N.ACTIVE_WITHOUT_POSITIVE_SIGNAL: 3,
-            _N.EMAIL_OUTPUT_NOT_MAPPED: 3,
             _N.REQUIRED_OUTPUT_NOT_MAPPED: 3,
         }
         _no_sentinel(caplog, ctx)

@@ -928,9 +928,8 @@ def test_the_user_overlay_phase_converts_its_copy_from_source(tmp_path: Path, ca
     """The CI-only phase reproduced FROM SOURCE: the planted overlay YAML over the phase's own copy
     previews all five rostering entities as BUILT (``unbuilt_entities`` — the script's own check,
     over what the dry run really prints); its twin, the Student-ID-only copy the phase fed before
-    S13d, now stops on Students (every student missing a value SpacesEDU requires — the rule
-    working, not a regression)."""
-    from src.etl.errors import EmptyRequiredOutputError
+    S13d, still previews its students (a student's email is optional, DSYNC-30) but leaves every
+    Family contact out — their last-name column is the other base column that copy lacks."""
     from src.etl.pipeline import run_pipeline
     from src.utils import paths
 
@@ -949,6 +948,5 @@ def test_the_user_overlay_phase_converts_its_copy_from_source(tmp_path: Path, ca
     assert not list(out.glob("*.csv")), "no CSV written by the preview"
 
     student_id_only = smoke.input_with_base_student_id(smoke.DEFAULT_SMOKE_INPUT, tmp_path / "student_id")
-    with pytest.raises(EmptyRequiredOutputError) as raised:
-        run_pipeline(smoke._SD93_OVERLAY_SIS, str(student_id_only), str(tmp_path / "out2"), dry_run=True)
-    assert raised.value.entity == "Students" and raised.value.required_values_left_out is True
+    twin = run_pipeline(smoke._SD93_OVERLAY_SIS, str(student_id_only), str(tmp_path / "out2"), dry_run=True)
+    assert twin.entity_counts["Students"] > 0 and twin.entity_counts.get("Family", 0) == 0
