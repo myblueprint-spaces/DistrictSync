@@ -12,7 +12,7 @@ from src.etl.transformers.base import BaseTransformer
 from src.etl.transformers.columns import Previously, require_columns, resolve_source_column, source_column_label
 from src.etl.transformers.context import TransformContext
 from src.etl.transformers.grades import filter_to_grade_scope, resolve_student_scope
-from src.etl.transformers.ids import normalize_id_series
+from src.etl.transformers.ids import is_blank_series, normalize_id_series
 from src.etl.transformers.required_values import leave_out_rows_missing_required_values
 
 logger = logging.getLogger(__name__)
@@ -37,9 +37,11 @@ class StudentTransformer(BaseTransformer):
             result["Date of Birth"] = result["Date of Birth"].apply(self.normalize_iso_date)
         self._coalesce_required_names(result)
         # Last, on the OUTPUT frame and after the preferred-name fallback: a student missing a value
-        # SpacesEDU requires — its email included, since plan 0053 S13d (owner 2026-09-28; it was
-        # KEPT under DECISIONS 2026-09-02) — is left out and counted (failure-policy §5 #42).
+        # SpacesEDU requires is left out and counted (failure-policy §5 #42). The email is NOT one of
+        # them (DSYNC-30): the importer takes a student with no address, who signs in another way
+        # (e.g. a QR code), so that row is kept and only counted in the log.
         result = leave_out_rows_missing_required_values(result, "Students", context, id_column=None).kept
+        self._log_students_without_email(result)
 
         # Publish the active roster (zero-orphan invariant). `result` is already
         # filtered to active-only AND to the rows kept above, so this IS the
@@ -53,6 +55,23 @@ class StudentTransformer(BaseTransformer):
             context.active_student_ids = set(normalize_id_series(result["User ID"]))
 
         return result
+
+    @staticmethod
+    def _log_students_without_email(result: pd.DataFrame) -> None:
+        """Say once, as a count, how many kept students carry no ``Email Address`` — never drop.
+
+        A missing student email is a data FACT, not a transform failure: the row ships, the student
+        signs in another way (e.g. a QR code), so it is neither an outcome note nor amber and not a
+        ``data_errors`` entry. Counts only — never a name, id or address.
+        """
+        if "Email Address" not in result.columns or result.empty:
+            return
+        missing = int(is_blank_series(result["Email Address"]).sum())
+        if missing:
+            logger.info(
+                f"[Students] {missing} of {len(result)} student row(s) have no email address — "
+                f"kept (SpacesEDU imports them); they cannot be invited by email."
+            )
 
     @staticmethod
     def _require_user_id_source(working: pd.DataFrame, field_map: dict[str, Any]) -> None:

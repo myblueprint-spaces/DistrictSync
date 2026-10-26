@@ -203,6 +203,7 @@ class TestPasswordOverride:
         uploader = SFTPUploader("sftp.ca.spacesedu.com", 22, "user", "/upload")
         with (
             patch("src.sftp.uploader.paramiko.SSHClient") as mock_cls,
+            patch("src.sftp.uploader.paramiko.SFTPClient"),
             patch("src.sftp.uploader.keyring.get_password") as mock_get,
         ):
             mock_client = mock_cls.return_value
@@ -218,6 +219,7 @@ class TestPasswordOverride:
         uploader = SFTPUploader("sftp.ca.spacesedu.com", 22, "user", "/upload")
         with (
             patch("src.sftp.uploader.paramiko.SSHClient") as mock_cls,
+            patch("src.sftp.uploader.paramiko.SFTPClient"),
             patch("src.sftp.uploader.keyring.get_password", return_value="stored-pw") as mock_get,
         ):
             mock_client = mock_cls.return_value

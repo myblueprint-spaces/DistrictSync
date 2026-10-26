@@ -132,6 +132,9 @@ class TestTheTable:
 
     def test_is_required_field_is_total(self):
         assert is_required_field("Staff", "Email")
+        # DSYNC-30: a student's email is OPTIONAL (PIV ACSV-006); the other Students values stay required.
+        assert not is_required_field("Students", "Email Address") and is_required_field("Students", "Student Number")
+        assert "Students" not in EMAIL_OUTPUT_FIELDS
         assert not is_required_field("Staff", "Phone")
         assert not is_required_field(None, "Email") and not is_required_field(["Staff"], "Email")
 
@@ -552,7 +555,7 @@ def _plant_one_of_each(d: Path) -> None:
     new = demo.iloc[[1]].copy()
     new["Student Number"] = "S004"
     new["Legal First Name"] = "Zelda-Sentinel"
-    new["Student email address"] = ""
+    new["School Number"] = ""
     pd.concat([demo, new], ignore_index=True).to_csv(d / "StudentDemographicInformation.txt", index=False)
     schedule = pd.read_csv(d / "StudentSchedule.txt", dtype=str, keep_default_na=False)
     s004 = schedule.iloc[[1]].copy()
@@ -639,13 +642,31 @@ class TestEndToEnd:
         inp.mkdir()
         out.mkdir()
         _create_mbp_all_inputs(inp)
-        _edit(inp / "StudentDemographicInformation.txt", **{"Student email address": {2: ""}})  # S003
+        _edit(inp / "StudentDemographicInformation.txt", **{"School Number": {2: ""}})  # S003
         run_pipeline("mbp_all", str(inp), str(out))
         assert "S003" not in set(_read(out, "Students")["User ID"])
         courses = _read(out, "StudentCourses")
         assert not courses.empty and "S003" not in set(courses["Student ID"])
         assert "S002" in set(courses["Student ID"]), "the twin: a kept student's transcript still ships"
         assert "S003" not in set(_read(out, "Enrollments")["User ID"])
+
+    def test_a_student_without_an_email_is_kept_linked_and_not_amber(self, tmp_path: Path) -> None:
+        """DSYNC-30: a student's email is OPTIONAL (young students sign in by QR code) — the student
+        ships, so does everything that points at them, and nothing is recorded against Students."""
+        inp, out = tmp_path / "in", tmp_path / "out"
+        inp.mkdir()
+        out.mkdir()
+        _create_myedbc_inputs(inp)
+        _edit(inp / "StudentDemographicInformation.txt", **{"Student email address": {1: ""}})  # S002
+        result = run_pipeline("myedbc", str(inp), str(out))
+        students = _read(out, "Students")
+        assert "S002" in set(students["User ID"])
+        assert students.loc[students["User ID"] == "S002", "Email Address"].eq("").all()
+        assert "S002" in set(_read(out, "Enrollments")["User ID"]), "the blank-email student is enrolled"
+        assert "S002" in set(_read(out, "Family")["Student User ID"]), "and linked to their family"
+        students_outcome = next(o for o in result.entity_outcomes if o.entity == "Students")
+        assert OutcomeNote.STUDENTS_EXCLUDED_REQUIRED_VALUE not in dict(students_outcome.notes)
+        assert _blank_required(out) == {}, "the email is not a required value, so a blank one is no violation"
 
     def test_every_staff_email_blank_stops_the_night_with_true_copy(self, tmp_path: Path) -> None:
         inp, out = tmp_path / "in", tmp_path / "out"

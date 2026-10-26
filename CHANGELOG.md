@@ -21,6 +21,25 @@ Per-release download links and auto-generated commit notes live on the
 
 ### Fixed
 
+- **Nightly SFTP uploads now retry a connection that drops mid-transfer, and no longer hang for
+  an hour opening the transfer channel.** A dropped connection used to fail the whole run at once
+  with a blank error; it is now retried (up to 3 attempts) like other network errors, and the
+  log names the error type. Opening the channel, the SSH banner and sign-in are each limited to
+  30 seconds. Wrong-password and unrecognised-server failures are still never retried.
+
+- **Unity Christian: student emails now come from the school's own data.** The district's setup built
+  every student address as the student number at the school's domain, which was never confirmed with the
+  school, and students signing in by QR code never noticed. It now reads the real `Student email address`
+  from the school's Enhanced demographic export (`StudentDemographicEnhanced.txt`) and never makes an
+  address up.
+- **Students with no email address are sent again.** Since v3.27.0 a student whose email was blank
+  was left out of the sync, along with their family contacts and class enrollments, and the run showed
+  amber. SpacesEDU accepts a student with no address — younger students often have none and sign in
+  another way, such as a QR code — so the student is now sent. The sync log says once how many
+  students have no email address; Home is not amber for it. Staff and family contacts with no email
+  are still left out (SpacesEDU does not accept them), and a student missing a student number, name,
+  grade or school is still left out. DistrictSync never makes up an email address: a district whose
+  address format is confirmed can still have one generated. Output contract 2.11.0.
 - **Home now warns when a nightly sync is scheduled but has never recorded a run.** If the
   schedule was set up and the computer has no run history at all, Home used to keep saying "No
   runs recorded yet" indefinitely. It now shows "We expected a nightly sync that didn't arrive"
