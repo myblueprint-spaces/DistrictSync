@@ -97,7 +97,10 @@ global_config:
         tardy_code: "T"       # this Absent Code -> tardy_rows, at every grade
         tardy_rows: 1
         default_rows: 1       # K-7, any other present absence (partial day)
-        upper_grade_from: "08"   # grades at/above this take the 0.25-day rows
+        # Grades at/above this take the 0.25-day rows. As in the importer, only
+        # kindergarten and grades below this take the K-7 rows; pre-K and other
+        # non-numeric grades take the 0.25-day rows; a blank grade keeps K-7.
+        upper_grade_from: "08"
         upper_full_day_rows: 4   # grade 8+ full day (4 x 0.25)
         # Grade 8+ partial day: nearest whole number of 0.25-day rows (halves
         # round up), kept between 1 and upper_full_day_rows - 1. A zero or

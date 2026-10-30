@@ -90,11 +90,14 @@ _DAILY_KEYS: tuple[str, ...] = (
 _PERIOD_KEYS: tuple[str, ...] = ("period_school_col", "period_student_col", "period_date_col", "period_category_col")
 
 
-#: The CEDS grades below grade 1 — the K-7 weighting band with ``01``-``07``. Every other CEDS
-#: code that is not a number (``UG``, ``PS``, ``Other``) is a grade the importer's weighting
-#: cannot be read from, so it is counted at the K-7 weighting and warned about (DECISIONS
-#: 2026-10-30).
-_PRE_GRADE_ONE: frozenset[str] = frozenset({"IT", "PR", "PK", "TK", "KG"})
+#: The importer's grade bands, read from its source on 2026-10-30 (``ReportingSpacesCollator.
+#: CalculateAttendance``, ``GradeHelpers.TryParseCedsGrade``; DECISIONS 2026-10-30): ONLY
+#: kindergarten and grades 1-7 weigh 0.5 day per row. ``UG`` — what ``grade_to_ceds`` makes of a
+#: blank or unknown grade — is the importer's "no grade": it also weighs 0.5, but SpacesEDU shows
+#: such a student no attendance at all. Every other CEDS code (``IT``, ``PR``, ``PK``, ``TK``,
+#: ``PS``, ``Other``, ``08``-``13``) weighs 0.25.
+_K7_NON_NUMERIC: frozenset[str] = frozenset({"KG"})
+_NO_GRADE: str = "UG"
 
 
 #: The CLOSED vocabulary of the authorized flag (compared upper-cased): yes, no, or blank.
@@ -391,9 +394,9 @@ class StudentAttendanceTransformer(BaseTransformer):
         if ungraded:
             # Counts only — a grade value beside a pupil number is attendance PII (§8).
             logger.warning(
-                f"[StudentAttendance] {ungraded} daily absence row(s) carry a grade that is not K-12, "
-                f"so they are counted at the K-7 weighting (0.5 day per row). If any of those students "
-                f"are in grade 8 or above, SpacesEDU will show their absences at half their length."
+                f"[StudentAttendance] {ungraded} daily absence row(s) carry a blank or unrecognised grade, "
+                f"so they are counted at the K-7 weighting (0.5 day per row), as SpacesEDU weighs a student "
+                f"with no grade. SpacesEDU shows no attendance for a student without a recognised grade."
             )
         return rows
 
@@ -505,20 +508,23 @@ class StudentAttendanceTransformer(BaseTransformer):
 
     @staticmethod
     def _is_upper_grade(grade_value: Any, upper_grade_from: int) -> bool | None:
-        """Whether a daily row's grade takes the grade 8+ weighting — ``None`` when it cannot be told.
+        """Whether a daily row's grade takes the 0.25-day weighting — ``None`` for "no grade".
 
         The raw grade goes through :func:`grades.grade_to_ceds` (once — it is not idempotent), so
         MyEd BC's ``KF``/``K``/``01``…``12`` and the unpadded ``1``…``9`` all read the same way.
-        A numeric CEDS grade at or above ``upper_grade_from`` is upper (``13`` included: the
-        importer's band is "grade 8 and above"); a numeric one below it, or a grade below grade 1,
-        is not. Anything else — blank, ``UG``, ``PS``, ``Other`` — is ``None``.
+        Mirrors the importer (:data:`_K7_NON_NUMERIC`): a numeric CEDS grade at or above
+        ``upper_grade_from`` is upper (``13`` included) and one below it is not; kindergarten is
+        not; blank/unknown (``UG``) is ``None``; every other code (pre-kindergarten, ``PS``,
+        ``Other``) is upper, as the importer weighs it.
         """
         ceds = grade_to_ceds(grade_value)
         if ceds.isdigit():
             return int(ceds) >= upper_grade_from
-        if ceds in _PRE_GRADE_ONE:
+        if ceds in _K7_NON_NUMERIC:
             return False
-        return None
+        if ceds == _NO_GRADE:
+            return None
+        return True
 
     @staticmethod
     def _derive_row_count(

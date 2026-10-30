@@ -1102,7 +1102,17 @@ class TestGradeWeightedRowCount:
 
     # -- a grade the weighting cannot be read from ---------------------------
 
-    @pytest.mark.parametrize("grade", ["", "UG", "Other", "PS", "HS", None])
+    @pytest.mark.parametrize("grade", ["Infant/Toddler", "Preschool", "Pre-K", "TK", "Other", "Postsecondary"])
+    def test_every_other_recognised_grade_takes_the_quarter_day_rows(
+        self, grade, student_attendance_mapping, attendance_global_config, caplog
+    ):
+        """The importer weighs ONLY kindergarten and 1-7 at 0.5 day (source read 2026-10-30)."""
+        with caplog.at_level(logging.WARNING, logger="src.etl.transformers.student_attendance"):
+            df = self._daily([grade], ["A"], [1.0])
+            assert self._counts(df, student_attendance_mapping, attendance_global_config) == [4]
+        assert not any("unrecognised grade" in r.getMessage() for r in caplog.records)
+
+    @pytest.mark.parametrize("grade", ["", "UG", "Ungraded", "HS", "SU", None])
     def test_unreadable_grade_counts_at_k7_weighting_and_warns(
         self, grade, student_attendance_mapping, attendance_global_config, caplog
     ):
@@ -1114,7 +1124,7 @@ class TestGradeWeightedRowCount:
         assert counts["PUPIL-SENTINEL"] == 2  # K-7 weighting: today's count, never dropped
         assert counts["S1"] == 4
         warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
-        assert any("1 daily absence row(s) carry a grade that is not K-12" in m for m in warnings)
+        assert any("1 daily absence row(s) carry a blank or unrecognised grade" in m for m in warnings)
         assert not any("PUPIL-SENTINEL" in m for m in warnings), "counts only — never a pupil number"
 
     def test_twin_every_readable_grade_warns_about_nothing(
@@ -1123,7 +1133,7 @@ class TestGradeWeightedRowCount:
         df = self._daily(["KF", "01", "08", "12"], ["A"] * 4, [1.0] * 4)
         with caplog.at_level(logging.WARNING, logger="src.etl.transformers.student_attendance"):
             _run(df, student_attendance_mapping, attendance_global_config)
-        assert not any("not K-12" in r.getMessage() for r in caplog.records)
+        assert not any("unrecognised grade" in r.getMessage() for r in caplog.records)
 
     def test_an_absent_grade_column_counts_every_row_at_k7_weighting(
         self, student_attendance_mapping, attendance_global_config, caplog
@@ -1135,7 +1145,7 @@ class TestGradeWeightedRowCount:
         assert len(result) == 2
         messages = [r.getMessage() for r in caplog.records]
         assert any("ABSENCE COLUMNS MISSING" in m and "grade" in m for m in messages)
-        assert not any("not K-12" in m for m in messages)
+        assert not any("unrecognised grade" in m for m in messages)
 
     # -- the knobs -----------------------------------------------------------
 
