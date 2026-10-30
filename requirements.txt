@@ -1,5 +1,5 @@
 # Runtime dependencies — needed to run the ETL pipeline
-pandas>=1.4.0,<3.0
+pandas>=1.4.0,<4.0
 PyYAML>=6.0,<7.0
 python-dateutil>=2.8.2,<3.0
 pydantic>=2.0,<3.0
