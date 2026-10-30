@@ -13,6 +13,7 @@ config injection. Synthetic data only — NO real PII.
 """
 
 import copy
+import logging
 
 import pandas as pd
 import pytest
@@ -971,3 +972,216 @@ class TestCrossBandStudentDaySuppression:
         assert len(s1) == 2, "S1's day must come from the daily band alone"
         assert set(s1["Absence Category"]) == {"A"}, "the derived category wins, not the passed-through one"
         assert len(result[result["Student Number"] == "S2"]) == 1
+
+
+class TestGradeWeightedRowCount:
+    """The daily band's row count follows the student's grade (2026-10-30, validation rule ATT-017).
+
+    SpacesEDU's attendance importer weighs every row by the student's grade — K-7 = 0.5 day per
+    row, grade 8 and up = 0.25 day per row, capped at 1 day, tardies 1 each unweighted — so a
+    grade 8+ full day needs FOUR rows where a K-7 one needs two. The K-7 path is unchanged.
+    """
+
+    @staticmethod
+    def _daily(grades, codes, portions):
+        n = len(grades)
+        return pd.DataFrame(
+            {
+                "school number": ["100"] * n,
+                "student number": [f"S{i}" for i in range(n)],
+                "absence date": ["2025-10-01"] * n,
+                "grade": grades,
+                "absent code am": codes,
+                "authorized am": ["N"] * n,
+                "portion absent": portions,
+            }
+        )
+
+    @staticmethod
+    def _counts(df, mapping, global_config):
+        result = _run(df, mapping, global_config)
+        counts = result["Student Number"].value_counts()
+        return [int(counts.get(f"S{i}", 0)) for i in range(len(df))]
+
+    # -- K-7: byte-identical to the grade-blind rule ------------------------
+
+    K7_PORTIONS = [1.0, 0.5, 0.25, 0.75, 0.0, "", "n/a", 1.5]
+
+    @pytest.mark.parametrize("grade", ["KF", "K", "KG", "01", "1", "04", "07", "7"])
+    def test_k7_counts_are_the_grade_blind_counts(self, grade, student_attendance_mapping, attendance_global_config):
+        n = len(self.K7_PORTIONS)
+        df = self._daily([grade] * n, ["A"] * n, self.K7_PORTIONS)
+        assert self._counts(df, student_attendance_mapping, attendance_global_config) == [2, 1, 1, 1, 1, 1, 1, 1]
+
+    def test_k7_frame_equals_the_frame_built_without_a_grade_column(
+        self, student_attendance_mapping, attendance_global_config
+    ):
+        """Golden: every K-7 row ships exactly what the band shipped before it read the grade."""
+        grades = ["KF", "01", "03", "05", "07", "02", "06", "04", "K", "07"]
+        codes = ["A", "A", "T", "A", "A", "T", "A", "A", "A", ""]
+        portions = [1.0, 0.5, 1.0, 0.25, 0.75, 0.5, "", 1.0, 0.0, 0.0]
+        graded = self._daily(grades, codes, portions)
+        graded["authorized am"] = ["N", "Y", "N", "Y", "N", "Y", "N", "Y", "N", ""]
+        blind = graded.drop(columns=["grade"])
+        expected = _run(blind, student_attendance_mapping, attendance_global_config)
+        actual = _run(graded, student_attendance_mapping, attendance_global_config)
+        pd.testing.assert_frame_equal(actual, expected)
+        assert len(actual) == 2 + 1 + 1 + 1 + 1 + 1 + 1 + 2 + 1 + 0
+
+    # -- grade 8+ ------------------------------------------------------------
+
+    @pytest.mark.parametrize("grade", ["08", "8", "09", "10", "12", "13"])
+    def test_upper_grade_full_day_is_four_identical_rows(
+        self, grade, student_attendance_mapping, attendance_global_config
+    ):
+        result = _run(self._daily([grade], ["A"], [1.0]), student_attendance_mapping, attendance_global_config)
+        assert len(result) == 4
+        assert (result == result.iloc[0]).all().all(), "four IDENTICAL rows"
+
+    @pytest.mark.parametrize(
+        ("portion", "rows"),
+        [
+            (0.1, 1),  # 0.4 rows -> at least one row (a partial absence is never nothing)
+            (0.125, 1),  # 0.5 rows -> rounds UP to 1
+            (0.25, 1),
+            (0.3333, 1),
+            (0.375, 2),  # 1.5 rows -> rounds UP to 2
+            (0.5, 2),
+            ("0.5000", 2),  # the GDE's own spelling
+            (0.6667, 3),
+            (0.75, 3),
+            (0.9, 3),  # 3.6 rows -> kept below a whole day
+        ],
+    )
+    def test_upper_grade_partial_portion_scales(
+        self, portion, rows, student_attendance_mapping, attendance_global_config
+    ):
+        df = self._daily(["10"], ["A"], [portion])
+        assert self._counts(df, student_attendance_mapping, attendance_global_config) == [rows]
+
+    @pytest.mark.parametrize("portion", [0.0, "", "n/a", 1.5, -0.5])
+    def test_upper_grade_unreadable_portion_is_half_a_day(
+        self, portion, student_attendance_mapping, attendance_global_config
+    ):
+        """Two 0.25-day rows — the same half day K-7's `default_rows` (one 0.5-day row) carries."""
+        df = self._daily(["11"], ["A"], [portion])
+        assert self._counts(df, student_attendance_mapping, attendance_global_config) == [2]
+
+    @pytest.mark.parametrize("grade", ["KF", "03", "07", "08", "12", "", "UG"])
+    @pytest.mark.parametrize("portion", [1.0, 0.5, 0.0])
+    def test_tardy_is_one_row_at_every_grade(
+        self, grade, portion, student_attendance_mapping, attendance_global_config
+    ):
+        df = self._daily([grade], ["T"], [portion])
+        result = _run(df, student_attendance_mapping, attendance_global_config)
+        assert len(result) == 1
+        assert list(result["Absence Category"]) == ["L"]
+
+    def test_mixed_grade_file(self, student_attendance_mapping, attendance_global_config):
+        grades = ["KF", "07", "08", "12", "10", "05", "09", "11"]
+        codes = ["A", "A", "A", "A", "A", "A", "T", ""]
+        portions = [1.0, 1.0, 1.0, 0.5, 0.25, 0.5, 1.0, 1.0]
+        df = self._daily(grades, codes, portions)
+        assert self._counts(df, student_attendance_mapping, attendance_global_config) == [2, 2, 4, 2, 1, 1, 1, 0]
+
+    def test_upper_grade_overlap_still_reported_once_by_the_daily_band(
+        self, student_attendance_mapping, attendance_global_config
+    ):
+        """Daily-wins suppression is unchanged: the 4 daily rows ARE the day; its period rows go."""
+        daily = self._daily(["10"], ["A"], [1.0])
+        period = pd.DataFrame(
+            {
+                "school number": ["100", "100"],
+                "student number": ["S0", "S0"],
+                "absence date": ["2025-10-01", "2025-10-01"],
+                "absence category": ["A", "A"],
+            }
+        )
+        result = _run(daily, student_attendance_mapping, attendance_global_config, period)
+        assert len(result) == 4
+
+    # -- a grade the weighting cannot be read from ---------------------------
+
+    @pytest.mark.parametrize("grade", ["Infant/Toddler", "Preschool", "Pre-K", "TK", "Other", "Postsecondary"])
+    def test_every_other_recognised_grade_takes_the_quarter_day_rows(
+        self, grade, student_attendance_mapping, attendance_global_config, caplog
+    ):
+        """The importer weighs ONLY kindergarten and 1-7 at 0.5 day (source read 2026-10-30)."""
+        with caplog.at_level(logging.WARNING, logger="src.etl.transformers.student_attendance"):
+            df = self._daily([grade], ["A"], [1.0])
+            assert self._counts(df, student_attendance_mapping, attendance_global_config) == [4]
+        assert not any("unrecognised grade" in r.getMessage() for r in caplog.records)
+
+    @pytest.mark.parametrize("grade", ["", "UG", "Ungraded", "HS", "SU", None])
+    def test_unreadable_grade_counts_at_k7_weighting_and_warns(
+        self, grade, student_attendance_mapping, attendance_global_config, caplog
+    ):
+        df = self._daily([grade, "08"], ["A", "A"], [1.0, 1.0])
+        df.loc[0, "student number"] = "PUPIL-SENTINEL"
+        with caplog.at_level(logging.WARNING, logger="src.etl.transformers.student_attendance"):
+            result = _run(df, student_attendance_mapping, attendance_global_config)
+        counts = result["Student Number"].value_counts()
+        assert counts["PUPIL-SENTINEL"] == 2  # K-7 weighting: today's count, never dropped
+        assert counts["S1"] == 4
+        warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("1 daily absence row(s) carry a blank or unrecognised grade" in m for m in warnings)
+        assert not any("PUPIL-SENTINEL" in m for m in warnings), "counts only — never a pupil number"
+
+    def test_twin_every_readable_grade_warns_about_nothing(
+        self, student_attendance_mapping, attendance_global_config, caplog
+    ):
+        df = self._daily(["KF", "01", "08", "12"], ["A"] * 4, [1.0] * 4)
+        with caplog.at_level(logging.WARNING, logger="src.etl.transformers.student_attendance"):
+            _run(df, student_attendance_mapping, attendance_global_config)
+        assert not any("unrecognised grade" in r.getMessage() for r in caplog.records)
+
+    def test_an_absent_grade_column_counts_every_row_at_k7_weighting(
+        self, student_attendance_mapping, attendance_global_config, caplog
+    ):
+        """Recorded once as a missing column (`_note_absent_columns`), not per row."""
+        df = self._daily(["10"], ["A"], [1.0]).drop(columns=["grade"])
+        with caplog.at_level(logging.WARNING, logger="src.etl.transformers.student_attendance"):
+            result = _run(df, student_attendance_mapping, attendance_global_config)
+        assert len(result) == 2
+        messages = [r.getMessage() for r in caplog.records]
+        assert any("ABSENCE COLUMNS MISSING" in m and "grade" in m for m in messages)
+        assert not any("unrecognised grade" in m for m in messages)
+
+    # -- the knobs -----------------------------------------------------------
+
+    def test_threshold_is_configurable(self, student_attendance_mapping, attendance_global_config):
+        cfg = copy.deepcopy(attendance_global_config)
+        cfg["attendance"]["daily"]["portion"]["upper_grade_from"] = "10"
+        df = self._daily(["09", "10"], ["A", "A"], [1.0, 1.0])
+        assert self._counts(df, student_attendance_mapping, cfg) == [2, 4]
+
+    @pytest.mark.parametrize("value", ["KG", "UG", "", "eight"])
+    def test_a_threshold_that_is_not_a_grade_fails_loud(
+        self, value, student_attendance_mapping, attendance_global_config
+    ):
+        cfg = copy.deepcopy(attendance_global_config)
+        cfg["attendance"]["daily"]["portion"]["upper_grade_from"] = value
+        with pytest.raises(ValueError, match="upper_grade_from"):
+            _run(self._daily(["08"], ["A"], [1.0]), student_attendance_mapping, cfg)
+
+    @pytest.mark.parametrize("key", ["upper_grade_from", "upper_full_day_rows", "upper_default_rows"])
+    def test_a_missing_upper_knob_fails_loud(self, key, student_attendance_mapping, attendance_global_config):
+        cfg = copy.deepcopy(attendance_global_config)
+        del cfg["attendance"]["daily"]["portion"][key]
+        with pytest.raises(ValueError, match=key):
+            _run(self._daily(["08"], ["A"], [1.0]), student_attendance_mapping, cfg)
+
+    def test_base_defaults_implement_the_importer_weighting(self):
+        daily = load_config("myedbc").global_config.attendance["daily"]
+        portion = daily["portion"]
+        assert (portion["full_day_rows"], portion["default_rows"], portion["tardy_rows"]) == (2, 1, 1)
+        assert str(portion["upper_grade_from"]) == "08"
+        assert (portion["upper_full_day_rows"], portion["upper_default_rows"]) == (4, 2)
+        assert daily["daily_grade_col"] == "grade"
+
+    @pytest.mark.parametrize("sis", ["sd51myedbc", "sd51attendance", "sd60myedbc", "unitychristianmyedbc"])
+    def test_attendance_districts_inherit_the_weighting_unchanged(self, sis):
+        base = load_config("myedbc").global_config.attendance["daily"]
+        district = load_config(sis).global_config.attendance["daily"]
+        assert district["portion"] == base["portion"]
+        assert district["daily_grade_col"] == base["daily_grade_col"]

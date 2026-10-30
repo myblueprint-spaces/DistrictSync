@@ -9,6 +9,27 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+### Fixed
+
+- **Attendance: absences of students in grade 8 and above are no longer shown at half their
+  length.** SpacesEDU counts each attendance row by the student's grade: half a day for
+  kindergarten to grade 7, a quarter of a day for grade 8 and above. DistrictSync sent the same
+  number of rows for every grade, so a grade 8+ student's full-day absence showed as half a day,
+  and partial days as less again. The daily absence rows now follow the student's grade: a grade
+  8+ full day is sent as four rows, and a partial day as the nearest number of quarter days.
+  Kindergarten to grade 7 attendance is sent exactly as before, and a late arrival is still one
+  row at every grade. A row whose grade DistrictSync cannot read is counted the way it was before,
+  and the sync log says how many there were. No district setup needs to change (output contract
+  3.0.0).
+
+### Added
+
+- **Unity Christian: attendance is sent.** The school's nightly sync now also builds
+  `StudentAttendance.csv` from its two absence exports, `StudentDailyAbsences.txt` and
+  `StudentPeriodAbsencesEnhanced.txt`. **The school must send both files every night**: a drop
+  missing either one stops that night's sync (nothing is sent, and SpacesEDU keeps the last good
+  data). A file with no absences in it is fine.
+
 ## [3.27.4] - 2026-10-26
 
 ### Added

@@ -7,7 +7,8 @@
 # 2026-10-21 drop, which swapped the demographic export for the ENHANCED report
 # under its own name (`StudentDemographicEnhanced.txt`) so the student email
 # comes from the school's data. The genuine differences below: the demographic
-# file name, the homeroom band, and the guardian filter.
+# file name, the homeroom band, and the guardian filter. Attendance is on from
+# 2026-10-30 (the 2026-10-29 drop's two absence exports).
 _base: myedbc
 version: '1.9'
 sis: MyEducationBC
@@ -26,6 +27,11 @@ global_config:
   # `source_files` override here: only the entity, and the guardian filter it
   # is NOT safe to ship without (see `row_filters` on Family below).
   #
+  # StudentAttendance is ON from 2026-10-30 (see its entry below). It is a
+  # CRITICAL entity: a night whose drop is missing either absence file STOPS
+  # (nothing is sent; SpacesEDU keeps the last good sync). A present file with
+  # no rows is a normal night without absences.
+  #
   # Restated in full because deep-merge REPLACES lists.
   enabled_entities:
     - Students
@@ -33,6 +39,7 @@ global_config:
     - Family
     - Classes
     - Enrollments
+    - StudentAttendance
 
   # Adds grade 8 to the base K-7 homeroom set. Unity's StudentSchedule.txt
   # covers grades 9-12 ONLY — grade 8 has no timetable rows at all, so without
@@ -97,6 +104,25 @@ mappings:
     row_filters:
       - column: "Parent Auth / Guardian"
         include: ["Y"]
+
+  # Both attendance bands, from the 2026-10-29 drop. No header or column
+  # overrides:
+  #   - StudentDailyAbsences.txt arrives WITH a header row, but in the base's
+  #     18-column layout, so the base `headers:` block names it and the
+  #     extractor drops the echoed header row (16 of 18 names match — the SD51
+  #     shape). Its grades run KF-12, so grade 8+ days take the 0.25-day rows.
+  #     Do NOT copy SD60's `daily_absent_code_col: absence code am` override:
+  #     the injected name is `absent code am`, so that override would blank
+  #     every code.
+  #   - StudentPeriodAbsencesEnhanced.txt is headerful (20 columns) and read by
+  #     its own header row, as SD51's is. Its `E AUTH` / `A-E AUTH` categories
+  #     pass through unmapped; the importer ignores them (owner decision
+  #     2026-10-30: attendance ships only importer-recognised codes, no period
+  #     category map).
+  StudentAttendance:
+    source_files:
+      daily_absences: "StudentDailyAbsences.txt"
+      period_absences: "StudentPeriodAbsencesEnhanced.txt"
 
 # ---------------------------------------------------------------------------
 # HISTORY — why Family was off, and what changed.
