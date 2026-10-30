@@ -774,6 +774,8 @@ def _create_sd60_inputs(d: Path) -> None:
             "School Number": ["100", "200", "200"],
             "Student Number": ["S001", "S002", "S003"],
             "Absence Date": ["2025-10-01", "2025-10-01", "2025-10-02"],
+            # SD60's daily file holds grades 01-06 (K-7 weighting: 0.5 day per row).
+            "Grade": ["01", "04", "06"],
             # SD60 spells this "Absence Code Am"; the base default is
             # "absent code am" — the config overrides the column name.
             "Absence Code Am": ["A", "A", "T"],

@@ -528,6 +528,7 @@ _DAILY_CFG = {
     "daily_absent_code_col": "Absent Code",
     "daily_authorized_col": "Authorized",
     "daily_portion_col": "Portion Absent",
+    "daily_grade_col": "Grade",
 }
 
 

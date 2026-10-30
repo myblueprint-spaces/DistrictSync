@@ -20,8 +20,10 @@ band's config is required ONLY when that band's data is present:
 K-7 **Student Daily Absences** band. The Daily GDE records a single
 ``Absent Code`` (A = absent, T = tardy) plus an ``Authorized`` (Y/N) flag and
 a ``Portion Absent`` fraction; from those the transformer DERIVES the SpacesEDU
-``Absence Category`` and the row multiplicity (full day -> 2 identical rows, so
-a full-day absence is intentionally TWO rows).
+``Absence Category`` and the row multiplicity, which follows the student's
+``Grade`` because SpacesEDU weighs every row by it (K-7 = 0.5 day per row,
+grade 8 and up = 0.25 day per row): a K-7 full day is TWO identical rows, a
+grade 8+ full day FOUR (:meth:`StudentAttendanceTransformer._derive_row_count`).
 
 8-12 **Student Period Absences** band — PER-PERIOD PASS-THROUGH. SpacesEDU
 aggregates per-day itself via per-entry weights (8-12 absence = 0.25/entry, so
@@ -59,6 +61,7 @@ never code.
 """
 
 import logging
+import math
 from typing import Any
 
 import pandas as pd
@@ -68,6 +71,7 @@ from src.etl.outcomes import OutcomeNote
 from src.etl.transformers.base import BaseTransformer
 from src.etl.transformers.columns import require_columns
 from src.etl.transformers.context import TransformContext
+from src.etl.transformers.grades import grade_to_ceds
 from src.etl.transformers.notes import is_code_shaped, record_note
 
 logger = logging.getLogger(__name__)
@@ -81,8 +85,16 @@ _DAILY_KEYS: tuple[str, ...] = (
     "daily_absent_code_col",
     "daily_authorized_col",
     "daily_portion_col",
+    "daily_grade_col",
 )
 _PERIOD_KEYS: tuple[str, ...] = ("period_school_col", "period_student_col", "period_date_col", "period_category_col")
+
+
+#: The CEDS grades below grade 1 — the K-7 weighting band with ``01``-``07``. Every other CEDS
+#: code that is not a number (``UG``, ``PS``, ``Other``) is a grade the importer's weighting
+#: cannot be read from, so it is counted at the K-7 weighting and warned about (DECISIONS
+#: 2026-10-30).
+_PRE_GRADE_ONE: frozenset[str] = frozenset({"IT", "PR", "PK", "TK", "KG"})
 
 
 #: The CLOSED vocabulary of the authorized flag (compared upper-cased): yes, no, or blank.
@@ -324,6 +336,7 @@ class StudentAttendanceTransformer(BaseTransformer):
         code_col = self._require(daily_cfg, "daily_absent_code_col")
         authorized_col = self._require(daily_cfg, "daily_authorized_col")
         portion_col = self._require(daily_cfg, "daily_portion_col")
+        grade_col = self._require(daily_cfg, "daily_grade_col")
 
         # The authorized flag is half of every category-map key (§5 #23): without the column,
         # every present code misses the map and the band cannot build a single row. So it is
@@ -342,6 +355,11 @@ class StudentAttendanceTransformer(BaseTransformer):
 
         category_map = self._category_map(daily_cfg)
         portion_rule = self._portion_rule(daily_cfg)
+        upper_grade_from = self._upper_grade_from(portion_rule)
+        # An ABSENT grade column is recorded once by `_note_absent_columns` (every row then counts
+        # at the K-7 weighting, as before 2026-10-30); only unreadable VALUES are counted here.
+        grade_present = grade_col in working.columns
+        ungraded = 0
 
         rows: list[dict[str, str]] = []
         for record in working.to_dict("records"):
@@ -352,7 +370,13 @@ class StudentAttendanceTransformer(BaseTransformer):
 
             authorized = self._str(record.get(authorized_col))
             category = self._derive_category(absent_code, authorized, category_map)
-            row_count = self._derive_row_count(absent_code, record.get(portion_col), portion_rule)
+            upper_grade = self._is_upper_grade(record.get(grade_col), upper_grade_from)
+            if upper_grade is None:
+                ungraded += grade_present
+                upper_grade = False
+            row_count = self._derive_row_count(
+                absent_code, record.get(portion_col), portion_rule, upper_grade=upper_grade
+            )
             if row_count <= 0:
                 continue
 
@@ -364,6 +388,13 @@ class StudentAttendanceTransformer(BaseTransformer):
             }
             rows.extend([dict(row) for _ in range(row_count)])
 
+        if ungraded:
+            # Counts only — a grade value beside a pupil number is attendance PII (§8).
+            logger.warning(
+                f"[StudentAttendance] {ungraded} daily absence row(s) carry a grade that is not K-12, "
+                f"so they are counted at the K-7 weighting (0.5 day per row). If any of those students "
+                f"are in grade 8 or above, SpacesEDU will show their absences at half their length."
+            )
         return rows
 
     # ------------------------------------------------------------------
@@ -473,14 +504,43 @@ class StudentAttendanceTransformer(BaseTransformer):
         return category
 
     @staticmethod
-    def _derive_row_count(absent_code: str, portion_value: Any, portion_rule: dict[str, Any]) -> int:
-        """Half-day row multiplicity from the portion rule, checked IN THIS ORDER:
+    def _is_upper_grade(grade_value: Any, upper_grade_from: int) -> bool | None:
+        """Whether a daily row's grade takes the grade 8+ weighting — ``None`` when it cannot be told.
 
-        1. tardy code (== ``tardy_code``) → ``tardy_rows`` (1). Checked FIRST, so
-           a tardy recorded against a full-day portion stays ONE row — the
-           portion is never consulted for a tardy.
-        2. else full-day portion (== ``full_day_value``) → ``full_day_rows`` (2).
-        3. else (partial day, or an unparseable portion) → ``default_rows`` (1).
+        The raw grade goes through :func:`grades.grade_to_ceds` (once — it is not idempotent), so
+        MyEd BC's ``KF``/``K``/``01``…``12`` and the unpadded ``1``…``9`` all read the same way.
+        A numeric CEDS grade at or above ``upper_grade_from`` is upper (``13`` included: the
+        importer's band is "grade 8 and above"); a numeric one below it, or a grade below grade 1,
+        is not. Anything else — blank, ``UG``, ``PS``, ``Other`` — is ``None``.
+        """
+        ceds = grade_to_ceds(grade_value)
+        if ceds.isdigit():
+            return int(ceds) >= upper_grade_from
+        if ceds in _PRE_GRADE_ONE:
+            return False
+        return None
+
+    @staticmethod
+    def _derive_row_count(
+        absent_code: str, portion_value: Any, portion_rule: dict[str, Any], *, upper_grade: bool
+    ) -> int:
+        """Row multiplicity from the portion rule and the student's grade band, checked IN THIS ORDER:
+
+        1. tardy code (== ``tardy_code``) → ``tardy_rows`` (1), at EVERY grade. Checked FIRST,
+           so a tardy recorded against a full-day portion stays ONE row — the portion is never
+           consulted for a tardy (the importer counts tardy rows one each, unweighted).
+        2. K-7 (``upper_grade`` false — each row is 0.5 day):
+           full-day portion (== ``full_day_value``) → ``full_day_rows`` (2); anything else
+           (partial day, or an unparseable portion) → ``default_rows`` (1). Unchanged since
+           before 2026-10-30, so K-7 output is byte-identical.
+        3. Grade 8+ (each row is 0.25 day):
+           full-day portion → ``upper_full_day_rows`` (4); a partial portion strictly between 0
+           and ``full_day_value`` → the nearest whole number of rows, halves rounding UP
+           (``floor(portion / full_day_value × upper_full_day_rows + 0.5)``), kept between 1 and
+           ``upper_full_day_rows - 1`` so a partial absence is never reported as nothing or as a
+           whole day; anything else (a zero, out-of-range or unparseable portion) →
+           ``upper_default_rows`` (2 — half a day, the same day-value K-7's ``default_rows``
+           carries).
 
         The precedence is load-bearing, not incidental: stating it the other way
         round describes a different feed. Callers drop blank-Absent-Code rows
@@ -492,9 +552,18 @@ class StudentAttendanceTransformer(BaseTransformer):
             portion = float(portion_value)
         except (TypeError, ValueError):
             portion = None
-        if portion is not None and portion == float(portion_rule["full_day_value"]):
-            return int(portion_rule["full_day_rows"])
-        return int(portion_rule["default_rows"])
+        full_day_value = float(portion_rule["full_day_value"])
+        if not upper_grade:
+            if portion is not None and portion == full_day_value:
+                return int(portion_rule["full_day_rows"])
+            return int(portion_rule["default_rows"])
+        upper_full_day_rows = int(portion_rule["upper_full_day_rows"])
+        if portion is not None and portion == full_day_value:
+            return upper_full_day_rows
+        if portion is not None and 0 < portion < full_day_value:
+            nearest = math.floor(portion / full_day_value * upper_full_day_rows + 0.5)
+            return min(max(nearest, 1), upper_full_day_rows - 1)
+        return int(portion_rule["upper_default_rows"])
 
     # ------------------------------------------------------------------
     # Config helpers
@@ -532,10 +601,30 @@ class StudentAttendanceTransformer(BaseTransformer):
         rule = daily_cfg.get("portion")
         if not isinstance(rule, dict):
             raise ValueError("StudentAttendance: global_config.attendance.daily.portion is missing.")
-        for key in ("full_day_value", "full_day_rows", "tardy_code", "tardy_rows", "default_rows"):
+        for key in (
+            "full_day_value",
+            "full_day_rows",
+            "tardy_code",
+            "tardy_rows",
+            "default_rows",
+            "upper_grade_from",
+            "upper_full_day_rows",
+            "upper_default_rows",
+        ):
             if key not in rule:
                 raise ValueError(f"StudentAttendance: global_config.attendance.daily.portion is missing '{key}'.")
         return rule
+
+    @staticmethod
+    def _upper_grade_from(portion_rule: dict[str, Any]) -> int:
+        """``portion.upper_grade_from`` as a grade number — fails loud unless it names a grade 01-13."""
+        ceds = grade_to_ceds(portion_rule["upper_grade_from"])
+        if not ceds.isdigit():
+            raise ValueError(
+                "StudentAttendance: global_config.attendance.daily.portion.upper_grade_from must be a "
+                f"grade from 01 to 13 (got {portion_rule['upper_grade_from']!r})."
+            )
+        return int(ceds)
 
     # ------------------------------------------------------------------
     # Output assembly
@@ -545,7 +634,7 @@ class StudentAttendanceTransformer(BaseTransformer):
 
         The rows already carry exactly the four output keys, so no blank-column
         fill is needed. No ``drop_duplicates`` — a full-day absence is
-        intentionally two identical rows.
+        intentionally two (K-7) or four (grade 8+) identical rows.
         """
         return pd.DataFrame(rows, columns=list(self.OUTPUT_COLUMNS))
 

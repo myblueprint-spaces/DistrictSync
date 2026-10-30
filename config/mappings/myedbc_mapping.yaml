@@ -78,6 +78,9 @@ global_config:
       daily_absent_code_col: "absent code am"
       daily_authorized_col: "authorized am"
       daily_portion_col: "portion absent"
+      # The student's grade decides how many rows an absence is (see `portion`
+      # below). Absent column -> every row counts at the K-7 weighting, recorded.
+      daily_grade_col: "grade"
       # (Absent Code | Authorized) -> SpacesEDU Absence Category. A non-blank
       # pair absent from this map fails loud (raises) — never silently dropped.
       category_map:
@@ -85,13 +88,21 @@ global_config:
         "A|Y": "A-E"    # authorized absence
         "T|N": "L"      # tardy = late
         "T|Y": "L-E"    # excused late
-      # Portion Absent -> output row count (each row = one half-day).
+      # Portion Absent + Grade -> output row count. SpacesEDU weighs each row by
+      # the student's grade (K-7 = 0.5 day/row, grade 8+ = 0.25 day/row, capped
+      # at 1 day; tardy rows count 1 each, unweighted), so the counts mirror it.
       portion:
-        full_day_value: 1.0   # portion == this -> full_day_rows
-        full_day_rows: 2
-        tardy_code: "T"       # this Absent Code -> tardy_rows (always 1 half-day)
+        full_day_value: 1.0   # portion == this -> a full day
+        full_day_rows: 2      # K-7 full day (2 x 0.5)
+        tardy_code: "T"       # this Absent Code -> tardy_rows, at every grade
         tardy_rows: 1
-        default_rows: 1       # any other present absence (partial day)
+        default_rows: 1       # K-7, any other present absence (partial day)
+        upper_grade_from: "08"   # grades at/above this take the 0.25-day rows
+        upper_full_day_rows: 4   # grade 8+ full day (4 x 0.25)
+        # Grade 8+ partial day: nearest whole number of 0.25-day rows (halves
+        # round up), kept between 1 and upper_full_day_rows - 1. A zero or
+        # unreadable portion -> upper_default_rows (half a day, like K-7's 1).
+        upper_default_rows: 2
     # 8-12 Student Period Absences band — PER-PERIOD PASS-THROUGH. SpacesEDU
     # aggregates per-day itself via per-entry weights (8-12 = 0.25/entry, 4
     # entries = 1 day, capped at 1/day), so we emit ONE output row per
