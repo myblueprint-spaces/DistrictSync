@@ -1109,8 +1109,13 @@ class TestTypedCategoriesReachTheRecord:
     def _plain_emergency_report(d: Path, *, first_header: str = "Student Number", guardian: bool = False) -> None:
         """The 2026-09-22 shape: the PLAIN report under the Enhanced report's filename.
 
-        Also Unity's 2026-10-21 demographic: the Enhanced report under its own name (DSYNC-34)."""
+        Also Unity's 2026-10-21 demographic: the Enhanced report under its own name (DSYNC-34), and
+        since 2026-10-30 its two absence exports (StudentAttendance is CRITICAL, so a drop
+        without them stops at the input gate before Family is reached)."""
+        from tests.test_contract import _write_unity_absences
+
         (d / "StudentDemographicInformation.txt").rename(d / "StudentDemographicEnhanced.txt")
+        _write_unity_absences(d)
         columns: dict[str, list[str]] = {
             first_header: ["S001"],
             "First Name": ["John"],
@@ -1327,6 +1332,7 @@ class TestEntityOutcomesReachTheRecord:
             "Family": ("failed", "missing_source_column"),
             "Classes": ("built", "none"),
             "Enrollments": ("built", "none"),
+            "StudentAttendance": ("built", "none"),
         }
         assert _log_payload(caplog)["entity_outcomes"] == stored["entity_outcomes"]
         # The flat count keys and the outcome rows agree for BUILT entities; Family reached nothing.
@@ -1336,6 +1342,7 @@ class TestEntityOutcomesReachTheRecord:
             "Classes.csv",
             "Enrollments.csv",
             "Staff.csv",
+            "StudentAttendance.csv",
             "Students.csv",
         ]
 

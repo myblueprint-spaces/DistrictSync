@@ -22,6 +22,14 @@ Per-release download links and auto-generated commit notes live on the
   and the sync log says how many there were. No district setup needs to change (output contract
   3.0.0).
 
+### Added
+
+- **Unity Christian: attendance is sent.** The school's nightly sync now also builds
+  `StudentAttendance.csv` from its two absence exports, `StudentDailyAbsences.txt` and
+  `StudentPeriodAbsencesEnhanced.txt`. **The school must send both files every night**: a drop
+  missing either one stops that night's sync (nothing is sent, and SpacesEDU keeps the last good
+  data). A file with no absences in it is fine.
+
 ## [3.27.4] - 2026-10-26
 
 ### Added

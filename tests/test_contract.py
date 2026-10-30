@@ -864,6 +864,79 @@ def _use_unity_enhanced_demographic(d: Path) -> None:
     _write_student_demographic(d, "StudentDemographicEnhanced.txt")
 
 
+#: The daily header row Unity's export echoes over the base's 18 injected names. Two names differ
+#: from the base (`Absence Code AM/PM` for `Absent Code AM/PM` — the SD51 shape), so the extractor
+#: still recognises it as a header (16 of 18) and drops it. Synthetic spellings, not the school's.
+_UNITY_DAILY_HEADING: tuple[str, ...] = (
+    "School Number",
+    "Student Number",
+    "Student Legal Last Name",
+    "Student Legal First Name",
+    "Grade",
+    "Homeroom",
+    "Teacher Name",
+    "Absence Date",
+    "Reason Code AM",
+    "Sub Allocation Code AM",
+    "Authorized Am",
+    "Reason Code PM",
+    "Sub Allocation Code PM",
+    "Authorized Pm",
+    "Absence Code AM",
+    "Absence Code PM",
+    "Teacher ID",
+    "Portion Absent",
+)
+
+
+def _write_unity_absences(d: Path) -> None:
+    """Unity's two absence exports (2026-10-29 shape): a daily file WITH a header row in the base's
+    18-column layout, grades KF-12, and the headerful Enhanced period file (with a category the
+    importer ignores, passed through).
+
+    S001 (KF) full day -> 2 rows; S002 (08) full day -> 4 rows; S003 (12) half day -> 2 rows;
+    S001 tardy -> 1 row; a blank-code row (portion 0) -> none. 9 daily rows. The period file
+    adds S004's two periods (one ``E AUTH``) and S002's same-day period, which daily wins over.
+    """
+    rows = [
+        ("100", "S001", "KF", "01-Oct-2026", "N", "A", "1.0000"),
+        ("200", "S002", "08", "01-Oct-2026", "Y", "A", "1.0000"),
+        ("200", "S003", "12", "02-Oct-2026", "N", "A", "0.5000"),
+        ("100", "S001", "KF", "03-Oct-2026", "N", "T", "0.0000"),
+        ("100", "S001", "KF", "06-Oct-2026", "", "", "0.0000"),
+    ]
+    lines = [",".join(_UNITY_DAILY_HEADING)]
+    for school, student, grade, date, authorized, code, portion in rows:
+        record = [school, student, "Last", "First", grade, "H1", "Teacher", date, "", "", authorized]
+        record += ["", "", "", code, "", "T001", portion]
+        lines.append(",".join(record))
+    (d / "StudentDailyAbsences.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    pd.DataFrame(
+        {
+            "School Number": ["200", "200", "200"],
+            "Student Number": ["S004", "S004", "S002"],
+            "Student Legal Last Name": ["Last"] * 3,
+            "Student Legal First Name": ["First"] * 3,
+            "Grade": ["10", "10", "08"],
+            "Homeroom": ["C4"] * 3,
+            "Teacher Name": ["Teacher"] * 3,
+            "Absence Date": ["02-Oct-2026", "02-Oct-2026", "01-Oct-2026"],
+            "Course Code": ["ENG10", "MATH10", "SCI08"],
+            "Absence Category": ["A", "E AUTH", "A-E"],
+            "Absence Sub Allocation Code": [""] * 3,
+            "Authorized Absence Code": [""] * 3,
+            "Office Reason": [""] * 3,
+            "Section Letter": ["A"] * 3,
+            "Period Id": ["1", "2", "1"],
+            "Teacher ID": ["T004"] * 3,
+            "School Course Code": ["ENG10", "MATH10", "SCI08"],
+            "Flavour": [""] * 3,
+            "Master Timetable ID": ["M1", "M2", "M3"],
+            "Schedule Term": ["S1"] * 3,
+        }
+    ).to_csv(d / "StudentPeriodAbsencesEnhanced.txt", index=False, header=True)
+
+
 def _create_unitychristian_inputs(d: Path) -> None:
     """Standard MyEd BC file shape, with the ENHANCED emergency-contact export.
 
@@ -881,6 +954,7 @@ def _create_unitychristian_inputs(d: Path) -> None:
     """
     _create_myedbc_inputs(d)
     _use_unity_enhanced_demographic(d)
+    _write_unity_absences(d)
     pd.DataFrame(
         {
             "Student Number": ["S001", "S002", "S002"],
@@ -936,6 +1010,7 @@ def _create_unitychristian_plain_report_inputs(d: Path) -> None:
     """
     _create_myedbc_inputs(d)
     _use_unity_enhanced_demographic(d)
+    _write_unity_absences(d)
     rows = [
         ("100", "S001", "Smith", "Alice", "3", "A1", "1", "Father", "John", "Smith"),
         ("200", "S002", "Jones", "Bob", "10", "C3", "1", "Mother", "Mei", "Wong"),
@@ -1979,7 +2054,7 @@ class TestDistrictQuirks:
 # ---------------------------------------------------------------------------
 
 #: The entities Unity's config builds that do NOT depend on the contacts file.
-_UNITY_REST = ("Students", "Staff", "Classes", "Enrollments")
+_UNITY_REST = ("Students", "Staff", "Classes", "Enrollments", "StudentAttendance")
 
 #: A user-dir overlay reproducing the owner's 2026-09-23 workaround: Unity with Family off.
 _UNITY_WITHOUT_FAMILY_SIS = "unitynofamilytest"
@@ -1990,6 +2065,7 @@ global_config:
     - Staff
     - Classes
     - Enrollments
+    - StudentAttendance
 """
 
 
@@ -2011,6 +2087,35 @@ def _run_unity_cli(input_dir: Path, output_dir: Path, monkeypatch: pytest.Monkey
 def _every_output_byte(output_dir: Path) -> bytes:
     """Every file the run left under ``output_dir``, archives included, concatenated."""
     return b"".join(p.read_bytes() for p in sorted(output_dir.rglob("*")) if p.is_file())
+
+
+@pytest.mark.integration
+class TestUnityAttendance:
+    """Unity Christian's attendance (2026-10-30), end to end on the CLI over :func:`_write_unity_absences`.
+
+    The daily file's echoed header row is dropped, its codes read under the base's injected names
+    (no SD60-style override), and its grade 8+ day carries four rows.
+    """
+
+    def test_rows_follow_grade_and_the_echoed_header_is_not_a_record(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        input_dir, out = tmp_path / "in", tmp_path / "out"
+        input_dir.mkdir()
+        out.mkdir()
+        _create_unitychristian_inputs(input_dir)
+        code, manifests = _run_unity_cli(input_dir, out, monkeypatch, "unitychristianmyedbc")
+        assert code == 0
+        assert "StudentAttendance.csv" in manifests[0]
+        attendance = _read_output(out, "StudentAttendance")
+        counts = attendance["Student Number"].value_counts().to_dict()
+        # S001 KF: full day 2 + tardy 1; S002 grade 08: full day 4 (its period row suppressed);
+        # S003 grade 12: half day 2; S004: two period rows passed through.
+        assert counts == {"S001": 3, "S002": 4, "S003": 2, "S004": 2}
+        assert "Student Number" not in set(attendance["Student Number"]), "the echoed header shipped as a row"
+        assert set(attendance.loc[attendance["Student Number"] == "S002", "Absence Category"]) == {"A-E"}
+        assert set(attendance.loc[attendance["Student Number"] == "S004", "Absence Category"]) == {"A", "E AUTH"}
+        assert set(attendance["Absence Date"]) == {"2026-10-01", "2026-10-02", "2026-10-03"}
 
 
 @pytest.mark.integration

@@ -168,8 +168,10 @@ EXPECTED_ENTITIES: dict[str, frozenset[str]] = {
     # email column at all; the 2026-09-14 drop switched it to the ENHANCED
     # report under the SAME canonical filename, supplying both `Email Address`
     # and the `Parent Auth / Guardian` flag the config now filters on. Rides the
-    # standard MyEd BC file shape.
-    "unitychristianmyedbc": ROSTERING_ENTITIES,
+    # standard MyEd BC file shape. StudentAttendance from 2026-10-30: both
+    # absence bands, the daily file with an echoed header row over the base's
+    # injected names (grades KF-12, so the grade 8+ weighting applies).
+    "unitychristianmyedbc": ROSTERING_ENTITIES | {"StudentAttendance"},
     "mbp_all": ROSTERING_ENTITIES | {"CourseInfo", "StudentCourses"},
     "mbp_core": frozenset({"Students", "CourseInfo", "StudentCourses"}),
     "mbponly": frozenset({"CourseInfo", "StudentCourses"}),
