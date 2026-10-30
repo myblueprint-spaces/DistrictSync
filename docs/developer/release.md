@@ -179,7 +179,7 @@ Work is tracked on the **DSYNC** Jira board (kanban: To Do → In Progress → I
 
 - **What gets a ticket:** features, bugs, process or doc changes, and every release. Major themes are epics; do not ticket every small change.
 - **Key convention:** put the key in the branch name, PR title and commit message, e.g. `DSYNC-123-sftp-timeout`. The PR template has a Jira field.
-- **Status flow:** a ticket moves to In Progress when work starts, In Review when the PR opens and Done when the PR merges. **Done means merged, not released.** (GitHub for Jira is installed, so PRs, commits, builds and deployments show on the ticket; the status moves themselves stay manual until the PR-to-status automation rules exist, requested in DIH-59 together with the Data Insights Hub.)
+- **Status flow:** a ticket moves to In Progress when work starts, In Review when the PR opens and Done when the PR merges. **Done means merged, not released.** Jira automation makes the moves (branch created, PR opened, PR merged); nobody moves them by hand. GitHub for Jira is installed, so PRs, commits and builds show on the ticket. The rules and the agent ticket workflow are in [`jira-automation.md`](jira-automation.md).
 - **Ticket body:** write the description in four parts, as the board's tickets already do: **Problem** (what is wrong, who it hurts, with counts where there are any), **Fix** (what changes), **Acceptance criteria** (what a reviewer can check, each pinned by a test where code is involved) and **Open questions** (non-blocking only). A fix that reverses an earlier decision names the DECISIONS entry it supersedes.
 - **Move the ticket yourself:** until the PR-to-status automation exists (DSYNC-22), move the ticket to Done when its PR merges. A merged PR with a ticket still in To Do is a gap, not a state.
 - **Cross-check the knowledge repo:** before a ticket decides that a column is Required or that a file gains or loses rows, check Product-Integration-Validation (`checklist.md`, `rules/`) for the rule that already covers it and cite its id in the ticket. The Advanced CSV Google Doc is outdated; [`output-contract.md`](output-contract.md) and that repo are the knowledge sources. If they disagree, say so in the ticket.
@@ -222,7 +222,6 @@ Not yet rehearsed: a first rollback drill is tracked on the board. Output-CSV sc
 
 | Item | Owner | Ticket |
 | --- | --- | --- |
-| PR to status automation rules (GitHub for Jira itself is installed; shared with Data Insights Hub) | Jira / GitHub administrator | DIH-59 |
 | Rollback rehearsal | DistrictSync | DSYNC-20 |
 
 **Platform changes.** DistrictSync is not on the Engineering Release Checklist (decision: no checklist line, DSYNC-21 closed). Instead the release owner confirms with Engineering that DistrictSync is notified before any change to the SpacesEDU importer that affects the output CSVs (see [`output-contract.md`](output-contract.md)).
