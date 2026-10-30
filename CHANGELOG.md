@@ -9,6 +9,8 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+## [3.28.0] - 2026-10-30
+
 ### Fixed
 
 - **Attendance: absences of students in grade 8 and above are no longer shown at half their
