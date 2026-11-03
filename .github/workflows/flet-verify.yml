@@ -6,8 +6,9 @@ name: flet-verify
 #
 # SECURITY (RC4): `pull_request` (NEVER `pull_request_target`). A `flet pack` runs
 # arbitrary PR code; pull_request runs it in the fork's least-privilege context
-# with no repo secrets. The reusable flet-pack.yml grants only `contents: read`
-# and the built exe is an upload-artifact, never a Release asset.
+# with no repo secrets. The reusable flet-pack.yml grants only `contents: read`,
+# and this caller leaves its `upload` input off: the exe is built and smoked, never
+# uploaded (DSYNC-54 — nobody downloads a PR build; ~415 MB of storage per run).
 on:
   workflow_dispatch: {}
   pull_request:

@@ -31,6 +31,8 @@ jobs:
   build-flet:
     needs: test
     uses: ./.github/workflows/flet-pack.yml
+    with:
+      upload: true # PR builds (flet-verify.yml) upload nothing (DSYNC-54)
 
   # -----------------------------------------------------------------------
   # Sign the Windows exe - Azure Trusted Signing (plan 0041 Slice 5).
@@ -148,7 +150,7 @@ jobs:
         with:
           name: DistrictSync-windows-signed
           path: dist/DistrictSync.exe
-          retention-days: 5
+          retention-days: 1
 
   # -----------------------------------------------------------------------
   # Publish release — attach the Flet-default exe (1/OS) + SHA-256 checksums.

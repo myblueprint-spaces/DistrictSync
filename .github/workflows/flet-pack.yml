@@ -7,10 +7,20 @@ name: flet-pack
 #
 # SECURITY (RC4): least-privilege by construction. A `flet pack` runs arbitrary PR
 # code, so this reusable workflow takes NO secrets and grants only read scope. On a PR
-# (flet-verify.yml) the built exe is an `upload-artifact` ONLY; on a tag, release.yml
-# downloads and attaches it.
+# (flet-verify.yml) nothing is uploaded; on a tag, release.yml passes `upload: true`,
+# then downloads and attaches the exe.
+#
+# ARTIFACT STORAGE (DSYNC-54): one run is ~415 MB across the three OSes and counts
+# against the org's Actions storage quota. Nobody downloads a PR build, so the upload
+# is opt-in: only release.yml sets `upload`, and the release consumes the artifacts
+# within minutes, so they are kept 1 day.
 on:
   workflow_call:
+    inputs:
+      upload:
+        description: "Upload the packed exe as an artifact (release.yml only)"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -363,12 +373,12 @@ jobs:
         run: hdiutil detach "$RUNNER_TEMP/dmg-mnt" || true
 
       # macOS uploads exactly two files: the DMG (districts) and the bare binary
-      # (headless CLI). The .app is not among them — it was MOVED into the DMG
+      # (headless CLI), and only on a release (`upload`). The .app is not among them — it was MOVED into the DMG
       # staging dir above, because uploading it loose would strip its mode bits and
       # hand anyone who used it the same broken download this plan fixes.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: always()
+        if: inputs.upload
         with:
           name: DistrictSync-${{ matrix.os }}
           path: dist/DistrictSync*
-          retention-days: 5
+          retention-days: 1
