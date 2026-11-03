@@ -20,6 +20,14 @@ updates:
         patterns:
           - "flet"
           - "flet-*"
+      # Everything else in one weekly PR (DSYNC-54): one bump per PR ran the full CI
+      # and the 3-OS pack once per package.
+      python:
+        patterns:
+          - "*"
+        exclude-patterns:
+          - "flet"
+          - "flet-*"
 
   - package-ecosystem: "github-actions"
     directory: "/"
@@ -29,3 +37,7 @@ updates:
     labels:
       - "dependencies"
       - "github-actions"
+    groups:
+      actions:
+        patterns:
+          - "*"

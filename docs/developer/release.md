@@ -2,7 +2,7 @@
 
 All builds and releases are automated via GitHub Actions. The process is:
 
-1. Push a version tag → Actions runs tests → packs one Flet exe per OS → creates a GitHub Release with all three files (+ checksums) attached.
+1. Push a version tag → Actions checks CI is green on that commit → packs one Flet exe per OS → creates a GitHub Release with all three files (+ checksums) attached.
 
 There is **no manual version bump** — the exe's `--version` is stamped from the git tag at build time (see [Versioning](#versioning) below).
 
@@ -28,8 +28,8 @@ push tag v*
     │
     ▼
 ┌──────────────┐
-│  test job    │  python -m pytest + 80% coverage gate
-└──────┬───────┘
+│ ci-green job │  CI (ci.yml) must be green on the tagged commit;
+└──────┬───────┘  waits if it is still running (DSYNC-54)
        │ (must pass)
        ▼
 ┌────────────────────────────────────────┐

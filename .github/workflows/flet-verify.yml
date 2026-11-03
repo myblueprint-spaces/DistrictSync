@@ -29,6 +29,12 @@ on:
 permissions:
   contents: read
 
+# One run per PR (DSYNC-54): a new push cancels the PR's in-flight run, which a
+# later run supersedes anyway. Runs on main/dispatch are never cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   pack:
     uses: ./.github/workflows/flet-pack.yml
