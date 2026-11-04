@@ -48,7 +48,7 @@ push tag v*
           └──────────────────────┘
 ```
 
-`build-flet` calls the reusable `.github/workflows/flet-pack.yml` workflow (the same workflow used for PR/dispatch smoke runs via `flet-verify.yml`). For each OS in the matrix it:
+`build-flet` calls the reusable `.github/workflows/flet-pack.yml` workflow (the same workflow used for PR/dispatch smoke runs via `flet-verify.yml`). A release and a `workflow_dispatch` build all three OSes; a pull request builds only `ubuntu-22.04` (`linux_only`, DSYNC-56, to save Actions minutes). For each OS in the matrix it:
 
 1. Checks out the repo.
 2. Stamps `src/_version.py` from the tag (see [Versioning](#versioning)).

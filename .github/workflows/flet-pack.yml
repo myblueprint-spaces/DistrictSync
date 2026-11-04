@@ -14,11 +14,22 @@ name: flet-pack
 # against the org's Actions storage quota. Nobody downloads a PR build, so the upload
 # is opt-in: only release.yml sets `upload`, and the release consumes the artifacts
 # within minutes, so they are kept 1 day.
+#
+# ACTIONS MINUTES (DSYNC-56, owner decision 2026-11-04: "DistrictSync PRs Linux-only"):
+# a pull request packs and smokes the Linux leg only (`linux_only`, set by
+# flet-verify.yml on pull_request). workflow_dispatch and release.yml leave it off and
+# get all three OSes. macOS bills at 10x and Windows at 2x against the org's shared
+# quota, and a PR build is never shipped, so the full three-OS proof runs where it
+# matters: on dispatch and on every release, before anything is published.
 on:
   workflow_call:
     inputs:
       upload:
         description: "Upload the packed exe as an artifact (release.yml only)"
+        type: boolean
+        default: false
+      linux_only:
+        description: "Pack + smoke ubuntu-22.04 only (flet-verify.yml on pull_request)"
         type: boolean
         default: false
 
@@ -33,35 +44,22 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          # Per-OS desktop flavor (RC6): warm-up, cache key, and `flet pack` MUST
-          # provably agree. ALL THREE now ship `light` (D-0037-1, 2026-07-28): the
-          # app plays no audio or video, so the `full` client's media stack was
-          # tens of MB of dead weight in every district download. Linux has shipped
-          # `light` since PLAT-0b; this run is the Windows/macOS evidence.
-          - os: windows-latest
-            flavor: light
-            sep: ";"
-            require_close: "--require-close"
-            # The brand icon runtime surface (`page.window.icon`) + the Explorer exe icon
-            # are Windows-only; PyInstaller `--icon` wants a `.icns` on macOS, so scope the
-            # `.ico` to Windows to avoid a mac conversion failure. The .ico is still BUNDLED
-            # on all OSes via `--add-data assets` (harmless elsewhere; tiny).
-            icon_arg: "--icon assets/districtsync.ico"
-          - os: ubuntu-22.04 # pinned: the Linux client filename encodes the distro
-            flavor: light
-            sep: ":"
-            require_close: ""
-            icon_arg: ""
-          - os: macos-latest
-            flavor: light
-            sep: ":"
-            require_close: ""
-            icon_arg: ""
+        # ONE place lists the three runners. ubuntu-22.04 is pinned: the Linux client
+        # filename encodes the distro. The matrix is a plain OS list, NOT `include`
+        # entries, so it can be narrowed safely: an `include` entry whose `os` matches no
+        # base combination ADDS a job instead of filtering one out. Per-OS settings are
+        # therefore derived from `runner.os` in the steps below (the `--add-data`
+        # separator, the Windows-only `--icon`, the Windows-only `--require-close`).
+        os: ${{ fromJSON(inputs.linux_only && '["ubuntu-22.04"]' || '["windows-latest","ubuntu-22.04","macos-latest"]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     env:
-      FLET_DESKTOP_FLAVOR: ${{ matrix.flavor }}
+      # Desktop flavor (RC6): warm-up, cache key, and `flet pack` MUST provably agree.
+      # ALL THREE OSes ship `light` (D-0037-1, 2026-07-28): the app plays no audio or
+      # video, so the `full` client's media stack was tens of MB of dead weight in every
+      # district download. Set explicitly because flet_desktop's own default is `full`
+      # on Windows and macOS.
+      FLET_DESKTOP_FLAVOR: light
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -133,7 +131,11 @@ jobs:
 
       # Pack the Flet-default entry point (src/main.py, no-argv branch) into a
       # windowed/no-console/offline onefile exe — THE public Release binary.
-      # --add-data separator is per-OS (matrix `sep`). The FULL src.* + flet
+      # --add-data separator is per-OS (`;` on Windows, `:` elsewhere). The brand
+      # `--icon` is Windows-only: the runtime icon surface (`page.window.icon`) and the
+      # Explorer exe icon are Windows-only, and PyInstaller `--icon` wants a `.icns` on
+      # macOS, so the `.ico` would fail a mac conversion. The .ico is still BUNDLED on
+      # all OSes via `--add-data assets` (harmless elsewhere; tiny). The FULL src.* + flet
       # hidden-import set is listed explicitly (belt-and-braces — registry.py
       # statically imports the transformers, but match release.yml's style).
       # NOTE: `flet pack` has NO native --paths/--exclude-module; raw PyInstaller
@@ -147,9 +149,9 @@ jobs:
         run: |
           flet pack src/main.py --name DistrictSync \
             --yes \
-            ${{ matrix.icon_arg }} \
-            --add-data "config${{ matrix.sep }}config" \
-            --add-data "assets${{ matrix.sep }}assets" \
+            ${{ runner.os == 'Windows' && '--icon assets/districtsync.ico' || '' }} \
+            --add-data "config${{ runner.os == 'Windows' && ';' || ':' }}config" \
+            --add-data "assets${{ runner.os == 'Windows' && ';' || ':' }}assets" \
             --hidden-import flet \
             --hidden-import flet_desktop \
             --hidden-import src.ui_flet.launcher \
@@ -229,7 +231,7 @@ jobs:
             echo ""
             echo "| runner | desktop flavor | bytes | MB |"
             echo "|---|---|---|---|"
-            echo "| \`${{ matrix.os }}\` | \`${{ matrix.flavor }}\` | $SIZE | $MB |"
+            echo "| \`${{ matrix.os }}\` | \`${{ env.FLET_DESKTOP_FLAVOR }}\` | $SIZE | $MB |"
           } >> "$GITHUB_STEP_SUMMARY"
 
       # ---------------------------------------------------------------------
@@ -277,11 +279,11 @@ jobs:
       # DMG instead — the artifact districts actually download.
       - name: Smoke the packed exe (Windows)
         if: runner.os == 'Windows'
-        run: python scripts/ci_flet_pack_smoke.py dist DistrictSync ${{ matrix.require_close }}
+        run: python scripts/ci_flet_pack_smoke.py dist DistrictSync --require-close
 
       - name: Smoke the packed exe (Linux, xvfb)
         if: runner.os == 'Linux'
-        run: xvfb-run -a python scripts/ci_flet_pack_smoke.py dist DistrictSync ${{ matrix.require_close }}
+        run: xvfb-run -a python scripts/ci_flet_pack_smoke.py dist DistrictSync
 
       # ---------------------------------------------------------------------
       # macOS: wrap the .app in a DMG — the district-facing download (plan 0045)

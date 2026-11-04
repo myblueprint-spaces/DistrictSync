@@ -3,6 +3,18 @@
 **Convention (adopted 2026-09-23):** every new entry carries a line `Supersedes: <date — title of the replaced entry>` (or `Supersedes: nothing`) directly under its heading, so a replaced decision is found by search rather than by reading prose.
 
 
+## 2026-11-04 - DSYNC-56: pull requests run CI on Linux only; Windows and macOS run on main, dispatch and releases
+
+Supersedes: nothing. Narrows plan 0049 S-1a-i.5 (`test-windows` on every pull request), plan 0053 S13b (the drift matrix on both OSes on every pull request) and PLAT-3 (flet-verify packs all three OSes on every matching pull request).
+
+**Why.** The myblueprint-spaces org passed 90% of its 3,000 included monthly Actions minutes on 2026-11-04, and the org billing page confirmed DistrictSync counts toward them. Windows bills at 2x and macOS at 10x. Measured Nov 1 to 4 from the runs API: 9 CI runs on pull_request cost about 546 weighted minutes and 9 flet-verify runs about 433, most of it the Windows and macOS legs.
+
+**Decision (owner, 2026-11-04: "DistrictSync PRs Linux-only").** On `pull_request`, `ci.yml` skips `test-windows` (job-level `if`) and runs `drift-matrix` on ubuntu only (the OS list is an expression, since a job-level `if` cannot see `matrix`). `flet-verify.yml` passes `linux_only: true` to `flet-pack.yml` on `pull_request`, which then packs and smokes `ubuntu-22.04` only. The push to main, `workflow_dispatch` and `release.yml` keep every leg. A release still gets the Windows checks because `release.yml`'s `ci-green` gate needs a green CI run on the released commit, and that run is the main push.
+
+**How the matrix narrows.** `flet-pack.yml`'s matrix is now a plain OS list chosen by `fromJSON(...)`, with the per-OS settings (`--add-data` separator, Windows-only `--icon`, Windows-only `--require-close`) derived from `runner.os` in the steps. The old `include` entries could not be filtered: an `include` entry whose `os` matches no base combination ADDS a job. RC4 is unchanged (`contents: read`, no secrets, no `id-token`).
+
+**Cost.** A Windows-only or macOS-only break is now caught on main after the merge (or on a `workflow_dispatch` of flet-verify before it), not on the PR. The only required check on main was already the Linux `test` job, so no merge rule changes. To prove a risky Windows or macOS change before merging, run flet-verify by hand on the branch.
+
 
 ## 2026-10-30 — StudentAttendance: the daily band's row count follows the student's grade; an unreadable grade keeps the K-7 count and warns
 
