@@ -2,7 +2,7 @@
 
 All builds and releases are automated via GitHub Actions. The process is:
 
-1. Push a version tag → Actions runs tests → packs one Flet exe per OS → creates a GitHub Release with all three files (+ checksums) attached.
+1. Push a version tag → Actions checks CI is green on that commit → packs one Flet exe per OS → creates a GitHub Release with all three files (+ checksums) attached.
 
 There is **no manual version bump** — the exe's `--version` is stamped from the git tag at build time (see [Versioning](#versioning) below).
 
@@ -28,8 +28,8 @@ push tag v*
     │
     ▼
 ┌──────────────┐
-│  test job    │  python -m pytest + 80% coverage gate
-└──────┬───────┘
+│ ci-green job │  CI (ci.yml) must be green on the tagged commit;
+└──────┬───────┘  waits if it is still running (DSYNC-54)
        │ (must pass)
        ▼
 ┌────────────────────────────────────────┐
@@ -55,7 +55,7 @@ push tag v*
 3. Installs Python 3.13 + `requirements.txt` + `requirements-dev.txt` (single source of pins — no inline `pip install`).
 4. Runs `flet pack src/main.py --name DistrictSync` — one windowed, no-console, offline exe that packs **both** the Flet UI and the CLI (no-argv → UI; `--sis`/`--input`/`--output` → CLI).
 5. Asserts the packed exe actually embeds the Flet client (offline guarantee) and smoke-tests the real exe (Windows/macOS directly, Linux under `xvfb-run`).
-6. Uploads the binary as a build artifact (`DistrictSync-<matrix.os>`, retained 5 days).
+6. Uploads the binary as a build artifact (`DistrictSync-<matrix.os>`, retained 1 day). Only on a release: `release.yml` passes `upload: true`, while the PR caller `flet-verify.yml` builds and smokes without uploading (DSYNC-54, Actions storage quota).
 
 `publish-release` downloads all three artifacts and renames them to `DistrictSync-windows.exe` / `DistrictSync-linux` / `DistrictSync-macos.dmg` / `DistrictSync-macos`, computes `SHA256SUMS.txt`, and creates the GitHub Release with auto-generated release notes plus a fixed downloads table.
 

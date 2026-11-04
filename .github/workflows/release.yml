@@ -12,15 +12,39 @@ on:
   workflow_dispatch:
 
 jobs:
-  test:
+  # -----------------------------------------------------------------------
+  # Gate on CI's own result for THIS commit instead of re-running the suite
+  # (DSYNC-54). ci.yml already ran tests + the 80% coverage gate (plus lint,
+  # types, bandit, configs, Windows and the drift matrix, which the old copy here
+  # did not) on the pushed commit; re-running it cost ~17 minutes per release.
+  # Fails CLOSED: no CI run for the commit, or no green one, stops the release.
+  # A run still in progress is waited on.
+  # -----------------------------------------------------------------------
+  ci-green:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      actions: read
+      contents: read
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.13"
-      - run: pip install -r requirements.txt -r requirements-dev.txt
-      - run: python -m pytest tests/ --cov=src --cov-fail-under=80
+      - name: Require a green CI run on this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          runs=$(gh run list -R "$GITHUB_REPOSITORY" --workflow ci.yml --commit "$GITHUB_SHA"             --limit 20 --json databaseId,status,conclusion)
+          echo "CI runs for $GITHUB_SHA: $runs"
+          if [ "$(jq '[.[] | select(.conclusion == "success")] | length' <<<"$runs")" -gt 0 ]; then
+            echo "CI is green on $GITHUB_SHA"; exit 0
+          fi
+          pending=$(jq -r '[.[] | select(.status != "completed")][0].databaseId // empty' <<<"$runs")
+          if [ -n "$pending" ]; then
+            echo "waiting for CI run $pending"
+            gh run watch "$pending" -R "$GITHUB_REPOSITORY" --exit-status --interval 30
+            exit 0
+          fi
+          echo "::error::no green CI run on $GITHUB_SHA - push it to main (or a PR) and let CI pass first"
+          exit 1
 
   # -----------------------------------------------------------------------
   # THE public exe — windowed/no-console/offline Flet-default onefile built +
@@ -29,8 +53,10 @@ jobs:
   # -----------------------------------------------------------------------
 
   build-flet:
-    needs: test
+    needs: ci-green
     uses: ./.github/workflows/flet-pack.yml
+    with:
+      upload: true # PR builds (flet-verify.yml) upload nothing (DSYNC-54)
 
   # -----------------------------------------------------------------------
   # Sign the Windows exe - Azure Trusted Signing (plan 0041 Slice 5).
@@ -148,7 +174,7 @@ jobs:
         with:
           name: DistrictSync-windows-signed
           path: dist/DistrictSync.exe
-          retention-days: 5
+          retention-days: 1
 
   # -----------------------------------------------------------------------
   # Publish release — attach the Flet-default exe (1/OS) + SHA-256 checksums.

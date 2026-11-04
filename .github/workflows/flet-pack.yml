@@ -7,10 +7,20 @@ name: flet-pack
 #
 # SECURITY (RC4): least-privilege by construction. A `flet pack` runs arbitrary PR
 # code, so this reusable workflow takes NO secrets and grants only read scope. On a PR
-# (flet-verify.yml) the built exe is an `upload-artifact` ONLY; on a tag, release.yml
-# downloads and attaches it.
+# (flet-verify.yml) nothing is uploaded; on a tag, release.yml passes `upload: true`,
+# then downloads and attaches the exe.
+#
+# ARTIFACT STORAGE (DSYNC-54): one run is ~415 MB across the three OSes and counts
+# against the org's Actions storage quota. Nobody downloads a PR build, so the upload
+# is opt-in: only release.yml sets `upload`, and the release consumes the artifacts
+# within minutes, so they are kept 1 day.
 on:
   workflow_call:
+    inputs:
+      upload:
+        description: "Upload the packed exe as an artifact (release.yml only)"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -299,9 +309,17 @@ jobs:
           rm -rf "$STAGE" && mkdir -p "$STAGE"
           mv dist/DistrictSync.app "$STAGE/DistrictSync.app"
           ln -s /Applications "$STAGE/Applications"
+          # Explicit -size: hdiutil's own -srcfolder estimate can come out too small
+          # for the onefile .app and fail with "No space left on device" (DSYNC-54,
+          # twice on one PR). Staged size + 25% + 20 MB headroom; UDZO compresses the
+          # free space away, so the published DMG does not grow.
+          STAGE_KB=$(du -sk "$STAGE" | cut -f1)
+          SIZE_MB=$(( STAGE_KB * 125 / 100 / 1024 + 20 ))
+          echo "staged: ${STAGE_KB} KB -> image size ${SIZE_MB}m"
           hdiutil create \
             -volname DistrictSync \
             -srcfolder "$STAGE" \
+            -size "${SIZE_MB}m" \
             -ov -format UDZO \
             dist/DistrictSync-macos.dmg
           ls -la dist/
@@ -363,12 +381,12 @@ jobs:
         run: hdiutil detach "$RUNNER_TEMP/dmg-mnt" || true
 
       # macOS uploads exactly two files: the DMG (districts) and the bare binary
-      # (headless CLI). The .app is not among them — it was MOVED into the DMG
+      # (headless CLI), and only on a release (`upload`). The .app is not among them — it was MOVED into the DMG
       # staging dir above, because uploading it loose would strip its mode bits and
       # hand anyone who used it the same broken download this plan fixes.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: always()
+        if: inputs.upload
         with:
           name: DistrictSync-${{ matrix.os }}
           path: dist/DistrictSync*
-          retention-days: 5
+          retention-days: 1
