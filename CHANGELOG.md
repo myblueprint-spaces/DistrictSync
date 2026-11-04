@@ -9,6 +9,13 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+### Changed
+
+- **Pull-request checks.** Checks on a pull request now run on Linux only, to save the
+  organization's GitHub Actions minutes. The Windows and macOS checks still run on every
+  change merged to main and on every release, before anything is published. No change to
+  the app (DSYNC-56).
+
 ## [3.28.1] - 2026-11-04
 
 No change to the app: the download works exactly like 3.28.0. This release changes only

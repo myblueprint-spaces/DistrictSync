@@ -81,7 +81,8 @@ the school-year determination and every date filter are deterministic.
 
 **Runtime and where it runs.** The parametrised matrix carries the ``drift_matrix`` marker,
 deselected by the default ``addopts`` and run by its OWN CI job (``drift-matrix`` in
-``.github/workflows/ci.yml``, ubuntu + windows) — its own time budget, as the plan's sizing
+``.github/workflows/ci.yml``; ubuntu on a pull request, ubuntu + windows on the push to main,
+DSYNC-56), its own time budget, as the plan's sizing
 finding asked; :func:`test_ci_runs_the_deselected_matrix` pins that the deselection can never
 orphan it. Everything else in this module (the derivation, the checker's doctored twins, one
 real case per outcome class and the planted-regression twins) runs in the default suite.

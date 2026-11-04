@@ -99,7 +99,15 @@ jobs:
   #     keeps its identity.
   # No test may depend on the runner's real elevation state or on how this box is
   # provisioned: every such branch is driven by monkeypatch on both legs.
+  #
+  # NOT on pull requests (DSYNC-56, owner decision 2026-11-04: "DistrictSync PRs
+  # Linux-only"). Windows minutes bill at 2x against the org's shared Actions quota,
+  # so this leg runs on the push to main instead. A release still gets it: release.yml's
+  # `ci-green` gate needs a green CI run on the released commit, and that run is the
+  # main push, which includes this job. A Windows-only break therefore shows up on main
+  # after the merge, not on the PR.
   test-windows:
+    if: github.event_name != 'pull_request'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -128,12 +136,16 @@ jobs:
   # that this step exists (the deselection can never orphan the matrix).
   #   * NO coverage gate — the ubuntu `test` job stays the single coverage gate.
   #   * NO lint / type / security / config steps — enforced once above.
+  #   * The windows leg is NOT on pull requests (DSYNC-56, same reason as `test-windows`
+  #     above): a PR runs the ubuntu leg only, the push to main runs both. The OS list is
+  #     chosen by expression rather than a job-level `if`, because a job-level `if` cannot
+  #     see `matrix` and a step-level skip still bills each job's minimum minute.
   drift-matrix:
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: ${{ fromJSON(github.event_name == 'pull_request' && '["ubuntu-latest"]' || '["ubuntu-latest","windows-latest"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
