@@ -9,6 +9,19 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+## [3.28.1] - 2026-11-04
+
+No change to the app: the download works exactly like 3.28.0. This release changes only
+how releases are built.
+
+### Changed
+
+- **Release builds.** Pull-request test builds no longer keep a copy of the app, which
+  had filled the organization's GitHub Actions storage. A release now checks that CI passed
+  on its commit instead of running the test suite a second time, and the macOS disk image
+  sets its own size (an automatic size estimate had failed the build). Release downloads
+  are unchanged and stay on the Releases page (DSYNC-54).
+
 ## [3.28.0] - 2026-10-30
 
 ### Fixed
