@@ -1,7 +1,7 @@
 # Runtime dependencies — needed to run the ETL pipeline
-pandas>=1.4.0,<3.0
+pandas>=1.4.0,<4.0
 PyYAML>=6.0,<7.0
-python-dateutil>=2.8.2,<3.0
+python-dateutil>=2.8.2,<5.0
 pydantic>=2.0,<3.0
 
 # Industry-standard per-OS user-data directory resolution (%LOCALAPPDATA% /
@@ -9,7 +9,7 @@ pydantic>=2.0,<3.0
 # A static `import platformdirs` in src/utils/paths.py, so PyInstaller detects it
 # via static analysis — no --hidden-import needed (those are only for the
 # dynamically-discovered keyring backends).
-platformdirs>=4.0,<5.0
+platformdirs>=4.14.2,<5.0
 
 # SFTP upload (--sftp flag) and credential storage in the OS keyring.
 paramiko>=3.0
@@ -25,4 +25,4 @@ flet-desktop==0.85.3
 
 # Task Scheduler COM engine (src/scheduler/task_com.py, plan 0041) — Windows-only.
 # Imported LAZILY under sys.platform guards, so Linux/macOS never need it.
-pywin32>=306 ; sys_platform == "win32"
+pywin32>=312 ; sys_platform == "win32"
