@@ -1,10 +1,12 @@
 """Tests for the DataLoader — CSV output with field ordering."""
 
+import inspect
 import logging
 import os
 import re
 import sys
 import time
+import zipfile
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -18,6 +20,21 @@ from src.etl.loader import (
     DataLoader,
     output_target_problem,
 )
+
+ZIP = "acsv_sd40_2026-11-06.zip"
+
+
+def _under(path: Path, prefix: str) -> bool:
+    """Whether ``path`` sits (at any depth) inside a dir whose name starts with ``prefix``."""
+    return any(parent.name.startswith(prefix) for parent in path.parents)
+
+
+def _seed(path: Path, text: str | None) -> Path:
+    """Create ``path``'s folder; write ``text`` when given. Returns ``path``."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if text is not None:
+        path.write_text(text, encoding="utf-8")
+    return path
 
 
 def _replace_side_effect(*, fail_role, fail_entity):
@@ -41,11 +58,11 @@ def _replace_side_effect(*, fail_role, fail_entity):
 
     def side_effect(src, dst):
         src, dst = Path(src), Path(dst)
-        if src.parent.name.startswith(".tmp_"):
+        if _under(src, ".tmp_"):
             role = "promote"
-        elif dst.parent.name.startswith(".bak_"):
+        elif _under(dst, ".bak_"):
             role = "backup"
-        elif src.parent.name.startswith(".bak_"):
+        elif _under(src, ".bak_"):
             role = "restore"
         else:
             role = "other"
@@ -64,7 +81,7 @@ class TestDataLoader:
         df = pd.DataFrame({"Name": ["Alice", "Bob"], "Grade": ["05", "06"]})
         loader.save_to_csv(df, "Students", ["Name", "Grade"])
 
-        output_file = tmp_path / "Students.csv"
+        output_file = tmp_path / "csv" / "Students.csv"
         assert output_file.exists()
 
         loaded = pd.read_csv(output_file)
@@ -76,7 +93,7 @@ class TestDataLoader:
         df = pd.DataFrame({"B": [1], "A": [2], "C": [3]})
         loader.save_to_csv(df, "Test", ["A", "B", "C"])
 
-        loaded = pd.read_csv(tmp_path / "Test.csv")
+        loaded = pd.read_csv(tmp_path / "csv" / "Test.csv")
         assert list(loaded.columns) == ["A", "B", "C"]
 
     def test_studentattendance_written_without_bom(self, tmp_path):
@@ -90,7 +107,7 @@ class TestDataLoader:
         loader.save_to_csv(df, "Students", ["School Number"])
 
         attendance = (tmp_path / "StudentAttendance.csv").read_bytes()
-        rostering = (tmp_path / "Students.csv").read_bytes()
+        rostering = (tmp_path / "csv" / "Students.csv").read_bytes()
         assert not attendance.startswith(b"\xef\xbb\xbf"), "StudentAttendance.csv must have no BOM"
         assert attendance.startswith(b"School Number"), "first header must be clean (no BOM glued on)"
         assert rostering.startswith(b"\xef\xbb\xbf"), "rostering CSVs keep the BOM for Excel"
@@ -115,7 +132,7 @@ class TestDataLoader:
         loader.save_to_csv(df1, "Test", ["Name"])
         loader.save_to_csv(df2, "Test", ["Name"])
 
-        loaded = pd.read_csv(tmp_path / "Test.csv")
+        loaded = pd.read_csv(tmp_path / "csv" / "Test.csv")
         assert len(loaded) == 2
         assert loaded["Name"].iloc[0] == "Bob"
 
@@ -146,7 +163,7 @@ class TestDataLoader:
         df = pd.DataFrame({"Name": ["René"], "Grade": ["05"]})
         loader.save_to_csv(df, "Test", ["Name", "Grade"])
 
-        raw_bytes = (tmp_path / "Test.csv").read_bytes()
+        raw_bytes = (tmp_path / "csv" / "Test.csv").read_bytes()
         assert raw_bytes.startswith(b"\xef\xbb\xbf")  # UTF-8 BOM
 
 
@@ -186,8 +203,8 @@ class TestAtomicWriteRollback:
         pre-exist, one is new."""
         loader = DataLoader(str(tmp_path))
         # Students + Staff pre-exist; Family is new.
-        (tmp_path / "Students.csv").write_text("orig-students", encoding="utf-8")
-        (tmp_path / "Staff.csv").write_text("orig-staff", encoding="utf-8")
+        _seed(tmp_path / "csv" / "Students.csv", None).write_text("orig-students", encoding="utf-8")
+        _seed(tmp_path / "csv" / "Staff.csv", None).write_text("orig-staff", encoding="utf-8")
 
         # Students sorts last → its promote is the final commit operation.
         side_effect, state = _replace_side_effect(fail_role="promote", fail_entity="Students")
@@ -196,14 +213,14 @@ class TestAtomicWriteRollback:
             patch("src.etl.loader.os.replace", side_effect=side_effect),
             pytest.raises(OSError, match="Simulated failure on promote of Students"),
         ):
-            loader.save_all(self._outputs(), self._field_orders())
+            loader.save_all(self._outputs(), self._field_orders(), zip_name=ZIP)
 
         assert state["fired"], "injected promote failure never triggered"
         # Prior files restored to original bytes (not the new version).
-        assert (tmp_path / "Students.csv").read_text(encoding="utf-8") == "orig-students"
-        assert (tmp_path / "Staff.csv").read_text(encoding="utf-8") == "orig-staff"
+        assert (tmp_path / "csv" / "Students.csv").read_text(encoding="utf-8") == "orig-students"
+        assert (tmp_path / "csv" / "Staff.csv").read_text(encoding="utf-8") == "orig-staff"
         # New entity rolled back to absent.
-        assert not (tmp_path / "Family.csv").exists(), "new file not rolled back to absent"
+        assert not (tmp_path / "csv" / "Family.csv").exists(), "new file not rolled back to absent"
         self._no_temp_or_backup_dirs(tmp_path)
 
     def test_backup_aside_failure_preserves_prior_output(self, tmp_path):
@@ -216,7 +233,7 @@ class TestAtomicWriteRollback:
             ("Staff", "orig-staff"),
             ("Family", "orig-family"),
         ):
-            (tmp_path / f"{entity}.csv").write_text(content, encoding="utf-8")
+            _seed(tmp_path / "csv" / f"{entity}.csv", None).write_text(content, encoding="utf-8")
 
         # Family + Staff back-up & promote first; Students' backup-aside fails →
         # Students.csv is never moved, earlier two must roll back.
@@ -226,19 +243,19 @@ class TestAtomicWriteRollback:
             patch("src.etl.loader.os.replace", side_effect=side_effect),
             pytest.raises(OSError, match="Simulated failure on backup of Students"),
         ):
-            loader.save_all(self._outputs(), self._field_orders())
+            loader.save_all(self._outputs(), self._field_orders(), zip_name=ZIP)
 
         assert state["fired"], "injected backup-aside failure never triggered"
-        assert (tmp_path / "Students.csv").read_text(encoding="utf-8") == "orig-students"
-        assert (tmp_path / "Staff.csv").read_text(encoding="utf-8") == "orig-staff"
-        assert (tmp_path / "Family.csv").read_text(encoding="utf-8") == "orig-family"
+        assert (tmp_path / "csv" / "Students.csv").read_text(encoding="utf-8") == "orig-students"
+        assert (tmp_path / "csv" / "Staff.csv").read_text(encoding="utf-8") == "orig-staff"
+        assert (tmp_path / "csv" / "Family.csv").read_text(encoding="utf-8") == "orig-family"
         self._no_temp_or_backup_dirs(tmp_path)
 
     def test_rollback_preserves_existing_output(self, tmp_path):
         """Promote failure on the FIRST committed file leaves existing output
         untouched (the file that never committed is never reached)."""
         loader = DataLoader(str(tmp_path))
-        (tmp_path / "Students.csv").write_text("original content", encoding="utf-8")
+        _seed(tmp_path / "csv" / "Students.csv", None).write_text("original content", encoding="utf-8")
 
         # Family sorts first → its promote is the first commit operation.
         side_effect, state = _replace_side_effect(fail_role="promote", fail_entity="Family")
@@ -247,21 +264,21 @@ class TestAtomicWriteRollback:
             patch("src.etl.loader.os.replace", side_effect=side_effect),
             pytest.raises(OSError, match="Simulated failure on promote of Family"),
         ):
-            loader.save_all(self._outputs(), self._field_orders())
+            loader.save_all(self._outputs(), self._field_orders(), zip_name=ZIP)
 
         assert state["fired"], "injected promote failure never triggered"
-        assert (tmp_path / "Students.csv").read_text(encoding="utf-8") == "original content"
+        assert (tmp_path / "csv" / "Students.csv").read_text(encoding="utf-8") == "original content"
         self._no_temp_or_backup_dirs(tmp_path)
 
     def test_rollback_cleans_up_staging_and_backup_dirs(self, tmp_path):
         """After any injected failure, no .tmp_* AND no .bak_* directory remains."""
         loader = DataLoader(str(tmp_path))
-        (tmp_path / "Students.csv").write_text("orig", encoding="utf-8")
+        _seed(tmp_path / "csv" / "Students.csv", None).write_text("orig", encoding="utf-8")
 
         side_effect, state = _replace_side_effect(fail_role="promote", fail_entity="Students")
 
         with patch("src.etl.loader.os.replace", side_effect=side_effect), pytest.raises(OSError):
-            loader.save_all(self._outputs(), self._field_orders())
+            loader.save_all(self._outputs(), self._field_orders(), zip_name=ZIP)
 
         assert state["fired"]
         self._no_temp_or_backup_dirs(tmp_path)
@@ -270,11 +287,11 @@ class TestAtomicWriteRollback:
         """Happy path: all files appear with the NEW values and no .tmp_*/.bak_*
         directory remains."""
         loader = DataLoader(str(tmp_path))
-        loader.save_all(self._outputs(), self._field_orders())
+        loader.save_all(self._outputs(), self._field_orders(), zip_name=ZIP)
 
         for entity in ["Students", "Staff", "Family"]:
-            assert (tmp_path / f"{entity}.csv").exists(), f"Missing {entity}.csv after save_all()"
-        students = pd.read_csv(tmp_path / "Students.csv")
+            assert (tmp_path / "csv" / f"{entity}.csv").exists(), f"Missing {entity}.csv after save_all()"
+        students = pd.read_csv(tmp_path / "csv" / "Students.csv")
         assert students["Name"].iloc[0] == "Alice"
         self._no_temp_or_backup_dirs(tmp_path)
 
@@ -283,15 +300,15 @@ class TestAtomicWriteRollback:
         the new values and no .tmp_*/.bak_* directory remains."""
         loader = DataLoader(str(tmp_path))
         for entity in ("Students", "Staff", "Family"):
-            (tmp_path / f"{entity}.csv").write_text("stale", encoding="utf-8")
+            _seed(tmp_path / "csv" / f"{entity}.csv", None).write_text("stale", encoding="utf-8")
 
-        loader.save_all(self._outputs(), self._field_orders())
+        loader.save_all(self._outputs(), self._field_orders(), zip_name=ZIP)
 
-        students = pd.read_csv(tmp_path / "Students.csv")
+        students = pd.read_csv(tmp_path / "csv" / "Students.csv")
         assert students["Name"].iloc[0] == "Alice"
-        staff = pd.read_csv(tmp_path / "Staff.csv")
+        staff = pd.read_csv(tmp_path / "csv" / "Staff.csv")
         assert staff["Role"].iloc[0] == "teacher"
-        family = pd.read_csv(tmp_path / "Family.csv")
+        family = pd.read_csv(tmp_path / "csv" / "Family.csv")
         assert family["Email"].iloc[0] == "john@test.ca"
         self._no_temp_or_backup_dirs(tmp_path)
 
@@ -312,19 +329,19 @@ class TestStagingBackupUniqueness:
         """Observed via the commit's real ``os.replace`` calls: both dirs are
         ``.<kind>_<YYYYMMDD>_<HHMMSS>_<8-hex>`` and share the same stamp."""
         loader = DataLoader(str(tmp_path))
-        (tmp_path / "Students.csv").write_text("old", encoding="utf-8")  # forces a backup-aside
+        _seed(tmp_path / "csv" / "Students.csv", None).write_text("old", encoding="utf-8")  # forces a backup-aside
 
         seen: set[str] = set()
         real = os.replace
 
         def spy(src, dst):
-            for p in (Path(src).parent, Path(dst).parent):
+            for p in (*Path(src).parents, *Path(dst).parents):
                 if p.name.startswith((".tmp_", ".bak_")):
                     seen.add(p.name)
             return real(src, dst)
 
         with patch("src.etl.loader.os.replace", side_effect=spy):
-            loader.save_all(self._outputs(), self._orders())
+            loader.save_all(self._outputs(), self._orders(), zip_name=ZIP)
 
         tmp_names = {n for n in seen if n.startswith(".tmp_")}
         bak_names = {n for n in seen if n.startswith(".bak_")}
@@ -351,10 +368,10 @@ class TestStagingBackupUniqueness:
             pytest.raises(FileExistsError),
         ):
             dt.now.return_value = datetime(2026, 7, 16, 3, 0, 0)
-            loader.save_all(self._outputs(), self._orders())
+            loader.save_all(self._outputs(), self._orders(), zip_name=ZIP)
 
         # Nothing was committed and the foreign dir was not destroyed.
-        assert not (tmp_path / "Students.csv").exists()
+        assert not (tmp_path / "csv" / "Students.csv").exists()
         assert (tmp_path / ".tmp_20260716_030000_deadbeef").exists()
 
 
@@ -387,7 +404,7 @@ class TestReconcileOutputDir:
         os.utime(stale_bak, (aged, aged))
 
         with caplog.at_level(logging.WARNING, logger="src.etl.loader"):
-            loader.save_all(self._outputs(), self._orders())
+            loader.save_all(self._outputs(), self._orders(), zip_name=ZIP)
 
         # Warned loudly that a previous run was interrupted.
         assert any("interrupted mid-commit" in r.message for r in caplog.records)
@@ -398,7 +415,7 @@ class TestReconcileOutputDir:
         moved = recovered[0] / stale_bak.name / "Students.csv"
         assert moved.read_text(encoding="utf-8") == "pre-crash originals"
         # And this run's write still committed normally.
-        assert (tmp_path / "Students.csv").exists()
+        assert (tmp_path / "csv" / "Students.csv").exists()
 
     def test_fresh_backup_is_left_alone(self, tmp_path, caplog):
         # A young .bak_ may be a LIVE concurrent run's in-flight backup — moving
@@ -409,7 +426,7 @@ class TestReconcileOutputDir:
         (fresh_bak / "Students.csv").write_text("live in-flight backup", encoding="utf-8")
 
         with caplog.at_level(logging.WARNING, logger="src.etl.loader"):
-            loader.save_all(self._outputs(), self._orders())
+            loader.save_all(self._outputs(), self._orders(), zip_name=ZIP)
 
         assert fresh_bak.exists()
         assert (fresh_bak / "Students.csv").read_text(encoding="utf-8") == "live in-flight backup"
@@ -427,7 +444,7 @@ class TestReconcileOutputDir:
         fresh_tmp.mkdir()
 
         with caplog.at_level(logging.INFO, logger="src.etl.loader"):
-            loader.save_all(self._outputs(), self._orders())
+            loader.save_all(self._outputs(), self._orders(), zip_name=ZIP)
 
         # Aged staging is deleted (pure scratch) and the removal is logged.
         assert not old_tmp.exists()
@@ -443,7 +460,7 @@ class TestReconcileOutputDir:
         ancient = time.time() - 400 * 86400
         os.utime(archive, (ancient, ancient))
 
-        loader.save_all(self._outputs(), self._orders())
+        loader.save_all(self._outputs(), self._orders(), zip_name=ZIP)
 
         # Even an ancient archive dir is DATA — never swept, moved, or renamed.
         assert (archive / "Family.csv").read_text(encoding="utf-8") == "archived data"
@@ -470,11 +487,11 @@ class TestReconcileOutputDir:
             caplog.at_level(logging.ERROR, logger="src.etl.loader"),
             patch("src.etl.loader.os.replace", side_effect=deny_bak_move),
         ):
-            loader.save_all(self._outputs(), self._orders())
+            loader.save_all(self._outputs(), self._orders(), zip_name=ZIP)
 
         assert any("Could not move leftover backup" in r.message for r in caplog.records)
         # The run still committed; the stale backup's bytes were never deleted.
-        assert (tmp_path / "Students.csv").exists()
+        assert (tmp_path / "csv" / "Students.csv").exists()
         assert (stale_bak / "Students.csv").read_text(encoding="utf-8") == "pre-crash originals"
 
 
@@ -497,119 +514,125 @@ class TestEntityFilenameRule:
     def test_written_file_matches_the_rule(self, tmp_path):
         """The write path uses the same rule — so a manifest built from it always matches."""
         loader = DataLoader(str(tmp_path))
-        loader.save_all({"Students": pd.DataFrame({"User ID": ["1"]})}, {"Students": ["User ID"]})
-        written = {p.name for p in tmp_path.glob("*.csv")}
+        loader.save_all({"Students": pd.DataFrame({"User ID": ["1"]})}, {"Students": ["User ID"]}, zip_name=ZIP)
+        written = {p.name for p in (tmp_path / "csv").glob("*.csv")}
         assert written == DataLoader.output_filenames(["Students"])
 
 
 class TestDetectStaleOutputs:
-    """Item 3 (Plan 0008): pure, non-destructive stale-output detection.
+    """Pure, non-destructive stale-output detection (Plan 0008, DSYNC-57 layout).
 
-    Lists entity CSVs in the output dir not produced this run; deletes NOTHING.
-    The destructive (archive) decision lives in ``archive_stale_outputs`` —
-    detection stays a pure, registry-keyed helper that is independently tested.
+    Lists output files this run did not refresh; deletes NOTHING. The destructive (archive)
+    decision lives in ``archive_stale_outputs``.
     """
 
-    def test_detects_stale_entities_only_and_deletes_nothing(self, tmp_path):
+    def test_detects_unemitted_entities_at_their_layout_paths(self, tmp_path):
         loader = DataLoader(str(tmp_path))
-        # Pre-seed: two recognized entity CSVs (one a cross-config myBlueprint+
-        # file), an unrelated non-entity file.
-        (tmp_path / "Classes.csv").write_text("stale-classes", encoding="utf-8")
-        (tmp_path / "CourseInfo.csv").write_text("stale-courseinfo", encoding="utf-8")
-        (tmp_path / "notes.txt").write_text("hand-written notes", encoding="utf-8")
+        _seed(tmp_path / "csv" / "Classes.csv", "stale-classes")
+        _seed(tmp_path / "CourseInfo.csv", "stale-courseinfo")
+        _seed(tmp_path / "notes.txt", "hand-written notes")
 
-        # This run emitted Students + Staff (no CSVs on disk for them — detection
-        # keys off what is present + not emitted).
-        stale = loader.detect_stale_outputs({"Students", "Staff"})
+        stale = loader.detect_stale_outputs({"Students", "Staff"}, keep_zip=None)
 
-        # Sorted, entity-only: Classes + CourseInfo; notes.txt excluded.
-        assert stale == ["Classes.csv", "CourseInfo.csv"]
-
-        # NON-DESTRUCTIVE: every pre-seeded file still exists on disk.
-        assert (tmp_path / "Classes.csv").exists()
+        assert stale == ["CourseInfo.csv", "csv/Classes.csv"]
+        assert (tmp_path / "csv" / "Classes.csv").exists()
         assert (tmp_path / "CourseInfo.csv").exists()
         assert (tmp_path / "notes.txt").exists()
 
+    def test_a_top_level_rostering_csv_is_legacy_even_when_emitted(self, tmp_path):
+        """Pre-DSYNC-57 a roster CSV sat beside where the zip now goes. Its fresh copy lives
+        in csv/, so the top-level one is stale whether or not this run produced the entity."""
+        loader = DataLoader(str(tmp_path))
+        _seed(tmp_path / "Students.csv", "pre-upgrade")
+        _seed(tmp_path / "csv" / "Students.csv", "fresh")
+
+        assert loader.detect_stale_outputs({"Students"}, keep_zip=None) == ["Students.csv"]
+
+    def test_an_emitted_standalone_feed_is_not_stale(self, tmp_path):
+        """A standalone feed's layout path IS the top level, so it is never mistaken for legacy."""
+        loader = DataLoader(str(tmp_path))
+        _seed(tmp_path / "StudentAttendance.csv", "fresh")
+
+        assert loader.detect_stale_outputs({"StudentAttendance"}, keep_zip=None) == []
+
+    def test_earlier_zips_are_stale_and_this_runs_zip_is_kept(self, tmp_path):
+        loader = DataLoader(str(tmp_path))
+        _seed(tmp_path / ZIP, "today")
+        _seed(tmp_path / "acsv_sd40_2026-11-05.zip", "yesterday")
+        _seed(tmp_path / "districtsync_sd40_2026-11-05.zip", "not ours to judge")
+
+        assert loader.detect_stale_outputs(set(), keep_zip=ZIP) == ["acsv_sd40_2026-11-05.zip"]
+
+    def test_a_run_that_wrote_no_zip_marks_every_zip_stale(self, tmp_path):
+        """An attendance-only run leaves no roster bundle, so none may sit there looking current."""
+        loader = DataLoader(str(tmp_path))
+        _seed(tmp_path / ZIP, "earlier")
+
+        assert loader.detect_stale_outputs({"StudentAttendance"}, keep_zip=None) == [ZIP]
+
+    def test_keep_zip_is_required(self):
+        param = inspect.signature(DataLoader.detect_stale_outputs).parameters["keep_zip"]
+        assert param.kind is inspect.Parameter.KEYWORD_ONLY
+        assert param.default is inspect.Parameter.empty
+
 
 class TestArchiveStaleOutputs:
-    """Item 3 (Plan 0008, post-approval revision): archive stale outputs.
-
-    Stale entity CSVs are MOVED into ``archive_<ts>/`` (non-destructive) rather
-    than deleted — so the cross-config foot-gun under ``_base`` inheritance can't
-    cause data loss. The archive subdir is excluded from SFTP's top-level
-    ``*.csv`` glob, so a stale CSV can no longer ship.
+    """Stale outputs are MOVED into ``archive_<ts>/`` (non-destructive), never deleted, so the
+    cross-config foot-gun under ``_base`` inheritance can't cause data loss, and nothing in
+    the archive subdir can be delivered (delivery reads only the top-level zip and feeds).
     """
 
     @staticmethod
     def _archive_dirs(tmp_path):
         return [p for p in tmp_path.iterdir() if p.is_dir() and p.name.startswith("archive_")]
 
-    def test_archives_stale_entities_and_excludes_from_sftp_glob(self, tmp_path):
+    def test_archives_stale_files_keeping_their_relative_paths(self, tmp_path):
         loader = DataLoader(str(tmp_path))
-        # Pre-seed: two recognized entity CSVs (one a cross-config myBlueprint+
-        # file) + an unrelated non-entity file.
-        (tmp_path / "Classes.csv").write_text("stale-classes", encoding="utf-8")
-        (tmp_path / "CourseInfo.csv").write_text("stale-courseinfo", encoding="utf-8")
-        (tmp_path / "notes.txt").write_text("hand-written notes", encoding="utf-8")
+        _seed(tmp_path / "csv" / "Classes.csv", "stale-classes")
+        _seed(tmp_path / "CourseInfo.csv", "stale-courseinfo")
+        _seed(tmp_path / "Students.csv", "pre-upgrade")
+        _seed(tmp_path / "acsv_sd40_2026-11-05.zip", "yesterday")
+        _seed(tmp_path / "notes.txt", "hand-written notes")
 
-        # This run emitted Students + Staff (neither on disk).
-        archived = loader.archive_stale_outputs({"Students", "Staff"})
+        archived = loader.archive_stale_outputs({"Students", "Staff"}, keep_zip=ZIP)
 
-        # Returns the sorted stale entity filenames actually moved.
-        assert archived == ["Classes.csv", "CourseInfo.csv"]
-
-        # Exactly one archive_* subdir was created.
-        archive_dirs = self._archive_dirs(tmp_path)
-        assert len(archive_dirs) == 1, f"expected one archive_* dir, got {archive_dirs}"
-        archive_dir = archive_dirs[0]
-
-        # Both stale CSVs are GONE from the top level and PRESENT in the archive.
-        assert not (tmp_path / "Classes.csv").exists()
-        assert not (tmp_path / "CourseInfo.csv").exists()
-        assert (archive_dir / "Classes.csv").read_text(encoding="utf-8") == "stale-classes"
+        assert archived == ["CourseInfo.csv", "Students.csv", "acsv_sd40_2026-11-05.zip", "csv/Classes.csv"]
+        (archive_dir,) = self._archive_dirs(tmp_path)
+        assert (archive_dir / "csv" / "Classes.csv").read_text(encoding="utf-8") == "stale-classes"
         assert (archive_dir / "CourseInfo.csv").read_text(encoding="utf-8") == "stale-courseinfo"
-
-        # The unrelated file is untouched at the top level.
+        assert (archive_dir / "Students.csv").read_text(encoding="utf-8") == "pre-upgrade"
+        assert (archive_dir / "acsv_sd40_2026-11-05.zip").read_text(encoding="utf-8") == "yesterday"
+        for rel in archived:
+            assert not (tmp_path / rel).exists()
         assert (tmp_path / "notes.txt").read_text(encoding="utf-8") == "hand-written notes"
 
-        # SFTP delivers `output_dir.glob("*.csv")` (top-level, non-recursive):
-        # the archived names must no longer appear there.
-        top_level_csvs = sorted(p.name for p in tmp_path.glob("*.csv"))
-        assert "Classes.csv" not in top_level_csvs
-        assert "CourseInfo.csv" not in top_level_csvs
-
-    def test_emitted_entity_csv_is_never_archived(self, tmp_path):
+    def test_emitted_entity_csv_and_this_runs_zip_are_never_archived(self, tmp_path):
         loader = DataLoader(str(tmp_path))
-        (tmp_path / "Students.csv").write_text("fresh", encoding="utf-8")
-        (tmp_path / "Classes.csv").write_text("stale", encoding="utf-8")
+        _seed(tmp_path / "csv" / "Students.csv", "fresh")
+        _seed(tmp_path / ZIP, "fresh-zip")
+        _seed(tmp_path / "csv" / "Classes.csv", "stale")
 
-        archived = loader.archive_stale_outputs({"Students"})
+        archived = loader.archive_stale_outputs({"Students"}, keep_zip=ZIP)
 
-        # Students emitted → kept at top level; only Classes archived.
-        assert archived == ["Classes.csv"]
-        assert (tmp_path / "Students.csv").read_text(encoding="utf-8") == "fresh"
-        assert not (tmp_path / "Classes.csv").exists()
+        assert archived == ["csv/Classes.csv"]
+        assert (tmp_path / "csv" / "Students.csv").read_text(encoding="utf-8") == "fresh"
+        assert (tmp_path / ZIP).read_text(encoding="utf-8") == "fresh-zip"
 
     def test_clean_run_creates_no_archive_dir_and_returns_empty(self, tmp_path):
         loader = DataLoader(str(tmp_path))
-        (tmp_path / "Classes.csv").write_text("fresh", encoding="utf-8")
+        _seed(tmp_path / "csv" / "Classes.csv", "fresh")
 
-        archived = loader.archive_stale_outputs({"Classes"})
+        archived = loader.archive_stale_outputs({"Classes"}, keep_zip=None)
 
         assert archived == []
-        # No archive dir is created when there is nothing stale.
         assert self._archive_dirs(tmp_path) == []
-        # The emitted CSV stays in place.
-        assert (tmp_path / "Classes.csv").read_text(encoding="utf-8") == "fresh"
+        assert (tmp_path / "csv" / "Classes.csv").read_text(encoding="utf-8") == "fresh"
 
     def test_archive_move_failure_is_best_effort_and_does_not_raise(self, tmp_path):
-        """A per-file move failure is logged and skipped — never raised — so an
-        archive hiccup can't turn an already committed + delivered run into a
-        failure, and a single failure does not abort the rest of the loop.
-        (Mirrors the 0007 ``os.replace``-injection discipline.)"""
+        """A per-file move failure is logged and skipped, never raised, and does not abort the loop."""
         loader = DataLoader(str(tmp_path))
-        (tmp_path / "Classes.csv").write_text("stale-classes", encoding="utf-8")
-        (tmp_path / "CourseInfo.csv").write_text("stale-courseinfo", encoding="utf-8")
+        _seed(tmp_path / "csv" / "Classes.csv", "stale-classes")
+        _seed(tmp_path / "CourseInfo.csv", "stale-courseinfo")
 
         real_replace = os.replace
 
@@ -619,18 +642,60 @@ class TestArchiveStaleOutputs:
             real_replace(src, dst)
 
         with patch("src.etl.loader.os.replace", side_effect=fail_on_classes):
-            archived = loader.archive_stale_outputs({"Students", "Staff"})
+            archived = loader.archive_stale_outputs({"Students", "Staff"}, keep_zip=None)
 
-        # Did not raise; only the successfully-moved file is returned.
         assert archived == ["CourseInfo.csv"]
+        assert (tmp_path / "csv" / "Classes.csv").read_text(encoding="utf-8") == "stale-classes"
+        (archive_dir,) = self._archive_dirs(tmp_path)
+        assert (archive_dir / "CourseInfo.csv").read_text(encoding="utf-8") == "stale-courseinfo"
 
-        # The failed move left Classes.csv in place (bytes not lost); the loop
-        # continued and still archived CourseInfo.csv.
-        assert (tmp_path / "Classes.csv").read_text(encoding="utf-8") == "stale-classes"
-        archive_dirs = self._archive_dirs(tmp_path)
-        assert len(archive_dirs) == 1
-        assert (archive_dirs[0] / "CourseInfo.csv").read_text(encoding="utf-8") == "stale-courseinfo"
-        assert not (archive_dirs[0] / "Classes.csv").exists()
+
+class TestAdvancedCsvZip:
+    """DSYNC-57: ``save_all`` writes the import-ready Advanced CSV zip in the same commit."""
+
+    @staticmethod
+    def _save(tmp_path, entities):
+        loader = DataLoader(str(tmp_path))
+        outputs = {e: pd.DataFrame({"ID": ["1"]}) for e in entities}
+        return loader.save_all(outputs, {e: ["ID"] for e in entities}, zip_name=ZIP)
+
+    def test_the_top_level_holds_only_the_upload_set(self, tmp_path):
+        written = self._save(tmp_path, ["Students", "Staff", "StudentAttendance", "CourseInfo"])
+
+        assert written == ZIP
+        top = sorted(p.name for p in tmp_path.iterdir())
+        assert top == sorted(["csv", ZIP, "StudentAttendance.csv", "CourseInfo.csv"])
+        assert sorted(p.name for p in (tmp_path / "csv").iterdir()) == ["Staff.csv", "Students.csv"]
+
+    def test_the_zip_holds_exactly_the_rostering_csvs_at_its_root(self, tmp_path):
+        self._save(tmp_path, ["Students", "Enrollments", "StudentAttendance", "StudentCourses"])
+
+        with zipfile.ZipFile(tmp_path / ZIP) as zf:
+            assert sorted(zf.namelist()) == ["Enrollments.csv", "Students.csv"]
+            assert zf.read("Students.csv") == (tmp_path / "csv" / "Students.csv").read_bytes()
+
+    def test_a_standalone_only_run_writes_no_zip(self, tmp_path):
+        assert self._save(tmp_path, ["StudentAttendance"]) is None
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["StudentAttendance.csv"]
+
+    def test_a_failed_commit_leaves_the_previous_zip_and_csvs(self, tmp_path):
+        """The zip is in the same transaction: a failure restores the prior zip too."""
+        _seed(tmp_path / ZIP, "prior-zip")
+        _seed(tmp_path / "csv" / "Students.csv", "prior-students")
+        side_effect, state = _replace_side_effect(fail_role="promote", fail_entity="Students")
+
+        with patch("src.etl.loader.os.replace", side_effect=side_effect), pytest.raises(OSError):
+            self._save(tmp_path, ["Students", "Staff"])
+
+        assert state["fired"]
+        assert (tmp_path / ZIP).read_text(encoding="utf-8") == "prior-zip"
+        assert (tmp_path / "csv" / "Students.csv").read_text(encoding="utf-8") == "prior-students"
+        assert not (tmp_path / "csv" / "Staff.csv").exists()
+
+    def test_zip_name_is_required(self):
+        param = inspect.signature(DataLoader.save_all).parameters["zip_name"]
+        assert param.kind is inspect.Parameter.KEYWORD_ONLY
+        assert param.default is inspect.Parameter.empty
 
 
 class TestOutputTargetProblem:
@@ -757,9 +822,9 @@ class TestOutputTargetProblem:
         assert caplog.records == [], "a probe a concurrent run already swept is not a warning"
 
     def test_a_probe_dir_is_invisible_to_the_stale_output_detector(self, tmp_path: Path):
-        # Verified, not assumed: every output-dir scan that could see the probe is *.csv
+        # Verified, not assumed: every output-dir scan that could see the probe is file-name
         # keyed or branches on .bak_/.tmp_ only.
         (tmp_path / ".dsync_probe_live").mkdir()
         loader = DataLoader(str(tmp_path))
-        assert loader.detect_stale_outputs({"Students"}) == []
-        assert loader.archive_stale_outputs({"Students"}) == []
+        assert loader.detect_stale_outputs({"Students"}, keep_zip=None) == []
+        assert loader.archive_stale_outputs({"Students"}, keep_zip=None) == []

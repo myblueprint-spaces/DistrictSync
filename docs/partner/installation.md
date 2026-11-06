@@ -350,8 +350,8 @@ The number of output files depends on which config you're using — see the [Out
 2. Tool reads GDE files from the input directory
 3. Transforms data into the CSV files enabled by your config (5 for standard rostering, 7 with myBlueprint+, or a subset)
 4. Checks for anomalies — if any entity's record count has dropped more than 20% compared to the previous run, a warning is logged
-5. Writes all enabled CSVs atomically (all succeed or none are committed)
-6. Zips the five rostering CSVs into a single dated file (`districtsync_YYYY-MM-DD.zip`) and uploads it to SpacesEDU via SFTP, together with `StudentAttendance.csv`, `CourseInfo.csv` and `StudentCourses.csv` as standalone files (those three are ingested individually, so they are never put inside the zip)
+5. Writes all enabled CSVs atomically (all succeed or none are committed), together with the import-ready zip: the five rostering CSVs zipped into one dated file (`acsv_<district>_YYYY-MM-DD.zip`) at the top of the output folder, the separate rostering CSVs in its `csv` subfolder
+6. Uploads that zip to SpacesEDU via SFTP, together with `StudentAttendance.csv`, `CourseInfo.csv` and `StudentCourses.csv` as standalone files (those three are ingested individually, so they are never put inside the zip)
 7. Writes a detailed log entry to `etl_tool.log`
 
 ### Output CSVs

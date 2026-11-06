@@ -117,6 +117,14 @@ def _settings_tree(stub_page, monkeypatch, **over):
     return build_setup(stub_page)
 
 
+def _seed_output(out_dir, csv_names, sis_type):
+    """Seed committed output in the DSYNC-57 layout (roster CSVs in csv/ + the zip; feeds at top)."""
+    from tests._output_tree import build_output_tree
+
+    entities = [n.removesuffix(".csv") for n in csv_names]
+    build_output_tree(out_dir, entities, district=sis_type or "myedbc", body="id\n1\n")
+
+
 class TestScreensRender:
     def test_setup_wizard_folders_step(self, stub_page, monkeypatch):
         # A fresh (unconfigured) config renders the wizard's first (Folders) step.
@@ -219,8 +227,7 @@ class TestScreensRender:
         out_dir = tmp_path / "out"
         out_dir.mkdir(exist_ok=True)
         if with_csv:
-            for name in csv_names:
-                (out_dir / name).write_text("id\n1\n")
+            _seed_output(out_dir, csv_names, sis_type)
         cfg = AppConfig(
             input_dir=str(tmp_path),
             output_dir=str(out_dir),
@@ -2837,8 +2844,7 @@ def _deliver_ready_cfg(tmp_path, monkeypatch, *, sis_type, csv_names):
     """A configured install with SFTP delivery set up and ``csv_names`` committed on disk."""
     out_dir = tmp_path / "out"
     out_dir.mkdir(exist_ok=True)
-    for name in csv_names:
-        (out_dir / name).write_text("id\n1\n")
+    _seed_output(out_dir, csv_names, sis_type)
     in_dir = tmp_path / "in"
     in_dir.mkdir(exist_ok=True)
     cfg = AppConfig(
@@ -3021,13 +3027,13 @@ def test_a_switched_district_can_never_ship_another_districts_roster(tmp_path, m
     ``sd74myedbc`` and ``sd40myedbc`` produce byte-identical entity filenames, so a
     result-card deliver that re-resolved the district at CLICK time built a NON-empty
     manifest and SUCCEEDED — shipping Gold Trail's real student roster to SpacesEDU as
-    ``districtsync_sd40_<date>.zip``, under New Westminster's identity.
+    ``districtsync_sd40_<date>.zip`` (``acsv_sd40_<date>.zip`` since DSYNC-57), under New Westminster's identity.
 
     The deliver action must stay bound to the run that built the files, so even a click
     that races the re-render can only ever ship as ``sd74myedbc``.
     """
     import src.ui_flet.screens.convert as convert_mod
-    from src.sftp.uploader import build_zip_name
+    from src.etl.output_layout import acsv_zip_name
     from src.ui_flet.convert_result import ConvertResult, ConvertStatus
 
     tree, page, result_slot = _convert_with_result(
@@ -3070,8 +3076,8 @@ def test_a_switched_district_can_never_ship_another_districts_roster(tmp_path, m
     assert "sd40myedbc" not in shipped, "sd74's roster must NEVER ship under sd40's identity"
     for sis in shipped:
         assert sis == "sd74myedbc"
-        assert "sd74" in build_zip_name(sis)
-        assert "sd40" not in build_zip_name(sis)
+        assert "sd74" in acsv_zip_name(sis)
+        assert "sd40" not in acsv_zip_name(sis)
 
 
 class TestCheckRowFactory:

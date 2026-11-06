@@ -11,6 +11,17 @@ Per-release download links and auto-generated commit notes live on the
 
 ### Changed
 
+- **The output folder is ready to import.** Every conversion now zips the roster files
+  (Students, Staff, Family, Classes, Enrollments) into one file in your output folder,
+  `acsv_<district>_<date>.zip` (for example `acsv_sd40_2026-11-06.zip`), so a manual Advanced
+  CSV import no longer means zipping by hand. Attendance and the myBlueprint+ course files
+  stay beside it as separate files, because SpacesEDU imports them on their own. The
+  separate roster CSVs move into a `csv` folder inside the output folder, for checking.
+  The Convert result lists which files to upload. Delivery to SpacesEDU sends that same zip,
+  which replaces the old `districtsync_<district>_<date>.zip` name; an earlier day's zip is
+  moved into an `archive_` folder, never deleted. A folder last built by an older version
+  needs one conversion before "deliver files already on disk" offers it (DSYNC-57).
+
 - **Pull-request checks.** Checks on a pull request now run on Linux only, to save the
   organization's GitHub Actions minutes. The Windows and macOS checks still run on every
   change merged to main and on every release, before anything is published. No change to

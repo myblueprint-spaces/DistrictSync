@@ -32,6 +32,7 @@ import pandas as pd
 import pytest
 
 from src.config.app_config import AppConfig
+from src.etl import output_layout
 from src.etl.outcomes import (
     EntityOutcome,
     OutcomeKind,
@@ -252,7 +253,7 @@ def _sd60_class_info(d: Path, *, with_coteacher_columns: bool) -> None:
 
 
 def _coteacher_rows(out: Path) -> pd.DataFrame:
-    enrollments = pd.read_csv(out / "Enrollments.csv", dtype=str, encoding="utf-8-sig")
+    enrollments = pd.read_csv(output_layout.csv_path(out, "Enrollments.csv"), dtype=str, encoding="utf-8-sig")
     return enrollments[enrollments["User ID"] == _COTEACHER_ID]
 
 
@@ -335,7 +336,7 @@ def test_an_sd40_shaped_drop_without_a_master_timetable_id_is_partial_two_nights
         run_pipeline("sd40myedbc", str(inp), str(out))
         record, prior, records = _latest()
         assert record["status"] == "success", "the declared session components keep SD40 building"
-        classes = pd.read_csv(out / "Classes.csv", dtype=str, encoding="utf-8-sig")
+        classes = pd.read_csv(output_layout.csv_path(out, "Classes.csv"), dtype=str, encoding="utf-8-sig")
         assert classes["Class ID"].str.startswith("BLENDED_").any(), "the fixture must really carry a blend"
         _assert_partial_with_the_note(record, prior, records, "sd40myedbc")
         assert _coteacher_rows(out).empty, "a blended co-teacher shipped without its linking column"

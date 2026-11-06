@@ -112,6 +112,7 @@ import yaml
 
 from src.config.loader import available_configs, load_config
 from src.config.models import MappingConfig
+from src.etl import output_layout
 from src.etl.column_names import normalize_column_name
 from src.etl.errors import EmptyRequiredOutputError, GuardKind, SourceSchemaError
 from src.etl.outcomes import (
@@ -669,7 +670,9 @@ def _sha(path: Path) -> str:
 
 
 def _csvs(directory: Path) -> dict[str, str]:
-    return {p.name: _sha(p) for p in sorted(directory.glob("*.csv"))}
+    """Every entity CSV a run wrote: the standalone feeds at the top + the roster CSVs in csv/ (DSYNC-57)."""
+    found = [*directory.glob("*.csv"), *(directory / output_layout.ROSTERING_SUBDIR).glob("*.csv")]
+    return {p.name: _sha(p) for p in sorted(found)}
 
 
 def _tree(directory: Path) -> dict[str, str]:
@@ -677,10 +680,10 @@ def _tree(directory: Path) -> dict[str, str]:
 
 
 def _blank_required(directory: Path) -> dict[str, dict[str, int]]:
-    """Per top-level rostering CSV in ``directory``, the REQUIRED columns carrying a blank."""
+    """Per rostering CSV in ``directory``, the REQUIRED columns carrying a blank."""
     found: dict[str, dict[str, int]] = {}
     for entity, required in REQUIRED_OUTPUT_FIELDS.items():
-        path = directory / f"{entity}.csv"
+        path = output_layout.csv_path(directory, f"{entity}.csv")
         if not path.is_file():
             continue
         frame = pd.read_csv(path, dtype=str, keep_default_na=False, encoding="utf-8-sig")

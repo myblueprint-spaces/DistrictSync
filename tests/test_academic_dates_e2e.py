@@ -45,6 +45,7 @@ import pytest
 
 from src.config.loader import load_config
 from src.config.models import FieldAcademicYear, GlobalConfig
+from src.etl import output_layout
 from src.etl.errors import GuardKind, SourceSchemaError
 from src.etl.extractor import DataExtractor
 from src.etl.outcomes import OutcomeKind, OutcomeLedger
@@ -116,7 +117,7 @@ def _rollover_date(year: int, global_config: GlobalConfig) -> date:
 
 
 def _read_classes(output_dir: Path) -> pd.DataFrame:
-    return pd.read_csv(output_dir / "Classes.csv", encoding="utf-8-sig", dtype=str).fillna("")
+    return pd.read_csv(output_layout.csv_path(output_dir, "Classes.csv"), encoding="utf-8-sig", dtype=str).fillna("")
 
 
 def _sole_value(classes: pd.DataFrame, column: str) -> str:
@@ -294,7 +295,7 @@ class TestDerivedAcademicDatesEndToEnd:
 
 def _tree(directory: Path) -> dict[str, str]:
     return {
-        str(p.relative_to(directory)): hashlib.sha256(p.read_bytes()).hexdigest()
+        p.relative_to(directory).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
         for p in sorted(directory.rglob("*"))
         if p.is_file()
     }
@@ -327,7 +328,7 @@ class TestSchoolYearSourceColumnIsRequired:
         with _frozen_clock(date(FROZEN_CLOCK_YEAR, 3, 3)):
             run_pipeline(E2E_SIS_TYPE, str(input_dir), str(output_dir))  # the last good night
         before = _tree(output_dir)
-        assert "Classes.csv" in before, "non-vacuity: the seeded output exists"
+        assert output_layout.csv_relpath("Classes.csv").as_posix() in before, "non-vacuity: the seeded output exists"
         _drop_school_year_column(input_dir, global_config)
 
         with _frozen_clock(date(FROZEN_CLOCK_YEAR, 3, 3)), pytest.raises(SourceSchemaError) as raised:

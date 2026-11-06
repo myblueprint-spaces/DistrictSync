@@ -17,6 +17,7 @@ from unittest.mock import patch
 import pandas as pd
 import pytest
 
+from src.etl import output_layout
 from src.main import main
 
 SNAPSHOT_DIR = Path(__file__).parent / "snapshots"
@@ -65,18 +66,18 @@ class TestSD74Regression:
 
     def test_all_five_output_files_exist(self, sd74_output):
         for entity in ENTITIES:
-            assert (sd74_output / f"{entity}.csv").exists(), f"Missing {entity}.csv"
+            assert output_layout.csv_path(sd74_output, f"{entity}.csv").exists(), f"Missing {entity}.csv"
 
     def test_output_row_counts_match_golden(self, sd74_output):
         """Quick count check — easier to read failure message than full diff."""
         for entity in ENTITIES:
-            actual = _read(sd74_output / f"{entity}.csv")
+            actual = _read(output_layout.csv_path(sd74_output, f"{entity}.csv"))
             golden = _read(GOLDEN_DIR / f"{entity}.csv")
             assert len(actual) == len(golden), f"{entity}: expected {len(golden)} rows, got {len(actual)}"
 
     def test_output_column_names_match_golden(self, sd74_output):
         for entity in ENTITIES:
-            actual_cols = list(_read(sd74_output / f"{entity}.csv").columns)
+            actual_cols = list(_read(output_layout.csv_path(sd74_output, f"{entity}.csv")).columns)
             golden_cols = list(_read(GOLDEN_DIR / f"{entity}.csv").columns)
             assert actual_cols == golden_cols, (
                 f"{entity} column mismatch.\n  Expected: {golden_cols}\n  Got:      {actual_cols}"
@@ -87,27 +88,27 @@ class TestSD74Regression:
     # ------------------------------------------------------------------
 
     def test_students_matches_golden(self, sd74_output):
-        actual = _read(sd74_output / "Students.csv").reset_index(drop=True)
+        actual = _read(output_layout.csv_path(sd74_output, "Students.csv")).reset_index(drop=True)
         golden = _read(GOLDEN_DIR / "Students.csv").reset_index(drop=True)
         pd.testing.assert_frame_equal(actual, golden, check_dtype=False)
 
     def test_staff_matches_golden(self, sd74_output):
-        actual = _read(sd74_output / "Staff.csv").reset_index(drop=True)
+        actual = _read(output_layout.csv_path(sd74_output, "Staff.csv")).reset_index(drop=True)
         golden = _read(GOLDEN_DIR / "Staff.csv").reset_index(drop=True)
         pd.testing.assert_frame_equal(actual, golden, check_dtype=False)
 
     def test_family_matches_golden(self, sd74_output):
-        actual = _read(sd74_output / "Family.csv").reset_index(drop=True)
+        actual = _read(output_layout.csv_path(sd74_output, "Family.csv")).reset_index(drop=True)
         golden = _read(GOLDEN_DIR / "Family.csv").reset_index(drop=True)
         pd.testing.assert_frame_equal(actual, golden, check_dtype=False)
 
     def test_classes_matches_golden(self, sd74_output):
-        actual = _read(sd74_output / "Classes.csv").reset_index(drop=True)
+        actual = _read(output_layout.csv_path(sd74_output, "Classes.csv")).reset_index(drop=True)
         golden = _read(GOLDEN_DIR / "Classes.csv").reset_index(drop=True)
         pd.testing.assert_frame_equal(actual, golden, check_dtype=False)
 
     def test_enrollments_matches_golden(self, sd74_output):
-        actual = _read(sd74_output / "Enrollments.csv").reset_index(drop=True)
+        actual = _read(output_layout.csv_path(sd74_output, "Enrollments.csv")).reset_index(drop=True)
         golden = _read(GOLDEN_DIR / "Enrollments.csv").reset_index(drop=True)
         pd.testing.assert_frame_equal(actual, golden, check_dtype=False)
 
@@ -116,17 +117,17 @@ class TestSD74Regression:
     # ------------------------------------------------------------------
 
     def test_student_emails_use_sd74_domain(self, sd74_output):
-        students = _read(sd74_output / "Students.csv")
+        students = _read(output_layout.csv_path(sd74_output, "Students.csv"))
         emails = students["Email Address"].dropna()
         emails = emails[emails != ""]
         assert all(e.endswith("@sd74.bc.ca") for e in emails), "All student emails must use @sd74.bc.ca domain"
 
     def test_classes_have_fixed_dates(self, sd74_output):
-        classes = _read(sd74_output / "Classes.csv")
+        classes = _read(output_layout.csv_path(sd74_output, "Classes.csv"))
         assert all(classes["Start Date"] == "2025-08-25"), "SD74 start date must be fixed at 2025-08-25"
         assert all(classes["End Date"] == "2026-07-25"), "SD74 end date must be fixed at 2026-07-25"
 
     def test_output_files_have_utf8_bom(self, sd74_output):
         for entity in ENTITIES:
-            raw = (sd74_output / f"{entity}.csv").read_bytes()
+            raw = output_layout.csv_path(sd74_output, f"{entity}.csv").read_bytes()
             assert raw.startswith(b"\xef\xbb\xbf"), f"{entity}.csv is missing UTF-8 BOM"

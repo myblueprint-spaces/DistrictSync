@@ -16,7 +16,7 @@ Developer reference for where DistrictSync keeps its profile — the per-user ap
 
 ## One secret store: the SELECT RULE
 
-**The SELECT RULE (S-1a-ii):** `sftp/secret_store.select_store()` returns `MachineSecretStore()` iff `is_machine_scope()`, else `UserSecretStore()` — **never both, never a fallback chain** (that would restore the split-brain), and always the keyring under `DISTRICTSYNC_DATA_DIR` by construction of the pin; the same predicate adds `has_secret` as a machine-scope-only conjunct of `sftp_is_configured()` (per-user byte-identical) and routes the scheduled nightly's zip staging to `runs/tmp` (`pipeline._delivery_staging_dir` — machine scope **and** `source == "scheduled"`; manual/CLI keep `%TEMP%`). Every run record carries `run_as` (`accounts.process_account()`, set in `build_run_record` so both sinks share it) — a record KEY, **no `user_version` bump**.
+**The SELECT RULE (S-1a-ii):** `sftp/secret_store.select_store()` returns `MachineSecretStore()` iff `is_machine_scope()`, else `UserSecretStore()` — **never both, never a fallback chain** (that would restore the split-brain), and always the keyring under `DISTRICTSYNC_DATA_DIR` by construction of the pin; the same predicate adds `has_secret` as a machine-scope-only conjunct of `sftp_is_configured()` (per-user byte-identical) (the scheduled nightly once staged its delivery zip in `runs/tmp`; since DSYNC-57 the conversion writes the zip into the output folder and delivery uploads that file, so nothing is staged and `pipeline._delivery_staging_dir` is gone). Every run record carries `run_as` (`accounts.process_account()`, set in `build_run_record` so both sinks share it) — a record KEY, **no `user_version` bump**.
 
 ## Provisioning (the elevated half)
 

@@ -36,8 +36,16 @@ import pytest
 import tomllib
 
 import src.main as main_mod
+from src.etl import output_layout
 from src.main import cli
 from tests.test_pipeline_required_input import _write_full_rostering_input
+
+
+def _entity_csvs(output_dir: Path) -> list[Path]:
+    """Every entity CSV a run wrote (DSYNC-57 layout: the standalone feeds at the top level,
+    the rostering CSVs in ``csv/``)."""
+    return sorted([*output_dir.glob("*.csv"), *(output_dir / output_layout.ROSTERING_SUBDIR).glob("*.csv")])
+
 
 _EXPECTED_ENTITIES = ["Students", "Staff", "Family", "Classes", "Enrollments"]
 
@@ -73,7 +81,7 @@ class TestExitCodeZero:
     def test_successful_run_returns_0_and_writes_csvs(self, gde_input: Path, gde_output: Path) -> None:
         """A clean ETL run through the real entry point returns 0 and writes output."""
         assert cli(_etl_argv(gde_input, gde_output)) == 0
-        assert (gde_output / "Students.csv").exists()
+        assert output_layout.csv_path(gde_output, "Students.csv").exists()
 
     def test_successful_sftp_returns_0(self, gde_input: Path, gde_output: Path, monkeypatch) -> None:
         """--sftp with a delivery that SUCCEEDS returns 0 (the exit-3 branch is not taken)."""
@@ -88,7 +96,8 @@ class TestExitCodeZero:
 
         monkeypatch.setattr("src.etl.pipeline._sftp_upload", _must_not_upload)
         assert cli(_etl_argv(gde_input, gde_output, "--dry-run", "--sftp")) == 0
-        assert list(gde_output.glob("*.csv")) == []
+        assert _entity_csvs(gde_output) == []
+        assert output_layout.acsv_zips(gde_output) == []
 
     def test_no_sftp_flag_returns_0(self, gde_input: Path, gde_output: Path, monkeypatch) -> None:
         """Without --sftp the uploader is never reached and the run exits 0."""
@@ -320,7 +329,7 @@ class TestExitCodeThree:
         """Exit 3 means 'built but not delivered' — the CSVs must NOT be rolled back."""
         monkeypatch.setattr("src.etl.pipeline._sftp_upload", lambda *a, **k: False)
         assert cli(_etl_argv(gde_input, gde_output, "--sftp")) == 3
-        present = {e for e in _EXPECTED_ENTITIES if (gde_output / f"{e}.csv").exists()}
+        present = {e for e in _EXPECTED_ENTITIES if output_layout.csv_path(gde_output, f"{e}.csv").exists()}
         assert present == set(_EXPECTED_ENTITIES)
 
     def test_sftp_failure_logs_exit_3_summary(
