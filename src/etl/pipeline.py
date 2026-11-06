@@ -54,6 +54,7 @@ from src.etl.outcomes import (
     stopped_file_labels,
     stops_when_empty,
 )
+from src.etl.output_layout import acsv_zip_name, csv_path, legacy_csv_path
 from src.etl.preflight import label_vocabulary_by_entity, missing_columns_by_entity
 from src.etl.required_fields import left_out_for_required_values
 from src.etl.transformer import DataTransformer
@@ -62,7 +63,6 @@ from src.etl.transformers.dates import SchoolYearDetermination
 from src.history.store import VALID_SOURCES, write_run_record
 from src.quality.report import DataQualityReport, declared_blank_fields
 from src.sftp.uploader import SFTPUploader, describe_sftp_error, retry_schedule_for_source
-from src.utils import paths
 from src.utils.accounts import process_account
 
 logger = logging.getLogger(__name__)
@@ -912,6 +912,21 @@ def _unreadable_baseline_msg(entity: str) -> str:
     return f"{entity}: the previous output file could not be read, so the drop check was skipped for this entity"
 
 
+def _previous_csv(output_dir: Path, entity: str) -> Path | None:
+    """The previous run's CSV for ``entity``: its layout path, else its pre-DSYNC-57 spot.
+
+    The fallback matters for exactly one run: the first after an upgrade, when the last
+    good rostering CSVs still sit at the folder's top level (this run's save then moves
+    them into ``archive_<ts>/``). Without it, that night's anomaly check and ``--diff``
+    would have no baseline. ``None`` when neither exists.
+    """
+    filename = DataLoader.csv_filename(entity)
+    for candidate in (csv_path(output_dir, filename), legacy_csv_path(output_dir, filename)):
+        if candidate.exists():
+            return candidate
+    return None
+
+
 def compute_anomalies(
     outputs: dict[str, pd.DataFrame],
     output_dir: Path,
@@ -941,8 +956,8 @@ def compute_anomalies(
     """
     warnings: list[str] = []
     for entity, df in outputs.items():
-        prev_path = output_dir / f"{entity}.csv"
-        if not prev_path.exists():
+        prev_path = _previous_csv(output_dir, entity)
+        if prev_path is None:
             continue
         prev_count = _previous_row_count(prev_path)
         if prev_count is None:
@@ -955,8 +970,8 @@ def compute_anomalies(
     # Vanished entities: configured to be produced, produced nothing this run,
     # and a previous CSV is on disk (sorted for a deterministic warning order).
     for entity in sorted(set(expected_entities or ()) - set(outputs)):
-        prev_path = output_dir / f"{entity}.csv"
-        if not prev_path.exists():
+        prev_path = _previous_csv(output_dir, entity)
+        if prev_path is None:
             continue  # never produced before — a missing baseline is fine
         prev_count = _previous_row_count(prev_path)
         if prev_count is None:
@@ -1468,20 +1483,19 @@ def run_pipeline(
             # of the previous set is `_commit_staged`'s BEST-EFFORT rollback, which logs a
             # failed restore at ERROR rather than raising (see `OutputWriteError`).
             try:
-                loader.save_all(outputs, field_orders)
+                zip_name = loader.save_all(outputs, field_orders, zip_name=acsv_zip_name(sis_type))
             except OSError as exc:
                 raise OutputWriteError(f"Could not write the output files: {exc}") from exc
 
-            # Archive (non-destructive) entity CSVs left in the output dir that
-            # this run did NOT produce — they were not refreshed and would ship
-            # stale in the next SFTP zip. Moving them into archive_<ts>/ (a
-            # SUBfolder) excludes them from SFTP's top-level *.csv glob without
-            # deleting anything — auto-delete is unsafe under _base inheritance
+            # Archive (non-destructive) output files this run did NOT refresh: an entity
+            # it did not produce, a pre-DSYNC-57 top-level rostering CSV, an earlier day's
+            # zip. Moving them into archive_<ts>/ (a SUBfolder) keeps them out of delivery
+            # without deleting anything — auto-delete is unsafe under _base inheritance
             # (see DataLoader.archive_stale_outputs). No exit/run-log change.
-            archived = loader.archive_stale_outputs(set(outputs))
+            archived = loader.archive_stale_outputs(set(outputs), keep_zip=zip_name)
             if archived:
                 logger.info(
-                    f"Archived {len(archived)} stale entity CSV(s) not produced by this run into "
+                    f"Archived {len(archived)} stale output file(s) not refreshed by this run into "
                     f"archive_<ts>/ (excluded from SFTP): {archived}"
                 )
 
@@ -1493,7 +1507,6 @@ def run_pipeline(
                 sftp_attempted = True
                 sftp_ok = _sftp_upload(
                     output_path,
-                    sis_type,
                     manifest=DataLoader.output_filenames(outputs),
                     source=resolved_source,
                 )
@@ -1599,32 +1612,8 @@ def run_pipeline(
         raise
 
 
-def _delivery_staging_dir(source: str | None) -> Path | None:
-    """Where the delivery ZIP is BUILT — ``None`` means the system temp dir (plan 0049 S-1a-ii.2).
-
-    ``<machine profile>/runs/tmp`` for the scheduled nightly on a machine-scoped install
-    ONLY, on both halves of an ``and``:
-
-    * *machine-scoped* — the service principal may have no loaded user profile, so
-      ``%TEMP%`` is not a location it can be relied on to have;
-    * *scheduled* — the admin's manual Convert and a hand-run CLI DO have a loaded profile
-      and keep ``%TEMP%``. ``runs/`` grants the service principal Modify by design and
-      their ZIP is student PII about to leave the building, so it must not sit where
-      another principal could swap it between build and put.
-
-    Never raises on its own account: ``is_machine_scope()`` is already pinned by
-    ``pin_data_dir()`` at both entry points, and the one caller
-    (:func:`_sftp_upload`) turns any surprise into a logged delivery failure rather than
-    swallowing it here.
-    """
-    if source != "scheduled" or not paths.is_machine_scope():
-        return None
-    return paths.machine_data_dir() / "runs" / "tmp"
-
-
 def _sftp_upload(
     output_path: str,
-    sis_type: str | None = None,
     *,
     manifest: Collection[str],
     source: str | None = None,
@@ -1632,10 +1621,11 @@ def _sftp_upload(
     """Upload THIS run's generated CSV files via SFTP. Returns True on success.
 
     ``source`` is the run's already-resolved source tag (:func:`_resolve_source`), used
-    for ONE decision — where the ZIP is staged (:func:`_delivery_staging_dir`). It is
-    optional because omitting it selects the conservative branch every install uses today
-    (the system temp dir); ``None`` honestly means "the caller did not say", never a
-    claim that this was a CLI run.
+    for ONE decision: the retry schedule (:func:`retry_schedule_for_source`). ``None``
+    honestly means "the caller did not say", never a claim that this was a CLI run.
+
+    The files shipped are the ones the conversion already committed to the output folder
+    (the Advanced CSV zip and the standalone feeds, DSYNC-57); nothing is built here.
 
     ``manifest`` is the authoritative payload — the filenames this run wrote
     (``DataLoader.output_filenames(outputs)``), threaded through so delivery ships the
@@ -1666,9 +1656,7 @@ def _sftp_upload(
         )
         uploaded = uploader.upload_csvs(
             Path(output_path),
-            sis_type=sis_type,
             manifest=manifest,
-            staging_dir=_delivery_staging_dir(source),
             retry=retry_schedule_for_source(source),
         )
         if uploaded:
@@ -1707,8 +1695,8 @@ def _print_diff(outputs: dict[str, pd.DataFrame], output_path: str) -> None:
     print("\n=== DIFF vs existing output ===")
 
     for name, new_df in outputs.items():
-        existing_path = output_dir / f"{name}.csv"
-        if not existing_path.exists():
+        existing_path = _previous_csv(output_dir, name)
+        if existing_path is None:
             print(f"  {name}: NEW (no existing file)")
             continue
 

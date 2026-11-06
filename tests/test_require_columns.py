@@ -37,6 +37,7 @@ import pandas as pd
 import pytest
 
 from src.config.models import FieldAppendYear
+from src.etl import output_layout
 from src.etl.errors import GuardKind, RunErrorCategory, SourceSchemaError, classify_error_category
 from src.etl.outcomes import OutcomeKind, OutcomeNote, OutcomeReason
 from src.etl.pipeline import run_pipeline
@@ -48,6 +49,13 @@ from src.etl.transformers.staff import StaffTransformer
 from src.etl.transformers.students import StudentTransformer
 from src.history.store import read_run_records
 from tests.test_contract import _create_myedbc_inputs
+
+
+def _entity_csvs(output_dir: Path) -> list[Path]:
+    """Every entity CSV a run wrote (DSYNC-57 layout: the standalone feeds at the top level,
+    the rostering CSVs in ``csv/``)."""
+    return sorted([*output_dir.glob("*.csv"), *(output_dir / output_layout.ROSTERING_SUBDIR).glob("*.csv")])
+
 
 _REPO = Path(__file__).resolve().parents[1]
 _TRANSFORMERS_DIR = _REPO / "src" / "etl" / "transformers"
@@ -1136,7 +1144,8 @@ class TestNoPartialShip:
 # End to end: a CRITICAL entity's guard fails the run, typed and named          #
 # --------------------------------------------------------------------------- #
 def _snapshot(folder: Path) -> dict[str, str]:
-    return {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(folder.glob("*.csv"))}
+    files = [*_entity_csvs(folder), *output_layout.acsv_zips(folder)]
+    return {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(files)}
 
 
 @pytest.mark.integration
@@ -1216,7 +1225,8 @@ class TestClassInformationSchoolAtBlendedDetection:
             run_pipeline("sd74myedbc", str(input_dir), str(output_dir))
 
         _assert_schema_error(exc, entity="Classes", guard=GuardKind.JOIN_KEY, columns=("School Number",))
-        assert list(output_dir.glob("*.csv")) == [], "nothing is written"
+        assert _entity_csvs(output_dir) == [], "nothing is written"
+        assert output_layout.acsv_zips(output_dir) == []
         records = read_run_records() or []
         record = records[0]
         assert (record["status"], record["error_category"]) == ("failed", "source_schema")

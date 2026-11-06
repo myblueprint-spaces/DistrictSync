@@ -25,23 +25,23 @@ Usage::
         # ``manifest`` is required; build it from the entities the run wrote:
         #     from src.etl.loader import DataLoader
         #     manifest = DataLoader.output_filenames(outputs)   # e.g. {"Students.csv", ...}
-        uploaded = uploader.upload_csvs(Path("data/output"), manifest=manifest)
+        uploaded = uploader.upload_csvs(Path("data/output"), manifest=manifest, retry=INTERACTIVE_RETRY)
 """
 
 from __future__ import annotations
 
 import logging
-import re
 import time
+import zipfile
 from collections.abc import Callable, Collection
 from dataclasses import dataclass
-from datetime import date
 from pathlib import Path
 from typing import TypeVar
 
 import keyring  # noqa: F401  (see the note below — a deliberate PyInstaller anchor)
 import paramiko
 
+from src.etl.output_layout import STANDALONE_CSV_FILENAMES, acsv_zips, zip_member_names
 from src.sftp.secret_store import KEYRING_SERVICE as KEYRING_SERVICE  # noqa: PLC0414 (re-export)
 from src.sftp.secret_store import select_store
 from src.utils.paths import bundle_known_hosts_file, user_known_hosts_file
@@ -141,68 +141,6 @@ LISTING_DENIED_NOTE = (
     "Connected and signed in. This account can't list the remote folder — "
     "that's normal for upload-only delivery accounts."
 )
-
-
-# ---------------------------------------------------------------------------
-# Delivery envelope — the feeds that ship OUTSIDE the rostering zip
-# ---------------------------------------------------------------------------
-
-# SpacesEDU ingests these three as individual files rather than as members of the
-# Advanced-CSV bundle, so each is put on its own into the same remote directory:
-#   - StudentAttendance.csv — the attendance importer identifies this feed BY NAME
-#     (a 2026-06-19 delivery was rejected with "Unexpected file: StudentAttendance.csv"),
-#     and it must not pollute the rostering bundle.
-#   - CourseInfo.csv / StudentCourses.csv — the myBlueprint+ course feeds, a separate
-#     product tier ingested as standalone CSVs (owner decision 2026-08-26).
-# Everything else — the five SpacesEDU rostering CSVs — zips together as before.
-#
-# The names are re-spelled here rather than derived from ``DataLoader.csv_filename``:
-# importing the ETL loader into the delivery layer would drag pandas into the import
-# graph of every module that touches SFTP, including the Flet Setup screen on the app's
-# boot path (the same layer-isolation reasoning that keeps ``ui_flet/sftp_copy.py`` free
-# of this module). ``tests/test_sftp_uploader.TestStandaloneFeedNames`` pins this set
-# against the loader's entity→filename rule so the two cannot drift.
-STANDALONE_CSV_FILENAMES: frozenset[str] = frozenset(
-    {
-        "StudentAttendance.csv",
-        "CourseInfo.csv",
-        "StudentCourses.csv",
-    }
-)
-
-
-# ---------------------------------------------------------------------------
-# Zip naming (lives here — the uploader is its only production consumer)
-# ---------------------------------------------------------------------------
-
-
-def district_slug(sis_type: str) -> str:
-    """Short user-facing identifier for a district, derived from its sis_type.
-
-    - sd40myedbc  -> sd40
-    - sd74myedbc  -> sd74
-    - myedbc      -> myedbc   (base config, keep as-is)
-    - myBlueprint+ -> myBlueprint  (sanitized for filenames)
-    """
-    stem = sis_type
-    if stem != "myedbc" and stem.endswith("myedbc"):
-        stem = stem[: -len("myedbc")]
-    # Sanitize for filesystem + zip filename use
-    return re.sub(r"[^A-Za-z0-9_-]+", "_", stem).strip("_") or "district"
-
-
-def build_zip_name(sis_type: str | None = None, for_date: date | None = None) -> str:
-    """Build the canonical output zip filename.
-
-    Pattern: ``districtsync_<district>_<YYYY-MM-DD>.zip`` when sis_type is known,
-    falling back to ``districtsync_<YYYY-MM-DD>.zip`` for legacy callers that
-    don't pass a district (preserves backwards compatibility with existing
-    SFTP uploads that use only the date).
-    """
-    when = (for_date or date.today()).isoformat()
-    if sis_type:
-        return f"districtsync_{district_slug(sis_type)}_{when}.zip"
-    return f"districtsync_{when}.zip"
 
 
 # ---------------------------------------------------------------------------
@@ -596,168 +534,125 @@ class SFTPUploader:
     def upload_csvs(
         self,
         output_dir: Path,
-        zip_name: str | None = None,
-        sis_type: str | None = None,
         *,
         manifest: Collection[str],
         retry: RetrySchedule,
-        staging_dir: Path | None = None,
     ) -> list[str]:
-        """Zip the *manifested* rostering CSVs in *output_dir* and upload via SFTP.
+        """Upload the *manifested* output files in *output_dir* via SFTP: what the admin would.
 
-        **The manifest is the authoritative payload — not the folder listing.**
-        Callers name exactly the CSV filenames this delivery vouches for (built from
-        the entity→filename rule in ``DataLoader.output_filenames``), and only those
-        files ship. The folder is merely *where* they live: a spreadsheet export, a
-        ``students_backup.csv``, or any other ``*.csv`` an admin drops into the output
-        folder is left on disk and never egresses to SpacesEDU. ``manifest`` is
-        REQUIRED (keyword-only) precisely so a future caller cannot silently fall back
-        to "whatever is in the folder" — the defect this closes.
+        **Ships the files already on disk (DSYNC-57).** The conversion writes the Advanced
+        CSV zip (``acsv_<district>_<date>.zip``) and the standalone feeds to the top level
+        of the output folder (:mod:`src.etl.output_layout`); this uploads exactly those, so
+        what SFTP sends and what an admin uploads by hand are the same bytes. Nothing is
+        zipped here.
 
-        **Three feeds arrive standalone, outside the rostering zip** — the ones
-        SpacesEDU ingests as individual files: ``StudentAttendance.csv`` (their
-        nightly check looks for it by name) and the two myBlueprint+ course feeds,
-        ``CourseInfo.csv`` and ``StudentCourses.csv``. Each manifested one is
-        excluded from the zip and uploaded with its own ``sftp.put`` into the same
-        remote directory; see :data:`STANDALONE_CSV_FILENAMES`. A district emitting
-        only the five rostering CSVs therefore sees ``zip_files == csv_files`` and
-        the unchanged single-zip delivery.
+        **The manifest is the authoritative payload, not the folder listing.** Callers name
+        exactly the CSV filenames this delivery vouches for (``DataLoader.output_filenames``).
+        A standalone feed ships only if manifested; the zip ships only if its member names
+        EQUAL the manifested rostering names, so a hand-edited, stale or foreign zip never
+        egresses as this run's roster. ``manifest`` is REQUIRED (keyword-only) so a caller
+        cannot fall back to "whatever is in the folder".
+
+        **Standalone feeds arrive outside the zip** (:data:`STANDALONE_CSV_FILENAMES`;
+        Product-Integration-Validation ACSV-026), each with its own ``sftp.put`` into the
+        same remote directory.
 
         Args:
-            output_dir: Local directory containing the generated CSV files.
-            zip_name: Explicit name of the ZIP file. If not provided, the name
-                is derived from ``sis_type`` and today's date via
-                ``build_zip_name`` — e.g. ``districtsync_sd40_2026-04-10.zip``
-                when ``sis_type='sd40myedbc'``, or
-                ``districtsync_2026-04-10.zip`` when no ``sis_type`` is provided.
-            sis_type: District SIS identifier used to derive the default
-                ``zip_name``. Ignored when ``zip_name`` is provided explicitly.
-            manifest: The exact CSV filenames authorized for this delivery
-                (e.g. ``DataLoader.output_filenames(outputs)``). Files in
-                *output_dir* outside this set are NOT uploaded.
-            retry: The transient-failure retry schedule — REQUIRED keyword-only so every
+            output_dir: The output folder.
+            manifest: The exact CSV filenames authorized for this delivery. Files outside
+                this set are NOT uploaded.
+            retry: The transient-failure retry schedule, REQUIRED keyword-only so every
                 caller chooses: :data:`UNATTENDED_RETRY` for the scheduled nightly,
                 :data:`INTERACTIVE_RETRY` when a person is waiting
                 (:func:`retry_schedule_for_source` maps a run's source tag).
-            staging_dir: Where to build the transient ZIP. ``None`` (the default, and
-                every install in the field) means the system temp dir, byte-identical to
-                what this has always done. Only the scheduled nightly on a machine-scoped
-                install passes a directory — ``<machine profile>/runs/tmp`` — because that
-                principal may have no loaded user profile to hold a ``%TEMP%``. It is
-                deliberately NOT used for a manual Convert or a hand-run CLI: ``runs/``
-                grants the service principal Modify by design, and the admin's zip is
-                student PII that must not sit where another principal could swap it. The
-                directory is created if absent and the ZIP inside it is always removed,
-                delivered or not (plan 0049 S-1a-ii.2).
 
         Returns:
-            List of CSV filenames delivered — the zipped rostering CSVs plus every
-            standalone feed. Always non-empty on return (an empty manifest / missing
-            files raise rather than returning ``[]``).
+            The CSV filenames delivered: the zip's members plus every standalone feed.
+            Always non-empty on return.
 
         Raises:
-            RuntimeError: If *manifest* is empty, if none of the manifested files are
-                present in *output_dir* (fail-loud — a silent ``[]`` let callers report
-                a false "delivered"), if a manifested file is missing (a partial
-                delivery reported as success would be dishonest), or if the connection /
-                upload could not be established.
+            RuntimeError: If *manifest* is empty, a manifested standalone feed is missing,
+                there is not exactly one Advanced CSV zip when rostering files are
+                manifested, the zip's members differ from the manifest, or the connection
+                / upload could not be established. Messages carry file NAMES only.
         """
-        import tempfile
-        import zipfile
-
-        if zip_name is None:
-            zip_name = build_zip_name(sis_type)
-
         requested = set(manifest)
         if not requested:
             # Nothing was vouched for — refuse rather than invent a payload.
             logger.error("SFTP delivery aborted: no output files were nominated for delivery")
             raise RuntimeError("No output files were nominated for delivery")
 
-        # Only manifested files ship. Top-level glob only (an `archive_<ts>/` subfolder
-        # is already invisible here); the manifest then narrows it to this run's roster.
-        csv_files = sorted(p for p in output_dir.glob("*.csv") if p.is_file() and p.name in requested)
-        if not csv_files:
-            # Fail loud: a silent `[]` return let callers mark the delivery "ok" (a false
-            # "delivered"). Raise so run_pipeline exits 3 / Convert shows BUILT_NOT_DELIVERED.
-            # Only the directory NAME (never the full path) is in the message — no PII leak.
-            logger.error(f"No CSV files found to upload in {output_dir.name}")
-            raise RuntimeError(f"No CSV files found to upload in {output_dir.name}")
+        standalone_names = sorted(requested & STANDALONE_CSV_FILENAMES)
+        rostering_names = requested - STANDALONE_CSV_FILENAMES
 
-        missing = sorted(requested - {p.name for p in csv_files})
+        standalone_files = [output_dir / name for name in standalone_names]
+        missing = sorted(p.name for p in standalone_files if not p.is_file())
         if missing:
-            # A vouched-for file vanished between the atomic commit and delivery —
-            # shipping the rest as "delivered" would be a partial roster reported as
-            # whole. Entity CSV names only (no paths, no PII).
+            # A vouched-for file vanished between the commit and delivery — shipping the
+            # rest as "delivered" would be a partial roster reported as whole.
             logger.error(f"SFTP delivery aborted: manifested file(s) missing from {output_dir.name}: {missing}")
             raise RuntimeError(f"Cannot deliver — file(s) this run produced are missing from disk: {missing}")
 
-        # The attendance + myBlueprint+ course feeds ship standalone (see
-        # STANDALONE_CSV_FILENAMES); the rostering CSVs zip together.
-        standalone_files = [f for f in csv_files if f.name in STANDALONE_CSV_FILENAMES]
-        zip_files = [f for f in csv_files if f.name not in STANDALONE_CSV_FILENAMES]
+        uploads = list(standalone_files)
+        if rostering_names:
+            uploads.insert(0, self._rostering_zip(output_dir, rostering_names))
 
-        if staging_dir is not None:
-            # The provisioned ``runs/`` already carries the principal's ACL, which this
-            # subdirectory inherits — so no permission work happens here.
-            staging_dir.mkdir(parents=True, exist_ok=True)
+        def _deliver() -> list[str]:
+            """One connect+put attempt — the unit the bounded retry re-runs.
 
-        with tempfile.TemporaryDirectory(dir=staging_dir) as tmpdir:
-            # Build the rostering zip ONCE, outside the retry (local + deterministic) —
-            # and only when there are rostering CSVs, so a standalone-only run (an
-            # attendance district, or a course-only myBlueprint+ config) never delivers
-            # an empty archive; its files are still sent below.
-            zip_path: Path | None = None
-            if zip_files:
-                zip_path = Path(tmpdir) / zip_name
-                with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-                    for csv_file in zip_files:
-                        zf.write(csv_file, csv_file.name)
-                logger.info(
-                    f"Created ZIP: {zip_name} with {len(zip_files)} file(s) ({zip_path.stat().st_size:,} bytes)"
-                )
-
-            def _deliver() -> list[str]:
-                """One connect+put attempt — the unit the bounded retry re-runs.
-
-                Each attempt reconnects fresh (a dead transport can't be reused), and
-                the date-stamped zip name makes a re-put idempotent: a retry overwrites
-                the same remote name rather than duplicating the delivery. That holds for
-                EVERY file in the envelope: ``zip_name`` is fixed once, before the retry loop
-                (a retry crossing midnight cannot mint a second name), and each standalone
-                feed (StudentAttendance/CourseInfo/StudentCourses) is put under its own
-                fixed filename. A retry re-sends files an earlier attempt already delivered;
-                it never adds a differently-named one.
-                """
-                delivered: list[str] = []
-                client, sftp = self._connect()
-                try:
-                    if zip_path is not None:
-                        zip_size = zip_path.stat().st_size
-                        remote_file = f"{self.remote_path.rstrip('/')}/{zip_name}"
-                        logger.info(f"Uploading {zip_name} -> {remote_file}")
-                        sftp.put(str(zip_path), remote_file)
-                        logger.info(f"Uploaded {zip_name} ({zip_size:,} bytes)")
-                        delivered.extend(f.name for f in zip_files)
-
-                    # Deliver each standalone feed with its own put (same logging style +
-                    # failure semantics as the zip put, so a failed put propagates and
-                    # preserves the pipeline's exit-code-3 contract).
-                    for standalone_file in standalone_files:
-                        file_size = standalone_file.stat().st_size
-                        remote_standalone = f"{self.remote_path.rstrip('/')}/{standalone_file.name}"
-                        logger.info(f"Uploading {standalone_file.name} -> {remote_standalone} ({file_size:,} bytes)")
-                        sftp.put(str(standalone_file), remote_standalone)
-                        logger.info(f"Uploaded {standalone_file.name} ({file_size:,} bytes)")
-                        delivered.append(standalone_file.name)
-
-                    sftp.close()
-                    return delivered
-                finally:
-                    client.close()
-
+            Each attempt reconnects fresh (a dead transport can't be reused). Every file
+            keeps its own fixed name across attempts (the zip's date-stamped name was set
+            when it was built), so a retry overwrites the same remote names rather than
+            adding a differently-named delivery.
+            """
+            client, sftp = self._connect()
             try:
-                return self._with_retry(_deliver, "SFTP upload", retry)
-            except Exception as exc:
-                logger.error(f"Failed to upload to {self.host}: {describe_sftp_error(exc)}")
-                raise
+                for local in uploads:
+                    size = local.stat().st_size
+                    remote_file = f"{self.remote_path.rstrip('/')}/{local.name}"
+                    logger.info(f"Uploading {local.name} -> {remote_file} ({size:,} bytes)")
+                    sftp.put(str(local), remote_file)
+                    logger.info(f"Uploaded {local.name} ({size:,} bytes)")
+                sftp.close()
+                return sorted(rostering_names) + standalone_names
+            finally:
+                client.close()
+
+        try:
+            return self._with_retry(_deliver, "SFTP upload", retry)
+        except Exception as exc:
+            logger.error(f"Failed to upload to {self.host}: {describe_sftp_error(exc)}")
+            raise
+
+    @staticmethod
+    def _rostering_zip(output_dir: Path, rostering_names: set[str]) -> Path:
+        """The ONE Advanced CSV zip in ``output_dir``, checked against the manifest (fail loud).
+
+        Exactly one ``acsv_*.zip`` must sit at the top level (each conversion archives the
+        earlier ones), and its members must be exactly ``rostering_names``.
+        """
+        zips = acsv_zips(output_dir)
+        if len(zips) != 1:
+            found = [p.name for p in zips]
+            logger.error(f"SFTP delivery aborted: expected one Advanced CSV zip in {output_dir.name}, found {found}")
+            raise RuntimeError(
+                "Cannot deliver — the output folder must hold exactly one Advanced CSV zip "
+                f"(found {len(zips)}). Convert again to rebuild it."
+            )
+        try:
+            members = zip_member_names(zips[0])
+        except (OSError, zipfile.BadZipFile) as exc:
+            logger.error(f"SFTP delivery aborted: {zips[0].name} is unreadable: {exc}")
+            raise RuntimeError(
+                f"Cannot deliver — {zips[0].name} could not be read. Convert again to rebuild it."
+            ) from exc
+        if members != rostering_names:
+            logger.error(
+                f"SFTP delivery aborted: {zips[0].name} holds {sorted(members)}, "
+                f"but this delivery vouches for {sorted(rostering_names)}"
+            )
+            raise RuntimeError(
+                f"Cannot deliver — {zips[0].name} does not match the files this run produced. "
+                "Convert again to rebuild it."
+            )
+        return zips[0]

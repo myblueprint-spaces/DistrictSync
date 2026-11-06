@@ -36,7 +36,7 @@ import pytest
 from src.config.app_config import AppConfig
 from src.config.loader import available_configs, load_config
 from src.config.models import EntityConfig, GlobalConfig, MappingConfig
-from src.etl import outcomes
+from src.etl import outcomes, output_layout
 from src.etl.errors import IncompleteInputError
 from src.etl.outcomes import (
     CLASS_INFORMATION_ROLE,
@@ -70,6 +70,13 @@ from tests.test_contract import (
     _write_class_info,
 )
 from tests.test_coteacher_standing_warning import _assert_partial_with_the_note, _latest
+
+
+def _entity_csvs(output_dir: Path) -> list[Path]:
+    """Every entity CSV a run wrote (DSYNC-57 layout: the standalone feeds at the top level,
+    the rostering CSVs in ``csv/``)."""
+    return sorted([*output_dir.glob("*.csv"), *(output_dir / output_layout.ROSTERING_SUBDIR).glob("*.csv")])
+
 
 _REPO = Path(__file__).resolve().parents[1]
 _NOTE = OutcomeNote.COTEACHER_SOURCE_UNUSABLE
@@ -399,7 +406,7 @@ def _dirs(tmp_path: Path) -> tuple[Path, Path]:
 
 
 def _csvs(out: Path) -> dict[str, bytes]:
-    return {p.name: p.read_bytes() for p in sorted(out.glob("*.csv"))}
+    return {p.name: p.read_bytes() for p in sorted(_entity_csvs(out))}
 
 
 @pytest.mark.integration
@@ -423,6 +430,8 @@ def test_sd45_without_class_information_is_partial_two_nights_running(tmp_path: 
         )
         _assert_partial_with_the_note(record, prior, records, "sd45myedbc")
     assert set(_csvs(out)) == {"Students.csv", "Staff.csv", "Family.csv", "Classes.csv", "Enrollments.csv"}
+    (zip_path,) = output_layout.acsv_zips(out)
+    assert output_layout.zip_member_names(zip_path) == set(_csvs(out))
 
 
 @pytest.mark.integration
@@ -471,7 +480,9 @@ def _add_unroled_coteacher(inp: Path) -> None:
 
 
 def _shipped_staff(out: Path) -> set[str]:
-    return set(pd.read_csv(out / "Staff.csv", encoding="utf-8-sig", dtype=str)["User ID"].dropna())
+    return set(
+        pd.read_csv(output_layout.csv_path(out, "Staff.csv"), encoding="utf-8-sig", dtype=str)["User ID"].dropna()
+    )
 
 
 @pytest.mark.integration
@@ -518,6 +529,7 @@ def test_twin_a_blended_on_config_without_class_information_still_stops(tmp_path
         "ClassInfoEnhanced.txt",
     )
     assert _csvs(out) == {}
+    assert output_layout.acsv_zips(out) == []
 
 
 @pytest.mark.integration

@@ -21,12 +21,14 @@ from __future__ import annotations
 
 import os
 import sys
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
+from src.etl import output_layout
 from src.etl.outcomes import ENTITY_CRITICALITY, EntityCriticality
+from src.etl.transformers.registry import TRANSFORMER_REGISTRY
 from src.ui_flet import convert_output
 from src.ui_flet.convert_output import (
     NO_OPTIONAL_INPUTS,
@@ -56,6 +58,7 @@ from src.ui_flet.convert_output import (
     standalone_deliver_state,
     this_run_label,
 )
+from tests._output_tree import build_output_tree
 
 
 class TestCanRunConvert:
@@ -191,10 +194,27 @@ class TestOpenFolder:
 _MAPPINGS_DIR = Path(__file__).resolve().parents[1] / "config" / "mappings"
 
 
+_KNOWN_ENTITIES = frozenset(TRANSFORMER_REGISTRY)
+
+
 def _seed(folder: Path, *names: str) -> Path:
+    """Seed an output folder in the DSYNC-57 layout.
+
+    An entity CSV goes where the loader puts it (rostering in ``csv/`` and bundled into ONE
+    top-level ``acsv_*.zip``; a standalone feed at the top level). Any other name (a foreign
+    ``report.csv``) is written at the top level as-is.
+    """
+    entities = [n.removesuffix(".csv") for n in names if n.removesuffix(".csv") in _KNOWN_ENTITIES]
+    build_output_tree(folder, entities, body="id\n1\n")
     for name in names:
-        (folder / name).write_text("id\n1\n", encoding="utf-8")
+        if name.removesuffix(".csv") not in _KNOWN_ENTITIES:
+            (folder / name).write_text("id\n1\n", encoding="utf-8")
     return folder
+
+
+def _zip(folder: Path) -> Path:
+    (zip_path,) = output_layout.acsv_zips(folder)
+    return zip_path
 
 
 class TestConfiguredOutputEntities:
@@ -292,11 +312,13 @@ class TestDeliverableFiles:
 
     # -- the freshness line -------------------------------------------------- #
     def test_freshness_is_the_newest_deliverable_csv(self, tmp_path: Path) -> None:
+        # The roster ships as the zip, so the zip's mtime is the vintage, not the csv/ copies'.
         _seed(tmp_path, "Staff.csv", "Students.csv")
         old_ts = datetime(2026, 7, 1, 3, 0, 0).timestamp()
         new_ts = datetime(2026, 7, 14, 3, 0, 0).timestamp()
-        os.utime(tmp_path / "Staff.csv", (old_ts, old_ts))
-        os.utime(tmp_path / "Students.csv", (new_ts, new_ts))
+        os.utime(tmp_path / "csv" / "Staff.csv", (old_ts, old_ts))
+        os.utime(tmp_path / "csv" / "Students.csv", (old_ts, old_ts))
+        os.utime(_zip(tmp_path), (new_ts, new_ts))
         assert self._files("sd74myedbc", tmp_path).newest_mtime_iso == datetime.fromtimestamp(new_ts).isoformat(
             timespec="seconds"
         )
@@ -307,7 +329,8 @@ class TestDeliverableFiles:
         _seed(tmp_path, "Students.csv", "report.csv", "CourseInfo.csv")
         deliverable_ts = datetime(2026, 7, 1, 3, 0, 0).timestamp()
         foreign_ts = datetime(2026, 7, 20, 3, 0, 0).timestamp()
-        os.utime(tmp_path / "Students.csv", (deliverable_ts, deliverable_ts))
+        os.utime(_zip(tmp_path), (deliverable_ts, deliverable_ts))
+        os.utime(tmp_path / "csv" / "Students.csv", (foreign_ts, foreign_ts))
         os.utime(tmp_path / "report.csv", (foreign_ts, foreign_ts))
         os.utime(tmp_path / "CourseInfo.csv", (foreign_ts, foreign_ts))
         assert self._files("sd74myedbc", tmp_path).newest_mtime_iso == datetime.fromtimestamp(deliverable_ts).isoformat(
@@ -320,10 +343,13 @@ class TestDeliverableFiles:
 
     def test_unreadable_folder_degrades_to_empty(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         # TOTAL: an OS-level folder read failure hides the action, never crashes the render.
-        def _boom(self: Path, _pattern: str):
+        _seed(tmp_path, "Students.csv", "StudentAttendance.csv")
+
+        def _boom(self: Path, *_args):
             raise OSError("permission denied")
 
         monkeypatch.setattr(convert_output.Path, "glob", _boom)
+        monkeypatch.setattr(convert_output.Path, "is_file", _boom)
         assert self._files("sd74myedbc", tmp_path).present is False
 
     def test_unstattable_deliverable_file_still_has_no_vintage(
@@ -333,12 +359,12 @@ class TestDeliverableFiles:
         # read) degrades the vintage to "recently" downstream — the file itself still counts
         # as deliverable, so the action is not withdrawn over a transient stat failure.
         class _Unstattable:
-            name = "Students.csv"
+            name = "acsv_sd40_2026-11-06.zip"
 
             def stat(self):
                 raise OSError("vanished mid-read")
 
-        monkeypatch.setattr(convert_output, "_top_level_csvs", lambda _dir: [_Unstattable()])
+        monkeypatch.setattr(convert_output, "_on_disk_deliverables", lambda _dir: {"Students.csv": _Unstattable()})
         files = self._files("sd74myedbc", tmp_path)
         assert files.filenames == frozenset({"Students.csv"})
         assert files.newest_mtime_iso == ""
@@ -704,9 +730,19 @@ class TestDeliverableManifest:
     _ENTITIES = ["Students", "Staff", "Family", "Classes", "Enrollments"]
 
     def _folder(self, tmp_path: Path, names: list[str]) -> Path:
-        for name in names:
-            (tmp_path / name).write_text("col\nv\n", encoding="utf-8")
-        return tmp_path
+        return _seed(tmp_path, *names)
+
+    def test_two_zips_deliver_no_roster(self, tmp_path: Path) -> None:
+        """An ambiguous folder offers nothing the uploader would refuse to send."""
+        _seed(tmp_path, "Students.csv")
+        build_output_tree(tmp_path, ["Students"], for_date=date(2026, 11, 5))
+        assert deliverable_manifest(self._ENTITIES, str(tmp_path)) == set()
+
+    def test_loose_csvs_without_a_zip_deliver_nothing(self, tmp_path: Path) -> None:
+        """A pre-DSYNC-57 folder (top-level CSVs, no zip) must be converted again first."""
+        for e in self._ENTITIES:
+            (tmp_path / f"{e}.csv").write_text("col\nv\n", encoding="utf-8")
+        assert deliverable_manifest(self._ENTITIES, str(tmp_path)) == set()
 
     def test_foreign_csvs_are_excluded(self, tmp_path: Path) -> None:
         folder = self._folder(
@@ -998,3 +1034,41 @@ class TestFileChipsIgnoreFilenameCase:
 
         assert line in text
         assert "ClassInformationEnh.txt" in text
+
+
+class TestManualImportFiles:
+    """DSYNC-57: the result card names the files an admin uploads by hand, read from the folder."""
+
+    def test_a_rostering_district_lists_only_the_zip(self, tmp_path: Path) -> None:
+        _seed(tmp_path, "Students.csv", "Staff.csv")
+        files = convert_output.manual_import_files(str(tmp_path))
+        assert [f.filename for f in files] == ["acsv_sd40_2026-11-06.zip"]
+        assert "Advanced CSV" in files[0].note
+
+    def test_standalone_feeds_follow_the_zip_in_upload_order(self, tmp_path: Path) -> None:
+        _seed(tmp_path, "Students.csv", "StudentCourses.csv", "CourseInfo.csv", "StudentAttendance.csv")
+        assert [f.filename for f in convert_output.manual_import_files(str(tmp_path))] == [
+            "acsv_sd40_2026-11-06.zip",
+            "StudentAttendance.csv",
+            "CourseInfo.csv",
+            "StudentCourses.csv",
+        ]
+
+    def test_each_standalone_feed_says_to_upload_it_on_its_own(self, tmp_path: Path) -> None:
+        _seed(tmp_path, "StudentAttendance.csv", "CourseInfo.csv", "StudentCourses.csv")
+        files = convert_output.manual_import_files(str(tmp_path))
+        assert [f.filename for f in files] == ["StudentAttendance.csv", "CourseInfo.csv", "StudentCourses.csv"]
+        assert all("on its own" in f.note for f in files)
+
+    def test_roster_csvs_in_the_subfolder_and_foreign_files_are_never_listed(self, tmp_path: Path) -> None:
+        _seed(tmp_path, "Students.csv", "report.csv")
+        names = [f.filename for f in convert_output.manual_import_files(str(tmp_path))]
+        assert "Students.csv" not in names and "report.csv" not in names
+        assert names == ["acsv_sd40_2026-11-06.zip"]
+
+    @pytest.mark.parametrize("value", ["", "   ", None])
+    def test_blank_folder_lists_nothing(self, value: str | None) -> None:
+        assert convert_output.manual_import_files(value) == []
+
+    def test_the_csv_folder_note_names_the_real_subfolder(self) -> None:
+        assert f" {output_layout.ROSTERING_SUBDIR} folder" in convert_output.ROSTER_CSV_FOLDER_NOTE

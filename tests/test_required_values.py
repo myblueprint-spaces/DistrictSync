@@ -33,6 +33,7 @@ import pandas as pd
 import pytest
 
 from src.config.loader import available_configs, load_config
+from src.etl import output_layout
 from src.etl.errors import EmptyRequiredOutputError
 from src.etl.outcomes import (
     DEPENDS_ON,
@@ -518,13 +519,15 @@ class TestTheCascade:
 # End to end over a synthetic drop                                             #
 # --------------------------------------------------------------------------- #
 def _read(out: Path, entity: str) -> pd.DataFrame:
-    return pd.read_csv(out / f"{entity}.csv", dtype=str, keep_default_na=False, encoding="utf-8-sig")
+    return pd.read_csv(
+        output_layout.csv_path(out, f"{entity}.csv"), dtype=str, keep_default_na=False, encoding="utf-8-sig"
+    )
 
 
 def _blank_required(out: Path) -> dict[str, dict[str, int]]:
     found: dict[str, dict[str, int]] = {}
     for entity, required in REQUIRED_OUTPUT_FIELDS.items():
-        path = out / f"{entity}.csv"
+        path = output_layout.csv_path(out, f"{entity}.csv")
         if not path.exists():
             continue
         frame = _read(out, entity)
@@ -722,7 +725,9 @@ class TestEndToEnd:
         result = run_pipeline("myedbc", str(inp), str(out))
         family = next(o for o in result.entity_outcomes if o.entity == "Family")
         assert (family.kind, family.reason) == (OutcomeKind.EMPTY, OutcomeReason.REQUIRED_VALUES_MISSING)
-        assert not (out / "Family.csv").exists() and (out / "Staff.csv").exists()
+        assert (
+            not output_layout.csv_path(out, "Family.csv").exists() and output_layout.csv_path(out, "Staff.csv").exists()
+        )
         (record,) = read_run_records() or []
         assert classify_latest_reason(record, prior_build=None) is LatestReason.PARTIAL
         headline, detail = partial_copy(warning_outcomes(outcomes_from_record(record)), delivered=False)

@@ -78,7 +78,8 @@ python scripts/check_no_emails.py      # no plaintext email in any tracked file 
 - GDE column names MUST come from the district `field_map` — never hardcoded. Use `apply_field_map(...)` or `columns.resolve_source_column(...)` (the ONE resolver, AST-pinned); a column that guards WHO ships or LINKS rows is checked with `columns.require_columns`. The ONLY sanctioned literals are the join keys + resolver defaults in `src/etl/column_names.py`.
 - `enabled_entities` = inclusion, `entity_order` = ordering. Select via `MappingConfig.active_entities()` / `models.filter_enabled_entities` — never respell `enabled_entities or []`. Configs SELECT entities, never redefine them.
 - **Entity order gotcha:** `entity_order` defaults to `[]`; use `global_config.get("entity_order") or list(mappings.keys())`.
-- Stale entity CSVs are ARCHIVED (`archive_<ts>/`), never deleted; any future prune must derive from `enabled_entities`, NEVER `mappings.keys()` (cross-config data loss).
+- Output layout (DSYNC-57, `src/etl/output_layout.py`): roster CSVs in `csv/`, the `acsv_<district>_<date>.zip` + standalone feeds at the top level (the upload set); SFTP ships that zip, never re-zips.
+- Stale entity CSVs (and an earlier day's zip) are ARCHIVED (`archive_<ts>/`), never deleted; any future prune must derive from `enabled_entities`, NEVER `mappings.keys()` (cross-config data loss).
 - Classes→Enrollments handoff = frozen `ClassArtifacts` in `context.class_artifacts`. New output entity: checklist in `docs/developer/adding-transformer.md`.
 
 ## Engineering Principles (non-negotiable)

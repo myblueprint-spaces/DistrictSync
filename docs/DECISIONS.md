@@ -3,6 +3,21 @@
 **Convention (adopted 2026-09-23):** every new entry carries a line `Supersedes: <date — title of the replaced entry>` (or `Supersedes: nothing`) directly under its heading, so a replaced decision is found by search rather than by reading prose.
 
 
+## 2026-11-06 - DSYNC-57: every conversion writes the import-ready Advanced CSV zip; the loose roster CSVs move into `csv/`
+
+Supersedes: nothing. Narrows plan 0049 S-1a-ii.2 (the scheduled nightly's `runs/tmp` zip staging, now removed with the delivery-time zip) and the 2026-08-26 entry's delivery envelope (the zip's name and where it is built; the standalone-feed split is unchanged).
+
+**Why.** District admins doing an ad hoc import found the SpacesEDU importer accepts no single CSV and no multi-select once Advanced CSV is chosen, so they zipped the output folder by hand. The zip existed only inside the SFTP upload, built in a temp folder.
+
+**Decision (owner, 2026-11-06).** Every non-dry-run conversion (Convert, CLI, scheduled) commits `acsv_<district>_<YYYY-MM-DD>.zip` at the top of the output folder, in the same backup-and-restore transaction as the CSVs (`DataLoader.save_all(..., *, zip_name)`). The rostering CSVs move into `csv/` (owner's option b: kept for checking, out of the upload set); the standalone feeds stay at the top level, so the top level is exactly what an admin uploads. SFTP uploads that zip as-is and builds nothing. Name: `acsv_` + district then date (owner: "acsv_sdname_date or date first, you decide"); district-first groups one district's zips together in a folder listing. The Convert result card lists the top-level files and what each is for, read from the folder.
+
+**Cross-checked against Product-Integration-Validation** (CLAUDE.md, cross-check rule): ACSV-025 (CSVs at the zip root), ACSV-026 (FAIL: CourseInfo, StudentCourses and StudentAttendance never inside the zip; the user's "just 2 files" holds for attendance districts, a myBlueprint+ district gets up to 4), ACSV-022 (Enrollments with its class and people files, Family with Students: one zip carries them). The importer routes an SFTP file by extension (`docs/attendance_importer_runtime_main.md`, ImportValidator), so the rename is not expected to change what imports. The zip name is still a delivery-envelope change, so the contract goes to `4.0.0` and **importer re-confirmation of one `acsv_*.zip` import (SFTP and manual) is OUTSTANDING before merge**.
+
+**Safety rules kept.** The manifest still decides what ships: the zip ships only when its members EQUAL the manifested rostering names, and zero zips, several zips, an unreadable zip or a mismatch refuse the delivery (exit 3). An earlier day's zip and a pre-upgrade top-level roster CSV are moved to `archive_<ts>/` (`archive_stale_outputs(..., *, keep_zip)`), never deleted. `acsv_zip_name` raises on a blank district (D9). The anomaly check and `--diff` fall back to the pre-upgrade top-level CSV for the one run after an upgrade, so that night keeps its baseline.
+
+**Cost.** A deliver-from-disk on a folder last built by an older version (CSVs at the top level, no zip) offers nothing until the admin converts once. The admin's zip now sits in the output folder rather than `%TEMP%`; that folder already held the same CSVs, so the exposure is unchanged. Product-Integration-Validation's `scripts/districtsync_run.py` points `validate_acsv.py` at the output folder and must point it at the zip or `csv/` instead (follow-up in that repo).
+
+
 ## 2026-11-04 - DSYNC-56: pull requests run CI on Linux only; Windows and macOS run on main, dispatch and releases
 
 Supersedes: nothing. Narrows plan 0049 S-1a-i.5 (`test-windows` on every pull request), plan 0053 S13b (the drift matrix on both OSes on every pull request) and PLAT-3 (flet-verify packs all three OSes on every matching pull request).

@@ -7,6 +7,7 @@ argparse layer, which allows pytest to capture stdout cleanly.
 import pandas as pd
 import pytest
 
+from src.etl import output_layout
 from src.main import run_pipeline
 from tests.test_pipeline_required_input import _write_class_info_rows
 
@@ -94,8 +95,8 @@ class TestDryRunFlag:
     def test_dry_run_writes_no_files(self, gde_input, gde_output, capsys):
         gde_output.mkdir()
         run_pipeline("myedbc", str(gde_input), str(gde_output), dry_run=True)
-        csv_files = list(gde_output.glob("*.csv"))
-        assert csv_files == [], f"Dry run wrote files: {csv_files}"
+        written = [p for p in gde_output.rglob("*") if p.is_file()]
+        assert written == [], f"Dry run wrote files: {written}"
 
     def test_dry_run_prints_summary(self, gde_input, gde_output, capsys):
         gde_output.mkdir()
@@ -118,8 +119,10 @@ class TestDiffFlag:
         # First run to produce output, then diff against it
         run_pipeline("myedbc", str(gde_input), str(gde_output))
         # Remove one file to simulate "new" entity
-        students_csv = gde_output / "Students.csv"
+        students_csv = output_layout.csv_path(gde_output, "Students.csv")
         students_csv.unlink()
+        # No pre-DSYNC-57 top-level copy either, or --diff would fall back to it.
+        assert not output_layout.legacy_csv_path(gde_output, "Students.csv").exists()
         run_pipeline("myedbc", str(gde_input), str(gde_output), diff=True, dry_run=True)
         captured = capsys.readouterr()
         assert "DIFF" in captured.out
@@ -156,9 +159,13 @@ class TestTransactionalWrite:
     def test_normal_run_produces_all_outputs(self, gde_input, gde_output):
         gde_output.mkdir()
         run_pipeline("myedbc", str(gde_input), str(gde_output))
-        # All 5 entities should be present
-        for entity in ["Students", "Staff", "Family", "Classes", "Enrollments"]:
-            assert (gde_output / f"{entity}.csv").exists(), f"Missing {entity}.csv"
+        # All 5 entities should be present, in csv/ and inside the one Advanced CSV zip
+        entities = ["Students", "Staff", "Family", "Classes", "Enrollments"]
+        for entity in entities:
+            assert output_layout.csv_path(gde_output, f"{entity}.csv").exists(), f"Missing {entity}.csv"
+        (zip_path,) = output_layout.acsv_zips(gde_output)
+        assert zip_path.name == output_layout.acsv_zip_name("myedbc")
+        assert output_layout.zip_member_names(zip_path) == {f"{e}.csv" for e in entities}
 
     def test_no_tmp_dir_left_after_success(self, gde_input, gde_output):
         gde_output.mkdir()

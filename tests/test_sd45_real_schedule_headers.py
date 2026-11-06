@@ -24,6 +24,7 @@ import pandas as pd
 import pytest
 
 from src.config.loader import load_config
+from src.etl import output_layout
 from src.etl.errors import IncompleteInputError
 from src.etl.outcomes import CLASS_INFORMATION_ROLE, OutcomeKind, OutcomeReason
 from src.etl.pipeline import run_pipeline
@@ -35,6 +36,13 @@ from tests.test_contract import (
     _write_staff,
     _write_student_demographic,
 )
+
+
+def _entity_csvs(output_dir: Path) -> list[Path]:
+    """Every entity CSV a run wrote (DSYNC-57 layout: the standalone feeds at the top level,
+    the rostering CSVs in ``csv/``)."""
+    return sorted([*output_dir.glob("*.csv"), *(output_dir / output_layout.ROSTERING_SUBDIR).glob("*.csv")])
+
 
 SD45 = "sd45myedbc"
 SCHEDULE_FILE = "StudentSchedule.csv"
@@ -195,7 +203,7 @@ def _inputs(
 
 
 def _enrollments(out: Path) -> pd.DataFrame:
-    return pd.read_csv(out / "Enrollments.csv", dtype=str, keep_default_na=False)
+    return pd.read_csv(output_layout.csv_path(out, "Enrollments.csv"), dtype=str, keep_default_na=False)
 
 
 def test_the_fixture_is_the_spec_shape(tmp_path: Path) -> None:
@@ -229,7 +237,7 @@ def test_enrollments_build_on_the_standard_schedules_student_id(tmp_path: Path) 
         ("T004", "teacher"),
     }
     # S001 is a homeroom-grade pupil: no subject enrollment, but never dropped from the roster.
-    students = pd.read_csv(out / "Students.csv", dtype=str, keep_default_na=False)
+    students = pd.read_csv(output_layout.csv_path(out, "Students.csv"), dtype=str, keep_default_na=False)
     assert {"S001", "S002", "S003"} <= set(students["User ID"])
 
 
@@ -243,7 +251,7 @@ def test_class_names_carry_section_letter_and_primary_teacher(tmp_path: Path) ->
     record = read_run_records()[0]
     assert record["status"] == "success"
     assert all("notes" not in record["entity_outcomes"][e] for e in ("Classes", "Enrollments"))
-    classes = pd.read_csv(out / "Classes.csv", dtype=str, keep_default_na=False)
+    classes = pd.read_csv(output_layout.csv_path(out, "Classes.csv"), dtype=str, keep_default_na=False)
     names = dict(zip(classes["Class ID"].str.split("_").str[0], classes["Name"], strict=True))
     assert names["MT002"].startswith("Liu Math 10 (A) ")
     assert names["MT003"].startswith("Singh English 12 (B) ")
@@ -259,7 +267,7 @@ def test_a_drop_with_only_the_drops_extract_stops_the_night_naming_the_schedule(
         run_pipeline(SD45, str(inp), str(out))
     assert raised.value.missing == (SCHEDULE_FILE,)
     assert read_run_records()[0]["error_category"] == "incomplete_input"
-    assert not (out / "Enrollments.csv").exists()
+    assert not output_layout.csv_path(out, "Enrollments.csv").exists()
 
 
 @pytest.mark.integration
@@ -273,7 +281,7 @@ def test_the_drops_extract_is_ignored_when_sent_beside_the_schedule(tmp_path: Pa
     assert not enrollments["Class ID"].str.startswith(f"{_DROPPED_MTID}_").any()
     mt002 = enrollments[enrollments["Class ID"].str.startswith("MT002_")]
     assert ("S002", "student") in set(zip(mt002["User ID"], mt002["Role"], strict=True))
-    classes = pd.read_csv(out / "Classes.csv", dtype=str, keep_default_na=False)
+    classes = pd.read_csv(output_layout.csv_path(out, "Classes.csv"), dtype=str, keep_default_na=False)
     assert not classes["Class ID"].str.startswith(f"{_DROPPED_MTID}_").any()
 
 
@@ -294,7 +302,9 @@ def test_the_missing_emergency_contact_file_only_leaves_family_out(tmp_path: Pat
     )
     for entity in ("Students", "Staff", "Classes", "Enrollments"):
         assert outcomes[entity].kind is OutcomeKind.BUILT
-    assert {p.name for p in out.glob("*.csv")} == {"Students.csv", "Staff.csv", "Classes.csv", "Enrollments.csv"}
+    assert {p.name for p in _entity_csvs(out)} == {"Students.csv", "Staff.csv", "Classes.csv", "Enrollments.csv"}
+    (zip_path,) = output_layout.acsv_zips(out)
+    assert output_layout.zip_member_names(zip_path) == {"Students.csv", "Staff.csv", "Classes.csv", "Enrollments.csv"}
 
 
 @pytest.mark.integration
@@ -312,9 +322,9 @@ def test_class_information_enhanced_links_the_homeroom_coteacher(tmp_path: Path)
     # The `N` row (T004 on MT002) links nothing: MT002's teachers come from the schedule alone.
     mt002 = enrollments[enrollments["Class ID"].str.startswith("MT002_")]
     assert set(mt002.loc[mt002["Role"] == "teacher", "User ID"]) == {"T003"}
-    classes = pd.read_csv(out / "Classes.csv", dtype=str, keep_default_na=False)
+    classes = pd.read_csv(output_layout.csv_path(out, "Classes.csv"), dtype=str, keep_default_na=False)
     assert not classes["Class ID"].str.startswith("BLENDED_").any()
-    staff = pd.read_csv(out / "Staff.csv", dtype=str, keep_default_na=False)
+    staff = pd.read_csv(output_layout.csv_path(out, "Staff.csv"), dtype=str, keep_default_na=False)
     assert _HOMEROOM_COTEACHER in set(staff["User ID"])
 
 
@@ -332,7 +342,7 @@ def test_twin_without_class_information_the_coteacher_is_left_out_and_the_night_
     assert record["status"] == "success" and record["error_category"] == "none"
     assert record["entity_outcomes"]["Enrollments"]["notes"] == {"coteacher_source_unusable": 1}
     assert _HOMEROOM_COTEACHER not in set(_enrollments(out)["User ID"])
-    staff = pd.read_csv(out / "Staff.csv", dtype=str, keep_default_na=False)
+    staff = pd.read_csv(output_layout.csv_path(out, "Staff.csv"), dtype=str, keep_default_na=False)
     assert _HOMEROOM_COTEACHER not in set(staff["User ID"])
 
 

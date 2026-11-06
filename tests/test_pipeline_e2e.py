@@ -7,6 +7,7 @@ and verifies the output CSVs have the expected structure and data.
 import pandas as pd
 import pytest
 
+from src.etl import output_layout
 from src.main import main
 from tests.test_pipeline_required_input import _write_class_info_rows
 
@@ -102,14 +103,14 @@ class TestEndToEndPipeline:
 
         expected_files = ["Students.csv", "Staff.csv", "Family.csv", "Classes.csv", "Enrollments.csv"]
         for filename in expected_files:
-            path = output_dir / filename
+            path = output_layout.csv_path(output_dir, filename)
             assert path.exists(), f"Missing output file: {filename}"
 
     def test_students_output_only_active(self, setup_gde_files):
         input_dir, output_dir = setup_gde_files
         main("myedbc", str(input_dir), str(output_dir))
 
-        students = pd.read_csv(output_dir / "Students.csv")
+        students = pd.read_csv(output_layout.csv_path(output_dir, "Students.csv"))
         assert len(students) == 3  # All 3 are Active
         assert "EnrollStatus" in students.columns
 
@@ -117,7 +118,7 @@ class TestEndToEndPipeline:
         input_dir, output_dir = setup_gde_files
         main("myedbc", str(input_dir), str(output_dir))
 
-        students = pd.read_csv(output_dir / "Students.csv", dtype=str)
+        students = pd.read_csv(output_layout.csv_path(output_dir, "Students.csv"), dtype=str)
         grades = set(students["Grade"].dropna())
         # "3" → "03", "10" → "10", "12" → "12" (all CEDS-format)
         assert "03" in grades
@@ -127,7 +128,7 @@ class TestEndToEndPipeline:
         input_dir, output_dir = setup_gde_files
         main("myedbc", str(input_dir), str(output_dir))
 
-        classes = pd.read_csv(output_dir / "Classes.csv")
+        classes = pd.read_csv(output_layout.csv_path(output_dir, "Classes.csv"))
         # Test data has 'School Year' = "2025/2026" → end-year = 2026
         # so class IDs are suffixed with "_2026".
         subject_ids = classes["Class ID"].dropna().astype(str)
@@ -137,7 +138,7 @@ class TestEndToEndPipeline:
         input_dir, output_dir = setup_gde_files
         main("myedbc", str(input_dir), str(output_dir))
 
-        enrollments = pd.read_csv(output_dir / "Enrollments.csv")
+        enrollments = pd.read_csv(output_layout.csv_path(output_dir, "Enrollments.csv"))
         roles = set(enrollments["Role"].dropna())
         assert "student" in roles
         assert "teacher" in roles
@@ -150,7 +151,7 @@ class TestEndToEndPipeline:
 
         config = load_config("myedbc")
         for entity_name in ("Students", "Staff", "Family"):
-            output_file = output_dir / f"{entity_name}.csv"
+            output_file = output_layout.csv_path(output_dir, f"{entity_name}.csv")
             if output_file.exists():
                 df = pd.read_csv(output_file)
                 expected_order = list(config.mappings[entity_name].field_map.keys())
@@ -164,28 +165,28 @@ class TestEndToEndPipeline:
         main("myedbc", str(input_dir), str(output_dir))
 
         for name in ("Students", "Staff", "Family", "Classes", "Enrollments"):
-            raw = (output_dir / f"{name}.csv").read_bytes()
+            raw = output_layout.csv_path(output_dir, f"{name}.csv").read_bytes()
             assert raw.startswith(b"\xef\xbb\xbf"), f"{name}.csv missing UTF-8 BOM"
 
     def test_staff_output_has_correct_count(self, setup_gde_files):
         input_dir, output_dir = setup_gde_files
         main("myedbc", str(input_dir), str(output_dir))
 
-        staff = pd.read_csv(output_dir / "Staff.csv")
+        staff = pd.read_csv(output_layout.csv_path(output_dir, "Staff.csv"))
         assert len(staff) == 3
 
     def test_family_output(self, setup_gde_files):
         input_dir, output_dir = setup_gde_files
         main("myedbc", str(input_dir), str(output_dir))
 
-        family = pd.read_csv(output_dir / "Family.csv")
+        family = pd.read_csv(output_layout.csv_path(output_dir, "Family.csv"))
         assert len(family) == 2
 
     def test_classes_output_not_empty(self, setup_gde_files):
         input_dir, output_dir = setup_gde_files
         main("myedbc", str(input_dir), str(output_dir))
 
-        classes = pd.read_csv(output_dir / "Classes.csv")
+        classes = pd.read_csv(output_layout.csv_path(output_dir, "Classes.csv"))
         assert len(classes) > 0
         assert "Class ID" in classes.columns
 
@@ -193,7 +194,7 @@ class TestEndToEndPipeline:
         input_dir, output_dir = setup_gde_files
         main("myedbc", str(input_dir), str(output_dir))
 
-        enrollments = pd.read_csv(output_dir / "Enrollments.csv")
+        enrollments = pd.read_csv(output_layout.csv_path(output_dir, "Enrollments.csv"))
         assert len(enrollments) > 0
         assert "Role" in enrollments.columns
         # Should have both student and teacher roles

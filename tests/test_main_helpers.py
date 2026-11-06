@@ -27,7 +27,6 @@ from src.main import (
     extract_required_files,
 )
 from src.sftp.uploader import INTERACTIVE_RETRY, UNATTENDED_RETRY
-from src.utils import paths as paths_module
 
 # -----------------------------------------------------------------------
 # extract_required_files
@@ -727,55 +726,26 @@ class TestRunTransform:
 
 
 # -----------------------------------------------------------------------
-# _delivery_staging_dir — WHO stages WHERE (plan 0049 S-1a-ii.2)
+# _sftp_upload — what reaches the uploader (DSYNC-57: nothing is staged any more)
 # -----------------------------------------------------------------------
 
 
-class TestDeliveryStagingDir:
-    """``runs/tmp`` is for the scheduled nightly on a machine-scoped install ONLY.
-
-    The admin's manual Convert and a hand-run CLI have a loaded profile and keep
-    ``%TEMP%`` — their zip is student PII and must not sit in the one directory the
-    service principal holds Modify on.
+class TestSftpUploadWiring:
+    """Delivery ships the zip the conversion already committed to the output folder, so the
+    uploader is told only WHERE that folder is, WHAT the run vouches for and HOW to retry.
+    (Plan 0049's ``runs/tmp`` staging dir existed for a delivery-time zip; there is none now.)
     """
 
     @staticmethod
-    def _machine(monkeypatch, tmp_path):
-        shared = tmp_path / "ProgramData" / "DistrictSync"
-        shared.mkdir(parents=True)
-        monkeypatch.setattr(paths_module, "machine_data_dir", lambda: shared)
-        monkeypatch.setattr(paths_module, "_machine_switch_on", lambda: True)
-        monkeypatch.setattr(paths_module, "_assert_machine_dir_trusted", lambda path: None)
-        paths_module.reset_data_dir_pin()
-        return shared
-
-    def test_scheduled_on_machine_scope_stages_under_runs_tmp(self, monkeypatch, tmp_path):
-        shared = self._machine(monkeypatch, tmp_path)
-        assert pipeline._delivery_staging_dir("scheduled") == shared / "runs" / "tmp"
-
-    @pytest.mark.parametrize("source", ["manual", "cli", "unknown", None])
-    def test_every_other_source_on_machine_scope_keeps_temp(self, monkeypatch, tmp_path, source):
-        self._machine(monkeypatch, tmp_path)
-        assert pipeline._delivery_staging_dir(source) is None
-
-    @pytest.mark.parametrize("source", ["scheduled", "manual", "cli", None])
-    def test_per_user_always_keeps_temp(self, monkeypatch, tmp_path, source):
-        monkeypatch.setattr(paths_module, "_machine_switch_on", lambda: False)
-        paths_module.reset_data_dir_pin()
-        assert pipeline._delivery_staging_dir(source) is None
-
-    def test_the_decision_reaches_upload_csvs(self, monkeypatch, tmp_path):
-        """The pure rule above is only worth anything if the uploader is actually told."""
-        shared = self._machine(monkeypatch, tmp_path)
-        seen = {}
+    def _wire(monkeypatch):
+        seen: dict = {}
 
         class _Uploader:
             def __init__(self, **kwargs):
                 pass
 
-            def upload_csvs(self, output_dir, sis_type=None, *, manifest, retry, staging_dir=None):
-                seen["staging_dir"] = staging_dir
-                seen["retry"] = retry
+            def upload_csvs(self, output_dir, *, manifest, retry):
+                seen.update(output_dir=output_dir, manifest=manifest, retry=retry)
                 return ["Students.csv"]
 
         cfg = MagicMock()
@@ -786,34 +756,20 @@ class TestDeliveryStagingDir:
         cfg.sftp_remote_path = "/upload"
         monkeypatch.setattr("src.config.app_config.AppConfig.load", classmethod(lambda cls: cfg))
         monkeypatch.setattr("src.etl.pipeline.SFTPUploader", _Uploader)
+        return seen
+
+    def test_a_scheduled_run_reaches_upload_csvs_with_the_unattended_schedule(self, monkeypatch, tmp_path):
+        seen = self._wire(monkeypatch)
 
         assert _sftp_upload(str(tmp_path), manifest={"Students.csv"}, source="scheduled") is True
-        assert seen["staging_dir"] == shared / "runs" / "tmp"
-        assert seen["retry"] is UNATTENDED_RETRY
+        assert seen == {"output_dir": tmp_path, "manifest": {"Students.csv"}, "retry": UNATTENDED_RETRY}
 
-    def test_a_manual_run_reaches_upload_csvs_with_no_staging_dir(self, monkeypatch, tmp_path):
-        """Positive twin — the wiring above is a real decision, not a constant."""
-        self._machine(monkeypatch, tmp_path)
-        seen = {}
-
-        class _Uploader:
-            def __init__(self, **kwargs):
-                pass
-
-            def upload_csvs(self, output_dir, sis_type=None, *, manifest, retry, staging_dir=None):
-                seen["staging_dir"] = staging_dir
-                seen["retry"] = retry
-                return ["Students.csv"]
-
-        cfg = MagicMock()
-        cfg.sftp_is_configured.return_value = True
-        cfg.sftp_host = "sftp.ca.spacesedu.com"
-        cfg.sftp_port = 22
-        cfg.sftp_username = "user"
-        cfg.sftp_remote_path = "/upload"
-        monkeypatch.setattr("src.config.app_config.AppConfig.load", classmethod(lambda cls: cfg))
-        monkeypatch.setattr("src.etl.pipeline.SFTPUploader", _Uploader)
+    def test_a_manual_run_reaches_upload_csvs_with_the_interactive_schedule(self, monkeypatch, tmp_path):
+        """Positive twin — the retry wiring is a real decision, not a constant."""
+        seen = self._wire(monkeypatch)
 
         assert _sftp_upload(str(tmp_path), manifest={"Students.csv"}, source="manual") is True
-        assert seen["staging_dir"] is None
         assert seen["retry"] is INTERACTIVE_RETRY
+
+    def test_the_staging_dir_seam_is_gone(self):
+        assert not hasattr(pipeline, "_delivery_staging_dir")

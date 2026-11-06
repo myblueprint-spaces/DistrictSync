@@ -44,7 +44,7 @@ global_config:
   # ships, not a new pattern; sd51attendance is the separate attendance-ONLY
   # tier, for a district that sends the absence GDEs by themselves.
   # StudentAttendance.csv is delivered STANDALONE beside the zip
-  # (sftp.uploader.STANDALONE_CSV_FILENAMES), so rostering delivery is
+  # (etl.output_layout.STANDALONE_CSV_FILENAMES), so rostering delivery is
   # unchanged.
   enabled_entities:
     - Students

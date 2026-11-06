@@ -83,6 +83,7 @@ import ci_flet_pack_smoke as smoke  # loaded + registered by tests/conftest.py
 import pandas as pd
 import pytest
 
+from src.etl import output_layout
 from src.etl.loader import DataLoader
 from src.etl.required_fields import REQUIRED_OUTPUT_FIELDS
 from src.etl.transformers.ids import is_blank_series
@@ -99,6 +100,13 @@ from tests.contract_schema import (
     OUTPUT_SCHEMA,
 )
 from tests.test_pipeline_e2e_mbponly import FIXTURE_DIR as MBP_GDE_DIR
+
+
+def _entity_csvs(output_dir: Path) -> list[Path]:
+    """Every entity CSV a run wrote (DSYNC-57 layout: the standalone feeds at the top level,
+    the rostering CSVs in ``csv/``)."""
+    return sorted([*output_dir.glob("*.csv"), *(output_dir / output_layout.ROSTERING_SUBDIR).glob("*.csv")])
+
 
 UTF8_BOM = b"\xef\xbb\xbf"
 
@@ -1281,13 +1289,23 @@ class TestOutputSchemaContract:
         `_base`-inheritance hazard behind the stale-output archival rule).
         """
         sis, out, _ = district_output
-        produced = {p.stem for p in out.glob("*.csv")}
+        produced = {p.stem for p in _entity_csvs(out)}
         expected = set(EXPECTED_ENTITIES[sis])
         assert produced == expected, (
             f"[{sis}] emitted {sorted(produced)}, expected exactly {sorted(expected)} "
             f"(missing {sorted(expected - produced) or 'none'}; "
             f"unexpected {sorted(produced - expected) or 'none'})"
         )
+        # DSYNC-57: the rostering CSVs sit in csv/ and are bundled into ONE Advanced CSV zip
+        # at the top level; the standalone feeds stay beside it, never inside it.
+        rostering = {f"{e}.csv" for e in expected if not output_layout.is_standalone(f"{e}.csv")}
+        zips = output_layout.acsv_zips(out)
+        if rostering:
+            assert [z.name for z in zips] == [output_layout.acsv_zip_name(sis)], f"[{sis}] zips: {zips}"
+            assert output_layout.zip_member_names(zips[0]) == rostering
+            assert (out / output_layout.ROSTERING_SUBDIR).is_dir()
+        else:
+            assert zips == [], f"[{sis}] a standalone-only config must write no Advanced CSV zip"
 
     def test_column_order_matches_contract(self, district_output):
         """EXACT column order per emitted entity — set equality is not enough.
@@ -1304,7 +1322,7 @@ class TestOutputSchemaContract:
         sis, out, _ = district_output
         failures = []
         for entity in sorted(EXPECTED_ENTITIES[sis]):
-            df = pd.read_csv(out / DataLoader.csv_filename(entity), encoding="utf-8-sig")
+            df = pd.read_csv(output_layout.csv_path(out, DataLoader.csv_filename(entity)), encoding="utf-8-sig")
             actual = list(df.columns)
             if actual != OUTPUT_SCHEMA[entity]:
                 failures.append(_order_failure_message(sis, entity, actual))
@@ -1313,7 +1331,7 @@ class TestOutputSchemaContract:
     def test_staff_role_values(self, district_output):
         sis, out, _ = district_output
         _skip_unless_emitted(sis, "Staff")
-        df = pd.read_csv(out / "Staff.csv", encoding="utf-8-sig")
+        df = pd.read_csv(output_layout.csv_path(out, "Staff.csv"), encoding="utf-8-sig")
         bad = set(df["Role"].dropna().unique()) - VALID_STAFF_ROLES
         assert not bad, f"[{sis}] Staff.csv has invalid Role values: {bad}"
 
@@ -1327,7 +1345,7 @@ class TestOutputSchemaContract:
         """
         sis, out, _ = district_output
         _skip_unless_emitted(sis, "Staff")
-        df = pd.read_csv(out / "Staff.csv", encoding="utf-8-sig")
+        df = pd.read_csv(output_layout.csv_path(out, "Staff.csv"), encoding="utf-8-sig")
         shipped = set(df["User ID"].dropna().astype(str))
         assert _DEPARTED_TEACHER_ID not in shipped, (
             f"[{sis}] Staff.csv ships departed staff {_DEPARTED_TEACHER_ID} — "
@@ -1344,7 +1362,7 @@ class TestOutputSchemaContract:
         """
         sis, out, _ = district_output
         _skip_unless_emitted(sis, "Staff")
-        df = pd.read_csv(out / "Staff.csv", encoding="utf-8-sig")
+        df = pd.read_csv(output_layout.csv_path(out, "Staff.csv"), encoding="utf-8-sig")
         roles = set(df["Role"].dropna().astype(str).str.strip().str.lower())
         if sis == "sd83myedbc":
             assert "administrator" in roles, "sd83 states roles outright and must still emit them"
@@ -1359,7 +1377,7 @@ class TestOutputSchemaContract:
         there is nothing to publish: not an administrator, and not a blank Role."""
         sis, out, _ = district_output
         _skip_unless_emitted(sis, "Staff")
-        df = pd.read_csv(out / "Staff.csv", encoding="utf-8-sig")
+        df = pd.read_csv(output_layout.csv_path(out, "Staff.csv"), encoding="utf-8-sig")
         shipped = set(df["User ID"].dropna().astype(str))
         assert _SUPPORT_STAFF_ID not in shipped, (
             f"[{sis}] Staff.csv ships an employee whose role the export never states"
@@ -1389,7 +1407,7 @@ class TestOutputSchemaContract:
         """The positive twin: the exclusion narrows, it does not empty."""
         sis, out, _ = district_output
         _skip_unless_emitted(sis, "Staff")
-        df = pd.read_csv(out / "Staff.csv", encoding="utf-8-sig")
+        df = pd.read_csv(output_layout.csv_path(out, "Staff.csv"), encoding="utf-8-sig")
         shipped = set(df["User ID"].dropna().astype(str))
         assert "T001" in shipped, f"[{sis}] Staff.csv dropped an Active staff member"
 
@@ -1423,7 +1441,7 @@ class TestOutputSchemaContract:
         _skip_unless_emitted(sis, "Family")
         if not self._fixture_supplies_a_non_guardian(input_dir):
             pytest.skip(f"[{sis}] fixture plants no non-guardian contact")
-        df = pd.read_csv(out / "Family.csv", encoding="utf-8-sig")
+        df = pd.read_csv(output_layout.csv_path(out, "Family.csv"), encoding="utf-8-sig")
         shipped = set(df["Email"].dropna().astype(str))
         assert _NON_GUARDIAN_CONTACT_EMAIL not in shipped, (
             f"[{sis}] Family.csv ships a contact the GDE does not mark as a guardian. "
@@ -1437,7 +1455,7 @@ class TestOutputSchemaContract:
         _skip_unless_emitted(sis, "Family")
         if not self._fixture_supplies_a_non_guardian(input_dir):
             pytest.skip(f"[{sis}] fixture plants no non-guardian contact")
-        df = pd.read_csv(out / "Family.csv", encoding="utf-8-sig")
+        df = pd.read_csv(output_layout.csv_path(out, "Family.csv"), encoding="utf-8-sig")
         shipped = set(df["Email"].dropna().astype(str))
         assert _GUARDIAN_CONTACT_EMAIL in shipped, (
             f"[{sis}] Family.csv dropped an authorized guardian — a filter that keeps "
@@ -1447,21 +1465,21 @@ class TestOutputSchemaContract:
     def test_enrollment_role_values(self, district_output):
         sis, out, _ = district_output
         _skip_unless_emitted(sis, "Enrollments")
-        df = pd.read_csv(out / "Enrollments.csv", encoding="utf-8-sig")
+        df = pd.read_csv(output_layout.csv_path(out, "Enrollments.csv"), encoding="utf-8-sig")
         bad = set(df["Role"].dropna().unique()) - VALID_ENROLLMENT_ROLES
         assert not bad, f"[{sis}] Enrollments.csv has invalid Role values: {bad}"
 
     def test_class_ids_contain_school_year(self, district_output):
         sis, out, _ = district_output
         _skip_unless_emitted(sis, "Classes")
-        classes = pd.read_csv(out / "Classes.csv", encoding="utf-8-sig")
+        classes = pd.read_csv(output_layout.csv_path(out, "Classes.csv"), encoding="utf-8-sig")
         ids = classes["Class ID"].dropna().astype(str)
         assert any("_20" in cid for cid in ids), f"[{sis}] No Class ID contains a school year suffix"
 
     def test_students_grade_is_ceds_format(self, district_output):
         sis, out, _ = district_output
         _skip_unless_emitted(sis, "Students")
-        students = pd.read_csv(out / "Students.csv", encoding="utf-8-sig", dtype=str)
+        students = pd.read_csv(output_layout.csv_path(out, "Students.csv"), encoding="utf-8-sig", dtype=str)
         grades = students["Grade"].dropna()
         # CEDS grades are 2-char strings (e.g. "03", "KG") or special values
         invalid = [g for g in grades if len(str(g)) > 5]
@@ -1476,8 +1494,8 @@ class TestOutputSchemaContract:
         """
         sis, out, _ = district_output
         _skip_unless_emitted(sis, "Classes", "Enrollments")
-        classes = pd.read_csv(out / "Classes.csv", encoding="utf-8-sig", dtype=str)
-        enrollments = pd.read_csv(out / "Enrollments.csv", encoding="utf-8-sig", dtype=str)
+        classes = pd.read_csv(output_layout.csv_path(out, "Classes.csv"), encoding="utf-8-sig", dtype=str)
+        enrollments = pd.read_csv(output_layout.csv_path(out, "Enrollments.csv"), encoding="utf-8-sig", dtype=str)
         class_ids = set(classes["Class ID"].dropna().astype(str))
         enrolled_ids = set(enrollments["Class ID"].dropna().astype(str))
         orphans = enrolled_ids - class_ids
@@ -1495,7 +1513,7 @@ class TestOutputSchemaContract:
         """
         sis, out, _ = district_output
         _skip_unless_emitted(sis, "Enrollments")
-        enrollments = pd.read_csv(out / "Enrollments.csv", encoding="utf-8-sig", dtype=str)
+        enrollments = pd.read_csv(output_layout.csv_path(out, "Enrollments.csv"), encoding="utf-8-sig", dtype=str)
         user_ids = enrollments["User ID"].fillna("").astype(str).str.strip().str.lower()
         blank = enrollments[(user_ids == "") | (user_ids == "nan")]
         assert blank.empty, (
@@ -1506,7 +1524,7 @@ class TestOutputSchemaContract:
         """Every Enrollments row must have a non-empty Class ID."""
         sis, out, _ = district_output
         _skip_unless_emitted(sis, "Enrollments")
-        enrollments = pd.read_csv(out / "Enrollments.csv", encoding="utf-8-sig", dtype=str)
+        enrollments = pd.read_csv(output_layout.csv_path(out, "Enrollments.csv"), encoding="utf-8-sig", dtype=str)
         class_ids = enrollments["Class ID"].fillna("").astype(str).str.strip().str.lower()
         blank = enrollments[(class_ids == "") | (class_ids == "nan")]
         assert blank.empty, f"[{sis}] {len(blank)} Enrollments rows have empty/nan Class ID"
@@ -1522,7 +1540,9 @@ class TestOutputSchemaContract:
         if not emitted:
             pytest.skip(f"[{sis}] emits no SpacesEDU rostering file")
         for entity in emitted:
-            frame = pd.read_csv(out / f"{entity}.csv", encoding="utf-8-sig", dtype=str, keep_default_na=False)
+            frame = pd.read_csv(
+                output_layout.csv_path(out, f"{entity}.csv"), encoding="utf-8-sig", dtype=str, keep_default_na=False
+            )
             required = REQUIRED_OUTPUT_FIELDS[entity]
             assert set(required) <= set(frame.columns), (
                 f"[{sis}] {entity}.csv lacks {set(required) - set(frame.columns)}"
@@ -1550,7 +1570,7 @@ class TestOnDiskEncodingContract:
     def test_rostering_csv_starts_with_the_excel_bom(self, district_output):
         """Rostering CSVs are utf-8-SIG so districts can open them in Excel unmangled."""
         sis, out, _ = district_output
-        head = (out / "Students.csv").read_bytes()[: len(UTF8_BOM)]
+        head = output_layout.csv_path(out, "Students.csv").read_bytes()[: len(UTF8_BOM)]
         assert head == UTF8_BOM, f"[{sis}] Students.csv must start with the UTF-8 BOM, got {head!r}"
 
     @pytest.mark.parametrize("district_output", ["sd51attendance"], indirect=True)
@@ -1559,7 +1579,7 @@ class TestOnDiskEncodingContract:
         BOM as part of the case-sensitive first header and rejects the file
         ("Unexpected file" + cascading "Invalid date format")."""
         sis, out, _ = district_output
-        head = (out / "StudentAttendance.csv").read_bytes()[: len(b"School Number")]
+        head = output_layout.csv_path(out, "StudentAttendance.csv").read_bytes()[: len(b"School Number")]
         assert not head.startswith(UTF8_BOM), f"[{sis}] StudentAttendance.csv must NOT carry a BOM"
         assert head == b"School Number", (
             f'[{sis}] StudentAttendance.csv must begin with the bare first header b"School Number", got {head!r}'
@@ -1676,7 +1696,7 @@ def test_expected_entities_track_active_entities():
 
 
 def _read_output(out: Path, entity: str) -> pd.DataFrame:
-    return pd.read_csv(out / f"{entity}.csv", encoding="utf-8-sig", dtype=str)
+    return pd.read_csv(output_layout.csv_path(out, f"{entity}.csv"), encoding="utf-8-sig", dtype=str)
 
 
 def _assert_mt_excluded(out: Path, mt_id: str) -> None:
@@ -2143,8 +2163,11 @@ class TestUnityPlainContactReport:
     def test_the_run_completes_exit_0_and_delivers_everything_but_family(self, plain):
         code, manifests, _input_dir, out = plain
         assert code == 0
-        assert sorted(p.name for p in out.glob("*.csv")) == sorted(f"{e}.csv" for e in _UNITY_REST)
-        assert not (out / "Family.csv").exists()
+        assert sorted(p.name for p in _entity_csvs(out)) == sorted(f"{e}.csv" for e in _UNITY_REST)
+        assert not output_layout.csv_path(out, "Family.csv").exists()
+        (zip_path,) = output_layout.acsv_zips(out)
+        rostering = {f"{e}.csv" for e in _UNITY_REST if not output_layout.is_standalone(f"{e}.csv")}
+        assert output_layout.zip_member_names(zip_path) == rostering
         assert len(manifests) == 1 and sorted(manifests[0]) == sorted(f"{e}.csv" for e in _UNITY_REST)
 
     def test_the_record_is_a_success_with_family_failed(self, plain):
@@ -2245,9 +2268,12 @@ class TestUnityPlainContactReport:
         switched_off.mkdir()
         code, _ = _run_unity_cli(input_dir, switched_off, monkeypatch, _UNITY_WITHOUT_FAMILY_SIS)
         assert code == 0
-        assert sorted(p.name for p in switched_off.glob("*.csv")) == sorted(f"{e}.csv" for e in _UNITY_REST)
+        assert sorted(p.name for p in _entity_csvs(switched_off)) == sorted(f"{e}.csv" for e in _UNITY_REST)
         for entity in _UNITY_REST:
-            assert (out / f"{entity}.csv").read_bytes() == (switched_off / f"{entity}.csv").read_bytes(), entity
+            assert (
+                output_layout.csv_path(out, f"{entity}.csv").read_bytes()
+                == output_layout.csv_path(switched_off, f"{entity}.csv").read_bytes()
+            ), entity
 
     def test_the_twin_the_enhanced_report_builds_family_with_guardians_only(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

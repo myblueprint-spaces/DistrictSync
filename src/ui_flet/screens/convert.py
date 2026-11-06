@@ -122,6 +122,7 @@ from src.etl.errors import ConfigLoadError, OutputFolderUnsetError, RunErrorCate
 from src.etl.extractor import DataExtractor
 from src.etl.loader import DataLoader, output_target_problem
 from src.etl.outcomes import EntityOutcome, OutcomeLedger
+from src.etl.output_layout import acsv_zip_name
 from src.etl.pipeline import (
     NOTHING_TO_SEND_LOG_LINE,
     build_run_record,
@@ -139,6 +140,7 @@ from src.quality.report import DataQualityReport, declared_blank_fields
 from src.sftp.uploader import INTERACTIVE_RETRY, SFTPUploader
 from src.ui_flet import components, tokens
 from src.ui_flet.convert_output import (
+    ROSTER_CSV_FOLDER_NOTE,
     DeliverableFiles,
     DeliverReadiness,
     ResultDeliverReadiness,
@@ -151,6 +153,7 @@ from src.ui_flet.convert_output import (
     district_mismatch_note,
     freshness_fact,
     interaction_state,
+    manual_import_files,
     missing_files_copy,
     nothing_to_deliver_copy,
     open_folder,
@@ -480,7 +483,7 @@ def convert_job(
             loader = DataLoader(str(output_dir))
             _WRITE_IN_FLIGHT = True
             try:
-                loader.save_all(outputs, field_orders)
+                zip_name = loader.save_all(outputs, field_orders, zip_name=acsv_zip_name(config_name))
             finally:
                 _WRITE_IN_FLIGHT = False
         except OSError:
@@ -493,12 +496,12 @@ def convert_job(
                 delivery_requested=sftp_requested,
             )
 
-        # Archive (non-destructive) entity CSVs left in the output dir that this run
-        # did NOT produce — mirrors run_pipeline: a stale CSV must never ship in an
-        # SFTP zip (the delivery leg below, or a later deliver-from-disk, globs the
-        # top-level *.csv set). Moving them into archive_<ts>/ (a SUBfolder) excludes
-        # them without deleting anything; best-effort — never fails a committed build.
-        loader.archive_stale_outputs(set(outputs))
+        # Archive (non-destructive) output files this run did NOT refresh — mirrors
+        # run_pipeline: an entity it did not produce, a pre-DSYNC-57 top-level roster CSV,
+        # an earlier day's zip. None of them may ship (the delivery leg below, or a later
+        # deliver-from-disk) or sit beside the upload set looking current. Moving them into
+        # archive_<ts>/ (a SUBfolder) deletes nothing; best-effort — never fails a build.
+        loader.archive_stale_outputs(set(outputs), keep_zip=zip_name)
 
         # Columns the config declares fixed-blank ({value: ""}) skip the missing-field check —
         # blank by design is not a finding (see quality/report.py; same rule as run_pipeline).
@@ -539,7 +542,6 @@ def convert_job(
                 remote_path=cfg.sftp_remote_path,
             ).upload_csvs(
                 output_dir,
-                sis_type=config_name,
                 # THIS build's committed CSVs — never the folder's *.csv glob (a stray
                 # admin backup/spreadsheet in the output folder must not reach SpacesEDU).
                 manifest=DataLoader.output_filenames(outputs),
@@ -662,7 +664,7 @@ def deliver_job(sis_type: str) -> ConvertResult:
             port=cfg.sftp_port,
             username=cfg.sftp_username,
             remote_path=cfg.sftp_remote_path,
-        ).upload_csvs(Path(output_dir_value), sis_type=district, manifest=manifest, retry=INTERACTIVE_RETRY)
+        ).upload_csvs(Path(output_dir_value), manifest=manifest, retry=INTERACTIVE_RETRY)
     except Exception:  # noqa: BLE001 - exit-3 shape: a failed delivery is a RESULT, not on_error
         logger.error("Delivery-only run failed (district %r).", district, exc_info=True)
         failed = ConvertResult(
@@ -1706,18 +1708,41 @@ def _delivery_not_ready_card() -> ft.Control:  # pragma: no cover - Flet view gl
 
 
 def _output_folder_row(output_dir: str) -> ft.Control:  # pragma: no cover - Flet view glue
-    """A view-layer row naming the resolved output folder + an "Open folder" button (D10).
+    """A view-layer row naming the resolved output folder, the files ready to import by hand,
+    and an "Open folder" button (D10, DSYNC-57).
 
     The output path is app-owned config (never student PII), so it lives HERE at the view
-    layer and never enters the PII-free ``ConvertResult``. "Open folder" dispatches per-OS
-    via ``convert_output.open_folder`` (best-effort, never raises).
+    layer and never enters the PII-free ``ConvertResult``. The import list is read from the
+    folder (``convert_output.manual_import_files``), so it names exactly what this build left
+    there: the Advanced CSV zip, plus attendance / course files when this district has them.
+    "Open folder" dispatches per-OS via ``convert_output.open_folder`` (best-effort).
     """
+    import_files = manual_import_files(output_dir)
+    import_rows: list[ft.Control] = []
+    if import_files:
+        import_rows.append(
+            ft.Text("Ready to import", size=13, weight=ft.FontWeight.W_700, color=tokens.color_text),
+        )
+        for item in import_files:
+            import_rows.append(
+                ft.Column(
+                    spacing=2,
+                    controls=[
+                        ft.Text(
+                            item.filename, size=13, weight=ft.FontWeight.W_600, color=tokens.color_text, selectable=True
+                        ),
+                        ft.Text(item.note, size=13, color=tokens.color_muted),
+                    ],
+                )
+            )
+        import_rows.append(ft.Text(ROSTER_CSV_FOLDER_NOTE, size=13, color=tokens.color_muted))
     return components.card(
         content=ft.Column(
             spacing=12,
             controls=[
                 ft.Text("Where your files are", size=15, weight=ft.FontWeight.W_700, color=tokens.color_text),
                 ft.Text(output_dir, size=13, color=tokens.color_muted, selectable=True),
+                *import_rows,
                 ft.Row(
                     controls=[
                         components.secondary_button(
