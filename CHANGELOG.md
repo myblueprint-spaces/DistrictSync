@@ -9,6 +9,8 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+## [3.29.0] - 2026-11-09
+
 ### Changed
 
 - **The output folder is ready to import.** Every conversion now zips the roster files
