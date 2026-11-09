@@ -40,7 +40,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from src.etl import pipeline
+from src.etl import output_layout, pipeline
 from src.etl.errors import GuardKind, SourceSchemaError
 from src.etl.outcomes import (
     ENTITY_CRITICALITY,
@@ -65,6 +65,12 @@ from tests.test_contract import (
     _write_daily_absences,
     _write_period_absences,
 )
+
+
+def _entity_csvs(output_dir: Path) -> list[Path]:
+    """Every entity CSV a run wrote (DSYNC-57 layout: the standalone feeds at the top level,
+    the rostering CSVs in ``csv/``)."""
+    return sorted([*output_dir.glob("*.csv"), *(output_dir / output_layout.ROSTERING_SUBDIR).glob("*.csv")])
 
 
 def _create_sd51_with_attendance_inputs(d: Path) -> None:
@@ -95,7 +101,8 @@ def _snapshot(directory: Path) -> dict[str, str]:
 
 
 def _archived(directory: Path, filename: str) -> list[Path]:
-    return [p for p in directory.glob(f"archive_*/{filename}")]
+    """Where ``filename`` sits in any ``archive_<ts>/`` (it keeps its layout path, e.g. ``csv/``)."""
+    return [p for p in directory.glob(f"archive_*/{output_layout.csv_relpath(filename).as_posix()}")]
 
 
 def _kinds(record: dict) -> dict[str, tuple[str, str]]:
@@ -149,7 +156,7 @@ def test_a_raise_is_contained_or_propagated_by_the_entitys_criticality(
     clean = run_pipeline(sis, str(input_dir), str(output_dir), sftp=True)
     clean_kinds = {o.entity: o.kind for o in clean.entity_outcomes}
     assert clean_kinds[entity] is OutcomeKind.BUILT, f"{sis} must build {entity} for this sweep to mean anything"
-    assert (output_dir / f"{entity}.csv").is_file()
+    assert output_layout.csv_path(output_dir, f"{entity}.csv").is_file()
     before = _snapshot(output_dir)
     uploads.clear()
 
@@ -165,8 +172,8 @@ def test_a_raise_is_contained_or_propagated_by_the_entitys_criticality(
         assert {o.entity: o.kind for o in result.entity_outcomes} == {**clean_kinds, entity: OutcomeKind.FAILED}
         failed = next(o for o in result.entity_outcomes if o.entity == entity)
         assert failed == EntityOutcome.failed(entity, OutcomeReason.TRANSFORM_ERROR)
-        # Never substituted: absent from the top level, its previous CSV archived, not shipped.
-        assert not (output_dir / f"{entity}.csv").exists()
+        # Never substituted: absent from its layout path, its previous CSV archived, not shipped.
+        assert not output_layout.csv_path(output_dir, f"{entity}.csv").exists()
         assert _archived(output_dir, f"{entity}.csv")
         assert len(uploads) == 1 and f"{entity}.csv" not in uploads[0]
         expected_written = sorted(f"{name}.csv" for name, kind in clean_kinds.items() if kind is OutcomeKind.BUILT)
@@ -284,14 +291,14 @@ def test_two_consecutive_nights_without_family_are_both_partial(tmp_path: Path) 
     _create_unitychristian_plain_report_inputs(plain)
 
     night0 = run_pipeline(sis, str(enhanced), str(out))
-    assert "Family" in night0.entity_counts and (out / "Family.csv").is_file()
+    assert "Family" in night0.entity_counts and output_layout.csv_path(out, "Family.csv").is_file()
 
     night1 = run_pipeline(sis, str(plain), str(out))
     records = read_run_records()
     assert records is not None
     assert any("Family produced no output this run" in a for a in night1.anomalies)
     assert classify_latest_reason(records[0], prior_build=build_record_for(records, 0)) is LatestReason.PARTIAL
-    assert not (out / "Family.csv").exists()
+    assert not output_layout.csv_path(out, "Family.csv").exists()
     first_archive = _archived(out, "Family.csv")
     assert len(first_archive) == 1
 
@@ -302,7 +309,7 @@ def test_two_consecutive_nights_without_family_are_both_partial(tmp_path: Path) 
     assert records[0]["anomalies"] == []
     assert _kinds(records[0])["Family"] == ("failed", "missing_source_column")
     assert classify_latest_reason(records[0], prior_build=build_record_for(records, 0)) is LatestReason.PARTIAL
-    assert not (out / "Family.csv").exists()
+    assert not output_layout.csv_path(out, "Family.csv").exists()
     assert _archived(out, "Family.csv") == first_archive, "night 0's Family.csv stays where night 1 put it"
 
 
@@ -328,7 +335,8 @@ class TestNothingBuiltFailsTheRun:
         assert records[0]["status"] == "failed"
         assert records[0]["error_category"] == "unknown", "the exception's own category — never no_output"
         assert _kinds(records[0]) == {"StudentAttendance": ("failed", "transform_error")}
-        assert not list(output_dir.glob("*.csv"))
+        assert _entity_csvs(output_dir) == []
+        assert output_layout.acsv_zips(output_dir) == []
 
     def test_the_real_unmapped_absence_code_fails_the_attendance_only_config(self, tmp_path: Path) -> None:
         """§5 #23 on a real transform: an unmapped (code, authorized) pair — ``data``, as before S4."""
@@ -360,7 +368,8 @@ class TestNothingBuiltFailsTheRun:
         with pytest.raises(RuntimeError) as raised:
             run_pipeline("mbponly", str(input_dir), str(output_dir))
         assert raised.value is boom
-        assert list(output_dir.glob("*.csv")) == []
+        assert _entity_csvs(output_dir) == []
+        assert output_layout.acsv_zips(output_dir) == []
         records = read_run_records()
         assert records is not None and records[0]["status"] == "failed"
         assert _kinds(records[0]) == {

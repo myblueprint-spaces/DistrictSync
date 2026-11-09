@@ -28,6 +28,7 @@ from src.sftp.uploader import (
     describe_sftp_error,
     retry_schedule_for_source,
 )
+from tests._output_tree import build_output_tree
 
 SFTP_RETRY_ATTEMPTS = INTERACTIVE_RETRY.attempts  # the pre-DSYNC-36 contract: 3 attempts
 
@@ -38,7 +39,7 @@ def _uploader() -> SFTPUploader:
 
 @pytest.fixture
 def output_dir(tmp_path):
-    (tmp_path / "Students.csv").write_text("id,name\n1,Alice\n", encoding="utf-8")
+    build_output_tree(tmp_path, ["Students"])
     return tmp_path
 
 
@@ -413,8 +414,7 @@ class TestRetryIdempotency:
 
     def test_every_attempt_puts_identical_remote_names(self, tmp_path):
         names = ["Students.csv", "Enrollments.csv", "StudentAttendance.csv", "CourseInfo.csv", "StudentCourses.csv"]
-        for n in names:
-            (tmp_path / n).write_text("a\n1\n", encoding="utf-8")
+        build_output_tree(tmp_path, [n.removesuffix(".csv") for n in names])
         uploader = _uploader()
         dropped_client, dropped_sftp = MagicMock(), MagicMock()
         # The drop happens AFTER the zip and the first standalone feed already went up.

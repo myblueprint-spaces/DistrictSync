@@ -25,9 +25,17 @@ from pathlib import Path
 import pytest
 
 from src.config.app_config import AppConfig
+from src.etl import output_layout
 from src.history.store import read_run_records
 from src.main import _paused_by_sync_window, cli
 from tests.test_pipeline_required_input import _write_full_rostering_input
+
+
+def _entity_csvs(output_dir: Path) -> list[Path]:
+    """Every entity CSV a run wrote (DSYNC-57 layout: the standalone feeds at the top level,
+    the rostering CSVs in ``csv/``)."""
+    return sorted([*output_dir.glob("*.csv"), *(output_dir / output_layout.ROSTERING_SUBDIR).glob("*.csv")])
+
 
 _GATE_LOGGER = logging.getLogger("tests.sync_window_gate")
 
@@ -136,7 +144,8 @@ class TestScheduledOutsideWindowPauses:
         code = cli(_argv(gde_input, gde_output, "--source", "scheduled"))
 
         assert code == 0, "a paused night is healthy, not a failure — must exit 0"
-        assert list(gde_output.glob("*.csv")) == [], "a paused night must write no output"
+        assert _entity_csvs(gde_output) == [], "a paused night must write no output"
+        assert output_layout.acsv_zips(gde_output) == []
         assert read_run_records() == [], "a paused night must not write a per-night run record"
 
     def test_scheduled_outside_enabled_window_does_not_deliver(
@@ -161,7 +170,8 @@ class TestScheduledOutsideWindowPauses:
         _fix_today(monkeypatch, _SUMMER)
 
         assert cli(_argv(gde_input, gde_output, "--source", "scheduled", "--sftp")) == 0
-        assert list(gde_output.glob("*.csv")) == []
+        assert _entity_csvs(gde_output) == []
+        assert output_layout.acsv_zips(gde_output) == []
 
     def test_the_day_after_the_end_boundary_is_paused(
         self,
@@ -179,7 +189,8 @@ class TestScheduledOutsideWindowPauses:
         )
         _fix_today(monkeypatch, date(2026, 7, 7))
         assert cli(_argv(gde_input, gde_output, "--source", "scheduled")) == 0
-        assert list(gde_output.glob("*.csv")) == []
+        assert _entity_csvs(gde_output) == []
+        assert output_layout.acsv_zips(gde_output) == []
 
 
 class TestScheduledInsideWindowRuns:
@@ -199,7 +210,7 @@ class TestScheduledInsideWindowRuns:
         )
         _fix_today(monkeypatch, _TERM)
         assert cli(_argv(gde_input, gde_output, "--source", "scheduled")) == 0
-        assert (gde_output / "Students.csv").exists()
+        assert output_layout.csv_path(gde_output, "Students.csv").exists()
 
     @pytest.mark.parametrize("boundary", [date(2026, 8, 11), date(2027, 7, 6)])
     def test_boundary_days_are_inclusive_and_run(
@@ -219,7 +230,7 @@ class TestScheduledInsideWindowRuns:
         )
         _fix_today(monkeypatch, boundary)
         assert cli(_argv(gde_input, gde_output, "--source", "scheduled")) == 0
-        assert (gde_output / "Students.csv").exists()
+        assert output_layout.csv_path(gde_output, "Students.csv").exists()
 
 
 class TestGateBypass:
@@ -242,7 +253,7 @@ class TestGateBypass:
         )
         _fix_today(monkeypatch, _SUMMER)
         assert cli(_argv(gde_input, gde_output, "--source", source)) == 0
-        assert (gde_output / "Students.csv").exists()
+        assert output_layout.csv_path(gde_output, "Students.csv").exists()
 
     def test_disabled_window_runs_year_round(
         self,
@@ -260,7 +271,7 @@ class TestGateBypass:
         )
         _fix_today(monkeypatch, _SUMMER)
         assert cli(_argv(gde_input, gde_output, "--source", "scheduled")) == 0
-        assert (gde_output / "Students.csv").exists()
+        assert output_layout.csv_path(gde_output, "Students.csv").exists()
 
     def test_no_window_config_at_all_runs_year_round(
         self,
@@ -272,7 +283,7 @@ class TestGateBypass:
         """No config.json at all -> defaults (window off) -> scheduled run proceeds."""
         _fix_today(monkeypatch, _SUMMER)
         assert cli(_argv(gde_input, gde_output, "--source", "scheduled")) == 0
-        assert (gde_output / "Students.csv").exists()
+        assert output_layout.csv_path(gde_output, "Students.csv").exists()
 
 
 class TestSourceResolution:
@@ -294,7 +305,8 @@ class TestSourceResolution:
         )
         _fix_today(monkeypatch, _SUMMER)
         assert cli(_argv(gde_input, gde_output)) == 0
-        assert list(gde_output.glob("*.csv")) == []
+        assert _entity_csvs(gde_output) == []
+        assert output_layout.acsv_zips(gde_output) == []
 
 
 class TestMalformedWindowFailsSafe:
@@ -317,7 +329,7 @@ class TestMalformedWindowFailsSafe:
         _fix_today(monkeypatch, _SUMMER)
         code = cli(_argv(gde_input, gde_output, "--source", "scheduled"))
         assert code == 0
-        assert (gde_output / "Students.csv").exists(), "an invalid window must not pause the sync"
+        assert output_layout.csv_path(gde_output, "Students.csv").exists(), "an invalid window must not pause the sync"
 
     def test_enabled_with_empty_bounds_runs_normally(
         self,
@@ -335,4 +347,4 @@ class TestMalformedWindowFailsSafe:
         )
         _fix_today(monkeypatch, _SUMMER)
         assert cli(_argv(gde_input, gde_output, "--source", "scheduled")) == 0
-        assert (gde_output / "Students.csv").exists()
+        assert output_layout.csv_path(gde_output, "Students.csv").exists()

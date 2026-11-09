@@ -26,6 +26,7 @@ from unittest.mock import MagicMock, patch
 import pandas as pd
 import pytest
 
+from src.etl import output_layout
 from src.etl.pipeline import PipelineResult, run_pipeline
 from src.sftp.uploader import INTERACTIVE_RETRY
 from tests.test_pipeline_required_input import _write_class_info_rows
@@ -124,8 +125,8 @@ _EXPECTED_ENTITIES = ["Students", "Staff", "Family", "Classes", "Enrollments"]
 
 
 def _csv_files_present(output_dir: Path) -> list[str]:
-    """Return the entity names for which <Entity>.csv exists in output_dir."""
-    return [e for e in _EXPECTED_ENTITIES if (output_dir / f"{e}.csv").exists()]
+    """Return the entity names whose CSV exists at its layout path (DSYNC-57: ``csv/``)."""
+    return [e for e in _EXPECTED_ENTITIES if output_layout.csv_path(output_dir, f"{e}.csv").exists()]
 
 
 def _make_mock_app_config(host: str = "sftp.ca.spacesedu.com") -> MagicMock:
@@ -379,12 +380,19 @@ class TestSftpEmptyOutputDirExit3:
     """
 
     def test_empty_output_dir_upload_raises(self, tmp_path: Path) -> None:
-        """``upload_csvs`` on an empty dir raises RuntimeError instead of returning []."""
+        """``upload_csvs`` on an empty dir raises RuntimeError instead of returning [].
+
+        With no Advanced CSV zip to deliver the raise fires before any connection.
+        """
         from src.sftp.uploader import SFTPUploader
 
         uploader = SFTPUploader("sftp.ca.spacesedu.com", 22, "user", "/files")
-        with pytest.raises(RuntimeError, match="No CSV files found to upload"):
+        with (
+            patch.object(SFTPUploader, "_connect") as connect,
+            pytest.raises(RuntimeError, match=r"exactly one Advanced CSV zip \(found 0\)"),
+        ):
             uploader.upload_csvs(tmp_path, manifest={"Students.csv"}, retry=INTERACTIVE_RETRY)
+        connect.assert_not_called()
 
     def test_sftp_upload_seam_empty_dir_returns_false(self, tmp_path: Path) -> None:
         """The pipeline seam catches the fail-loud raise and reports False.

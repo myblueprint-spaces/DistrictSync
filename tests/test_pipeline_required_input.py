@@ -28,10 +28,18 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from src.etl import output_layout
 from src.etl.errors import EmptyRequiredOutputError, IncompleteInputError, NoUsableInputError, RunErrorCategory
 from src.etl.outcomes import EntityOutcome, OutcomeKind, OutcomeLedger, OutcomeReason
 from src.etl.pipeline import check_required_inputs, configured_entity_order, run_pipeline, run_transform
 from src.history.store import read_run_records
+
+
+def _entity_csvs(output_dir: Path) -> list[Path]:
+    """Every entity CSV a run wrote (DSYNC-57 layout: the standalone feeds at the top level,
+    the rostering CSVs in ``csv/``)."""
+    return sorted([*output_dir.glob("*.csv"), *(output_dir / output_layout.ROSTERING_SUBDIR).glob("*.csv")])
+
 
 # ---------------------------------------------------------------------------
 # Required-input GDE columns (minimal, mirrors test_sftp_exit.py)
@@ -211,7 +219,8 @@ class TestNoUsableInput:
         with pytest.raises(RuntimeError):
             run_pipeline("myedbc", str(empty_input), str(gde_output))
 
-        assert list(gde_output.glob("*.csv")) == []
+        assert _entity_csvs(gde_output) == []
+        assert output_layout.acsv_zips(gde_output) == []
 
 
 # ---------------------------------------------------------------------------
@@ -247,7 +256,8 @@ class TestPeriodOnlyAttendanceDoesNotFire:
 
         assert (raised.value.missing, raised.value.empty) == (("StudentDailyAbsences.txt",), ())
         assert raised.value.named == ("StudentDailyAbsences.txt",)
-        assert list(gde_output.glob("*.csv")) == []
+        assert _entity_csvs(gde_output) == []
+        assert output_layout.acsv_zips(gde_output) == []
         record = read_run_records()[0]
         assert (record["status"], record["error_category"]) == ("failed", "incomplete_input")
         assert record["entity_outcomes"]["StudentAttendance"] == {
@@ -273,7 +283,7 @@ class TestPartialInputStillRuns:
 
         result = run_pipeline("myedbc", str(input_dir), str(gde_output))
 
-        assert (gde_output / "Students.csv").exists()
+        assert output_layout.csv_path(gde_output, "Students.csv").exists()
         assert result.entity_counts.get("Students", 0) > 0
 
     def test_partial_input_with_some_empty_sources_stops_the_night(self, tmp_path: Path, gde_output: Path) -> None:
@@ -314,7 +324,8 @@ class TestPartialInputStillRuns:
             "ClassInformationEnh.txt",
         }, "every missing file a required output lists — never the family contacts file"
         assert raised.value.category is RunErrorCategory.INCOMPLETE_INPUT
-        assert list(gde_output.glob("*.csv")) == [], "nothing is written"
+        assert _entity_csvs(gde_output) == [], "nothing is written"
+        assert output_layout.acsv_zips(gde_output) == []
         record = read_run_records()[0]
         assert (record["status"], record["error_category"]) == ("failed", "incomplete_input")
         kinds = {entity: (entry["kind"], entry["reason"]) for entity, entry in record["entity_outcomes"].items()}
@@ -347,13 +358,15 @@ class TestTheInputGate:
         result = run_pipeline("myedbc", str(input_dir), str(gde_output))
 
         assert all(o.kind is OutcomeKind.BUILT for o in result.entity_outcomes), result.entity_outcomes
-        assert {p.name for p in gde_output.glob("*.csv")} == {
+        assert {p.name for p in _entity_csvs(gde_output)} == {
             "Students.csv",
             "Staff.csv",
             "Family.csv",
             "Classes.csv",
             "Enrollments.csv",
         }
+        (zip_path,) = output_layout.acsv_zips(gde_output)
+        assert output_layout.zip_member_names(zip_path) == {p.name for p in _entity_csvs(gde_output)}
 
     @pytest.mark.parametrize(
         ("damage", "missing", "empty"),
@@ -373,7 +386,8 @@ class TestTheInputGate:
         input_dir.mkdir()
         _write_full_rostering_input(input_dir)
         run_pipeline("myedbc", str(input_dir), str(gde_output))  # the last good night
-        before = {p.name: p.read_bytes() for p in gde_output.glob("*.csv")}
+        before = {p.name: p.read_bytes() for p in [*_entity_csvs(gde_output), *output_layout.acsv_zips(gde_output)]}
+        assert "Students.csv" in before and any(name.endswith(".zip") for name in before)
         schedule = input_dir / "StudentSchedule.txt"
         if damage == "delete":
             schedule.unlink()
@@ -387,7 +401,8 @@ class TestTheInputGate:
 
         assert (raised.value.missing, raised.value.empty) == (missing, empty)
         assert raised.value.named == ("StudentSchedule.txt",)
-        assert {p.name: p.read_bytes() for p in gde_output.glob("*.csv")} == before
+        after = {p.name: p.read_bytes() for p in [*_entity_csvs(gde_output), *output_layout.acsv_zips(gde_output)]}
+        assert after == before
         record = read_run_records()[0]
         assert record["error_category"] == "incomplete_input"
         for entity in ("Classes", "Enrollments"):
@@ -418,8 +433,8 @@ class TestTheInputGate:
 
         family = next(o for o in result.entity_outcomes if o.entity == "Family")
         assert (family.kind, family.reason) == (OutcomeKind.EMPTY, OutcomeReason.SOURCE_FILES_EMPTY)
-        assert not (gde_output / "Family.csv").exists()
-        assert (gde_output / "Enrollments.csv").exists()
+        assert not output_layout.csv_path(gde_output, "Family.csv").exists()
+        assert output_layout.csv_path(gde_output, "Enrollments.csv").exists()
 
     def test_the_gate_is_pure_over_the_declarations(self) -> None:
         """No file system: Family's file is never checked, a shared file is checked through the

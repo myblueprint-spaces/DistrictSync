@@ -54,9 +54,17 @@ import pandas as pd
 import pytest
 
 from src.config.app_config import AppConfig
+from src.etl import output_layout
 from src.etl.pipeline import build_run_record, run_pipeline
 from src.history.store import read_run_records
 from tests.test_pipeline_required_input import _write_class_info_rows
+
+
+def _entity_csvs(output_dir: Path) -> list[Path]:
+    """Every entity CSV a run wrote (DSYNC-57 layout: the standalone feeds at the top level,
+    the rostering CSVs in ``csv/``)."""
+    return sorted([*output_dir.glob("*.csv"), *(output_dir / output_layout.ROSTERING_SUBDIR).glob("*.csv")])
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -339,7 +347,7 @@ def test_a_poisoned_stored_identity_reaches_neither_sink(isolated_user_profile: 
         assert probe not in log_text, f"{probe!r} reached the diagnostic log"
         assert probe not in json.dumps(stored), f"{probe!r} reached the run store"
 
-    written = "\n".join(p.read_text(encoding="utf-8", errors="replace") for p in output_dir.glob("*.csv"))
+    written = "\n".join(p.read_text(encoding="utf-8", errors="replace") for p in _entity_csvs(output_dir))
     assert written, "no CSVs were written; the output assertion would be vacuous"
     for probe in (CANARY_EMAIL, CANARY_LOCAL, CANARY_SD):
         assert probe not in written, f"{probe!r} reached an output CSV"

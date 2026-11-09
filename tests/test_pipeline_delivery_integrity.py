@@ -57,7 +57,7 @@ import pandas as pd
 import pytest
 
 from src.config.app_config import AppConfig
-from src.etl import pipeline
+from src.etl import output_layout, pipeline
 from src.etl.errors import EmptyRequiredOutputError, IncompleteInputError, NoUsableInputError, RunErrorCategory
 from src.etl.outcomes import EntityOutcome, OutcomeReason
 from src.etl.pipeline import run_pipeline
@@ -246,9 +246,21 @@ def gde_output(tmp_path: Path) -> Path:
     return out
 
 
+def _written(output_dir: Path) -> list[Path]:
+    """Every file a run committed (DSYNC-57 layout: ``csv/``, the zip, the standalone feeds).
+
+    ``archive_<ts>/`` is excluded — it is asserted on separately via :func:`_archive_dirs`.
+    """
+    return sorted(
+        p
+        for p in output_dir.rglob("*")
+        if p.is_file() and not p.relative_to(output_dir).parts[0].startswith("archive_")
+    )
+
+
 def _snapshot(output_dir: Path) -> dict[str, bytes]:
-    """Every top-level CSV's exact bytes — the "output dir untouched" oracle."""
-    return {p.name: p.read_bytes() for p in sorted(output_dir.glob("*.csv"))}
+    """Every committed file's exact bytes, by relative path — the "output dir untouched" oracle."""
+    return {p.relative_to(output_dir).as_posix(): p.read_bytes() for p in _written(output_dir)}
 
 
 def _archive_dirs(output_dir: Path) -> list[Path]:
@@ -392,7 +404,7 @@ class TestZeroOutputFailsLoud:
     def test_nothing_is_written(self, tmp_path: Path, gde_output: Path) -> None:
         with pytest.raises(RuntimeError):
             run_pipeline("myedbc", str(self._zero_output_input(tmp_path)), str(gde_output))
-        assert list(gde_output.glob("*.csv")) == []
+        assert _written(gde_output) == []
         assert _archive_dirs(gde_output) == []
 
     def test_run_record_says_failed_with_the_empty_required_output_category(
@@ -487,7 +499,7 @@ class TestRosterAnchorVanishedFailsLoud:
             run_pipeline("myedbc", str(complete_input), str(gde_output))
 
         assert _snapshot(gde_output) == good
-        assert (gde_output / f"{_ANCHOR}.csv").exists()
+        assert output_layout.csv_path(gde_output, f"{_ANCHOR}.csv").exists()
         assert _archive_dirs(gde_output) == []
 
     def test_no_orphan_enrollment_survives_on_disk(self, complete_input: Path, gde_output: Path) -> None:
@@ -497,8 +509,8 @@ class TestRosterAnchorVanishedFailsLoud:
         with pytest.raises(RuntimeError):
             run_pipeline("myedbc", str(complete_input), str(gde_output))
 
-        students = pd.read_csv(gde_output / f"{_ANCHOR}.csv", dtype=str)
-        enrollments = pd.read_csv(gde_output / "Enrollments.csv", dtype=str)
+        students = pd.read_csv(output_layout.csv_path(gde_output, f"{_ANCHOR}.csv"), dtype=str)
+        enrollments = pd.read_csv(output_layout.csv_path(gde_output, "Enrollments.csv"), dtype=str)
         roster = set(students["User ID"].dropna())
         student_rows = enrollments[enrollments["Role"] == "student"]
         orphans = set(student_rows["User ID"].dropna()) - roster
@@ -574,7 +586,7 @@ class TestRosterAnchorVanishedFailsLoud:
 
         with pytest.raises(IncompleteInputError):
             run_pipeline("myedbc", str(d), str(gde_output))
-        assert list(gde_output.glob("*.csv")) == []
+        assert _written(gde_output) == []
 
 
 # --------------------------------------------------------------------------- #
@@ -712,7 +724,7 @@ class TestStudentRosteringGradesMatchingNobodyFailsLoud:
         result = run_pipeline("srg_matching", str(complete_input), str(gde_output))
 
         assert result.entity_counts.get(_ANCHOR, 0) == 1  # the grade-10 student only
-        students = pd.read_csv(gde_output / f"{_ANCHOR}.csv", dtype=str)
+        students = pd.read_csv(output_layout.csv_path(gde_output, f"{_ANCHOR}.csv"), dtype=str)
         assert set(students["Grade"]) == {"10"}
 
 
@@ -723,7 +735,7 @@ class TestLegitimatePartialRunsStayGreen:
     def test_healthy_full_run_is_unchanged(self, gde_input: Path, gde_output: Path) -> None:
         result = run_pipeline("myedbc", str(gde_input), str(gde_output))
         assert result.entity_counts.get(_ANCHOR, 0) > 0
-        assert (gde_output / f"{_ANCHOR}.csv").exists()
+        assert output_layout.csv_path(gde_output, f"{_ANCHOR}.csv").exists()
 
     def test_non_anchor_entity_vanishing_stays_a_warning(self, gde_input: Path, gde_output: Path) -> None:
         """Family is the ONE output that may be left out (owner 2026-09-28). A vanished Family
@@ -755,7 +767,8 @@ class TestLegitimatePartialRunsStayGreen:
 
         assert result.entity_counts.get(_ANCHOR, 0) > 0
         assert "Family" not in result.entity_counts
-        assert not (gde_output / "Family.csv").exists()
+        assert not output_layout.csv_path(gde_output, "Family.csv").exists()
+        assert output_layout.csv_path(gde_output, f"{_ANCHOR}.csv").exists()
         assert _exit_code_via_main_wiring("myedbc", str(gde_input), str(gde_output)) == 0
 
     def test_an_anchor_only_folder_now_stops_the_night(self, tmp_path: Path, gde_output: Path) -> None:
@@ -772,7 +785,7 @@ class TestLegitimatePartialRunsStayGreen:
 
         assert "EmergencyContactInformation.txt" not in raised.value.missing
         assert "StudentSchedule.txt" in raised.value.missing
-        assert list(gde_output.glob("*.csv")) == []
+        assert _written(gde_output) == []
         assert _exit_code_via_main_wiring("myedbc", str(d), str(gde_output)) == 1
 
     def test_config_without_the_anchor_stays_green(self, tmp_path: Path, gde_output: Path) -> None:
@@ -838,7 +851,7 @@ class TestConvertPathRefusesAnOrphanRoster:
 
         assert "StudentDemographicInformation.txt" in raised.value.missing
         # Nothing committed — the refusal precedes save_all/archive/upload.
-        assert list(gde_output.glob("*.csv")) == []
+        assert _written(gde_output) == []
         assert _archive_dirs(gde_output) == []
         # The ledger must not claim a healthy night.
         assert self._success_records() == []
@@ -857,7 +870,7 @@ class TestConvertPathRefusesAnOrphanRoster:
             convert_job("myedbc", str(complete_input))
 
         assert _snapshot(gde_output) == good
-        assert (gde_output / f"{_ANCHOR}.csv").exists()
+        assert output_layout.csv_path(gde_output, f"{_ANCHOR}.csv").exists()
         assert _archive_dirs(gde_output) == []
 
     def test_an_anomaly_acknowledgement_cannot_buy_delivery(self, complete_input: Path, gde_output: Path) -> None:
@@ -917,7 +930,7 @@ class TestConvertPathRefusesAnOrphanRoster:
             convert_job("myedbc", str(d))
 
         assert raised.value.entity == _ANCHOR
-        assert list(gde_output.glob("*.csv")) == []
+        assert _written(gde_output) == []
         assert read_run_records()[0]["error_category"] == RunErrorCategory.EMPTY_REQUIRED_OUTPUT.value
 
     def test_no_output_at_all_keeps_its_own_category(self, tmp_path: Path, gde_output: Path) -> None:
@@ -931,7 +944,7 @@ class TestConvertPathRefusesAnOrphanRoster:
         result = convert_job(sis, str(d))
 
         assert result.status is ConvertStatus.NO_OUTPUT
-        assert list(gde_output.glob("*.csv")) == []
+        assert _written(gde_output) == []
 
 
 class TestConvertPathTierConfigsAreNeverFalsePositives:
@@ -957,7 +970,7 @@ class TestConvertPathTierConfigsAreNeverFalsePositives:
         assert result.entity_counts.get("StudentCourses", 0) > 0
         assert (gde_output / "CourseInfo.csv").exists()
         assert (gde_output / "StudentCourses.csv").exists()
-        assert not (gde_output / f"{_ANCHOR}.csv").exists()
+        assert not output_layout.csv_path(gde_output, f"{_ANCHOR}.csv").exists()
 
     def test_sd51attendance_converts_without_a_roster_anchor(self, tmp_path: Path, gde_output: Path) -> None:
         d = tmp_path / "attendance"
@@ -1126,7 +1139,7 @@ class TestANightWithNothingToSend:
         with pytest.raises(IncompleteInputError) as raised:
             run_pipeline("sd51attendance", str(with_rows), str(gde_output))
         assert list(raised.value.missing) == ["StudentDailyAbsences.txt"]
-        assert list(gde_output.glob("*.csv")) == []
+        assert _written(gde_output) == []
 
     def test_twin_a_rostering_folder_of_row_less_files_is_still_no_input(
         self, tmp_path: Path, gde_output: Path

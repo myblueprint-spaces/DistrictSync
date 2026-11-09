@@ -27,6 +27,7 @@ import pytest
 
 from src.config.app_config import AppConfig
 from src.config.loader import load_config
+from src.etl import output_layout
 from src.etl.loader import DataLoader
 from src.etl.pipeline import run_pipeline
 from src.ui_flet.convert_result import ConvertStatus
@@ -287,6 +288,13 @@ def _file_headers(config_name: str) -> dict[str, list[str]]:
 # ---------------------------------------------------------------------------
 
 
+def _entity_csvs(out_dir: Path) -> dict[str, Path]:
+    """Every entity CSV a run wrote, by filename: the standalone feeds at the top level plus
+    the rostering CSVs in ``csv/`` (DSYNC-57 layout)."""
+    found = [*out_dir.glob("*.csv"), *(out_dir / output_layout.ROSTERING_SUBDIR).glob("*.csv")]
+    return {p.name: p for p in sorted(found)}
+
+
 def _run_cli_path(gde_sources: dict[str, bytes], tmp_path: Path) -> Path:
     """CLI path: write GDE bytes to disk, run run_pipeline → output dir."""
     input_dir = tmp_path / "cli_input"
@@ -335,9 +343,14 @@ class TestCLIvsUIParity:
         cli_dir = _run_cli_path(gde_sources, tmp_path)
         ui_dir = _run_ui_path(gde_sources, tmp_path)
 
-        cli_files = {p.name for p in cli_dir.glob("*.csv")}
-        ui_files = {p.name for p in ui_dir.glob("*.csv")}
+        cli_files = set(_entity_csvs(cli_dir))
+        ui_files = set(_entity_csvs(ui_dir))
         assert cli_files == ui_files
+        # Both paths commit the same Advanced CSV zip, carrying the same rostering members.
+        cli_zips = output_layout.acsv_zips(cli_dir)
+        ui_zips = output_layout.acsv_zips(ui_dir)
+        assert [z.name for z in cli_zips] == [z.name for z in ui_zips] == [output_layout.acsv_zip_name(CONFIG)]
+        assert output_layout.zip_member_names(cli_zips[0]) == output_layout.zip_member_names(ui_zips[0])
         # The run must include both a no-BOM and a with-BOM entity, or the
         # byte-parity assertion below would not actually exercise the BOM split.
         assert "StudentAttendance.csv" in cli_files
@@ -347,9 +360,12 @@ class TestCLIvsUIParity:
         cli_dir = _run_cli_path(gde_sources, tmp_path)
         ui_dir = _run_ui_path(gde_sources, tmp_path)
 
-        for cli_csv in sorted(cli_dir.glob("*.csv")):
-            ui_csv = ui_dir / cli_csv.name
-            assert ui_csv.exists(), f"UI path missing {cli_csv.name}"
+        ui_csvs = _entity_csvs(ui_dir)
+        cli_csvs = _entity_csvs(cli_dir)
+        assert "Students.csv" in cli_csvs, "the rostering CSVs must be compared, not only the top-level feeds"
+        for name, cli_csv in cli_csvs.items():
+            ui_csv = ui_csvs.get(name)
+            assert ui_csv is not None and ui_csv.exists(), f"UI path missing {name}"
             # Frame-equal: identical data + column order.
             cli_df = pd.read_csv(cli_csv, dtype=str)
             ui_df = pd.read_csv(ui_csv, dtype=str)
@@ -406,7 +422,7 @@ class TestCLIvsUIParity:
         ui_dir = _run_ui_path(gde_sources, tmp_path)
 
         for out_dir in (cli_dir, ui_dir):
-            data = (out_dir / "Students.csv").read_bytes()
+            data = output_layout.csv_path(out_dir, "Students.csv").read_bytes()
             assert data.startswith(b"\xef\xbb\xbf"), f"{out_dir.name}/Students.csv must keep the BOM"
 
 
@@ -432,11 +448,17 @@ class TestCLIvsUIParityOverAPartialRun:
         ui_result = convert_job(self._SIS, str(input_dir))
         assert ui_result.status is ConvertStatus.DELIVERED
 
-        cli_files = sorted(p.name for p in cli_out.glob("*.csv"))
-        assert cli_files == sorted(p.name for p in ui_out.glob("*.csv"))
+        cli_csvs, ui_csvs = _entity_csvs(cli_out), _entity_csvs(ui_out)
+        cli_files = sorted(cli_csvs)
+        assert cli_files == sorted(ui_csvs)
         assert "Family.csv" not in cli_files and "Students.csv" in cli_files
         for name in cli_files:
-            assert (cli_out / name).read_bytes() == (ui_out / name).read_bytes(), f"{name} differs"
+            assert cli_csvs[name].read_bytes() == ui_csvs[name].read_bytes(), f"{name} differs"
+        # Family is left out of the Advanced CSV zip too, on both paths.
+        for out in (cli_out, ui_out):
+            (zip_path,) = output_layout.acsv_zips(out)
+            members = output_layout.zip_member_names(zip_path)
+            assert "Family.csv" not in members and "Students.csv" in members
         assert ui_result.entity_outcomes == cli_result.entity_outcomes
         assert [(o.entity, o.kind.value) for o in cli_result.entity_outcomes if o.kind.value != "built"] == [
             ("Family", "failed")
@@ -460,10 +482,12 @@ class TestUIWriteFailsLoud:
         field_orders = {"Students": ["Name", "Grade", "Email"]}
 
         with pytest.raises(ValueError, match="columns missing.*Email"):
-            loader.save_all(outputs, field_orders)
+            loader.save_all(outputs, field_orders, zip_name=output_layout.acsv_zip_name(CONFIG))
 
-        # No partial file committed.
-        assert not (tmp_path / "Students.csv").exists()
+        # No partial file committed: neither the CSV (at either layout path) nor the zip.
+        assert not output_layout.csv_path(tmp_path, "Students.csv").exists()
+        assert not output_layout.legacy_csv_path(tmp_path, "Students.csv").exists()
+        assert output_layout.acsv_zips(tmp_path) == []
 
     def test_download_path_raises_value_error_not_key_error(self):
         """The download/zip path (``create_zip`` + the per-CSV buttons) now routes
@@ -498,9 +522,12 @@ class TestUIWriteFailsLoud:
         ui_dir = _run_ui_path(gde_sources, tmp_path)
 
         raw = load_config(CONFIG).to_raw_dict()
-        for cli_csv in sorted(cli_dir.glob("*.csv")):
+        ui_csvs = _entity_csvs(ui_dir)
+        cli_csvs = _entity_csvs(cli_dir)
+        assert "Students.csv" in cli_csvs, "the rostering CSVs must be checked, not only the top-level feeds"
+        for name, cli_csv in cli_csvs.items():
             entity = cli_csv.stem
-            ui_csv = ui_dir / cli_csv.name
+            ui_csv = ui_csvs[name]
             cli_cols = list(pd.read_csv(cli_csv, dtype=str).columns)
             ui_cols = list(pd.read_csv(ui_csv, dtype=str).columns)
             assert cli_cols == ui_cols, f"{entity}: CLI/UI column sets differ"

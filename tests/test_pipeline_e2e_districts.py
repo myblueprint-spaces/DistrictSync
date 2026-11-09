@@ -8,6 +8,7 @@ file names that each district uses.
 import pandas as pd
 import pytest
 
+from src.etl import output_layout
 from src.main import main
 
 # ---------------------------------------------------------------------------
@@ -141,18 +142,18 @@ class TestSD48Pipeline:
         input_dir, output_dir = sd48_files
         main("sd48myedbc", str(input_dir), str(output_dir))
         for filename in EXPECTED_OUTPUTS:
-            assert (output_dir / filename).exists(), f"SD48: Missing {filename}"
+            assert output_layout.csv_path(output_dir, filename).exists(), f"SD48: Missing {filename}"
 
     def test_sd48_students_output_populated(self, sd48_files):
         input_dir, output_dir = sd48_files
         main("sd48myedbc", str(input_dir), str(output_dir))
-        students = pd.read_csv(output_dir / "Students.csv")
+        students = pd.read_csv(output_layout.csv_path(output_dir, "Students.csv"))
         assert len(students) == 3
 
     def test_sd48_staff_output_populated(self, sd48_files):
         input_dir, output_dir = sd48_files
         main("sd48myedbc", str(input_dir), str(output_dir))
-        staff = pd.read_csv(output_dir / "Staff.csv")
+        staff = pd.read_csv(output_layout.csv_path(output_dir, "Staff.csv"))
         assert len(staff) == 3
 
     def test_sd48_no_tmp_dirs_left(self, sd48_files):
@@ -222,12 +223,12 @@ class TestSD74Pipeline:
         input_dir, output_dir = sd74_files
         main("sd74myedbc", str(input_dir), str(output_dir))
         for filename in EXPECTED_OUTPUTS:
-            assert (output_dir / filename).exists(), f"SD74: Missing {filename}"
+            assert output_layout.csv_path(output_dir, filename).exists(), f"SD74: Missing {filename}"
 
     def test_sd74_students_output_populated(self, sd74_files):
         input_dir, output_dir = sd74_files
         main("sd74myedbc", str(input_dir), str(output_dir))
-        students = pd.read_csv(output_dir / "Students.csv")
+        students = pd.read_csv(output_layout.csv_path(output_dir, "Students.csv"))
         assert len(students) == 3
 
     def test_sd74_no_tmp_dirs_left(self, sd74_files):

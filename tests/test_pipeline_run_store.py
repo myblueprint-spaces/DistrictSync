@@ -25,7 +25,7 @@ import pytest
 
 from src.config.app_config import AppConfig
 from src.config.authoring import OverlaySpec, overlay_path, write_overlay
-from src.etl import pipeline
+from src.etl import output_layout, pipeline
 from src.etl.pipeline import PipelineResult, run_pipeline
 from src.history.store import read_run_records
 from src.ui_flet.home_status import derive_home_status
@@ -184,7 +184,7 @@ class TestNonFatal:
         # The result + exit-code inputs are unchanged; the CSVs are written.
         assert isinstance(result, PipelineResult)
         assert result.sftp_attempted is False and result.sftp_ok is False
-        assert (gde_output / "Students.csv").exists()
+        assert output_layout.csv_path(gde_output, "Students.csv").exists()
         assert result.entity_counts.get("Students", 0) == 2
 
     def test_failure_path_store_error_preserves_original_exception(
@@ -535,11 +535,19 @@ class TestOutputFolderPreflight:
 # --------------------------------------------------------------------------- #
 # deliver_job → deliver from disk (0034 Slice 2)                                #
 # --------------------------------------------------------------------------- #
-def _fake_uploader(calls: list[tuple[Path, str | None, set[str]]], *, fail: bool = False) -> type:
+def _entity_csv_relpaths(output_dir: Path) -> list[str]:
+    """Every entity CSV a run wrote, relative to the output folder (DSYNC-57 layout: the
+    standalone feeds at the top level, the rostering CSVs in ``csv/``)."""
+    found = [*output_dir.glob("*.csv"), *(output_dir / output_layout.ROSTERING_SUBDIR).glob("*.csv")]
+    return sorted(p.relative_to(output_dir).as_posix() for p in found)
+
+
+def _fake_uploader(calls: list[tuple[Path, set[str]]], *, fail: bool = False) -> type:
     """A test double for ``SFTPUploader`` recording ``upload_csvs`` calls (no network).
 
-    Records the delivery MANIFEST alongside the folder + district: deliver-from-disk must
-    nominate the files it ships, never let the uploader glob the folder.
+    Records the delivery MANIFEST alongside the folder: deliver-from-disk must nominate the
+    files it ships, never let the uploader glob the folder. (DSYNC-57: the district-named
+    zip is built at conversion time, so the uploader no longer takes a district.)
     """
 
     class _Fake:
@@ -549,14 +557,11 @@ def _fake_uploader(calls: list[tuple[Path, str | None, set[str]]], *, fail: bool
         def upload_csvs(
             self,
             output_dir: Path,
-            zip_name: str | None = None,
-            sis_type: str | None = None,
             *,
             manifest: Collection[str],
             retry: object,
-            staging_dir: Path | None = None,
         ) -> list:
-            calls.append((output_dir, sis_type, set(manifest)))
+            calls.append((output_dir, set(manifest)))
             if fail:
                 raise RuntimeError("connection refused by 203.0.113.9")
             return ["Students.csv"]
@@ -584,15 +589,17 @@ class TestDeliverFromDisk:
 
         self._configure(gde_input, gde_output)
         convert_screen.convert_job("myedbc", str(gde_input))  # a committed build on disk first
-        calls: list[tuple[Path, str | None, set[str]]] = []
+        calls: list[tuple[Path, set[str]]] = []
         monkeypatch.setattr(convert_screen, "SFTPUploader", _fake_uploader(calls))
 
         result = convert_screen.deliver_job("myedbc")
         assert result.status is ConvertStatus.DELIVERED_FROM_DISK
         assert result.sftp_attempted is True and result.sftp_ok is True
-        # Shipped from the OUTPUT dir, zip named per district, and the payload NOMINATED:
-        # exactly the active config's entity CSVs found on disk — never the folder's glob.
-        assert calls == [(gde_output, "myedbc", _MYEDBC_CSVS)]
+        # Shipped from the OUTPUT dir, and the payload NOMINATED: exactly the active config's
+        # entity CSVs found on disk — never the folder's glob. The zip it ships is the one the
+        # build committed, named per district (DSYNC-57).
+        assert calls == [(gde_output, _MYEDBC_CSVS)]
+        assert [z.name for z in output_layout.acsv_zips(gde_output)] == [output_layout.acsv_zip_name("myedbc")]
 
         records = read_run_records()
         assert records is not None and len(records) == 2  # the build record + the delivery record
@@ -622,7 +629,7 @@ class TestDeliverFromDisk:
         monkeypatch.setattr(convert_screen, "run_transform", _boom)
         monkeypatch.setattr(convert_screen, "extract_required_files", _boom)
         monkeypatch.setattr(convert_screen.DataExtractor, "load_data", _boom)
-        calls: list[tuple[Path, str | None, set[str]]] = []
+        calls: list[tuple[Path, set[str]]] = []
         monkeypatch.setattr(convert_screen, "SFTPUploader", _fake_uploader(calls))
 
         result = convert_screen.deliver_job("myedbc")
@@ -639,7 +646,7 @@ class TestDeliverFromDisk:
 
         self._configure(gde_input, gde_output)
         convert_screen.convert_job("myedbc", str(gde_input))
-        calls: list[tuple[Path, str | None, set[str]]] = []
+        calls: list[tuple[Path, set[str]]] = []
         monkeypatch.setattr(convert_screen, "SFTPUploader", _fake_uploader(calls, fail=True))
 
         result = convert_screen.deliver_job("myedbc")
@@ -684,13 +691,13 @@ class TestDeliverFromDisk:
         (gde_output / "old_roster.csv").write_text("id,name\n9,Ex Student\n", encoding="utf-8")
         (gde_output / "students_backup.csv").write_text("id,name\n8,Backup\n", encoding="utf-8")
 
-        calls: list[tuple[Path, str | None, set[str]]] = []
+        calls: list[tuple[Path, set[str]]] = []
         monkeypatch.setattr(convert_screen, "SFTPUploader", _fake_uploader(calls))
         convert_screen.deliver_job("myedbc")
 
-        assert calls and calls[0][2] == _MYEDBC_CSVS
-        assert "old_roster.csv" not in calls[0][2]
-        assert "students_backup.csv" not in calls[0][2]
+        assert calls and calls[0][1] == _MYEDBC_CSVS
+        assert "old_roster.csv" not in calls[0][1]
+        assert "students_backup.csv" not in calls[0][1]
         # Nothing is deleted — the files simply stay home.
         assert (gde_output / "old_roster.csv").exists()
 
@@ -703,7 +710,7 @@ class TestDeliverFromDisk:
 
         self._configure(gde_input, gde_output)
         convert_screen.convert_job("myedbc", str(gde_input))
-        calls: list[tuple[Path, str | None, set[str]]] = []
+        calls: list[tuple[Path, set[str]]] = []
         monkeypatch.setattr(convert_screen, "SFTPUploader", _fake_uploader(calls))
         convert_screen.deliver_job("myedbc")
 
@@ -1338,7 +1345,7 @@ class TestEntityOutcomesReachTheRecord:
         # The flat count keys and the outcome rows agree for BUILT entities; Family reached nothing.
         assert stored["Students"] == stored["entity_outcomes"]["Students"]["rows"] == 2
         assert stored["Family"] == 0
-        assert sorted(p.name for p in gde_output.glob("*.csv")) == [
+        assert sorted(Path(rel).name for rel in _entity_csv_relpaths(gde_output)) == [
             "Classes.csv",
             "Enrollments.csv",
             "Staff.csv",
@@ -1370,7 +1377,8 @@ class TestEntityOutcomesReachTheRecord:
         assert _log_payload(caplog)["entity_outcomes"] == stored["entity_outcomes"]
         # The flat count keys keep their meaning: nothing reached `outputs` on this run.
         assert stored["Students"] == 0 and stored["entity_outcomes"]["Students"]["rows"] == 2
-        assert not list(gde_output.glob("*.csv"))
+        assert not _entity_csv_relpaths(gde_output)
+        assert output_layout.acsv_zips(gde_output) == []
 
     def test_a_family_with_no_usable_contact_is_empty_required_values_missing(
         self, gde_input: Path, gde_output: Path
@@ -1537,7 +1545,7 @@ class TestConvertRecordsTheSameOutcomes:
 
         AppConfig(input_dir=str(gde_input), output_dir=str(gde_output), sis_type="myedbc").save()
         convert_screen.convert_job("myedbc", str(gde_input))
-        calls: list[tuple[Path, str | None, set[str]]] = []
+        calls: list[tuple[Path, set[str]]] = []
         monkeypatch.setattr(convert_screen, "SFTPUploader", _fake_uploader(calls))
         result = convert_screen.deliver_job("myedbc")
 
@@ -1678,8 +1686,8 @@ class TestSourceObservation:
         with caplog.at_level(logging.DEBUG, logger="src.etl.pipeline"):
             broken = run_pipeline(self._SD67, str(sd67_input), str(broken_out))
 
-        observed_csvs = sorted(p.name for p in observed_out.glob("*.csv"))
-        assert observed_csvs == sorted(p.name for p in broken_out.glob("*.csv")) and observed_csvs
+        observed_csvs = _entity_csv_relpaths(observed_out)
+        assert observed_csvs == _entity_csv_relpaths(broken_out) and observed_csvs
         for name in observed_csvs:
             assert (observed_out / name).read_bytes() == (broken_out / name).read_bytes()
         assert observed.entity_counts == broken.entity_counts
@@ -1731,8 +1739,8 @@ class TestSourceObservation:
         broken = convert_job(self._SD67, str(sd67_input))
 
         assert broken.status is observed.status
-        names = sorted(p.name for p in observed_out.glob("*.csv"))
-        assert names and names == sorted(p.name for p in broken_out.glob("*.csv"))
+        names = _entity_csv_relpaths(observed_out)
+        assert names and names == _entity_csv_relpaths(broken_out)
         for name in names:
             assert (observed_out / name).read_bytes() == (broken_out / name).read_bytes()
         records = read_run_records()
@@ -1779,8 +1787,8 @@ class TestSourceObservation:
         with caplog.at_level(logging.DEBUG, logger="src.etl.pipeline"):
             broken = run_pipeline(self._SD67, str(sd67_input), str(broken_out))
 
-        names = sorted(p.name for p in labelled_out.glob("*.csv"))
-        assert names and names == sorted(p.name for p in broken_out.glob("*.csv"))
+        names = _entity_csv_relpaths(labelled_out)
+        assert names and names == _entity_csv_relpaths(broken_out)
         for name in names:
             assert (labelled_out / name).read_bytes() == (broken_out / name).read_bytes()
         assert labelled.entity_counts == broken.entity_counts

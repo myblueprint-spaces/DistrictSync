@@ -22,12 +22,19 @@ from pathlib import Path
 import pytest
 
 from src.config.app_config import AppConfig
+from src.etl import output_layout
 from src.etl.pipeline import run_pipeline
 from src.history.store import read_run_records
 from src.ui_flet.convert_output import run_identity
 from src.ui_flet.convert_result import ConvertStatus
 from src.ui_flet.screens.convert import convert_job
 from tests.test_pipeline_run_store import _write_myedbc_input
+
+
+def _entity_csvs(output_dir: Path) -> list[Path]:
+    """Every entity CSV a run wrote (DSYNC-57 layout: the standalone feeds at the top level,
+    the rostering CSVs in ``csv/``)."""
+    return sorted([*output_dir.glob("*.csv"), *(output_dir / output_layout.ROSTERING_SUBDIR).glob("*.csv")])
 
 
 @pytest.fixture()
@@ -54,7 +61,7 @@ class TestRunPipelineVanish:
         # Run 1 (baseline): the full input produces the rostering CSVs.
         first = run_pipeline("myedbc", str(gde_input), str(gde_output))
         assert first.anomalies == []  # first run: no baseline → silent
-        assert (gde_output / "Family.csv").exists()
+        assert output_layout.csv_path(gde_output, "Family.csv").exists()
         assert first.entity_counts.get("Family", 0) > 0  # guard: the baseline is non-empty
 
         # Run 2: the Family source file disappears → Family transforms to nothing
@@ -70,10 +77,10 @@ class TestRunPipelineVanish:
         assert records is not None and records
         assert records[0]["anomalies"] == result.anomalies
         # The stale Family.csv was archived (non-destructive) — not left to ship, not deleted.
-        assert not (gde_output / "Family.csv").exists()
+        assert not output_layout.csv_path(gde_output, "Family.csv").exists()
         archives = _archive_dirs(gde_output)
         assert len(archives) == 1
-        assert (archives[0] / "Family.csv").exists()
+        assert (archives[0] / output_layout.csv_relpath("Family.csv")).exists()
 
     def test_first_run_into_an_empty_output_dir_is_silent(self, gde_input: Path, gde_output: Path) -> None:
         result = run_pipeline("myedbc", str(gde_input), str(gde_output))
@@ -90,15 +97,15 @@ class TestConvertJobVanishGate:
         assert first.entity_counts.get("Family", 0) > 0
 
         (gde_input / "EmergencyContactInformation.txt").unlink()
-        family_before = (gde_output / "Family.csv").read_bytes()
-        students_before = (gde_output / "Students.csv").read_bytes()
+        family_before = output_layout.csv_path(gde_output, "Family.csv").read_bytes()
+        students_before = output_layout.csv_path(gde_output, "Students.csv").read_bytes()
 
         gated = convert_job("myedbc", str(gde_input))
         assert gated.status is ConvertStatus.NEEDS_ANOMALY_ACK
         assert any("Family produced no output this run" in a for a in gated.anomalies)
         # WITHOUT writing: every on-disk byte is exactly as the first run left it.
-        assert (gde_output / "Family.csv").read_bytes() == family_before
-        assert (gde_output / "Students.csv").read_bytes() == students_before
+        assert output_layout.csv_path(gde_output, "Family.csv").read_bytes() == family_before
+        assert output_layout.csv_path(gde_output, "Students.csv").read_bytes() == students_before
         assert _archive_dirs(gde_output) == []
 
         # Explicit acknowledgement: the write proceeds (a legit-empty source stays a
@@ -115,12 +122,12 @@ class TestConvertJobVanishGate:
         acked = convert_job("myedbc", str(gde_input), anomaly_ack=run_identity("myedbc", str(gde_input)))
         assert acked.status is not ConvertStatus.NEEDS_ANOMALY_ACK
         assert acked.entity_counts  # a committed build
-        assert not (gde_output / "Family.csv").exists()
+        assert not output_layout.csv_path(gde_output, "Family.csv").exists()
         archives = _archive_dirs(gde_output)
         assert len(archives) == 1
-        assert (archives[0] / "Family.csv").read_bytes() == family_before
+        assert (archives[0] / output_layout.csv_relpath("Family.csv")).read_bytes() == family_before
         # The SFTP ship set (top-level *.csv) no longer contains the stale file.
-        assert "Family.csv" not in {p.name for p in gde_output.glob("*.csv")}
+        assert "Family.csv" not in {p.name for p in _entity_csvs(gde_output)}
 
     def test_ack_from_one_run_never_authorizes_a_different_run(
         self, gde_input: Path, gde_output: Path, tmp_path: Path
@@ -155,13 +162,15 @@ class TestConvertJobVanishGate:
         gated = convert_job("myedbc", str(gde_input))
         assert gated.status is ConvertStatus.NEEDS_ANOMALY_ACK
         reviewed = run_identity("myedbc", str(gde_input))
-        family_before = (gde_output / "Family.csv").read_bytes()
+        family_before = output_layout.csv_path(gde_output, "Family.csv").read_bytes()
 
         # The admin repoints to B, then clicks the ack: A's approval, B's run.
         acked_wrong_run = convert_job("myedbc", str(other_input), anomaly_ack=reviewed)
 
         assert acked_wrong_run.status is ConvertStatus.NEEDS_ANOMALY_ACK  # B was never reviewed
-        assert (gde_output / "Family.csv").read_bytes() == family_before  # nothing written under A's ack
+        assert (
+            output_layout.csv_path(gde_output, "Family.csv").read_bytes() == family_before
+        )  # nothing written under A's ack
         assert _archive_dirs(gde_output) == []
 
         # The SAME token does authorize the run it actually reviewed.
@@ -175,14 +184,14 @@ class TestConvertJobVanishGate:
         convert_job("myedbc", str(gde_input))
         (gde_input / "EmergencyContactInformation.txt").unlink()
         assert convert_job("myedbc", str(gde_input)).status is ConvertStatus.NEEDS_ANOMALY_ACK
-        family_before = (gde_output / "Family.csv").read_bytes()
+        family_before = output_layout.csv_path(gde_output, "Family.csv").read_bytes()
 
         # Reviewed under sd48myedbc, clicked while the dropdown reads myedbc.
         stale = run_identity("sd48myedbc", str(gde_input))
         result = convert_job("myedbc", str(gde_input), anomaly_ack=stale)
 
         assert result.status is ConvertStatus.NEEDS_ANOMALY_ACK
-        assert (gde_output / "Family.csv").read_bytes() == family_before
+        assert output_layout.csv_path(gde_output, "Family.csv").read_bytes() == family_before
 
     def test_manual_convert_archives_stale_cross_config_csv_without_false_anomaly(
         self, gde_input: Path, gde_output: Path
@@ -193,17 +202,19 @@ class TestConvertJobVanishGate:
         WITHOUT firing a false vanish anomaly (the expected set derives from
         enabled_entities, never mappings.keys())."""
         self._configure(gde_input, gde_output)
-        (gde_output / "CourseInfo.csv").write_text("stale cross-config file", encoding="utf-8")
+        output_layout.csv_path(gde_output, "CourseInfo.csv").write_text("stale cross-config file", encoding="utf-8")
 
         result = convert_job("myedbc", str(gde_input))
         assert result.status is not ConvertStatus.NEEDS_ANOMALY_ACK  # no false vanish for a disabled entity
         assert result.entity_counts.get("Students", 0) > 0
         # Not shipped from the top level, not deleted — moved into archive_<ts>/.
-        assert not (gde_output / "CourseInfo.csv").exists()
+        assert not output_layout.csv_path(gde_output, "CourseInfo.csv").exists()
         archives = _archive_dirs(gde_output)
         assert len(archives) == 1
-        assert (archives[0] / "CourseInfo.csv").read_text(encoding="utf-8") == "stale cross-config file"
-        assert "CourseInfo.csv" not in {p.name for p in gde_output.glob("*.csv")}
+        assert (archives[0] / output_layout.csv_relpath("CourseInfo.csv")).read_text(
+            encoding="utf-8"
+        ) == "stale cross-config file"
+        assert "CourseInfo.csv" not in {p.name for p in _entity_csvs(gde_output)}
 
 
 class TestConvertLeavesAFailedEntityOut:
@@ -235,7 +246,7 @@ class TestConvertLeavesAFailedEntityOut:
 
         first = convert_job(self._SIS, str(enhanced))
         assert first.entity_counts.get("Family", 0) > 0
-        family_before = (out / "Family.csv").read_bytes()
+        family_before = output_layout.csv_path(out, "Family.csv").read_bytes()
 
         gated = convert_job(self._SIS, str(plain))
         assert gated.status is ConvertStatus.NEEDS_ANOMALY_ACK
@@ -262,15 +273,19 @@ class TestConvertLeavesAFailedEntityOut:
             "their export file, EmergencyContactInformation.txt, is missing the column "
             "“Parent Auth / Guardian”, which this district's mapping needs"
         ) in prompt
-        assert (out / "Family.csv").read_bytes() == family_before, "nothing is written before the ack"
+        assert output_layout.csv_path(out, "Family.csv").read_bytes() == family_before, (
+            "nothing is written before the ack"
+        )
 
         acked = convert_job(self._SIS, str(plain), anomaly_ack=run_identity(self._SIS, str(plain)))
         assert acked.status is ConvertStatus.DELIVERED
         verdict, headline, _detail = summarize(acked)
         assert verdict is Verdict.WARNING and headline == "Your sync completed without family contacts"
-        assert not (out / "Family.csv").exists()
+        assert not output_layout.csv_path(out, "Family.csv").exists()
         archives = _archive_dirs(out)
-        assert len(archives) == 1 and (archives[0] / "Family.csv").read_bytes() == family_before
+        assert (
+            len(archives) == 1 and (archives[0] / output_layout.csv_relpath("Family.csv")).read_bytes() == family_before
+        )
         records = read_run_records()
         assert records is not None and records[0]["source"] == "manual"
         assert records[0]["status"] == "success"

@@ -1,7 +1,7 @@
 """Tests for src/utils/helpers.py — utility functions.
 
-The zip-naming helpers (``district_slug`` / ``build_zip_name``) live with their
-SFTP consumer now — see ``tests/test_sftp_uploader.py``.
+The zip-naming helpers (``district_slug`` / ``acsv_zip_name``) live in the output
+layout module now — see ``tests/test_output_layout.py``.
 """
 
 import ntpath

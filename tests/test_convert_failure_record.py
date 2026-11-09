@@ -33,7 +33,7 @@ import yaml
 from src.config.app_config import AppConfig
 from src.config.authoring import overlay_path
 from src.config.models import MappingConfig
-from src.etl import pipeline
+from src.etl import output_layout, pipeline
 from src.etl.errors import ConfigLoadError, GuardKind, OutputFolderUnsetError, SourceSchemaError
 from src.etl.extractor import DataExtractor, ExtractionError
 from src.etl.pipeline import run_pipeline
@@ -132,7 +132,9 @@ class TestACriticalRaiseIsRecordedOnce:
             "Classes": ("not_run", "run_aborted"),
             "Enrollments": ("not_run", "run_aborted"),
         }
-        assert list(gde_output.glob("*.csv")) == []  # nothing was written
+        # Nothing was written: no CSV at either layout level and no Advanced CSV zip (DSYNC-57).
+        assert list(gde_output.rglob("*.csv")) == []
+        assert output_layout.acsv_zips(gde_output) == []
 
     def test_twin_a_clean_convert_writes_exactly_one_success_record(self, configured: tuple[Path, Path]) -> None:
         """The positive twin: the same drop, nothing injected — one record, and it is green."""
@@ -183,7 +185,8 @@ class TestACriticalRaiseIsRecordedOnce:
             convert_job(_SIS, str(gde_input))
 
         assert excinfo.value is injected
-        assert (gde_output / "Students.csv").exists(), "the write committed before the raise"
+        assert output_layout.csv_path(gde_output, "Students.csv").exists(), "the write committed before the raise"
+        assert output_layout.acsv_zips(gde_output), "the zip is part of the same committed write"
         records = _records()
         assert len(records) == 1
         assert records[0]["status"] == "failed"
@@ -459,7 +462,7 @@ class TestTheFourNonRecords:
         # Twin: the acknowledged re-run IS an outcome and is recorded.
         convert_job(_SIS, str(gde_input), anomaly_ack=run_identity(_SIS, str(gde_input)))
         assert len(_records()) == 2
-        assert (gde_output / "Students.csv").exists()
+        assert output_layout.csv_path(gde_output, "Students.csv").exists()
 
 
 # --------------------------------------------------------------------------- #

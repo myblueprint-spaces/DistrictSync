@@ -66,6 +66,7 @@ import logging
 import os
 import subprocess  # nosec B404 - launching the OS file browser; no shell, list-form args
 import sys
+import zipfile
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
@@ -73,6 +74,7 @@ from enum import Enum
 from pathlib import Path
 
 from src.config.loader import load_config
+from src.etl import output_layout
 from src.etl.loader import DataLoader
 from src.etl.outcomes import CLASS_INFORMATION_ROLE, EntityCriticality, criticality_of
 from src.etl.pipeline import configured_entity_order, optional_source_files
@@ -531,34 +533,51 @@ def nothing_to_deliver_copy(sis_type: str, *, config_dir: Path | None = None) ->
     )
 
 
-def _top_level_csvs(output_dir: str | None) -> list[Path]:
-    """The committed top-level ``*.csv`` files in the output folder (TOTAL — never raises).
+def _on_disk_deliverables(output_dir: str | None) -> dict[str, Path]:
+    """What the output folder could deliver: CSV filename → the file that carries it (TOTAL).
 
-    Top-level only (non-recursive), matching the directory SCOPE ``SFTPUploader.upload_csvs``
-    globs, so ``archive_<ts>/`` / ``.bak_<ts>/`` contents are invisible to both. This is the
-    raw candidate set ONLY — it is deliberately NOT a "what would ship" answer: the uploader
-    additionally narrows its glob by the delivery manifest, so every caller must pass this
-    through :func:`_deliverable_paths` before claiming anything about delivery (FIX-4 — the
-    unnarrowed read was exactly the dead-end gate). A blank/unreadable folder → ``[]``.
+    Mirrors what ``SFTPUploader.upload_csvs`` reads (DSYNC-57, ``src.etl.output_layout``):
+    a standalone feed is carried by itself at the folder's top level; a rostering CSV is
+    carried by the ONE top-level Advanced CSV zip it is a member of. More than one zip, or
+    an unreadable one, carries nothing (the uploader would refuse it). ``archive_<ts>/``
+    and ``csv/`` are never read. A blank or unreadable folder → ``{}``.
+
+    This is the raw candidate set ONLY; every caller narrows it to the config's entities
+    through :func:`_deliverable_paths` before claiming anything about delivery (FIX-4).
     """
     target = (output_dir or "").strip()
     if not target:
-        return []
+        return {}
+    folder = Path(target)
+    carried: dict[str, Path] = {}
     try:
-        return [p for p in Path(target).glob("*.csv") if p.is_file()]
+        for name in output_layout.STANDALONE_CSV_FILENAMES:
+            path = folder / name
+            if path.is_file():
+                carried[name] = path
     except OSError:
-        return []
+        return {}
+    zips = output_layout.acsv_zips(folder)
+    if len(zips) == 1:
+        try:
+            members = output_layout.zip_member_names(zips[0])
+        except (OSError, zipfile.BadZipFile):
+            members = frozenset()
+        for name in members:
+            if not output_layout.is_standalone(name):
+                carried[name] = zips[0]
+    return carried
 
 
-def _deliverable_paths(entity_names: Iterable[str], output_dir: str | None) -> list[Path]:
-    """The on-disk paths of the config's entity CSVs — the narrowing every deliver fact shares.
+def _deliverable_paths(entity_names: Iterable[str], output_dir: str | None) -> dict[str, Path]:
+    """The config's entity CSVs the folder can deliver → the file carrying each (zip or feed).
 
     The entity→filename spelling comes from ``DataLoader.output_filenames`` (one rule, shared
     with the write path and the stale-output detector), so a manifest can never drift from
     what was written.
     """
     candidates = DataLoader.output_filenames(entity_names)
-    return [p for p in _top_level_csvs(output_dir) if p.name in candidates]
+    return {name: path for name, path in _on_disk_deliverables(output_dir).items() if name in candidates}
 
 
 def _newest_mtime_iso(paths: Iterable[Path]) -> str:
@@ -648,10 +667,10 @@ def deliverable_files(
         # is simply "no deliver action", and Mapping is where a broken config is reported.
         logger.warning("Could not resolve the deliverable set for district '%s': %s", district, exc)
         return DeliverableFiles(filenames=frozenset(), newest_mtime_iso="")
-    paths = _deliverable_paths(entities, output_dir)
+    carried = _deliverable_paths(entities, output_dir)
     return DeliverableFiles(
-        filenames=frozenset(p.name for p in paths),
-        newest_mtime_iso=_newest_mtime_iso(paths),
+        filenames=frozenset(carried),
+        newest_mtime_iso=_newest_mtime_iso(set(carried.values())),
     )
 
 
@@ -672,7 +691,50 @@ def deliverable_manifest(entity_names: Iterable[str], output_dir: str | None) ->
     The entity→filename spelling comes from ``DataLoader.output_filenames`` (one rule,
     shared with the write path and the stale-output detector).
     """
-    return {p.name for p in _deliverable_paths(entity_names, output_dir)}
+    return set(_deliverable_paths(entity_names, output_dir))
+
+
+# What each upload-ready file is, in the order an admin uploads them (DSYNC-57).
+_STANDALONE_IMPORT_NOTES: tuple[tuple[str, str], ...] = (
+    ("StudentAttendance.csv", "Attendance. Upload it on its own."),
+    ("CourseInfo.csv", "myBlueprint+ course list. Upload it on its own."),
+    ("StudentCourses.csv", "myBlueprint+ student courses. Upload it on its own."),
+)
+_ZIP_IMPORT_NOTE = "Your roster. Import it as Advanced CSV."
+
+#: The closing line of the manual-import list: where the loose roster CSVs went.
+ROSTER_CSV_FOLDER_NOTE = (
+    f"The separate roster files are in the {output_layout.ROSTERING_SUBDIR} folder, for checking only."
+)
+
+
+@dataclass(frozen=True)
+class ImportFile:
+    """One upload-ready file at the top of the output folder, with what it is for."""
+
+    filename: str
+    note: str
+
+
+def manual_import_files(output_dir: str | None) -> list[ImportFile]:
+    """The files an admin uploads by hand, read from the output folder's top level (TOTAL).
+
+    Whatever this run left there: the Advanced CSV zip first, then each standalone feed
+    that exists. Each conversion archives an earlier day's zip and any feed it did not
+    produce, so this describes the latest build. A blank or unreadable folder → ``[]``.
+    """
+    target = (output_dir or "").strip()
+    if not target:
+        return []
+    folder = Path(target)
+    files = [ImportFile(p.name, _ZIP_IMPORT_NOTE) for p in output_layout.acsv_zips(folder)]
+    for name, note in _STANDALONE_IMPORT_NOTES:
+        try:
+            if (folder / name).is_file():
+                files.append(ImportFile(name, note))
+        except OSError:
+            continue
+    return files
 
 
 def freshness_fact(mtime_iso: str, *, now: datetime | None = None) -> str:

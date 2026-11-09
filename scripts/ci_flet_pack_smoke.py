@@ -95,6 +95,7 @@ import subprocess  # nosec B404 — launches the packed artifact under test, by 
 import sys
 import tempfile
 import time
+import zipfile
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -737,6 +738,11 @@ DEFAULT_SMOKE_INPUT = _REPO_ROOT / "tests" / "snapshots" / "input"
 # The 5 SpacesEDU rostering entities sd74myedbc emits.
 _ROSTERING_ENTITIES = ("Students", "Staff", "Family", "Classes", "Enrollments")
 _ROSTER_ANCHOR_CSV = "Students.csv"
+# The output-folder layout (DSYNC-57): loose roster CSVs in a subfolder, the import-ready
+# Advanced CSV zip at the top level. Literals because this script never imports `src`;
+# `tests/test_ci_flet_pack_smoke_layout_parity.py` ties them to `src.etl.output_layout`.
+_ROSTERING_SUBDIR = "csv"
+_ACSV_ZIP_PREFIX = "acsv_"
 _UTF8_BOM = b"\xef\xbb\xbf"
 
 # Log markers the phases key off (all owned by src/, cited at their source).
@@ -919,7 +925,7 @@ def _smoke_dry_run(art: Path, ctx: CliSmokeContext) -> bool:
         _expect(proc.returncode == 0, "exit 0", f"got {proc.returncode}"),
         _expect("=== DRY RUN" in proc.stdout, "'=== DRY RUN' banner on stdout"),
         _expect(not missing, "all 5 rostering entities previewed as BUILT", f"not built {missing}" if missing else ""),
-        _expect(not list(out.glob("*.csv")), "no CSV written by the preview"),
+        _expect(not list(out.rglob("*.csv")) and not list(out.glob("*.zip")), "no CSV or zip written by the preview"),
         _expect(record is not None, f"{_RUN_RECORD_MARKER} line in the log", why),
         _expect(
             bool(record) and record.get("status") == "success",
@@ -947,7 +953,8 @@ def _smoke_dry_run(art: Path, ctx: CliSmokeContext) -> bool:
 def _smoke_write_run(art: Path, ctx: CliSmokeContext) -> bool:
     """3 — a REAL write run: the packed exe's atomic-write path, exercised nowhere else.
 
-    Asserts the delivered shape only — the five CSVs exist and are non-empty, the
+    Asserts the delivered shape only — the five CSVs exist in ``csv/`` and are non-empty, the
+    one ``acsv_*.zip`` holds exactly them at its root, the
     roster anchor carries the UTF-8 BOM SpacesEDU/Excel needs, and no ``.tmp_*``
     staging dir survived the transactional commit.
 
@@ -959,20 +966,37 @@ def _smoke_write_run(art: Path, ctx: CliSmokeContext) -> bool:
     out = ctx.new_output("write-run")
     proc = _run_cli(art, _convert_args(ctx, out))
 
+    roster_dir = out / _ROSTERING_SUBDIR
     empty = [
         name
         for name in _ROSTERING_ENTITIES
-        if not (out / f"{name}.csv").is_file() or not (out / f"{name}.csv").stat().st_size
+        if not (roster_dir / f"{name}.csv").is_file() or not (roster_dir / f"{name}.csv").stat().st_size
     ]
-    anchor = out / _ROSTER_ANCHOR_CSV
+    anchor = roster_dir / _ROSTER_ANCHOR_CSV
     head = anchor.read_bytes()[:3] if anchor.is_file() else b""
+    zips = sorted(out.glob(f"{_ACSV_ZIP_PREFIX}*.zip"))
+    try:
+        members = sorted(zipfile.ZipFile(zips[0]).namelist()) if len(zips) == 1 else []
+    except (OSError, zipfile.BadZipFile) as exc:
+        members = [f"<unreadable: {exc}>"]
+    expected_members = sorted(f"{name}.csv" for name in _ROSTERING_ENTITIES)
     staging = [p.name for p in out.glob(".tmp_*")]
     store = ctx.store_path
 
     checks = [
         _expect(proc.returncode == 0, "exit 0", f"got {proc.returncode}"),
-        _expect(not empty, "all 5 rostering CSVs written non-empty", f"missing/empty {empty}" if empty else ""),
+        _expect(
+            not empty,
+            f"all 5 rostering CSVs written non-empty in {_ROSTERING_SUBDIR}/",
+            f"missing/empty {empty}" if empty else "",
+        ),
         _expect(head == _UTF8_BOM, f"{_ROSTER_ANCHOR_CSV} starts with the UTF-8 BOM", repr(head)),
+        _expect(len(zips) == 1, f"exactly one {_ACSV_ZIP_PREFIX}*.zip at the top level", str([z.name for z in zips])),
+        _expect(
+            members == expected_members,
+            "the zip holds exactly the 5 rostering CSVs at its root",
+            str(members),
+        ),
         _expect(not staging, "no .tmp_* staging dir left behind", str(staging) if staging else ""),
         _expect(store.is_file(), "the real run entered the run store (history.db created)", str(store)),
     ]
@@ -1165,7 +1189,9 @@ def _smoke_user_overlay(art: Path, ctx: CliSmokeContext) -> bool:
                 "this run's log slice names the user-dir district",
                 f"looked for {_SD93_OVERLAY_SIS!r} in {len(tail)} new log chars",
             ),
-            _expect(not list(out.glob("*.csv")), "no CSV written by the preview"),
+            _expect(
+                not list(out.rglob("*.csv")) and not list(out.glob("*.zip")), "no CSV or zip written by the preview"
+            ),
         ]
         if not all(checks):
             _dump(proc)

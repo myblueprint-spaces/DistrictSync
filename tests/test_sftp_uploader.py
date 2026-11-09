@@ -1,5 +1,7 @@
 """Tests for src/sftp/uploader.py — SFTP upload with mocked paramiko/keyring."""
 
+import inspect
+import zipfile
 from datetime import date
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -10,55 +12,9 @@ from src.sftp.uploader import (
     INTERACTIVE_RETRY,
     KEYRING_SERVICE,
     LISTING_DENIED_NOTE,
-    STANDALONE_CSV_FILENAMES,
     SFTPUploader,
-    build_zip_name,
-    district_slug,
 )
-
-
-class TestDistrictSlug:
-    def test_strips_myedbc_suffix(self):
-        assert district_slug("sd40myedbc") == "sd40"
-        assert district_slug("sd48myedbc") == "sd48"
-        assert district_slug("sd51myedbc") == "sd51"
-        assert district_slug("sd74myedbc") == "sd74"
-
-    def test_base_myedbc_unchanged(self):
-        assert district_slug("myedbc") == "myedbc"
-
-    def test_sanitizes_special_characters(self):
-        assert district_slug("myBlueprint+") == "myBlueprint"
-        assert district_slug("sis with spaces") == "sis_with_spaces"
-        assert district_slug("sis/with\\slashes") == "sis_with_slashes"
-
-    def test_fallback_when_all_stripped(self):
-        assert district_slug("+++") == "district"
-        assert district_slug("   ") == "district"
-
-
-class TestBuildZipName:
-    def test_with_district(self):
-        result = build_zip_name("sd40myedbc", for_date=date(2026, 4, 10))
-        assert result == "districtsync_sd40_2026-04-10.zip"
-
-    def test_with_base_district(self):
-        result = build_zip_name("myedbc", for_date=date(2026, 4, 10))
-        assert result == "districtsync_myedbc_2026-04-10.zip"
-
-    def test_without_district_falls_back_to_date_only(self):
-        """Legacy callers that don't know the district get the old format."""
-        result = build_zip_name(for_date=date(2026, 4, 10))
-        assert result == "districtsync_2026-04-10.zip"
-
-    def test_none_district_matches_default(self):
-        result = build_zip_name(sis_type=None, for_date=date(2026, 4, 10))
-        assert result == "districtsync_2026-04-10.zip"
-
-    def test_uses_today_when_no_date_provided(self):
-        result = build_zip_name("sd40myedbc")
-        today = date.today().isoformat()
-        assert result == f"districtsync_sd40_{today}.zip"
+from tests._output_tree import build_output_tree, zip_name
 
 
 class TestSFTPUploaderInit:
@@ -251,58 +207,81 @@ class TestPasswordOverride:
             mock_store.assert_not_called()
 
 
+ROSTERING = ["Students", "Staff", "Family", "Classes", "Enrollments"]
+
+
+def _deliver(uploader, output_dir, manifest):
+    """Run one delivery with a mocked transport; return (uploaded, zip members, remote paths, local paths)."""
+    zipped: list[str] = []
+    locals_: list[Path] = []
+
+    def capture_put(local, remote):
+        locals_.append(Path(local))
+        if str(local).endswith(".zip"):
+            with zipfile.ZipFile(local) as zf:
+                zipped.extend(zf.namelist())
+
+    mock_sftp = MagicMock()
+    mock_sftp.put.side_effect = capture_put
+    mock_client = MagicMock()
+    with patch.object(uploader, "_connect", return_value=(mock_client, mock_sftp)):
+        uploaded = uploader.upload_csvs(output_dir, manifest=manifest, retry=INTERACTIVE_RETRY)
+    mock_client.close.assert_called_once()
+    return uploaded, zipped, [call.args[1] for call in mock_sftp.put.call_args_list], locals_
+
+
+def _uploader(remote="/upload"):
+    return SFTPUploader("sftp.ca.spacesedu.com", 22, "user", remote)
+
+
 class TestUploadCsvs:
-    def test_upload_zips_all_csvs(self, tmp_path):
-        """upload_csvs should zip all CSVs into a single dated file and upload it."""
-        from datetime import date
+    def test_ships_the_zip_already_in_the_output_folder(self, tmp_path):
+        """DSYNC-57: the zip SFTP sends IS the file the conversion left in the folder."""
+        zip_path = build_output_tree(tmp_path, ["Students", "Staff"])
 
-        (tmp_path / "Students.csv").write_text("id,name\n1,Alice\n", encoding="utf-8")
-        (tmp_path / "Staff.csv").write_text("id,name\n1,Harper\n", encoding="utf-8")
+        uploaded, zipped, remote, local = _deliver(_uploader(), tmp_path, {"Students.csv", "Staff.csv"})
 
-        uploader = SFTPUploader("sftp.ca.spacesedu.com", 22, "user", "/upload")
+        assert sorted(uploaded) == ["Staff.csv", "Students.csv"]
+        assert sorted(zipped) == ["Staff.csv", "Students.csv"]
+        assert local == [zip_path]
+        assert remote == [f"/upload/{zip_name()}"]
+
+    def test_the_zip_is_not_rebuilt_or_removed(self, tmp_path):
+        zip_path = build_output_tree(tmp_path, ["Students"])
+        before = zip_path.read_bytes()
+
+        _deliver(_uploader(), tmp_path, {"Students.csv"})
+
+        assert zip_path.read_bytes() == before
+        assert sorted(p.name for p in tmp_path.iterdir()) == sorted(["csv", zip_name()])
+
+    def test_no_zip_in_the_folder_fails_loud(self, tmp_path):
+        """Fail-loud: a silent ``[]`` let callers report a false 'delivered' (exit 3 instead)."""
+        (tmp_path / "csv").mkdir()
+        (tmp_path / "csv" / "Students.csv").write_text("id\n1\n", encoding="utf-8")
+        with pytest.raises(RuntimeError, match="exactly one Advanced CSV zip"):
+            _uploader().upload_csvs(tmp_path, manifest={"Students.csv"}, retry=INTERACTIVE_RETRY)
+
+    def test_two_zips_in_the_folder_fail_loud(self, tmp_path):
+        """An ambiguous folder never guesses which bundle is this run's."""
+        build_output_tree(tmp_path, ["Students"])
+        build_output_tree(tmp_path, ["Students"], for_date=date(2026, 11, 5))
         mock_sftp = MagicMock()
-        mock_client = MagicMock()
-        with patch.object(uploader, "_connect", return_value=(mock_client, mock_sftp)):
-            uploaded = uploader.upload_csvs(tmp_path, manifest={"Students.csv", "Staff.csv"}, retry=INTERACTIVE_RETRY)
+        with (
+            patch.object(_uploader(), "_connect", return_value=(MagicMock(), mock_sftp)),
+            pytest.raises(RuntimeError, match=r"found 2"),
+        ):
+            _uploader().upload_csvs(tmp_path, manifest={"Students.csv"}, retry=INTERACTIVE_RETRY)
+        mock_sftp.put.assert_not_called()
 
-        # Returns the list of CSV filenames inside the ZIP
-        assert len(uploaded) == 2
-        assert "Staff.csv" in uploaded
-        assert "Students.csv" in uploaded
-        # Only one sftp.put call (the dated ZIP file)
-        assert mock_sftp.put.call_count == 1
-        remote_path = mock_sftp.put.call_args[0][1]
-        expected_name = f"districtsync_{date.today().isoformat()}.zip"
-        assert remote_path == f"/upload/{expected_name}"
-        mock_client.close.assert_called_once()
-
-    def test_upload_custom_zip_name(self, tmp_path):
-        (tmp_path / "Students.csv").write_text("id\n1\n", encoding="utf-8")
-
-        uploader = SFTPUploader("sftp.ca.spacesedu.com", 22, "user", "/upload")
-        mock_sftp = MagicMock()
-        mock_client = MagicMock()
-        with patch.object(uploader, "_connect", return_value=(mock_client, mock_sftp)):
-            uploaded = uploader.upload_csvs(
-                tmp_path, zip_name="custom.zip", manifest={"Students.csv"}, retry=INTERACTIVE_RETRY
-            )
-
-        assert len(uploaded) == 1
-        remote_path = mock_sftp.put.call_args[0][1]
-        assert remote_path == "/upload/custom.zip"
-
-    def test_upload_no_csv_files_raises(self, tmp_path):
-        """Fail-loud on an empty output dir: a silent ``[]`` return let callers report a
-        false 'delivered'. The raise makes the pipeline exit 3 / Convert BUILT_NOT_DELIVERED.
-        """
-        uploader = SFTPUploader("sftp.ca.spacesedu.com", 22, "user", "/upload")
-        with pytest.raises(RuntimeError, match="No CSV files found to upload"):
-            uploader.upload_csvs(tmp_path, manifest={"Students.csv"}, retry=INTERACTIVE_RETRY)
+    def test_an_unreadable_zip_fails_loud(self, tmp_path):
+        (tmp_path / zip_name()).write_bytes(b"not a zip")
+        with pytest.raises(RuntimeError, match="could not be read"):
+            _uploader().upload_csvs(tmp_path, manifest={"Students.csv"}, retry=INTERACTIVE_RETRY)
 
     def test_upload_raises_on_sftp_error(self, tmp_path):
-        (tmp_path / "Students.csv").write_text("id\n1\n", encoding="utf-8")
-
-        uploader = SFTPUploader("sftp.ca.spacesedu.com", 22, "user", "/upload")
+        build_output_tree(tmp_path, ["Students"])
+        uploader = _uploader()
         mock_sftp = MagicMock()
         mock_client = MagicMock()
         mock_sftp.put.side_effect = Exception("disk full")
@@ -313,418 +292,153 @@ class TestUploadCsvs:
             uploader.upload_csvs(tmp_path, manifest={"Students.csv"}, retry=INTERACTIVE_RETRY)
         mock_client.close.assert_called_once()
 
-    def test_uploaded_zip_contains_all_csvs(self, tmp_path):
-        """Verify the ZIP actually contains the expected CSV files."""
-        import zipfile
-
-        (tmp_path / "Students.csv").write_text("id,name\n1,Alice\n", encoding="utf-8")
-        (tmp_path / "Staff.csv").write_text("id,role\n1,teacher\n", encoding="utf-8")
-
-        uploader = SFTPUploader("sftp.ca.spacesedu.com", 22, "user", "/files")
-        mock_sftp = MagicMock()
-        mock_client = MagicMock()
-
-        # Capture the local ZIP path passed to sftp.put
-        captured_local = []
-
-        def capture_put(local, remote):
-            # Read the ZIP before the temp dir is cleaned up
-            with zipfile.ZipFile(local) as zf:
-                captured_local.extend(zf.namelist())
-
-        mock_sftp.put.side_effect = capture_put
-
-        with patch.object(uploader, "_connect", return_value=(mock_client, mock_sftp)):
-            uploader.upload_csvs(tmp_path, manifest={"Students.csv", "Staff.csv"}, retry=INTERACTIVE_RETRY)
-
-        assert sorted(captured_local) == ["Staff.csv", "Students.csv"]
+    def test_zip_name_and_staging_are_no_longer_parameters(self):
+        """Nothing is zipped at delivery time, so there is no name to choose or place to stage."""
+        params = inspect.signature(SFTPUploader.upload_csvs).parameters
+        assert {"zip_name", "sis_type", "staging_dir"}.isdisjoint(params)
 
 
 class TestDeliveryManifest:
-    """The payload is the caller's MANIFEST, never the output folder's ``*.csv`` glob.
+    """The payload is the caller's MANIFEST, never the output folder's listing.
 
     An admin who drops a spreadsheet export / backup CSV into the output folder must not
     have it uploaded to SpacesEDU — the folder is *where* the roster lives, not *what*
     the run vouched for.
     """
 
-    @staticmethod
-    def _capture(uploader, tmp_path, manifest):
-        """Run an upload with a mocked transport; return (zip member names, remote names)."""
-        import zipfile
-
-        zipped: list[str] = []
-        remote_names: list[str] = []
-        mock_sftp = MagicMock()
-
-        def _capture_put(local, remote):
-            remote_names.append(str(remote).rsplit("/", 1)[-1])
-            if str(local).endswith(".zip"):
-                with zipfile.ZipFile(local) as zf:
-                    zipped.extend(zf.namelist())
-
-        mock_sftp.put.side_effect = _capture_put
-        with patch.object(uploader, "_connect", return_value=(MagicMock(), mock_sftp)):
-            uploaded = uploader.upload_csvs(tmp_path, manifest=manifest, retry=INTERACTIVE_RETRY)
-        return uploaded, zipped, remote_names
-
-    def test_foreign_csv_in_the_folder_is_not_uploaded(self, tmp_path):
-        (tmp_path / "Students.csv").write_text("id,name\n1,Alice\n", encoding="utf-8")
+    def test_foreign_files_in_the_folder_are_not_uploaded(self, tmp_path):
+        build_output_tree(tmp_path, ["Students"])
         (tmp_path / "old_roster.csv").write_text("id,name\n9,Ex Student\n", encoding="utf-8")
-        (tmp_path / "students_backup.csv").write_text("id,name\n8,Backup\n", encoding="utf-8")
+        (tmp_path / "students_backup.zip").write_bytes(b"x")
 
-        uploader = SFTPUploader("sftp.ca.spacesedu.com", 22, "user", "/upload")
-        uploaded, zipped, _ = self._capture(uploader, tmp_path, {"Students.csv"})
+        uploaded, zipped, remote, _ = _deliver(_uploader(), tmp_path, {"Students.csv"})
 
         assert zipped == ["Students.csv"]
         assert uploaded == ["Students.csv"]
+        assert remote == [f"/upload/{zip_name()}"]
         # Not delivered — and not touched either (the uploader never deletes).
         assert (tmp_path / "old_roster.csv").exists()
-        assert (tmp_path / "students_backup.csv").exists()
+        assert (tmp_path / "students_backup.zip").exists()
 
-    def test_multi_run_folder_delivers_every_manifested_file(self, tmp_path):
-        """Back-compat: a folder holding a full district's CSVs still ships all of them."""
-        entities = ["Students", "Staff", "Family", "Classes", "Enrollments"]
-        for entity in entities:
-            (tmp_path / f"{entity}.csv").write_text("col\nv\n", encoding="utf-8")
-        (tmp_path / "notes.csv").write_text("junk\n", encoding="utf-8")
+    def test_a_full_district_ships_every_rostering_file_in_one_zip(self, tmp_path):
+        build_output_tree(tmp_path, ROSTERING)
 
-        uploader = SFTPUploader("sftp.ca.spacesedu.com", 22, "user", "/upload")
-        uploaded, zipped, _ = self._capture(uploader, tmp_path, {f"{e}.csv" for e in entities})
+        uploaded, zipped, remote, _ = _deliver(_uploader(), tmp_path, {f"{e}.csv" for e in ROSTERING})
 
-        assert sorted(zipped) == sorted(f"{e}.csv" for e in entities)
-        assert sorted(uploaded) == sorted(f"{e}.csv" for e in entities)
-        assert "notes.csv" not in zipped
+        assert sorted(zipped) == sorted(f"{e}.csv" for e in ROSTERING)
+        assert sorted(uploaded) == sorted(f"{e}.csv" for e in ROSTERING)
+        assert len(remote) == 1
 
-    def test_attendance_split_holds_inside_the_manifest(self, tmp_path):
-        """The manifest narrows WHAT ships; the standalone-attendance split is unchanged —
-        and an UNmanifested StudentAttendance.csv is not put standalone either."""
-        (tmp_path / "Students.csv").write_text("id\n1\n", encoding="utf-8")
-        (tmp_path / "StudentAttendance.csv").write_text("School Number\n100\n", encoding="utf-8")
-
-        uploader = SFTPUploader("sftp.ca.spacesedu.com", 22, "user", "/upload")
-
-        # Manifested → zip (rostering) + a standalone attendance put.
-        uploaded, zipped, remote = self._capture(uploader, tmp_path, {"Students.csv", "StudentAttendance.csv"})
-        assert zipped == ["Students.csv"]
-        assert "StudentAttendance.csv" in remote
-        assert sorted(uploaded) == ["StudentAttendance.csv", "Students.csv"]
-
-        # Not manifested → the attendance file stays home; only the rostering zip goes.
-        uploaded, zipped, remote = self._capture(uploader, tmp_path, {"Students.csv"})
-        assert zipped == ["Students.csv"]
-        assert "StudentAttendance.csv" not in remote
-        assert uploaded == ["Students.csv"]
-
-    def test_manifested_file_missing_from_disk_fails_loud(self, tmp_path):
-        """A vouched-for file that vanished must abort — a partial roster reported as
-        'delivered' is the dishonest outcome the exit-3 contract exists to prevent."""
-        (tmp_path / "Students.csv").write_text("id\n1\n", encoding="utf-8")
-
-        uploader = SFTPUploader("sftp.ca.spacesedu.com", 22, "user", "/upload")
+    def test_a_zip_that_disagrees_with_the_manifest_is_refused(self, tmp_path):
+        """A zip holding MORE than this run vouches for (a hand-edited or stale bundle) never ships."""
+        build_output_tree(tmp_path, ["Students", "Family"])
         mock_sftp = MagicMock()
+        uploader = _uploader()
         with (
             patch.object(uploader, "_connect", return_value=(MagicMock(), mock_sftp)),
-            pytest.raises(RuntimeError, match="Enrollments.csv"),
+            pytest.raises(RuntimeError, match="does not match the files this run produced"),
         ):
-            uploader.upload_csvs(tmp_path, manifest={"Students.csv", "Enrollments.csv"}, retry=INTERACTIVE_RETRY)
+            uploader.upload_csvs(tmp_path, manifest={"Students.csv"}, retry=INTERACTIVE_RETRY)
+        mock_sftp.put.assert_not_called()
+
+    def test_a_zip_missing_a_manifested_file_is_refused(self, tmp_path):
+        """A vouched-for roster file absent from the zip aborts: a partial roster reported as
+        'delivered' is the dishonest outcome the exit-3 contract exists to prevent."""
+        build_output_tree(tmp_path, ["Students"])
+        with pytest.raises(RuntimeError, match="does not match"):
+            _uploader().upload_csvs(tmp_path, manifest={"Students.csv", "Enrollments.csv"}, retry=INTERACTIVE_RETRY)
+
+    def test_attendance_split_holds_inside_the_manifest(self, tmp_path):
+        """The manifest narrows WHAT ships; an UNmanifested StudentAttendance.csv stays home."""
+        build_output_tree(tmp_path, ["Students", "StudentAttendance"])
+
+        uploaded, zipped, remote, _ = _deliver(_uploader(), tmp_path, {"Students.csv", "StudentAttendance.csv"})
+        assert zipped == ["Students.csv"]
+        assert "/upload/StudentAttendance.csv" in remote
+        assert sorted(uploaded) == ["StudentAttendance.csv", "Students.csv"]
+
+        uploaded, zipped, remote, _ = _deliver(_uploader(), tmp_path, {"Students.csv"})
+        assert zipped == ["Students.csv"]
+        assert "/upload/StudentAttendance.csv" not in remote
+        assert uploaded == ["Students.csv"]
+
+    def test_manifested_standalone_feed_missing_from_disk_fails_loud(self, tmp_path):
+        build_output_tree(tmp_path, ["Students"])
+        mock_sftp = MagicMock()
+        uploader = _uploader()
+        with (
+            patch.object(uploader, "_connect", return_value=(MagicMock(), mock_sftp)),
+            pytest.raises(RuntimeError, match="StudentAttendance.csv"),
+        ):
+            uploader.upload_csvs(tmp_path, manifest={"Students.csv", "StudentAttendance.csv"}, retry=INTERACTIVE_RETRY)
         mock_sftp.put.assert_not_called()  # nothing half-shipped
 
     def test_empty_manifest_refuses_to_invent_a_payload(self, tmp_path):
-        (tmp_path / "Students.csv").write_text("id\n1\n", encoding="utf-8")
-
-        uploader = SFTPUploader("sftp.ca.spacesedu.com", 22, "user", "/upload")
+        build_output_tree(tmp_path, ["Students"])
         with pytest.raises(RuntimeError, match="nominated for delivery"):
-            uploader.upload_csvs(tmp_path, manifest=set(), retry=INTERACTIVE_RETRY)
+            _uploader().upload_csvs(tmp_path, manifest=set(), retry=INTERACTIVE_RETRY)
 
     def test_manifest_is_required(self):
-        """Keyword-only and REQUIRED: no caller can silently fall back to globbing."""
-        import inspect
-
+        """Keyword-only and REQUIRED: no caller can silently fall back to the folder listing."""
         param = inspect.signature(SFTPUploader.upload_csvs).parameters["manifest"]
         assert param.kind is inspect.Parameter.KEYWORD_ONLY
         assert param.default is inspect.Parameter.empty
-
-
-class TestStandaloneFeedNames:
-    """``STANDALONE_CSV_FILENAMES`` is re-spelled in the uploader — pin it to the loader."""
-
-    def test_names_match_the_loader_entity_filename_rule(self):
-        """The set is spelled locally (layer isolation — see the constant's note), so it
-        must be pinned to ``DataLoader.csv_filename`` or the two can silently drift."""
-        from src.etl.loader import DataLoader
-
-        assert (
-            DataLoader.output_filenames({"StudentAttendance", "CourseInfo", "StudentCourses"})
-            == STANDALONE_CSV_FILENAMES
-        )
-
-    def test_every_standalone_name_is_a_real_entity_file(self):
-        """A typo ('StudentCourse.csv') would otherwise sit in the set silently: it would
-        match no file on disk, so the feed would land in the zip with no test failing."""
-        from src.etl.loader import DataLoader
-        from src.etl.transformers.registry import TRANSFORMER_REGISTRY
-
-        assert DataLoader.output_filenames(TRANSFORMER_REGISTRY) >= STANDALONE_CSV_FILENAMES
 
 
 class TestUploadStandaloneFeeds:
     """StudentAttendance + the two myBlueprint+ course CSVs ship outside the rostering zip."""
 
     def test_attendance_delivered_standalone_and_excluded_from_zip(self, tmp_path):
-        """Rostering CSVs zip together; StudentAttendance.csv is put separately."""
-        import zipfile
+        build_output_tree(tmp_path, ["Students", "Enrollments", "StudentAttendance"])
 
-        (tmp_path / "Students.csv").write_text("id,name\n1,Alice\n", encoding="utf-8")
-        (tmp_path / "Enrollments.csv").write_text("class,user\nC1,1\n", encoding="utf-8")
-        (tmp_path / "StudentAttendance.csv").write_text(
-            "School Number,Absence Date,Absence Category,Student Number\n,01-Sep-2025,A,1\n",
-            encoding="utf-8",
+        uploaded, zipped, remote, _ = _deliver(
+            _uploader(), tmp_path, {"Students.csv", "Enrollments.csv", "StudentAttendance.csv"}
         )
 
-        uploader = SFTPUploader("sftp.ca.spacesedu.com", 22, "user", "/upload")
-        mock_sftp = MagicMock()
-        mock_client = MagicMock()
+        assert sorted(zipped) == ["Enrollments.csv", "Students.csv"]
+        assert remote == [f"/upload/{zip_name()}", "/upload/StudentAttendance.csv"]
+        assert sorted(uploaded) == ["Enrollments.csv", "StudentAttendance.csv", "Students.csv"]
 
-        # Capture the namelist of any ZIP put, and all remote paths.
-        zipped_names: list[str] = []
+    def test_attendance_only_ships_no_zip(self, tmp_path):
+        """Only StudentAttendance.csv: delivered standalone, and no zip is needed or sent."""
+        build_output_tree(tmp_path, ["StudentAttendance"])
 
-        def capture_put(local, remote):
-            if str(local).endswith(".zip"):
-                with zipfile.ZipFile(local) as zf:
-                    zipped_names.extend(zf.namelist())
+        uploaded, zipped, remote, _ = _deliver(_uploader(), tmp_path, {"StudentAttendance.csv"})
 
-        mock_sftp.put.side_effect = capture_put
-
-        with patch.object(uploader, "_connect", return_value=(mock_client, mock_sftp)):
-            uploaded = uploader.upload_csvs(
-                tmp_path, manifest={"Students.csv", "Enrollments.csv", "StudentAttendance.csv"}, retry=INTERACTIVE_RETRY
-            )
-
-        # The zip contains the rostering CSVs but NOT the attendance file.
-        assert sorted(zipped_names) == ["Enrollments.csv", "Students.csv"]
-        assert "StudentAttendance.csv" not in zipped_names
-
-        # Two puts: the rostering zip + the standalone attendance file.
-        assert mock_sftp.put.call_count == 2
-        remote_paths = [call.args[1] for call in mock_sftp.put.call_args_list]
-        assert any(p.endswith("/StudentAttendance.csv") for p in remote_paths)
-        assert "/upload/StudentAttendance.csv" in remote_paths
-
-        # Return value reports both the zipped CSVs and the standalone file.
-        assert "StudentAttendance.csv" in uploaded
-        assert "Students.csv" in uploaded
-        assert "Enrollments.csv" in uploaded
-        mock_client.close.assert_called_once()
-
-    def test_no_standalone_put_when_attendance_absent(self, tmp_path):
-        """Districts without an attendance file: zip-only, behaviour unchanged."""
-        import zipfile
-
-        (tmp_path / "Students.csv").write_text("id,name\n1,Alice\n", encoding="utf-8")
-        (tmp_path / "Staff.csv").write_text("id,role\n1,teacher\n", encoding="utf-8")
-
-        uploader = SFTPUploader("sftp.ca.spacesedu.com", 22, "user", "/upload")
-        mock_sftp = MagicMock()
-        mock_client = MagicMock()
-
-        zipped_names: list[str] = []
-
-        def capture_put(local, remote):
-            with zipfile.ZipFile(local) as zf:
-                zipped_names.extend(zf.namelist())
-
-        mock_sftp.put.side_effect = capture_put
-
-        with patch.object(uploader, "_connect", return_value=(mock_client, mock_sftp)):
-            uploaded = uploader.upload_csvs(tmp_path, manifest={"Students.csv", "Staff.csv"}, retry=INTERACTIVE_RETRY)
-
-        # Single put (the zip), and the zip holds every rostering CSV.
-        assert mock_sftp.put.call_count == 1
-        assert mock_sftp.put.call_args.args[1].endswith(".zip")
-        assert sorted(zipped_names) == ["Staff.csv", "Students.csv"]
-        assert sorted(uploaded) == ["Staff.csv", "Students.csv"]
-
-    def test_attendance_only_no_empty_zip(self, tmp_path):
-        """Only StudentAttendance.csv present: deliver it standalone, no empty zip."""
-        (tmp_path / "StudentAttendance.csv").write_text(
-            "School Number,Absence Date,Absence Category,Student Number\n,01-Sep-2025,A,1\n",
-            encoding="utf-8",
-        )
-
-        uploader = SFTPUploader("sftp.ca.spacesedu.com", 22, "user", "/upload")
-        mock_sftp = MagicMock()
-        mock_client = MagicMock()
-
-        with patch.object(uploader, "_connect", return_value=(mock_client, mock_sftp)):
-            uploaded = uploader.upload_csvs(tmp_path, manifest={"StudentAttendance.csv"}, retry=INTERACTIVE_RETRY)
-
-        # Exactly one put — the standalone attendance file, no empty zip.
-        assert mock_sftp.put.call_count == 1
-        remote_path = mock_sftp.put.call_args.args[1]
-        assert remote_path == "/upload/StudentAttendance.csv"
-        assert not remote_path.endswith(".zip")
+        assert remote == ["/upload/StudentAttendance.csv"]
+        assert zipped == []
         assert uploaded == ["StudentAttendance.csv"]
-        mock_client.close.assert_called_once()
-
-    @staticmethod
-    def _deliver(uploader, output_dir, manifest):
-        """Run one delivery; return (uploaded, the zip's namelist, every remote path)."""
-        import zipfile
-
-        zipped_names: list[str] = []
-
-        def capture_put(local, remote):
-            if str(local).endswith(".zip"):
-                with zipfile.ZipFile(local) as zf:
-                    zipped_names.extend(zf.namelist())
-
-        mock_sftp = MagicMock()
-        mock_sftp.put.side_effect = capture_put
-        with patch.object(uploader, "_connect", return_value=(MagicMock(), mock_sftp)):
-            uploaded = uploader.upload_csvs(output_dir, manifest=manifest, retry=INTERACTIVE_RETRY)
-        return uploaded, zipped_names, [call.args[1] for call in mock_sftp.put.call_args_list]
-
-    def test_course_files_delivered_standalone_and_excluded_from_zip(self, tmp_path):
-        """A myBlueprint+ district: the rostering CSVs zip together, and each course CSV
-        is put individually into the same remote folder."""
-        rostering = ["Students", "Staff", "Family", "Classes", "Enrollments"]
-        courses = ["CourseInfo", "StudentCourses"]
-        for entity in rostering + courses:
-            (tmp_path / f"{entity}.csv").write_text("col\nv\n", encoding="utf-8")
-
-        uploader = SFTPUploader("sftp.ca.spacesedu.com", 22, "user", "/upload")
-        uploaded, zipped, remote = self._deliver(uploader, tmp_path, {f"{e}.csv" for e in rostering + courses})
-
-        assert sorted(zipped) == sorted(f"{e}.csv" for e in rostering)
-        assert "CourseInfo.csv" not in zipped
-        assert "StudentCourses.csv" not in zipped
-
-        # One zip put + one put per course file, all into the same remote directory.
-        assert len(remote) == 3
-        assert sum(1 for p in remote if p.endswith(".zip")) == 1
-        assert "/upload/CourseInfo.csv" in remote
-        assert "/upload/StudentCourses.csv" in remote
-
-        # Every manifested file is still reported as delivered.
-        assert sorted(uploaded) == sorted(f"{e}.csv" for e in rostering + courses)
 
     def test_course_only_district_ships_no_zip(self, tmp_path):
-        """``mbponly`` emits only the two course CSVs: both go standalone and the
-        empty-zip guard means no archive is sent at all."""
-        for entity in ("CourseInfo", "StudentCourses"):
-            (tmp_path / f"{entity}.csv").write_text("col\nv\n", encoding="utf-8")
+        """``mbponly`` emits only the two course CSVs: both go standalone."""
+        build_output_tree(tmp_path, ["CourseInfo", "StudentCourses"])
 
-        uploader = SFTPUploader("sftp.ca.spacesedu.com", 22, "user", "/upload")
-        uploaded, zipped, remote = self._deliver(uploader, tmp_path, {"CourseInfo.csv", "StudentCourses.csv"})
+        uploaded, zipped, remote, _ = _deliver(_uploader(), tmp_path, {"CourseInfo.csv", "StudentCourses.csv"})
 
         assert zipped == []
-        assert not any(p.endswith(".zip") for p in remote)
         assert sorted(remote) == ["/upload/CourseInfo.csv", "/upload/StudentCourses.csv"]
         assert sorted(uploaded) == ["CourseInfo.csv", "StudentCourses.csv"]
 
-    def test_all_seven_entities_split_into_one_zip_and_three_standalone_feeds(self, tmp_path):
-        """The widest shipped shape (``mbp_all`` + attendance): the split is by feed, so
-        the three standalone feeds never ride the rostering bundle."""
-        rostering = ["Students", "Staff", "Family", "Classes", "Enrollments"]
+    def test_all_eight_entities_split_into_one_zip_and_three_standalone_feeds(self, tmp_path):
+        """The widest shipped shape: the split is by feed (ACSV-026)."""
         standalone = ["CourseInfo", "StudentCourses", "StudentAttendance"]
-        for entity in rostering + standalone:
-            (tmp_path / f"{entity}.csv").write_text("col\nv\n", encoding="utf-8")
+        build_output_tree(tmp_path, ROSTERING + standalone)
 
-        uploader = SFTPUploader("sftp.ca.spacesedu.com", 22, "user", "/upload")
-        uploaded, zipped, remote = self._deliver(uploader, tmp_path, {f"{e}.csv" for e in rostering + standalone})
+        uploaded, zipped, remote, _ = _deliver(_uploader(), tmp_path, {f"{e}.csv" for e in ROSTERING + standalone})
 
-        assert sorted(zipped) == sorted(f"{e}.csv" for e in rostering)
+        assert sorted(zipped) == sorted(f"{e}.csv" for e in ROSTERING)
         assert len(remote) == 4
         for entity in standalone:
             assert f"/upload/{entity}.csv" in remote
-        assert sorted(uploaded) == sorted(f"{e}.csv" for e in rostering + standalone)
+        assert sorted(uploaded) == sorted(f"{e}.csv" for e in ROSTERING + standalone)
 
     def test_unmanifested_course_file_is_not_put_standalone(self, tmp_path):
-        """The manifest still decides WHAT ships — the standalone split only decides HOW.
-        A course CSV left over from another config's run stays on disk."""
-        (tmp_path / "Students.csv").write_text("id\n1\n", encoding="utf-8")
-        (tmp_path / "CourseInfo.csv").write_text("col\nv\n", encoding="utf-8")
+        """The manifest still decides WHAT ships. A course CSV left by another config's run stays."""
+        build_output_tree(tmp_path, ["Students", "CourseInfo"])
 
-        uploader = SFTPUploader("sftp.ca.spacesedu.com", 22, "user", "/upload")
-        uploaded, zipped, remote = self._deliver(uploader, tmp_path, {"Students.csv"})
+        uploaded, zipped, remote, _ = _deliver(_uploader(), tmp_path, {"Students.csv"})
 
         assert zipped == ["Students.csv"]
         assert "/upload/CourseInfo.csv" not in remote
         assert uploaded == ["Students.csv"]
-        assert (tmp_path / "CourseInfo.csv").exists()  # never deleted, just not shipped
-
-
-class TestStagingDir:
-    """Where the delivery zip is BUILT (plan 0049 S-1a-ii.2).
-
-    ``staging_dir=None`` is today's ``%TEMP%``, byte-identical for every install in the
-    field; only the scheduled nightly on a machine-scoped install passes a directory, and
-    ``pipeline`` is what decides that (see ``tests/test_main_helpers.py``).
-    """
-
-    @staticmethod
-    def _deliver(uploader, output_dir, manifest, **kwargs):
-        mock_sftp = MagicMock()
-        mock_client = MagicMock()
-        seen: list[Path] = []
-
-        def _put(local, remote):
-            seen.append(Path(local))
-
-        mock_sftp.put.side_effect = _put
-        with patch.object(uploader, "_connect", return_value=(mock_client, mock_sftp)):
-            uploader.upload_csvs(output_dir, manifest=manifest, **kwargs, retry=INTERACTIVE_RETRY)
-        return seen
-
-    def test_default_stages_outside_the_output_folder(self, tmp_path):
-        """The default is unchanged: a system temp dir, not the profile and not the output."""
-        (tmp_path / "Students.csv").write_text("id\n1\n", encoding="utf-8")
-        uploader = SFTPUploader("sftp.ca.spacesedu.com", 22, "user", "/upload")
-
-        staged = self._deliver(uploader, tmp_path, {"Students.csv"})
-
-        assert len(staged) == 1
-        assert staged[0].suffix == ".zip"
-        assert tmp_path not in staged[0].parents
-
-    def test_an_explicit_staging_dir_is_where_the_zip_is_built(self, tmp_path):
-        (tmp_path / "Students.csv").write_text("id\n1\n", encoding="utf-8")
-        staging = tmp_path / "profile" / "runs" / "tmp"
-        uploader = SFTPUploader("sftp.ca.spacesedu.com", 22, "user", "/upload")
-
-        staged = self._deliver(uploader, tmp_path, {"Students.csv"}, staging_dir=staging)
-
-        assert len(staged) == 1
-        assert staging in staged[0].parents
-
-    def test_the_staging_dir_is_created_when_missing(self, tmp_path):
-        (tmp_path / "Students.csv").write_text("id\n1\n", encoding="utf-8")
-        staging = tmp_path / "profile" / "runs" / "tmp"
-        assert not staging.exists()
-        uploader = SFTPUploader("sftp.ca.spacesedu.com", 22, "user", "/upload")
-
-        self._deliver(uploader, tmp_path, {"Students.csv"}, staging_dir=staging)
-
-        assert staging.is_dir()
-
-    def test_nothing_is_left_behind_in_the_staging_dir(self, tmp_path):
-        """A zip of student PII must not outlive the delivery it was built for."""
-        (tmp_path / "Students.csv").write_text("id\n1\n", encoding="utf-8")
-        staging = tmp_path / "profile" / "runs" / "tmp"
-        uploader = SFTPUploader("sftp.ca.spacesedu.com", 22, "user", "/upload")
-
-        self._deliver(uploader, tmp_path, {"Students.csv"}, staging_dir=staging)
-
-        assert list(staging.iterdir()) == []
-
-    def test_a_standalone_only_delivery_needs_no_staging_at_all(self, tmp_path):
-        """No rostering CSVs → no zip → the staging dir is created but never written into."""
-        (tmp_path / "StudentAttendance.csv").write_text("id\n1\n", encoding="utf-8")
-        staging = tmp_path / "profile" / "runs" / "tmp"
-        uploader = SFTPUploader("sftp.ca.spacesedu.com", 22, "user", "/upload")
-
-        staged = self._deliver(uploader, tmp_path, {"StudentAttendance.csv"}, staging_dir=staging)
-
-        assert [p.name for p in staged] == ["StudentAttendance.csv"]
-        assert list(staging.iterdir()) == []
+        assert (tmp_path / "CourseInfo.csv").exists()

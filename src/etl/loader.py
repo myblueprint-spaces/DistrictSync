@@ -11,6 +11,7 @@ from typing import Optional
 
 import pandas as pd
 
+from src.etl import output_layout
 from src.utils.helpers import ensure_directory
 
 logger = logging.getLogger(__name__)
@@ -32,8 +33,8 @@ _STALE_BAK_MIN_AGE_SECONDS = 3600
 # The output-folder pre-flight's own scratch dir (see :func:`output_target_problem`).
 # A DISTINCT prefix, deliberately: it must be invisible to every other output-dir sweep
 # and glob — ``_reconcile_output_dir`` branches on ``.bak_``/``.tmp_`` only,
-# ``detect_stale_outputs``/``archive_stale_outputs``/``SFTPUploader.upload_csvs``/
-# ``convert_output._top_level_csvs`` are all ``*.csv``-keyed — and it must be reapable by
+# ``detect_stale_outputs``/``archive_stale_outputs``/``output_layout.acsv_zips``/
+# ``convert_output._on_disk_deliverables`` are all file-name-keyed — and it must be reapable by
 # name so a stranded one cannot accumulate.
 _PROBE_PREFIX = ".dsync_probe_"
 
@@ -169,8 +170,20 @@ class DataLoader:
         self,
         outputs: dict[str, pd.DataFrame],
         field_orders: dict[str, list[str]],
-    ) -> None:
-        """Write all entities atomically — all succeed or none are committed.
+        *,
+        zip_name: str,
+    ) -> str | None:
+        """Write all entities, plus the Advanced CSV zip, atomically — all or none committed.
+
+        **Layout (DSYNC-57, :mod:`src.etl.output_layout`).** The rostering CSVs land in
+        ``<output_dir>/csv/`` and are bundled, at the zip root, into ``zip_name`` at the
+        folder's top level. The standalone feeds (attendance, the myBlueprint+ course
+        files) land at the top level beside it. The zip is staged and committed in the
+        SAME backup-and-restore transaction as the CSVs, so a failed run never leaves a
+        zip that disagrees with the CSVs next to it.
+
+        ``zip_name`` is required keyword-only (``output_layout.acsv_zip_name(sis_type)``):
+        the caller owns the district, and there is no unnamed default.
 
         First reconciles interrupted-run leftovers (:meth:`_reconcile_output_dir`:
         a stranded ``.bak_*`` warns loudly and is archived; aged ``.tmp_*``
@@ -193,6 +206,11 @@ class DataLoader:
         Args:
             outputs: Mapping of entity name → transformed DataFrame.
             field_orders: Mapping of entity name → ordered column list.
+            zip_name: The Advanced CSV zip's filename.
+
+        Returns:
+            The zip's filename, or ``None`` when this run produced no rostering entity
+            (an attendance-only or course-only run writes no zip).
         """
         self._reconcile_output_dir()
 
@@ -206,12 +224,20 @@ class DataLoader:
                 field_order = field_orders.get(entity_name, list(df.columns))
                 self._write_csv(df, entity_name, field_order, tmp_dir, staging=True)
 
-            # Commit: materialise a sorted (deterministic) list of staged files
-            # up front, then promote them atomically with backup-and-restore.
-            staged_files = sorted(tmp_dir.iterdir())
-            self._commit_staged(staged_files, backup_dir)
+            rostering = sorted((tmp_dir / output_layout.ROSTERING_SUBDIR).glob("*.csv"))
+            written_zip: str | None = None
+            if rostering:
+                output_layout.write_acsv_zip(tmp_dir / zip_name, rostering)
+                written_zip = zip_name
+                logger.info(f"Staged {zip_name} with {len(rostering)} rostering CSV(s)")
 
-            logger.info(f"Committed {len(outputs)} output file(s) to {self.output_path.resolve()}")
+            # Commit: materialise a sorted (deterministic) list of staged files, as paths
+            # relative to the staging dir, then promote them with backup-and-restore.
+            staged = sorted(p.relative_to(tmp_dir) for p in tmp_dir.rglob("*") if p.is_file())
+            self._commit_staged(tmp_dir, staged, backup_dir)
+
+            logger.info(f"Committed {len(staged)} output file(s) to {self.output_path.resolve()}")
+            return written_zip
         finally:
             # Safe to run unconditionally: on failure _commit_staged has already
             # restored originals out of backup_dir before re-raising, so removing
@@ -282,11 +308,17 @@ class DataLoader:
                 except OSError as ex:
                     logger.error(f"Could not sweep abandoned staging directory {entry.name}: {ex}")
 
-    def _commit_staged(self, staged_files: list[Path], backup_dir: Path) -> None:
+    def _commit_staged(self, tmp_dir: Path, staged: list[Path], backup_dir: Path) -> None:
         """Promote each staged file into ``output_path`` with backup-and-restore
         atomicity — all promoted or, on any failure, all rolled back.
 
-        Per file (in ``staged_files`` order): if ``dest`` already exists, move it
+        ``staged`` holds paths RELATIVE to ``tmp_dir``; each lands at the same relative
+        path under ``output_path`` (so ``csv/Students.csv`` stays in ``csv/``), and its
+        backup at the same relative path under ``backup_dir``. Parent folders are
+        created as needed and are never removed by rollback (an empty ``csv/`` is
+        harmless; deleting a folder an admin may have opened is not).
+
+        Per file (in ``staged`` order): if ``dest`` already exists, move it
         aside into ``backup_dir`` via ``os.replace`` (created lazily on first
         need); record ``(dest, backup-or-None)`` in ``applied`` **before**
         promoting (so the in-flight file is covered by rollback); then promote
@@ -304,22 +336,24 @@ class DataLoader:
         Invariant: rollback completes here, inside this ``except``, **before**
         the caller's ``finally`` removes ``backup_dir`` — so backups are never
         deleted while still needed for restore.  ``os.replace`` requires the same
-        filesystem; guaranteed because ``staged_files``, ``backup_dir`` and each
-        ``dest`` are all children of ``output_path``.
+        filesystem; guaranteed because ``tmp_dir``, ``backup_dir`` and each
+        ``dest`` are all under ``output_path``.
         """
         applied: list[tuple[Path, Optional[Path]]] = []
         try:
-            for tmp_file in staged_files:
-                dest = self.output_path / tmp_file.name
+            for rel in staged:
+                dest = self.output_path / rel
                 backup: Optional[Path] = None
                 if dest.exists():
                     if not backup_dir.exists():
                         # Lazily, once; exist_ok=False so a collision fails loud.
                         backup_dir.mkdir(parents=True, exist_ok=False)
-                    backup = backup_dir / tmp_file.name
+                    backup = backup_dir / rel
+                    backup.parent.mkdir(parents=True, exist_ok=True)
                     os.replace(dest, backup)  # move existing target aside (atomic)
                 applied.append((dest, backup))  # record BEFORE promote
-                os.replace(tmp_file, dest)  # promote staged file (atomic overwrite)
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(tmp_dir / rel, dest)  # promote staged file (atomic overwrite)
         except Exception:  # noqa: BLE001 — re-raised; the rollback restores every original first, so it stays broad (failure-policy §11)
             for dest, backup in reversed(applied):
                 try:
@@ -428,75 +462,81 @@ class DataLoader:
     # Stale-output detection + archival (NON-DESTRUCTIVE)
     # ------------------------------------------------------------------
 
-    def detect_stale_outputs(self, emitted: set[str]) -> list[str]:
-        """Return sorted entity CSV filenames in the output dir NOT produced this run.
+    def detect_stale_outputs(self, emitted: set[str], *, keep_zip: str | None) -> list[str]:
+        """Return the output-folder files this run did NOT refresh, as sorted relative paths.
 
-        Lists every ``<EntityName>.csv`` present in ``output_path`` whose stem is a
-        recognized entity name (the transformer registry — the single source of
-        the known-entity set) but is **not** in ``emitted`` (the entities this run
-        wrote). Such a file is possibly stale — left by a prior or different run
-        whose entity is no longer produced — and would ship unrefreshed in the
-        next SFTP zip.
+        Three kinds, all **detection only** (the move lives in :meth:`archive_stale_outputs`):
 
-        **DETECTION ONLY — deletes nothing.** Pure, registry-keyed detection,
-        independently testable; the destructive decision lives in
-        :meth:`archive_stale_outputs`, which uses this. A broad registry known-set
-        is safe HERE precisely because nothing is removed (the caller archives,
-        never deletes — see :meth:`archive_stale_outputs`).
+        * an entity CSV at its layout path (``csv/<Entity>.csv`` for rostering, the top
+          level for a standalone feed) whose entity is a recognized one (the transformer
+          registry) but is **not** in ``emitted``: left by a prior or different run, it
+          would otherwise ship unrefreshed;
+        * a rostering CSV still at the folder's TOP level: the pre-DSYNC-57 layout, now
+          superseded by ``csv/`` (it would sit beside the zip looking like an upload file);
+        * an ``acsv_*.zip`` at the top level other than ``keep_zip`` (this run's zip, or
+          ``None`` when this run wrote none): an earlier day's bundle.
+
+        A broad registry known-set is safe HERE precisely because nothing is removed
+        (the caller archives, never deletes).
 
         Args:
             emitted: Entity names this run produced (e.g. ``set(outputs)``).
+            keep_zip: This run's zip filename (``save_all``'s return), never archived.
 
         Returns:
-            Sorted list of stale ``<EntityName>.csv`` filenames (empty if none).
+            Sorted POSIX-style paths relative to the output folder (empty if none).
         """
         from src.etl.transformers.registry import TRANSFORMER_REGISTRY
 
         known_files = self.output_filenames(TRANSFORMER_REGISTRY)
         emitted_files = self.output_filenames(emitted)
-        stale: list[str] = []
-        for csv_path in self.output_path.glob("*.csv"):
-            if csv_path.name in known_files and csv_path.name not in emitted_files:
-                stale.append(csv_path.name)
-        return sorted(stale)
+        stale: set[Path] = set()
+        for name in known_files:
+            current = output_layout.csv_relpath(name)
+            if name not in emitted_files and (self.output_path / current).is_file():
+                stale.add(current)
+            if (
+                not output_layout.is_standalone(name)
+                and output_layout.legacy_csv_path(self.output_path, name).is_file()
+            ):
+                stale.add(Path(name))
+        for zip_path in output_layout.acsv_zips(self.output_path):
+            if zip_path.name != keep_zip:
+                stale.add(Path(zip_path.name))
+        return sorted(p.as_posix() for p in stale)
 
-    def archive_stale_outputs(self, emitted: set[str]) -> list[str]:
-        """Move stale entity CSVs aside into ``archive_<ts>/`` — **non-destructive**.
+    def archive_stale_outputs(self, emitted: set[str], *, keep_zip: str | None) -> list[str]:
+        """Move stale output files aside into ``archive_<ts>/``: **non-destructive**.
 
-        Detects stale entity CSVs via :meth:`detect_stale_outputs` (output-dir
-        ``<EntityName>.csv`` files this run did NOT produce). If none, returns
-        ``[]`` and creates **no** archive directory. Otherwise lazily creates
-        ``<output_dir>/archive_<timestamp>/`` and **moves** each stale file into
-        it with ``os.replace`` (atomic same-filesystem rename — both the source
-        and the archive subdir are children of ``output_path``).
+        Detects them via :meth:`detect_stale_outputs`. If none, returns ``[]`` and creates
+        **no** archive directory. Otherwise lazily creates
+        ``<output_dir>/archive_<timestamp>/`` and **moves** each stale file into it at the
+        same relative path (``csv/Family.csv`` → ``archive_<ts>/csv/Family.csv``) with
+        ``os.replace`` (an atomic same-filesystem rename).
 
-        **Archives, never deletes — for cross-config safety.** Under ``_base``
-        config inheritance the safe allow-list for a *delete* is unknowable
-        (a registry/``mappings.keys()`` set would erase a DIFFERENT config's
-        inherited-but-disabled entity CSV sharing this dir; an ``enabled_entities``
-        set would miss a config-dropped entity AND wipe an enabled entity's
-        last-good CSV on an empty-input run). Moving the file aside surfaces the
-        stale entity without any data-loss path: the original bytes are preserved
-        in the archive subdir, recoverable by hand.
+        **Archives, never deletes, for cross-config safety.** Under ``_base`` config
+        inheritance the safe allow-list for a *delete* is unknowable (a
+        registry/``mappings.keys()`` set would erase a DIFFERENT config's
+        inherited-but-disabled entity CSV sharing this dir; an ``enabled_entities`` set
+        would miss a config-dropped entity AND wipe an enabled entity's last-good CSV on an
+        empty-input run). Moving the file aside preserves the original bytes, recoverable
+        by hand.
 
-        **Excluded from SFTP delivery.** The SFTP uploader globs
-        ``output_dir.glob("*.csv")`` — **top-level only, non-recursive** — so a
-        file inside the ``archive_<ts>/`` SUBfolder is automatically left out of
-        the next zip (a stale CSV can no longer ship).
+        **Excluded from SFTP delivery.** Delivery reads only the top-level zip and the
+        top-level standalone feeds, so nothing inside ``archive_<ts>/`` can ship.
 
-        **Best-effort — never fails the run.** The roster has already been
-        committed and (if requested) delivered before this runs, so a per-file
-        move hiccup is logged at ERROR and skipped rather than raised — an archive
-        problem must not turn a successful run into a failure.
+        **Best-effort: never fails the run.** The roster has already been committed (and,
+        if requested, delivered) before this runs, so a per-file move hiccup is logged at
+        ERROR and skipped rather than raised.
 
         Args:
             emitted: Entity names this run produced (e.g. ``set(outputs)``).
+            keep_zip: This run's zip filename (``save_all``'s return), never archived.
 
         Returns:
-            Sorted list of stale ``<EntityName>.csv`` filenames actually moved into
-            the archive subdir (empty if there was nothing stale).
+            Sorted relative paths actually moved into the archive subdir.
         """
-        stale = self.detect_stale_outputs(emitted)
+        stale = self.detect_stale_outputs(emitted, keep_zip=keep_zip)
         if not stale:
             return []
 
@@ -505,14 +545,16 @@ class DataLoader:
         archive_dir.mkdir(parents=True, exist_ok=True)
 
         archived: list[str] = []
-        for name in stale:
+        for rel in stale:
             try:
-                os.replace(self.output_path / name, archive_dir / name)
-                archived.append(name)
+                target = archive_dir / rel
+                target.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(self.output_path / rel, target)
+                archived.append(rel)
             except OSError as ex:
                 # Best-effort: an archive hiccup must not fail an already
                 # committed + delivered run. Log loud and continue.
-                logger.error(f"Failed to archive stale output {name}: {ex}")
+                logger.error(f"Failed to archive stale output {rel}: {ex}")
         return archived
 
     # ------------------------------------------------------------------
@@ -530,7 +572,8 @@ class DataLoader:
     ) -> None:
         try:
             ordered = self.select_ordered(df, field_order, entity_name)
-            output_file = directory / self.csv_filename(entity_name)
+            output_file = output_layout.csv_path(directory, self.csv_filename(entity_name))
+            output_file.parent.mkdir(parents=True, exist_ok=True)
             encoding = self.csv_encoding(entity_name)
             ordered.to_csv(output_file, index=False, encoding=encoding)
             label = "Staged" if staging else "Saved"
