@@ -28,6 +28,7 @@ with the same note — owner ruling 2026-09-30.)
 """
 
 import logging
+from collections.abc import Mapping
 from typing import Any, Optional
 
 import pandas as pd
@@ -121,21 +122,30 @@ class EnrollmentTransformer(BaseTransformer):
         student_demo_df = self._load_student_demo(normalized_sources, staff_id_col, context)
 
         # Fixed legacy source order — concat order IS the CSV row order.
+        # Built in that order too (each logs as it goes); the subject path also hands the
+        # co-teacher path the regular subject classes it built (Path 3).
+        homeroom_enroll = self._homeroom_enrollments(
+            student_demo_df, homeroom_grades, staff_id_col, staff_id_label, artifacts, context
+        )
+        subject_enroll, regular_subject_classes = self._subject_enrollments(
+            schedule_df,
+            homeroom_grades,
+            (student_id_col, student_id_label),
+            (staff_id_col, staff_id_label),
+            field_map,
+            artifacts,
+            context,
+        )
         sources = [
-            self._homeroom_enrollments(
-                student_demo_df, homeroom_grades, staff_id_col, staff_id_label, artifacts, context
-            ),
-            self._subject_enrollments(
-                schedule_df,
-                homeroom_grades,
-                (student_id_col, student_id_label),
-                (staff_id_col, staff_id_label),
-                field_map,
+            homeroom_enroll,
+            subject_enroll,
+            self._classinfo_coteacher_enrollments(
+                staff_id_col,
+                staff_id_label,
+                mapping.get("source_columns") or {},
                 artifacts,
                 context,
-            ),
-            self._classinfo_coteacher_enrollments(
-                staff_id_col, staff_id_label, mapping.get("source_columns") or {}, artifacts, context
+                regular_subject_classes=regular_subject_classes,
             ),
         ]
         final = [frame for frame in sources if frame is not None]
@@ -317,8 +327,15 @@ class EnrollmentTransformer(BaseTransformer):
         field_map: dict,
         artifacts: ClassArtifacts,
         context: TransformContext,
-    ) -> Optional[pd.DataFrame]:
-        """Student subject + blended teacher + non-blended teacher rows (in that order), or None.
+    ) -> tuple[Optional[pd.DataFrame], dict[str, str]]:
+        """Student subject + blended teacher + non-blended teacher rows (in that order), or None —
+        paired with the REGULAR subject classes those rows were built for.
+
+        The second value maps each non-blended section's normalized Class ID source value (the
+        ``Class ID`` mapping's column, default Master Timetable ID) to the Class ID this path
+        assigned it, read off the very rows Classes and Enrollments both keep. The co-teacher
+        Path 3 adds teachers ONLY to these classes, under these IDs — a class that already
+        ships, never a re-key and never a class of its own. Empty when no subject row is built.
 
         ``student_id`` / ``staff_id`` are ``(normalised column, config label)`` pairs. Once
         timetable rows exist, the schedule's student id, teacher id and school number
@@ -339,7 +356,7 @@ class EnrollmentTransformer(BaseTransformer):
         note_unapplied_exclusions(context, "Enrollments", schedule_df, configured=bool(excluded_codes))
         schedule_df = self.filter_excluded_course_codes(schedule_df, excluded_codes)
         if schedule_df.empty:
-            return None
+            return None, {}
 
         # The SAME schedule grade column Classes' split reads (the Classes
         # mapping's `Grade`), so the two keep the same rows (zero-orphan).
@@ -355,7 +372,7 @@ class EnrollmentTransformer(BaseTransformer):
             timetable_scope=resolve_timetable_scope(context.global_config, homeroom_grades),
         )
         if non_homeroom.empty:
-            return None
+            return None, {}
 
         # The Class ID column is listed here too (``assign_class_ids`` checks it again as
         # its own guard), so ONE call names every linking column the schedule lacks.
@@ -400,7 +417,15 @@ class EnrollmentTransformer(BaseTransformer):
         parts.append(teacher_enroll)
         logger.info(f"[Enrollments] Created {len(teacher_enroll)} teacher subject enrollments")
 
-        return pd.concat(parts, ignore_index=True)
+        mt_id_col = resolve_source_column(
+            field_map, "Class ID", default=MASTER_TIMETABLE_ID, previously=Previously.COLUMN_KEY_ONLY
+        )
+        regular_subject_classes = {
+            str(mt_id): str(class_id)
+            for mt_id, class_id in zip(non_blended[mt_id_col], non_blended["Class ID"])
+            if str(mt_id) and str(class_id)
+        }
+        return pd.concat(parts, ignore_index=True), regular_subject_classes
 
     def _assign_class_ids(self, df: pd.DataFrame, field_map: dict, context: TransformContext) -> pd.DataFrame:
         return self.assign_class_ids(df, field_map, context, entity="Enrollments")
@@ -440,13 +465,22 @@ class EnrollmentTransformer(BaseTransformer):
         source_columns: dict[str, Any],
         artifacts: ClassArtifacts,
         context: TransformContext,
+        *,
+        regular_subject_classes: Mapping[str, str],
     ) -> Optional[pd.DataFrame]:
         """Teacher enrollments for ClassInformation rows with Primary Teacher=Y, or None.
 
         Captures teachers (e.g. MADST modular-program teachers) who are not
         derived from student_schedule. Matches by (school_number, section
-        letter) against the homeroom lookup, and by Master Timetable ID
-        against the blended class map for subject classes. Rows that don't
+        letter) against the homeroom lookup (Path 1), by Master Timetable ID
+        against the blended class map (Path 2), and by Master Timetable ID
+        against ``regular_subject_classes`` — the non-blended subject classes
+        ``_subject_enrollments`` built, under the Class IDs it gave them (Path 3).
+        Path 3 is what gives a co-taught REGULAR section every teacher MyEd lists
+        as primary on it, where the schedule carries only one teacher per row:
+        it adds teacher rows to a class that already ships and never creates,
+        re-keys or re-rosters one (students are untouched). Primary=Y rows only,
+        as on Paths 1/2 — a blank or N flag is not a teacher of record. Rows that don't
         resolve to any known class are skipped. The outer
         drop_duplicates(subset=["Class ID","User ID","Role"]) in transform()
         deduplicates against any teacher rows already produced by the
@@ -464,7 +498,8 @@ class EnrollmentTransformer(BaseTransformer):
         flag, teacher id or school number leaves every co-teacher row out (every row is
         built from all three); with primary-teacher rows found, a missing section column
         leaves Path 1's rows out (when homeroom classes exist) and a missing Master
-        Timetable ID Path 2's (when blended classes exist) — the other path still runs.
+        Timetable ID Paths 2 and 3's (when blended or regular subject classes exist) — the
+        other path still runs.
         Each case logs ONE aggregated WARNING (column names + a count) and records
         ``OutcomeNote.COTEACHER_SOURCE_UNUSABLE`` on the Enrollments outcome, which Home and
         Run History show as a standing WARNING every night it persists
@@ -524,20 +559,26 @@ class EnrollmentTransformer(BaseTransformer):
         if primary_rows.empty:
             return None
 
-        # Path 1 reads the section column when homeroom classes exist, Path 2 the Master
-        # Timetable ID when blended classes exist. A path whose column is missing is left
-        # out — the other still runs — and ONE note + warning names every missing column.
+        # Path 1 reads the section column when homeroom classes exist, Paths 2 and 3 the
+        # Master Timetable ID when blended / regular subject classes exist. A path whose
+        # column is missing is left out — the other still runs — and ONE note + warning
+        # names every missing column.
         use_path_1 = not artifacts.homeroom_classes_df.empty
         use_path_2 = bool(artifacts.blended_class_map)
+        use_path_3 = bool(regular_subject_classes)
         # failure-policy: optional_field
         path_missing = absent_columns(
             primary_rows.columns,
-            [*([section_label] if use_path_1 else []), *([MASTER_TIMETABLE_ID] if use_path_2 else [])],
+            [
+                *([section_label] if use_path_1 else []),
+                *([MASTER_TIMETABLE_ID] if use_path_2 or use_path_3 else []),
+            ],
         )
         if path_missing:
             self._note_coteachers_left_out(context, path_missing, unused_rows=len(primary_rows))
             use_path_1 = use_path_1 and section_label not in path_missing
             use_path_2 = use_path_2 and MASTER_TIMETABLE_ID not in path_missing
+            use_path_3 = use_path_3 and MASTER_TIMETABLE_ID not in path_missing
 
         primary_rows[staff_id_col] = normalize_id_series(primary_rows[staff_id_col])
         primary_rows[SCHOOL_NUMBER] = normalize_id_series(primary_rows[SCHOOL_NUMBER])
@@ -576,9 +617,11 @@ class EnrollmentTransformer(BaseTransformer):
                     }
                 )
 
+        if use_path_2 or use_path_3:
+            primary_rows[MASTER_TIMETABLE_ID] = normalize_id_series(primary_rows[MASTER_TIMETABLE_ID])
+
         # Path 2: Master Timetable ID → blended class id
         if use_path_2:
-            primary_rows[MASTER_TIMETABLE_ID] = normalize_id_series(primary_rows[MASTER_TIMETABLE_ID])
             for _, row in primary_rows.iterrows():
                 mt_id = row[MASTER_TIMETABLE_ID]
                 blended_id = artifacts.blended_class_map.get(mt_id)
@@ -591,6 +634,28 @@ class EnrollmentTransformer(BaseTransformer):
                             SCHOOL_NUMBER: str(row[SCHOOL_NUMBER]),
                         }
                     )
+
+        # Path 3: Master Timetable ID → the REGULAR subject class the subject path built. A
+        # blended section never matches (its schedule rows took the blended id, so it is not in
+        # the map), and an MTID no subject row carries adds nothing — Path 3 never makes a class.
+        if use_path_3:
+            path_3_rows = 0
+            for _, row in primary_rows.iterrows():
+                class_id = regular_subject_classes.get(row[MASTER_TIMETABLE_ID])
+                if class_id:
+                    path_3_rows += 1
+                    rows.append(
+                        {
+                            "Class ID": class_id,
+                            "User ID": str(row[staff_id_col]),
+                            "Role": "teacher",
+                            SCHOOL_NUMBER: str(row[SCHOOL_NUMBER]),
+                        }
+                    )
+            logger.info(
+                f"[Enrollments] {path_3_rows} ClassInformation primary-teacher row(s) matched a regular "
+                f"subject class (before de-duplication against the schedule's teacher rows)"
+            )
 
         if not rows:
             return None
