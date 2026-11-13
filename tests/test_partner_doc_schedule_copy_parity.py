@@ -614,7 +614,7 @@ def test_the_coteacher_anchor_is_what_both_coteacher_warnings_really_log(caplog)
     with caplog.at_level(logging.WARNING):
         for ctx in (_context(no_flag, {}, {}), _context(pd.DataFrame(), {}, missing_file)):
             EnrollmentTransformer()._classinfo_coteacher_enrollments(
-                "teacher id", "Teacher ID", {}, ctx.class_artifacts, ctx
+                "teacher id", "Teacher ID", {}, ctx.class_artifacts, ctx, regular_subject_classes={}
             )
     lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("[Enrollments] ")]
     assert len(lines) == 2, lines
