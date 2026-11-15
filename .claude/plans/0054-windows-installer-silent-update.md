@@ -1,6 +1,6 @@
 # 0054 — Windows installer with silent, signed auto-update (Velopack)
 
-- **Status:** Draft 2026-11-13. Awaiting owner approval. No product code and no workflow is changed by this plan.
+- **Status:** Approved to proceed by the owner 2026-11-15 ("can proceed with the work"), with the answers recorded under "Owner answers 2026-11-15". First target: a real signed `DistrictSync-Setup.exe` from a rehearsal run that the owner installs like a customer, with the existing release untouched.
 - **Roadmap item:** Jira **DSYNC-16** "Evaluate a Windows installer (alongside the signed single exe)", parent epic DSYNC-4 "Distribution & trust". This plan is that ticket's stated output ("go/no-go and a scoped plan"). Each build slice below gets its own DSYNC ticket under DSYNC-4 when approved.
 - **References:** plan 0041 (`.claude/plans/0041-legit-distribution-com-scheduler-onedir-installer.md`, Slices 2-3 still open) · `docs/DECISIONS.md` 2026-08-05 and 2026-08-05 (later), 2026-09-02 (signing lives in `release.yml`), 2026-11-04 (DSYNC-56) · `.github/workflows/release.yml`, `flet-pack.yml` · `docs/developer/release.md` · RosterGate (private repo, commit `e375646`): `docs/RELEASE.md`, `docs/GAPS.md` G-067..G-074, `DECISIONS.md` 2026-11-12, `src/rostergate/services/update.py`, `tools/sign_manifest.py`, `.github/workflows/release.yml`, and `spikes/updater/README.md` on its branch `m1b-updater-spike` (commit `2a2a30a`; the file is not on RosterGate `main`).
 
@@ -68,7 +68,7 @@ The same source tree builds both Windows artifacts. A build-time stamp decides w
 
 ### 2. The one-folder Windows build, alongside the one-file build
 
-**Build.** A second `flet pack` in the Windows leg of `flet-pack.yml`, with `-D` (one-folder), a separate `--distpath dist-onedir` and work path, and the same hidden-import list. `flet pack --onedir` exists natively in flet-cli 0.85.3 (0041 Approach B) [V in 0041, RG-D for `flet pack -D`]. The hidden-import list must not be written twice: it moves into one place both invocations read (a small `scripts/flet_pack_args.py` or a YAML anchor), with a parity test, because "never duplicate config" and the "literal copied into CI needs a parity test" rule both apply [V CLAUDE.md].
+**Build.** A second `flet pack` with `-D` (one-folder) and the same hidden-import list, **in its own job** in `flet-pack.yml` (`pack-windows-onedir`), not inside the existing Windows leg. Owner priority 2026-11-15: the existing one-file exe must not be put at risk, so a failure in the one-folder build must not be able to fail or delay the job that builds the exe districts use today. `flet pack --onedir` exists natively in flet-cli 0.85.3 (0041 Approach B) [V in 0041, RG-D for `flet pack -D`]. The hidden-import list must not be written twice: it moves into one place both invocations read (a small `scripts/flet_pack_args.py` or a YAML anchor), with a parity test, because "never duplicate config" and the "literal copied into CI needs a parity test" rule both apply [V CLAUDE.md].
 
 **The Flet client goes inside the folder (0041 Goal 4, carried).** One-folder alone does not stop the first-launch extraction into `~/.flet`; 0041's Round-1 review verified that against flet_desktop 0.85.3 [V in 0041]. The Windows one-folder job extracts the client into `_internal/flet_view/` and the frozen launcher sets `FLET_VIEW_PATH` to it. Then `flet.exe` is a file in our tree that `vpk pack` signs, and the quarantine-brick mode is unreachable for installed copies. RosterGate instead collects Flet whole (`--collect-all flet --collect-all flet_desktop`, `tools/build_app.py`) and has not run that build (G-069) [RG-code]; whether its folder still drops into `~/.flet` is [N]. This is a place the two tools differ today and one standard should be picked (question Q7).
 
@@ -80,7 +80,7 @@ The same source tree builds both Windows artifacts. A build-time stamp decides w
 - The five CLI phases run unchanged against the inner exe. They already refuse to run without `DISTRICTSYNC_DATA_DIR` [V].
 - A new `--installed` mode (used only in `release.yml`) points the same phases at an installed copy.
 
-**CI time.** [I], to be measured in slice S1 and written back here: the second pack reuses the installed Python, the pip cache and the warmed Flet client, so the added cost is one PyInstaller run plus one more set of smokes on the Windows leg, on release and dispatch runs only. The release also gains one Windows job (section 7). Windows minutes bill at 2x (DSYNC-56) [V]. If S1 measures the release run more than about 15 wall-clock minutes longer, split the one-folder pack into its own parallel job.
+**CI time.** [I], to be measured in slice S1 and written back here: the separate job repeats the Python install and Flet warm-up, so it costs about one more Windows pack-and-smoke leg, in parallel, on release and dispatch runs only. The release also gains one Windows job (section 7). Windows minutes bill at 2x (DSYNC-56) [V].
 
 ### 3. Where `velopack.App().run()` goes, and how the CLI behaves when installed
 
@@ -177,7 +177,7 @@ Changes, all additive:
 5. **`publish-release`** (tag-only, unchanged trigger): adds `DistrictSync-Setup.exe` to the rename step, `SHA256SUMS.txt`, the `files:` list and the downloads table.
 6. **`publish-feed`** (new, tag-only, after `publish-release`, in `release`): upload the `.nupkg` files with `--overwrite false`, then `manifest.json` last. Uploading the manifest is the moment installed copies start updating. Question Q3 asks whether this job should sit behind its own approval.
 
-**Rehearsal** (`workflow_dispatch`): runs 1-4 including real signing, installs and smokes the signed installer, signs a manifest if the key variables exist, and uploads nothing to the Release or the container. Following 0041's rule that signing steps land "verified live, never dormant" [V], each workflow slice is merged only after a rehearsal run is read and quoted.
+**Rehearsal** (`workflow_dispatch`): runs 1-4 including real signing, installs and smokes the signed installer, signs a manifest if the key variables exist, and uploads nothing to the Release or the container. The signed `Setup.exe` is kept as a run artifact (1 day) so the owner can download and install it like a customer. A dispatch input `draft_release` (default off) attaches it to a **draft** GitHub Release instead: a draft is invisible to the public and does not change `latest`, and it gives the same browser download a customer gets. A version tag is never used for testing, because a tag publishes a real Release that becomes `latest`. Following 0041's rule that signing steps land "verified live, never dormant" [V], each workflow slice is merged only after a rehearsal run is read and quoted.
 
 **What does not change:** `flet-pack.yml` stays secret-free with `contents: read`; no pull request trigger exists on `release.yml`; nothing signs pull request code.
 
@@ -312,18 +312,43 @@ Every slice: targeted tests locally, then CI's own result read and quoted (land 
 
 Slices S0-S2 can start on approval of this plan. S3 waits on O1 and RosterGate. S6b and S8 wait on O3 and the owner's Azure steps.
 
-## Needs the owner
+## Owner answers 2026-11-15
 
-- **Q1 (O1).** Vendoring as proposed, including publishing those RosterGate files in this public repository? If not, option C.
-- **Q2.** Decided 2026-11-13 (D7): ECDSA P-256 in the vault. No longer a question.
-- **Q3.** Should publishing the manifest (the moment every installed district starts updating) be a separate approval after the Release page is live, so a release can be checked before it spreads?
-- **Q4.** Should a district be able to turn updates off (a documented config setting, no UI prompt)? Recommendation: yes; some district IT policies forbid self-updating software, and the alternative for them is the one-file exe.
-- **Q5.** Machine-scope and managed-service-account districts stay on the one-file exe for now (R1). Acceptable, or is a machine-wide installed format wanted as a follow-on plan?
-- **Q6.** Verifier: standard-library code in the shared module (RosterGate's choice) or the `cryptography` package DistrictSync already ships?
-- **Q7.** Flet client inside the install folder (`FLET_VIEW_PATH`, 0041 Goal 4) as the standard for both tools?
-- **Q8.** Required reviewers on the `release` environment and a tag protection rule (R13)?
-- **Q9 (O3).** Grants to the existing `github-districtsync-signing` identity as tabled, and the manifest key name.
-- **Owner steps, none done by this plan:** make the `districtsync` container public-read; create the manifest key; role grants; set the five GitHub variables; record the D1-D7 decisions in `docs/DECISIONS.md` (drafted with slice S1's pull request for the owner to confirm).
+| # | Question | Answer | Effect on the plan |
+|---|---|---|---|
+| Q1 | Updater code (O1) | "We need to hide DistrictSync behind the new integration.myblueprint.org, so that's the direction." | Not yet a decision on vendoring: what "behind" covers is asked back (see Still needed). Until answered, nothing with a baked-in host is built; S0-S2 and S6a do not need it. |
+| Q2 | Signature algorithm | ECDSA P-256 in the vault (D7, 2026-11-13) | Decided. |
+| Q3 | Separate approval before the manifest is published | Not now: "currently lets get it working." | No gate in the first build. Stays as risk R2 and is revisited before S8 (first release with updates on). |
+| Q4 | Off switch | Yes | `update_enabled` in `AppConfig` (config only, no prompt), in S4. |
+| Q5 | Service-account and machine-scope districts | Make the installer work in every scenario over time; make it robust. | R1 becomes a workstream, not a permanent exclusion. See "Gaps to full coverage". The first build still ships with the updater off in machine scope. |
+| Q6 | Verifier | Asked for a recommendation | Recommendation: the `cryptography` package for both tools (below). Needs the owner's yes because it changes RosterGate. |
+| Q7 | Flet client location | Asked for a recommendation | Recommendation: inside the install folder for both tools (below). |
+| Q8 | Release protection | Later, after the migration | R13 stays open and is listed for S8. |
+| Q9 | Role grants (O3) | The owner will try to elevate; otherwise ask Doug. | The ask is drafted in this plan's pull request. |
+| - | Proceed? | "Can proceed with the work." | S0 starts on this ticket (DSYNC-16 is "evaluate", and names the one-folder build as its first step). |
+
+**Recommendation on Q6 (verifier).** Use the `cryptography` package in the shared code. A hand-written P-256 verifier is more error-prone than the Ed25519 one RosterGate wrote (more special cases, plus encoding and malleability checks that a vetted library already gets right), and this is the one check that decides whether code runs on every district machine. Cost: RosterGate gains a compiled dependency of a few MB that it rejected for size; DistrictSync already ships it through `paramiko`, so it costs DistrictSync nothing. The other choice (standard-library code checked against published vectors) keeps RosterGate small and puts the correctness burden on our own tests.
+
+**Recommendation on Q7 (Flet client).** Inside the install folder, for both tools. Every executable that runs then sits in one signed folder and nothing is extracted into the user profile at first launch, which is the behaviour Bitdefender quarantined in 2026-08. Cost: one build step and one environment variable set by the launcher; the folder is no larger, because the client is already embedded as an archive today.
+
+### Gaps to full coverage (Q5)
+
+What the per-user installer does not cover yet, in the order I would close them. Each is its own slice after the first installer works.
+
+1. **A nightly that runs as a different account** (a stored-password service account or a gMSA). The program sits in the installing user's `%LOCALAPPDATA%`; the other account needs read and execute there, and cannot apply an update there. Whether Velopack can install to a chosen folder or machine-wide (and how it then updates without admin) is [N] and is a named question for S0.
+2. **Machine scope (plan 0049).** The data folder is shared and trust-checked; the updater must not write there, and whoever applies an update must be one declared account, not whichever user opens the window.
+3. **A district that never opens the window and whose nightly account differs from the installer.** No process that can write the install folder ever runs, so nothing would ever update. Needs either a machine-wide install with an updater that runs as the nightly account, or an honest "this setup does not update itself" line in Help and `--diagnose`.
+4. **Several Windows users on one server**, each installing their own copy against one scheduled task.
+5. **Locked-down networks**: only the three SFTP hosts allowed, or TLS inspection that breaks the feed connection. The app reports it and the docs carry the firewall line; nothing else can be done from our side.
+6. **Uninstall and reinstall** must never remove the profile, the keyring entry or the scheduled task. Covered for the profile by the pack id (section 3); the task is left alone and the docs say so.
+7. **Migration from the one-file exe without opening the window** (a scripted district). Not covered; they keep the one-file exe.
+
+## Still needed from the owner
+
+1. **What "behind integration.myblueprint.org" covers.** Three readings, each changing something different: (a) districts download from that site, not from the GitHub Release page; (b) the update feed is served from that host, not from `mybpdesktopupdates.blob.core.windows.net`; (c) the GitHub repository becomes private. Recommendation: (b) at least, from the first installer. The feed host is baked into every installed copy and is the one thing that cannot be changed later without a bridging release, so it should be a name the department owns (for example `updates.integration.myblueprint.org`) pointing at the storage account. Azure Blob does not serve https on a custom domain by itself, so that needs Azure Front Door or a CDN in front (an Azure change for the owner or Doug). If (c): the vendoring concern in O1 disappears, and the public `releases/latest/download/...` links in partner docs and emails stop working, so (a) must be live first.
+2. **Q6 and Q7**: yes or no to the two recommendations above.
+3. **Pack id** `myBlueprint.DistrictSync` (install folder `%LOCALAPPDATA%\myBlueprint.DistrictSync`). It cannot be changed after the first installer ships.
+4. **Owner or Doug steps, none done by this plan:** role grants and the manifest key (the drafted ask); the five GitHub variables; the feed's public read path; recording D1-D7 in `docs/DECISIONS.md` (drafted with slice S1's pull request for the owner to confirm).
 
 ## What was verified and what was inferred
 
