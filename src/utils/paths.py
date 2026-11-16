@@ -293,6 +293,15 @@ def _override_data_dir() -> Path | None:
     return expanded.resolve()
 
 
+def data_dir_override_active() -> bool:
+    """Whether ``DISTRICTSYNC_DATA_DIR`` is set (to anything non-blank), without validating it.
+
+    The update check consults this: a profile redirected by the override is a test, rehearsal or
+    support profile, and such a run must never open a connection to the update feed.
+    """
+    return bool(os.environ.get(_DATA_DIR_ENV_VAR, "").strip())
+
+
 def machine_data_dir() -> Path:
     """The shared, machine-scoped data directory (``C:\\ProgramData\\DistrictSync``).
 

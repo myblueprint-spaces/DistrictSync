@@ -205,6 +205,12 @@ class AppConfig:
     # unaffected (--sis is required there, never defaulted from AppConfig).
     sis_type: str = ""
 
+    # Updates (plan 0054 S4, DSYNC-63): the installed build checks for a signed update after the app's own
+    # scheduled run and when the window opens. ``False`` switches the check off on this install (config
+    # only, no prompt). It is a CHOSEN setting, deliberately outside every advisory prefix, so it counts in
+    # ``_carries_chosen_settings``. Only the installed build ever reads it; the portable build has no updater.
+    update_enabled: bool = True
+
     # Scheduling
     schedule_time: str = "03:00"  # HH:MM (24-hour)
     schedule_task_name: str = "DistrictSync_Daily"
