@@ -47,7 +47,7 @@ jobs:
       # else changes. This repo never uses `pull_request_target`, so a fork cannot reach the key
       # any other way. On a push to main the key MUST be present and the package MUST import
       # (DISTRICTSYNC_REQUIRE_UPDATER below), so a skipped proof can never read as a green one.
-      # The package is built from the pinned commit and checked against the pinned wheel hash by
+      # The package is built from the pinned commit and checked against the pinned tree hash by
       # scripts/updater_package.py; the key is passed only to the checkout step.
       - name: Is the shared-package read key available here
         id: updater-key
@@ -77,7 +77,7 @@ jobs:
           path: .shared-updater
           persist-credentials: false
 
-      - name: Install the shared updater package (built from the pin, wheel hash checked)
+      - name: Install the shared updater package (built from the pin, tree hash checked)
         if: steps.updater-key.outputs.present == 'true'
         shell: bash
         run: |
@@ -174,7 +174,7 @@ jobs:
       # else changes. This repo never uses `pull_request_target`, so a fork cannot reach the key
       # any other way. On a push to main the key MUST be present and the package MUST import
       # (DISTRICTSYNC_REQUIRE_UPDATER below), so a skipped proof can never read as a green one.
-      # The package is built from the pinned commit and checked against the pinned wheel hash by
+      # The package is built from the pinned commit and checked against the pinned tree hash by
       # scripts/updater_package.py; the key is passed only to the checkout step.
       - name: Is the shared-package read key available here
         id: updater-key
@@ -204,7 +204,7 @@ jobs:
           path: .shared-updater
           persist-credentials: false
 
-      - name: Install the shared updater package (built from the pin, wheel hash checked)
+      - name: Install the shared updater package (built from the pin, tree hash checked)
         if: steps.updater-key.outputs.present == 'true'
         shell: bash
         run: |

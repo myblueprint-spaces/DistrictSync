@@ -36,7 +36,7 @@ up = _load_script()
 class TestPins:
     def test_shapes(self):
         assert re.fullmatch(r"[0-9a-f]{40}", up.PINNED_COMMIT)
-        assert re.fullmatch(r"[0-9a-f]{64}", up.PINNED_WHEEL_SHA256)
+        assert re.fullmatch(r"[0-9a-f]{64}", up.PINNED_TREE_SHA256)
         assert f"myb_desktop_updater-{up.PINNED_VERSION}-py3-none-any.whl" == up.WHEEL_NAME
 
     def test_build_tools_are_exact_pins(self):
@@ -62,73 +62,121 @@ class TestCheckCommit:
             up.check_commit(other)
 
 
-class TestCheckWheel:
-    def _wheel(self, tmp_path: Path, payload: bytes = b"a wheel") -> tuple[Path, str]:
-        path = tmp_path / up.WHEEL_NAME
-        path.write_bytes(payload)
-        return path, hashlib.sha256(payload).hexdigest()
+def _tree(root: Path, files: dict[str, bytes]) -> Path:
+    for name, data in files.items():
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    return root
 
-    def test_matching_hash_passes(self, tmp_path):
-        path, digest = self._wheel(tmp_path)
-        up.check_wheel(path, digest)
 
-    def test_a_changed_wheel_is_refused_with_both_hashes(self, tmp_path):
-        path, digest = self._wheel(tmp_path)
-        with pytest.raises(up.PinError) as info:
-            up.check_wheel(path, "f" * 64)
-        assert digest in str(info.value) and "f" * 64 in str(info.value)
+class TestTreeHash:
+    FILES = {"pyproject.toml": b"[project]\nname = 'x'\n", "src/pkg/__init__.py": b"VALUE = 1\n"}
 
-    def test_a_missing_wheel_is_refused(self, tmp_path):
+    def test_matches_an_independent_computation_of_the_documented_rule(self, tmp_path):
+        """Path, NUL, then the SHA-256 of the content, files in byte order of their posix paths."""
+        root = _tree(tmp_path / "p", self.FILES)
+        digest = hashlib.sha256()
+        for name in sorted(self.FILES, key=lambda n: n.encode()):
+            digest.update(name.encode() + b"\0" + hashlib.sha256(self.FILES[name]).digest())
+        assert up.tree_hash(root) == digest.hexdigest()
+
+    def test_line_endings_do_not_change_it(self, tmp_path):
+        lf = _tree(tmp_path / "lf", self.FILES)
+        crlf = _tree(tmp_path / "crlf", {k: v.replace(b"\n", b"\r\n") for k, v in self.FILES.items()})
+        assert up.tree_hash(lf) == up.tree_hash(crlf)
+
+    def test_a_changed_byte_changes_it(self, tmp_path):
+        a = _tree(tmp_path / "a", self.FILES)
+        b = _tree(tmp_path / "b", {**self.FILES, "src/pkg/__init__.py": b"VALUE = 2\n"})
+        assert up.tree_hash(a) != up.tree_hash(b)
+
+    def test_an_added_file_changes_it(self, tmp_path):
+        a = _tree(tmp_path / "a", self.FILES)
+        b = _tree(tmp_path / "b", {**self.FILES, "src/pkg/extra.py": b""})
+        assert up.tree_hash(a) != up.tree_hash(b)
+
+    def test_build_leftovers_are_ignored(self, tmp_path):
+        a = _tree(tmp_path / "a", self.FILES)
+        b = _tree(
+            tmp_path / "b",
+            {**self.FILES, "build/lib/x.py": b"1", "x.egg-info/PKG-INFO": b"1", "src/pkg/__pycache__/m.pyc": b"1"},
+        )
+        assert up.tree_hash(a) == up.tree_hash(b)
+
+    def test_a_missing_folder_is_refused(self, tmp_path):
         with pytest.raises(up.PinError):
-            up.check_wheel(tmp_path / "nope.whl")
+            up.tree_hash(tmp_path / "nope")
 
-    def test_cli_verify_wheel_exit_codes(self, tmp_path, capsys):
-        path, _ = self._wheel(tmp_path)
-        assert up.main(["verify-wheel", str(path)]) == 1  # not the pinned hash
-        assert "FAILED" in capsys.readouterr().err
+    def test_check_tree(self, tmp_path):
+        root = _tree(tmp_path / "p", self.FILES)
+        up.check_tree(root, up.tree_hash(root))
+        with pytest.raises(up.PinError) as info:
+            up.check_tree(root, "f" * 64)
+        assert up.tree_hash(root) in str(info.value) and "f" * 64 in str(info.value)
 
-    def test_cli_commit_prints_the_pin(self, capsys):
-        assert up.main(["commit"]) == 0
-        assert capsys.readouterr().out.strip() == up.PINNED_COMMIT
+    def test_cli_tree_hash_prints_it(self, tmp_path, capsys):
+        root = _tree(tmp_path / "p", self.FILES)
+        assert up.main(["tree-hash", str(root)]) == 0
+        assert capsys.readouterr().out.strip() == up.tree_hash(root)
 
 
-class TestInstallRefusesBeforeTouchingPip:
+class TestInstall:
+    """``_run`` is replaced: nothing here touches git, pip or the network."""
+
     @pytest.fixture
-    def calls(self, monkeypatch):
-        recorded: list[list[str]] = []
+    def run(self, monkeypatch, tmp_path):
+        recorded: list[tuple[list[str], dict]] = []
+        state = {"head": up.PINNED_COMMIT + "\n", "status": ""}
 
         def fake_run(cmd, **kwargs):
-            recorded.append(list(cmd))
+            recorded.append((list(cmd), kwargs))
+            if cmd[:2] == ["git", "-C"] and "rev-parse" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, stdout=state["head"], stderr="")
+            if cmd[:2] == ["git", "-C"] and "status" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, stdout=state["status"], stderr="")
+            if "wheel" in cmd and "pip" in cmd:  # the build: produce the wheel where it was asked to
+                (Path(cmd[cmd.index("-w") + 1]) / up.WHEEL_NAME).write_bytes(b"wheel")
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
         monkeypatch.setattr(up, "_run", fake_run)
-        return recorded
+        source = tmp_path / "shared"
+        _tree(source / up.PACKAGE_DIR, TestTreeHash.FILES)
+        monkeypatch.setattr(up, "PINNED_TREE_SHA256", up.tree_hash(source / up.PACKAGE_DIR))
+        return source, recorded, state
 
-    def test_a_wheel_with_the_wrong_hash_is_never_installed(self, tmp_path, calls):
-        wheel = tmp_path / up.WHEEL_NAME
-        wheel.write_bytes(b"tampered")
-        assert up.main(["install", "--wheel", str(wheel)]) == 1
-        assert calls == []
+    @staticmethod
+    def _pip_calls(recorded):
+        return [c for c, _k in recorded if c[0] == sys.executable]
 
-    def test_a_wheel_with_the_pinned_hash_is_installed_without_dependencies(self, tmp_path, calls, monkeypatch):
-        """Positive twin of the refusal above."""
-        wheel = tmp_path / up.WHEEL_NAME
-        wheel.write_bytes(b"the pinned wheel")
-        monkeypatch.setattr(up, "PINNED_WHEEL_SHA256", hashlib.sha256(b"the pinned wheel").hexdigest())
-        assert up.main(["install", "--wheel", str(wheel)]) == 0
-        assert len(calls) == 1 and "--no-deps" in calls[0] and str(wheel) in calls[0]
+    def test_a_clean_checkout_at_the_pin_is_built_and_installed(self, run):
+        """Positive twin of every refusal below."""
+        source, recorded, _state = run
+        assert up.main(["install", "--source", str(source)]) == 0
+        pips = self._pip_calls(recorded)
+        assert any("setuptools==84.2.1" in c for c in pips)
+        build = next(k for c, k in recorded if "wheel" in c and "pip" in c)
+        assert build["env"]["SOURCE_DATE_EPOCH"] == up.SOURCE_DATE_EPOCH
+        install = pips[-1]
+        assert "--no-deps" in install and install[-1].endswith(up.WHEEL_NAME)
 
-    def test_a_checkout_at_another_commit_is_refused_before_building(self, tmp_path, monkeypatch):
-        recorded: list[list[str]] = []
+    def test_another_commit_is_refused_before_any_pip_call(self, run):
+        source, recorded, state = run
+        state["head"] = "0" * 40 + "\n"
+        assert up.main(["install", "--source", str(source)]) == 1
+        assert self._pip_calls(recorded) == []
 
-        def fake_run(cmd, **kwargs):
-            recorded.append(list(cmd))
-            return subprocess.CompletedProcess(cmd, 0, stdout="0" * 40 + "\n", stderr="")
+    def test_a_dirty_checkout_is_refused_before_any_pip_call(self, run):
+        source, recorded, state = run
+        state["status"] = " M packages/myb_desktop_updater/src/x.py\n"
+        assert up.main(["install", "--source", str(source)]) == 1
+        assert self._pip_calls(recorded) == []
 
-        monkeypatch.setattr(up, "_run", fake_run)
-        with pytest.raises(up.PinError):
-            up.build_wheel(tmp_path, tmp_path / "out")
-        assert [c[0] for c in recorded] == ["git"]  # only the rev-parse ran: no pip, no build
+    def test_changed_content_is_refused_before_any_pip_call(self, run):
+        source, recorded, _state = run
+        (source / up.PACKAGE_DIR / "src" / "pkg" / "__init__.py").write_bytes(b"VALUE = 99\n")
+        assert up.main(["install", "--source", str(source)]) == 1
+        assert self._pip_calls(recorded) == []
 
 
 def _workflow(name: str) -> dict:

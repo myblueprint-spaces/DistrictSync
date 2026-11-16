@@ -5,22 +5,24 @@ holds a checkout) installs it like this:
 
 1. A checkout of that repository at exactly ``PINNED_COMMIT`` (the workflow does it with the read-only deploy key).
 2. This script re-reads ``git rev-parse HEAD`` and REFUSES anything else, so a moved tag or branch cannot change
-   what is built.
-3. The wheel is built with ``SOURCE_DATE_EPOCH`` set and the pinned build tools, which makes the build reproducible
-   (the same commit gives the same bytes on a developer machine and on the runner).
-4. The wheel's SHA-256 must equal ``PINNED_WHEEL_SHA256``, or nothing is installed. That is the hash lock.
-5. Only then is the wheel installed (``--no-deps``; its one dependency is pinned in ``requirements-updater.txt``).
+   what is built, and refuses a checkout with uncommitted changes.
+3. The package folder's TREE HASH must equal ``PINNED_TREE_SHA256``. That is the hash lock. It is the same value
+   the shared repository's own CI prints (``tools/tree_hash.py``): a SHA-256 over every file's relative path and
+   content with line endings normalised, so it is identical on Windows and Linux. (A wheel's own SHA-256 is NOT
+   used: the same source builds three different wheels on a Windows CRLF checkout, a Windows LF checkout and
+   Linux, measured 2026-11-17, because file modes and line endings go into the archive.)
+4. Only then is the wheel built (``SOURCE_DATE_EPOCH``, pinned ``setuptools`` and ``wheel``) and installed
+   (``--no-deps``; its one dependency is pinned in ``requirements-updater.txt``).
 
-Raising the pin: take the new commit and the wheel hash printed by the shared repository's own CI, change the
-three constants below together, read the package's changelog, and let the ticketed change be reviewed. Dependabot
+Raising the pin: take the new commit and the tree hash the shared repository's own CI prints, change the three
+constants below together, read the package's changelog, and let the ticketed change be reviewed. Dependabot
 cannot do this for a private source, on purpose.
 
 Usage::
 
     python scripts/updater_package.py commit
+    python scripts/updater_package.py tree-hash <package folder>
     python scripts/updater_package.py install --source <checkout of the shared repository>
-    python scripts/updater_package.py install --wheel <a wheel built elsewhere>   # verifies the hash, installs it
-    python scripts/updater_package.py verify-wheel <wheel>
 
 Standard library only. The package source never enters this repository.
 """
@@ -36,29 +38,58 @@ import tempfile
 from pathlib import Path
 
 #: The commit of ``myblueprint-spaces/myb-desktop-shared`` the package is built from (0.2.0).
-#: Newer commit with the G-097 fix (a package taken in but not applied must not apply at next start) is NOT
+#: A newer commit with the G-097 fix (a package taken in but not applied must not apply at next start) is NOT
 #: pinned yet; when RosterGate reports it, these three change together.
 PINNED_COMMIT = "d9648d7c9d2f30c9d6f671aef10bf121bf4cd96c"
-#: The SHA-256 of the wheel that commit builds with the settings below (as printed by the shared repo's own CI).
-PINNED_WHEEL_SHA256 = "89e0631af3aec01f518696b4b51eddadd5d4f84e732be1ba6051edcf9fce5f54"
+#: The tree hash of ``packages/myb_desktop_updater`` at that commit, as the shared repo's own CI prints it.
+PINNED_TREE_SHA256 = "672d866c1553f17dcff8a935d7e4a494e5051f70eeae10062968be83f0e048a5"
 PINNED_VERSION = "0.2.0"
 
-#: Build settings the pinned hash depends on. Same as the shared repository's own CI.
+#: Build settings (same as the shared repository's own CI).
 SOURCE_DATE_EPOCH = "1763337600"
 BUILD_TOOLS = ("setuptools==84.2.1", "wheel==0.48.0")
 PACKAGE_DIR = Path("packages") / "myb_desktop_updater"
 WHEEL_NAME = f"myb_desktop_updater-{PINNED_VERSION}-py3-none-any.whl"
+
+# The tree-hash rules, copied from the shared repository's ``tools/tree_hash.py`` so the check does not run code
+# from the checkout it is checking.
+_TOP_SKIP = {"dist", "build"}
+_ANY_SKIP = {"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache"}
+_SKIP_SUFFIXES = {".pyc", ".pyo"}
 
 
 class PinError(Exception):
     """The package is not exactly the pinned one. Nothing is installed."""
 
 
-def sha256_file(path: Path) -> str:
+def _package_files(folder: Path) -> list[Path]:
+    if not folder.is_dir():
+        raise PinError(f"{folder} is not a folder")
+    found: list[tuple[str, Path]] = []
+    for path in folder.rglob("*"):
+        rel = path.relative_to(folder)
+        parts = rel.parts
+        if parts[0] in _TOP_SKIP or _ANY_SKIP & set(parts):
+            continue
+        if any(part.endswith(".egg-info") for part in parts) or path.suffix in _SKIP_SUFFIXES:
+            continue
+        if path.is_symlink():
+            raise PinError(f"{rel.as_posix()} is a link; a shared package holds plain files only")
+        if path.is_file():
+            found.append((rel.as_posix(), path))
+    return [path for _rel, path in sorted(found, key=lambda item: item[0].encode("utf8"))]
+
+
+def tree_hash(folder: Path) -> str:
+    """SHA-256 over each file's relative posix path and its content with CRLF normalised to LF."""
+    files = _package_files(folder)
+    if not files:
+        raise PinError(f"{folder} holds no files to hash")
     digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1 << 20), b""):
-            digest.update(chunk)
+    for path in files:
+        data = path.read_bytes().replace(b"\r\n", b"\n")
+        digest.update(path.relative_to(folder).as_posix().encode("utf8") + b"\0")
+        digest.update(hashlib.sha256(data).digest())
     return digest.hexdigest()
 
 
@@ -68,13 +99,11 @@ def check_commit(actual: str, expected: str | None = None) -> None:
         raise PinError(f"the shared repository is at {actual.strip()!r}, not the pinned commit {expected}")
 
 
-def check_wheel(path: Path, expected: str | None = None) -> None:
-    expected = PINNED_WHEEL_SHA256 if expected is None else expected
-    if not path.is_file():
-        raise PinError(f"no wheel at {path}")
-    actual = sha256_file(path)
+def check_tree(folder: Path, expected: str | None = None) -> None:
+    expected = PINNED_TREE_SHA256 if expected is None else expected
+    actual = tree_hash(folder)
     if actual != expected:
-        raise PinError(f"wheel {path.name} has sha256 {actual}, not the pinned {expected}; it was not installed")
+        raise PinError(f"package folder {folder} has tree hash {actual}, not the pinned {expected}; nothing was built")
 
 
 def _run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -82,12 +111,13 @@ def _run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
 
 
 def build_wheel(source: Path, out_dir: Path) -> Path:
-    """Build the pinned wheel from a checkout of the shared repository; refuse any other commit."""
+    """Build the wheel from a checkout of the shared repository; refuse any other commit or content."""
     head = _run(["git", "-C", str(source), "rev-parse", "HEAD"], capture_output=True).stdout
     check_commit(head)
     status = _run(["git", "-C", str(source), "status", "--porcelain"], capture_output=True).stdout
     if status.strip():
         raise PinError("the shared repository checkout has uncommitted changes; build from a clean checkout")
+    check_tree(source / PACKAGE_DIR)
     _run([sys.executable, "-m", "pip", "install", "--quiet", *BUILD_TOOLS])
     env = {**os.environ, "SOURCE_DATE_EPOCH": SOURCE_DATE_EPOCH}
     _run(
@@ -96,12 +126,12 @@ def build_wheel(source: Path, out_dir: Path) -> Path:
         env=env,
     )
     wheel = out_dir / WHEEL_NAME
-    check_wheel(wheel)
+    if not wheel.is_file():
+        raise PinError(f"the build did not produce {WHEEL_NAME}")
     return wheel
 
 
 def install_wheel(wheel: Path) -> None:
-    check_wheel(wheel)
     _run([sys.executable, "-m", "pip", "install", "--no-deps", "--quiet", str(wheel)])
 
 
@@ -109,27 +139,20 @@ def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("commit", help="print the pinned commit")
-    verify = sub.add_parser("verify-wheel", help="check a wheel against the pinned SHA-256")
-    verify.add_argument("wheel", type=Path)
-    install = sub.add_parser("install", help="build (or take) the pinned wheel, check it, install it")
-    group = install.add_mutually_exclusive_group(required=True)
-    group.add_argument("--source", type=Path, help="a checkout of the shared repository at the pinned commit")
-    group.add_argument("--wheel", type=Path, help="a wheel built elsewhere; it is hash-checked before install")
+    tree = sub.add_parser("tree-hash", help="print the tree hash of a package folder")
+    tree.add_argument("folder", type=Path)
+    install = sub.add_parser("install", help="check the pinned checkout, build the wheel, install it")
+    install.add_argument("--source", type=Path, required=True, help="a checkout of the shared repository")
     args = parser.parse_args(argv)
     try:
         if args.cmd == "commit":
             print(PINNED_COMMIT)
-        elif args.cmd == "verify-wheel":
-            check_wheel(args.wheel)
-            print(f"ok: {args.wheel.name} matches the pinned sha256")
-        elif args.wheel is not None:
-            install_wheel(args.wheel)
-            print(f"installed {args.wheel.name} (sha256 matched the pin)")
+        elif args.cmd == "tree-hash":
+            print(tree_hash(args.folder))
         else:
             with tempfile.TemporaryDirectory() as tmp:
-                wheel = build_wheel(args.source, Path(tmp))
-                install_wheel(wheel)
-            print(f"installed {WHEEL_NAME} built from {PINNED_COMMIT[:8]} (sha256 matched the pin)")
+                install_wheel(build_wheel(args.source, Path(tmp)))
+            print(f"installed {WHEEL_NAME} built from {PINNED_COMMIT[:8]} (commit and tree hash matched the pin)")
     except PinError as exc:
         print(f"updater package pin check FAILED: {exc}", file=sys.stderr)
         return 1
