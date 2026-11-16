@@ -72,6 +72,17 @@ _PER_OS: dict[str, tuple[str, ...]] = {
 }
 
 
+# Extra modules only the INSTALLED (one-folder, Velopack) Windows flavour needs. Deliberately NOT
+# in COMMON/_PER_OS: `all_modules()` is what the one-file step's text must contain, and the
+# portable build must not carry the updater runtime (plan 0054 S2).
+INSTALLED_EXTRA: tuple[str, ...] = (
+    "src._build_flavor",
+    "src.update",
+    "src.update.startup",
+    "velopack",
+)
+
+
 def hidden_imports(os_name: str) -> tuple[str, ...]:
     """The modules for ``os_name`` (``windows`` / ``macos`` / ``linux``). Raises on anything else."""
     if os_name not in _PER_OS:
@@ -86,16 +97,22 @@ def all_modules() -> frozenset[str]:
     return frozenset(COMMON).union(*_PER_OS.values())
 
 
-def as_flags(os_name: str) -> str:
-    return " ".join(f"--hidden-import {m}" for m in hidden_imports(os_name))
+def as_flags(os_name: str, *, installed: bool = False) -> str:
+    modules = hidden_imports(os_name)
+    if installed:
+        if os_name != "windows":
+            raise ValueError("the installed flavour exists for windows only")
+        modules = (*modules, *INSTALLED_EXTRA)
+    return " ".join(f"--hidden-import {m}" for m in modules)
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) != 1:
-        print("usage: flet_pack_args.py windows|macos|linux", file=sys.stderr)
+    installed = argv[1:] == ["--installed"]
+    if len(argv) != (2 if installed else 1):
+        print("usage: flet_pack_args.py windows|macos|linux [--installed]", file=sys.stderr)
         return 2
     try:
-        print(as_flags(argv[0]))
+        print(as_flags(argv[0], installed=installed))
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 2

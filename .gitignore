@@ -13,6 +13,10 @@ __pycache__/
 # Version file stamped from the git tag at build time (release.yml / Makefile)
 /src/_version.py
 
+# Build-flavour stamp ('installed' | 'portable'), written only by the one-folder Windows job
+# (flet-pack.yml). Exists only inside a build; absent means portable (plan 0054 S2).
+/src/_build_flavor.py
+
 # Logs
 *.log
 

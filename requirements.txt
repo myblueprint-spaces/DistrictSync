@@ -26,3 +26,9 @@ flet-desktop==0.85.3
 # Task Scheduler COM engine (src/scheduler/task_com.py, plan 0041) — Windows-only.
 # Imported LAZILY under sys.platform guards, so Linux/macOS never need it.
 pywin32>=306 ; sys_platform == "win32"
+
+# Velopack runtime for the INSTALLED Windows build only (plan 0054 S2). Pinned EXACTLY, and in
+# lockstep with the `vpk` tool the release workflow packs with (S6a; parity test
+# tests/test_velopack_pin.py). Imported by name inside src/update/startup.py and only when the
+# build is stamped installed, so the portable one-file exe never imports (or bundles) it.
+velopack==1.2.161 ; sys_platform == "win32"

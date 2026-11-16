@@ -441,6 +441,15 @@ jobs:
           fi
           cat src/_version.py
 
+      # The INSTALLED flavour (plan 0054 S2): the one-folder build is the one Velopack packs.
+      # Only this job writes the stamp; the one-file exe and the macOS/Linux builds never do,
+      # and an absent stamp means portable (src/utils/build_flavor.py).
+      - name: Stamp build flavour (installed)
+        shell: bash
+        run: |
+          echo "flavor = 'installed'" > src/_build_flavor.py
+          cat src/_build_flavor.py
+
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
@@ -472,7 +481,7 @@ jobs:
             --add-data "config;config" \
             --add-data "assets;assets" \
             --add-data "$(cygpath -w "$CLIENT");flet_view" \
-            $(python scripts/flet_pack_args.py windows) \
+            $(python scripts/flet_pack_args.py windows --installed) \
             --pyinstaller-build-args="--paths" --pyinstaller-build-args="." \
             --pyinstaller-build-args="--exclude-module" --pyinstaller-build-args="streamlit" \
             --pyinstaller-build-args="--exclude-module" --pyinstaller-build-args="src.ui"
@@ -480,6 +489,17 @@ jobs:
       - name: Assert the folder carries its own Flet client
         shell: bash
         run: python scripts/ci_flet_pack_smoke.py --assert-bundled-client dist DistrictSync
+
+      # The installed flavour must carry the Velopack runtime: without it the app silently runs
+      # with no updater. (Outside an install the runtime is never started, so no smoke below
+      # would notice its absence.)
+      - name: Assert the folder carries the Velopack runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          FOUND=$(find dist/DistrictSync -iname 'velopack*' | head -5)
+          echo "$FOUND"
+          [ -n "$FOUND" ] || { echo "FAIL: no velopack module in the one-folder app"; exit 1; }
 
       - name: Echo measured size
         shell: bash
