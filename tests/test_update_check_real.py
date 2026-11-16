@@ -141,6 +141,10 @@ def setup(monkeypatch, tmp_path):
                 state_dir=tmp_path / "state",
                 now=NOW,
                 budget=30.0,
+                # This file is about the check and the staging. Applying is covered in test_update_apply_real.py, so
+                # the hand-off is made to refuse deterministically (a copy is running) on every OS, and no installer is touched.
+                installer=object(),
+                running=lambda: 1,
             )
             return outcome, list(_RECORD)
         finally:
@@ -166,7 +170,7 @@ class TestAgainstALoopbackFeed:
         """Positive twin of the zero-connection guards: an eligible build connects to exactly the feed."""
         feed = setup.serve(lambda host: _manifest(host))
         outcome, connections = setup.run(feed.host)
-        assert outcome == check.CheckOutcome("staged", "staged", "3.31.0")
+        assert outcome == check.CheckOutcome("staged", "not_applied_app_running", "3.31.0")  # staged, apply refused
         staged = setup.state / check.STAGING_FOLDER / "DistrictSync-3.31.0-full.nupkg"
         assert staged.read_bytes() == PAYLOAD
         assert connections, "the audit hook recorded nothing: the proof would be vacuous"
