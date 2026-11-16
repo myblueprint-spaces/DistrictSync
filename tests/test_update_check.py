@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import logging
-import time
 import types
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -61,6 +60,7 @@ class FakeUpdater(types.ModuleType):
         self.enabled = enabled
         self.parseable = parseable
         self.checks: list[tuple[str, str]] = []  # (host, manifest path)
+        self.deadlines: list[float | None] = []  # the deadline_seconds the check was given
         outer = self
 
         class FeedFetcher:
@@ -80,8 +80,9 @@ class FakeUpdater(types.ModuleType):
             def is_healthy(self, version):
                 return True
 
-        def check_for_update(fetcher, manifest_path, *_rest):
+        def check_for_update(fetcher, manifest_path, *_rest, deadline_seconds=None):
             outer.checks.append((fetcher.host, manifest_path))
+            outer.deadlines.append(deadline_seconds)
             if isinstance(outer.result, Raises):
                 raise outer.result.error
             if callable(outer.result):
@@ -235,9 +236,16 @@ class TestOutcomes:
         assert outcome == check.CheckOutcome("error", "raised")
         assert any("RuntimeError" in r.getMessage() for r in caplog.records)
 
-    def test_a_slow_check_is_cut_off_by_the_budget(self, eligible):
-        outcome = _run(eligible, FakeUpdater(result=lambda: time.sleep(2)), budget=0.05)
-        assert outcome == check.CheckOutcome("error", "budget_exceeded")
+    def test_the_whole_check_is_bounded_by_the_packages_deadline(self, eligible):
+        """The package enforces the time limit and reports a cut-off as the refusal ``timed_out``."""
+        fake = FakeUpdater(result=_Refused("timed_out"))
+        assert _run(eligible, fake, budget=42.0) == check.CheckOutcome("refused", "timed_out")
+        assert fake.deadlines == [42.0]
+
+    def test_the_default_deadline_is_the_plans_five_minutes(self, eligible):
+        fake = FakeUpdater(result=None)
+        _run(eligible, fake)
+        assert fake.deadlines == [300.0] == [check.BUDGET_SECONDS]
 
     def test_nothing_unexpected_escapes(self, eligible, monkeypatch):
         def boom(*_a, **_k):

@@ -37,7 +37,8 @@ There is no environment variable, setting or option that points the release buil
 
 A check stages at most. Every failure, refusal and slowness is a returned `CheckOutcome` (`status`, `reason` code,
 `version`), logged as counts and codes, recorded in `<profile>\updater\last-check.json`. The wall-clock budget
-(`BUDGET_SECONDS`) is enforced on a daemon thread because the package bounds each request, not the whole check. The
+(`BUDGET_SECONDS`, 5 minutes) is the package's own `deadline_seconds` (manifest and download together; a cut-off is the refusal `timed_out`),
+which replaced DistrictSync's watchdog thread from S4. Kept in the wiring: the 6-hour `MIN_INTERVAL` gate and the `except` around the call. The
 conversion's exit code and run record are computed from the run alone (`tests/test_update_check.py::TestAfterScheduledRun`).
 
 ## State
@@ -71,15 +72,16 @@ begins and when the first screen is up: **healthy is start-up completing, never 
 failed starts the package records the version bad (the feed never offers it again) and `restore_last_good` puts the kept copy back,
 applied after exit; this works while updates are switched off.
 
-**Known limit:** a crash before `begin_start` runs (an import-time failure while `src.main` loads its modules) leaves no record, so it
-cannot be rolled back by this mechanism. Closing that needs a recording step before the heavy imports and is a follow-up, not part
-of S5.
+**Known limits (shared-package work queued, NOT in the pinned 0.3.1; do not claim them):** (1) a crash before `begin_start` runs (an
+import-time failure while `src.main` loads its modules) leaves no record and cannot be rolled back; (2) a start that dies in its own
+start-up shows a blocking error box instead of exiting (a window-less exe), so an unattended run can hang until it is ended; (3) the
+orphaned Flet client window is not closed or counted as a failed start. Each waits for the shared repository.
 
 ## The end-to-end proof
 
 `scripts/updater_e2e.py` builds three unsigned one-folder copies in the **e2e flavour** (the installed flavour plus a stamped
 loopback feed and a published RFC 6979 TEST key, `src/_e2e_target.py`, git-ignored), packs them with `vpk` under the real pack id,
 installs 3.99.1 for the current user and drives the nightly through: a tampered manifest refused; a good update applied after exit; a
-bad build that dies at start rolled back and never offered again. It uses `DISTRICTSYNC_DATA_DIR` for a throwaway profile and removes the
+bad build that dies at start rolled back and never offered again; and (G-097) a package that is only waiting in the install folder is not applied by a restart. It uses `DISTRICTSYNC_DATA_DIR` for a throwaway profile and removes the
 install afterwards. The e2e flavour exists for that script alone; tests (`tests/test_update_e2e_flavour.py`) pin that no release path can
 stamp it or point the release build at loopback or a test key. Not run in CI yet (it needs the private package in the pack job).

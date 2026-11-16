@@ -20,9 +20,10 @@ check leaves the running version exactly as it was. Every failure, slowness and 
 and recorded, never an exception to the caller. The conversion's exit code and run record are decided
 before this runs and cannot be altered by it.
 
-**A wall-clock budget.** The package bounds each request, not the whole check, so the check runs on a daemon
-thread and the caller waits at most ``BUDGET_SECONDS``. Past it the caller moves on and the process may exit;
-a half-finished download lives in a marked work folder that the package cleans on its next call.
+**A wall-clock budget.** The package bounds the whole check (``deadline_seconds``, ``BUDGET_SECONDS``): a cut-off is the
+refusal ``timed_out``. Our own watchdog thread from slice S4 is gone because the package's now covers it. Kept: the
+``MIN_INTERVAL`` gate (so a window opened ten times a day fetches the manifest once), and the ``except`` around the
+package call (a check must never change a run, whatever the package raises).
 
 What this is NOT: the one place the feed host or keys are decided (``src.update.feed``), nor the place the
 package is imported (``src.update.package``).
@@ -34,7 +35,6 @@ import contextlib
 import json
 import logging
 import os
-import threading
 import uuid
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
@@ -57,8 +57,9 @@ logger = logging.getLogger(__name__)
 TRIGGER_AFTER_RUN: Final = "after_run"
 TRIGGER_WINDOW: Final = "window"
 
-#: The longest a caller waits for a check (manifest + files). The package's own per-request timeout is below it.
-BUDGET_SECONDS: Final = 90.0
+#: The longest a whole check may take, manifest and download together (plan 0054 section 4: 5 minutes). Passed to the
+#: package as ``deadline_seconds``; the package enforces it. The per-request timeout below is within it.
+BUDGET_SECONDS: Final = 300.0
 REQUEST_TIMEOUT_SECONDS: Final = 15.0
 #: Attempts closer together than this are skipped (reason ``recent``).
 MIN_INTERVAL: Final = timedelta(hours=6)
@@ -157,26 +158,6 @@ def skip_reason(
     return None
 
 
-def _within_budget(work: Callable[[], Any], budget: float) -> tuple[str, Any]:
-    """Run ``work`` on a daemon thread. Returns ``("done", value)``, ``("raised", exception)`` or ``("late", None)``.
-
-    The tag matters: the package RETURNS its refusals (``UpdateRefused`` is an ``Exception`` subclass that is a
-    value, not a failure), so "it raised" and "it returned an exception object" must stay distinguishable.
-    """
-    box: list[tuple[str, Any]] = []
-
-    def _target() -> None:
-        try:
-            box.append(("done", work()))
-        except Exception as exc:  # noqa: BLE001 - handed to the caller as a tagged value, see the docstring
-            box.append(("raised", exc))
-
-    thread = threading.Thread(target=_target, name="districtsync-update-check", daemon=True)
-    thread.start()
-    thread.join(budget)
-    return box[0] if box else ("late", None)
-
-
 def run_update_check(
     trigger: str,
     *,
@@ -231,8 +212,10 @@ def _run(
     )
     when = datetime.now(UTC) if now is None else now
 
-    def _check() -> Any:
-        return module.check_for_update(
+    try:
+        # The package bounds the WHOLE check (manifest and download together, enforced as bytes arrive) and reports a
+        # cut-off as the refusal ``timed_out``; it does not re-download a package already staged and matching.
+        result = module.check_for_update(
             fetcher,
             resolved_target.manifest_path,
             resolved_target.trusted_keys,
@@ -244,20 +227,18 @@ def _run(
             resolved_target.channel,
             identity,
             directory,
+            deadline_seconds=budget,
         )
-
-    tag, result = _within_budget(_check, budget)
-    if tag == "late":
-        outcome = CheckOutcome(ERROR, "budget_exceeded")
-    elif tag == "raised":
-        logger.warning("update check raised %s; nothing was changed", type(result).__name__)
+    except Exception as exc:  # noqa: BLE001 - a check must never change the caller's result
+        logger.warning("update check raised %s; nothing was changed", type(exc).__name__)
         outcome = CheckOutcome(ERROR, "raised")
-    elif result is None:
-        outcome = CheckOutcome(NONE_NEWER, "up_to_date")
-    elif isinstance(result, module.UpdateRefused):
-        outcome = CheckOutcome(REFUSED, str(result.reason))
     else:
-        outcome = _hand_off(module, result, trigger, config, directory, identity, health, when, installer, running)
+        if result is None:
+            outcome = CheckOutcome(NONE_NEWER, "up_to_date")
+        elif isinstance(result, module.UpdateRefused):
+            outcome = CheckOutcome(REFUSED, str(result.reason))
+        else:
+            outcome = _hand_off(module, result, trigger, config, directory, identity, health, when, installer, running)
     _write_last(directory, outcome, trigger, when)
     return outcome
 

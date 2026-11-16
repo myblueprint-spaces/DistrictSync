@@ -104,14 +104,17 @@ class TestRunVelopackStartup:
         assert startup.run_velopack_startup() is False
         assert imported == []
 
-    def test_installed_build_under_an_install_runs_with_apply_at_start_off(self, monkeypatch, tmp_path):
-        """Positive twin of the two skips above."""
+    def test_installed_build_under_an_install_calls_the_packages_startup_hook(self, monkeypatch, tmp_path):
+        """Positive twin of the two skips above. The hook (the package's ``run_startup_hook``) is what switches the
+        installer's own auto-apply OFF before running; that behaviour is the package's, proven by the e2e script."""
         _stamp(monkeypatch, "installed")
         monkeypatch.setattr(sys, "executable", _install_layout(tmp_path))
-        fake = _FakeVelopack()
-        monkeypatch.setitem(sys.modules, "velopack", fake)
+        calls: list[str] = []
+        hook_module = types.ModuleType("myb_desktop_updater.velopack_installer")
+        hook_module.run_startup_hook = lambda: calls.append("hook")  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "myb_desktop_updater.velopack_installer", hook_module)
         assert startup.run_velopack_startup() is True
-        assert fake.calls == ["auto_apply=False", "run"]  # off BEFORE run: order matters
+        assert calls == ["hook"]
 
     def test_missing_runtime_is_logged_loudly_and_does_not_stop_the_run(self, monkeypatch, tmp_path, caplog):
         _stamp(monkeypatch, "installed")
@@ -123,7 +126,7 @@ class TestRunVelopackStartup:
         monkeypatch.setattr(startup.importlib, "import_module", _boom)
         with caplog.at_level(logging.ERROR, logger=startup.logger.name):
             assert startup.run_velopack_startup() is False
-        assert any(r.levelno == logging.ERROR and "velopack" in r.getMessage() for r in caplog.records)
+        assert any(r.levelno == logging.ERROR and "updater" in r.getMessage() for r in caplog.records)
 
     def test_install_root(self, tmp_path):
         exe = _install_layout(tmp_path)

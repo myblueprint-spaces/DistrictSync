@@ -361,6 +361,26 @@ def scenarios(vpk: str, python: str, work: Path, reuse: bool = False) -> None:
             f"the feed still offers 3.99.3 but it is not offered to this app again ({last})",
         )
         Check.that(app.version() == "3.99.2", "and 3.99.2 stays")
+
+        say("--- d. G-097: a package that is only WAITING in the install folder is not applied by a restart")
+        waiting = root / "packages" / f"{PACK_ID}-3.99.3-full.nupkg"
+        if not waiting.exists():
+            shutil.copyfile(packs["3.99.3"] / waiting.name, waiting)
+        Check.that(waiting.exists(), "a newer full package (3.99.3) is waiting in the install's packages folder")
+        app.forget_last_check()
+        app.nightly()
+        app.nightly()
+        time.sleep(30)
+        Check.that(app.version() == "3.99.2", "after two restarts the waiting package was NOT applied: still 3.99.2")
+        Check.that(waiting.exists(), "and the waiting package is still there, untouched")
+        say(
+            "premise twin: the waiting package really is applicable (Update.exe apply, as an auto-apply-on start would do)"
+        )
+        run([str(root / "Update.exe"), "apply", "--norestart"], check=False, timeout=120)
+        Check.that(
+            app.wait_for_version("3.99.3", 90, settle=5),
+            "asked to apply it explicitly, 3.99.3 becomes the installed version",
+        )
         feed.close()
     finally:
         pass
