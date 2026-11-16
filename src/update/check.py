@@ -44,6 +44,7 @@ from types import ModuleType
 from typing import Any, Final
 
 from src.config.app_config import AppConfig
+from src.update import apply
 from src.update.feed import FeedTarget, production_target
 from src.update.package import app_identity, load_updater
 from src.update.startup import install_root
@@ -71,13 +72,14 @@ STATE_FOLDER: Final = "updater"
 SKIPPED: Final = "skipped"
 NONE_NEWER: Final = "none"
 STAGED: Final = "staged"
+HANDED_OFF: Final = "handed_off"  # given to the installer; applied after this process exits
 REFUSED: Final = "refused"
 ERROR: Final = "error"
 
 
 @dataclass(frozen=True)
 class CheckOutcome:
-    status: str  # skipped | none | staged | refused | error
+    status: str  # skipped | none | staged | handed_off | refused | error
     reason: str  # a short code, never free text, never an address or a path
     version: str | None = None
 
@@ -184,13 +186,17 @@ def run_update_check(
     state_dir: Path | None = None,
     now: datetime | None = None,
     budget: float = BUDGET_SECONDS,
+    installer: Any | None = None,
+    running: Callable[[], int | None] | None = None,
 ) -> CheckOutcome:
-    """Run one update check if every guard allows it. Never raises; never applies anything.
+    """Run one update check if every guard allows it, and hand a verified update to the installer when that is safe.
 
-    ``target``/``updater``/``state_dir`` are test seams: no production call site passes them.
+    Never raises. Applying happens after this process exits (the package's hand-off), never during, and never restarts
+    the app. ``target``/``updater``/``state_dir``/``installer``/``running`` are test seams: no production call site
+    passes them.
     """
     try:
-        return _run(trigger, config, target, updater, state_dir, now, budget)
+        return _run(trigger, config, target, updater, state_dir, now, budget, installer, running)
     except Exception:  # noqa: BLE001 - a check must never change the caller's result
         logger.warning("update check failed unexpectedly; nothing was changed", exc_info=True)
         return CheckOutcome(ERROR, "unexpected")
@@ -204,6 +210,8 @@ def _run(
     state_dir: Path | None,
     now: datetime | None,
     budget: float,
+    installer: Any | None,
+    running: Callable[[], int | None] | None,
 ) -> CheckOutcome:
     resolved_target = production_target() if target is None else target
     reason = skip_reason(config=config, target=resolved_target, updater=updater, state_dir=state_dir, now=now)
@@ -249,9 +257,44 @@ def _run(
     elif isinstance(result, module.UpdateRefused):
         outcome = CheckOutcome(REFUSED, str(result.reason))
     else:
-        outcome = CheckOutcome(STAGED, "staged", str(result.version))
+        outcome = _hand_off(module, result, trigger, config, directory, identity, health, when, installer, running)
     _write_last(directory, outcome, trigger, when)
     return outcome
+
+
+def _hand_off(
+    module: ModuleType,
+    staged: Any,
+    trigger: str,
+    config: AppConfig | None,
+    directory: Path,
+    identity: Any,
+    health: Any,
+    when: datetime,
+    installer: Any | None,
+    running: Callable[[], int | None] | None,
+) -> CheckOutcome:
+    """Give a staged update to the installer if it is safe to; else leave it staged and say why (a code)."""
+    version = str(staged.version)
+    try:
+        if trigger == TRIGGER_WINDOW:
+            settings = AppConfig.load() if config is None else config
+            if not apply.window_may_request_apply(settings, when.astimezone()):
+                return CheckOutcome(STAGED, "not_applied_keep_clear_of_nightly", version)
+        result = module.hand_off(
+            staged,
+            apply.default_installer() if installer is None else installer,
+            identity,
+            directory,
+            apply.other_instances_counter(module) if running is None else running,
+            health.is_healthy,
+        )
+    except Exception:  # noqa: BLE001 - an apply problem must leave the update staged and the run untouched
+        logger.warning("handing the update to the installer failed; it stays staged", exc_info=True)
+        return CheckOutcome(STAGED, "not_applied_error", version)
+    if isinstance(result, module.HandoffRefused):
+        return CheckOutcome(STAGED, f"not_applied_{result.reason}", version)
+    return CheckOutcome(HANDED_OFF, "handed_off", version)
 
 
 def last_check_summary(state_dir: Path | None = None) -> dict[str, Any]:

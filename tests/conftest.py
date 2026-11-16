@@ -790,3 +790,26 @@ def sd74_frozen_corpus(tmp_path_factory):
         )
 
     return raw["global_config"], run
+
+
+@pytest.fixture
+def eligible(monkeypatch, tmp_path):
+    """An installed build under a Velopack install, per-user profile, update-ready (plan 0054 S4/S5 tests).
+
+    Stamps the installed flavour, lays out ``<root>/Update.exe`` + ``<root>/current/DistrictSync.exe`` and points
+    ``sys.executable`` at it, and pins the scope/override/version guards open. Returns ``state`` (the updater state dir)
+    and ``config`` (a default ``AppConfig``).
+    """
+    from types import SimpleNamespace
+
+    from src.config.app_config import AppConfig
+    from src.update import check, health
+    from tests.test_installed_flavour import _install_layout, _stamp
+
+    _stamp(monkeypatch, "installed")
+    monkeypatch.setattr("sys.executable", _install_layout(tmp_path))
+    monkeypatch.setattr(check.paths, "is_machine_scope", lambda: False)
+    monkeypatch.setattr(check.paths, "data_dir_override_active", lambda: False)
+    monkeypatch.setattr(check, "app_version", lambda: "3.30.0")
+    monkeypatch.setattr(health, "app_version", lambda: "3.30.0")
+    return SimpleNamespace(state=tmp_path / "state", config=AppConfig())

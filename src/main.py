@@ -506,9 +506,16 @@ def _cli(argv: list[str] | None) -> int:
     # --diagnose never start it. A portable build (and the unzipped CI folder) skips it
     # entirely; see src/update/startup.py. Imported lazily so the portable build never
     # imports velopack.
+    from src.update.health import begin_start, counts_as_a_start
     from src.update.startup import run_velopack_startup
 
     run_velopack_startup()
+
+    # Start-up health (plan 0054 S5): record that a start has BEGUN, as early as possible, so a build that
+    # dies in its own start-up leaves a failed start behind. Only a start that will reach a healthy mark
+    # counts (the window, and a conversion run); --version, the SFTP subcommands and the rest never do.
+    if counts_as_a_start(args_list):
+        begin_start()
 
     # No arguments → launch the UI (e.g. double-clicked from Explorer).
     # The launcher configures its own logging sink (launcher.boot_logging).
@@ -651,6 +658,12 @@ def _cli(argv: list[str] | None) -> int:
     # the window config + today; the diagnostic log line is the trail).
     if _resolve_source(args.source) == "scheduled" and _paused_by_sync_window(AppConfig.load(), _today(), logger):
         return 0
+
+    # Healthy = start-up COMPLETED, written BEFORE ETL begins. Never "the conversion succeeded": a run that
+    # exits 1 over a missing GDE file is a data problem, not a bad build (plan 0054 section 6).
+    from src.update.health import mark_healthy
+
+    mark_healthy()
 
     try:
         result = run_pipeline(

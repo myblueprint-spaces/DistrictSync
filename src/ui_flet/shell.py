@@ -571,6 +571,19 @@ def _check_for_update_in_window() -> None:
         logging.getLogger(__name__).debug("window update check failed", exc_info=True)
 
 
+def _mark_start_healthy() -> None:
+    """The first screen is up (the launch page or the app body): that is a healthy start (plan 0054 S5).
+
+    Total and a no-op outside the installed build; "healthy" here is start-up completing, never a conversion's result.
+    """
+    try:
+        from src.update.health import mark_healthy
+
+        mark_healthy()
+    except Exception:  # noqa: BLE001 - advisory; the window must not notice
+        logging.getLogger(__name__).debug("could not mark the start healthy", exc_info=True)
+
+
 def main(page: ft.Page) -> None:
     """Build the DistrictSync shell. Called by ``ft.run`` from ``launcher.py``.
 
@@ -765,6 +778,7 @@ def main(page: ft.Page) -> None:
 
     if not show_gate:
         _enter_app(app_cfg)
+        _mark_start_healthy()
         return
 
     try:
@@ -772,3 +786,4 @@ def main(page: ft.Page) -> None:
     except Exception:  # noqa: BLE001 - the floor: a broken launch page opens the app unfiltered
         logger.warning("The launch page could not be built; opening DistrictSync as usual.", exc_info=True)
         _enter_app(app_cfg)
+    _mark_start_healthy()

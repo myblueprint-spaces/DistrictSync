@@ -21,7 +21,7 @@ from src import main as main_module
 from src.config.app_config import AppConfig
 from src.update import check, feed, status
 from src.update.feed import FeedTarget
-from tests.test_installed_flavour import _install_layout, _stamp, _unstamped
+from tests.test_installed_flavour import _install_layout, _unstamped
 
 NOW = datetime(2026, 11, 17, 12, 0, tzinfo=UTC)
 TARGET = FeedTarget(host="feed.example.invalid", trusted_keys={"k1": b"\x04" + b"\x01" * 64})
@@ -38,6 +38,11 @@ class Raises:
 
     def __init__(self, error: Exception) -> None:
         self.error = error
+
+
+class _HandoffRefused:
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
 
 
 class _Staged:
@@ -72,6 +77,9 @@ class FakeUpdater(types.ModuleType):
             def bad_versions(self):
                 return ()
 
+            def is_healthy(self, version):
+                return True
+
         def check_for_update(fetcher, manifest_path, *_rest):
             outer.checks.append((fetcher.host, manifest_path))
             if isinstance(outer.result, Raises):
@@ -83,21 +91,18 @@ class FakeUpdater(types.ModuleType):
         self.FeedFetcher = FeedFetcher
         self.HealthStore = HealthStore
         self.check_for_update = check_for_update
+        self.HandoffRefused = _HandoffRefused
+        self.handoffs: list[tuple[str, int | None]] = []  # (staged version, others running as the package saw it)
+        self.handoff_result: object | None = None
+
+        def hand_off(staged, installer, identity, state_dir, running_count, healthy):
+            outer.handoffs.append((staged.version, running_count()))
+            return outer.handoff_result if outer.handoff_result is not None else SimpleNamespace(version=staged.version)
+
+        self.hand_off = hand_off
         self.AppIdentity = lambda *a: SimpleNamespace(name=a[0])
         self.updates_enabled = lambda _identity, _dir: outer.enabled
         self.parse_version = lambda v: (1,) if outer.parseable else None
-
-
-@pytest.fixture
-def eligible(monkeypatch, tmp_path):
-    """An installed build under a Velopack install, per-user profile, everything configured."""
-    _stamp(monkeypatch, "installed")
-    monkeypatch.setattr("sys.executable", _install_layout(tmp_path))
-    monkeypatch.setattr(check.paths, "is_machine_scope", lambda: False)
-    monkeypatch.setattr(check.paths, "data_dir_override_active", lambda: False)
-    monkeypatch.setattr(check, "app_version", lambda: "3.30.0")
-    state = tmp_path / "state"
-    return SimpleNamespace(state=state, config=AppConfig())
 
 
 def _run(eligible, updater, **kw):
@@ -108,6 +113,8 @@ def _run(eligible, updater, **kw):
         updater=updater,
         state_dir=eligible.state,
         now=NOW,
+        installer=kw.pop("installer", object()),
+        running=kw.pop("running", lambda: 0),
         **kw,
     )
 
@@ -212,8 +219,10 @@ class TestGuards:
 
 
 class TestOutcomes:
-    def test_staged(self, eligible):
-        assert _run(eligible, FakeUpdater(result=_Staged("3.31.0"))) == check.CheckOutcome("staged", "staged", "3.31.0")
+    def test_a_staged_update_is_handed_to_the_installer(self, eligible):
+        assert _run(eligible, FakeUpdater(result=_Staged("3.31.0"))) == check.CheckOutcome(
+            "handed_off", "handed_off", "3.31.0"
+        )
 
     def test_a_refusal_is_a_result_with_its_code(self, eligible):
         assert _run(eligible, FakeUpdater(result=_Refused("unreachable"))) == check.CheckOutcome(
@@ -243,8 +252,8 @@ class TestOutcomes:
         assert skipped.status == "skipped" and not (_unstamp_state / check.LAST_CHECK_FILE).exists()
         _run(eligible, FakeUpdater(result=_Staged("3.31.0")))  # positive twin
         record = json.loads((_unstamp_state / check.LAST_CHECK_FILE).read_text(encoding="utf8"))
-        assert record["status"] == "staged" and record["version"] == "3.31.0" and record["trigger"] == "window"
-        assert check.last_check_summary(_unstamp_state)["status"] == "staged"
+        assert record["status"] == "handed_off" and record["version"] == "3.31.0" and record["trigger"] == "window"
+        assert check.last_check_summary(_unstamp_state)["status"] == "handed_off"
 
     def test_the_record_carries_no_address_or_path(self, eligible):
         _run(eligible, FakeUpdater(result=_Refused("unreachable")))
