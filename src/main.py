@@ -435,6 +435,12 @@ def cli(argv: list[str] | None = None) -> int:
         return _exit_code_from(exc)
 
 
+def _check_for_update_after_run(args: argparse.Namespace, logger: logging.Logger) -> None:
+    """The after-run trigger, for every way a run can end. Only the app's OWN scheduled, non-dry run counts."""
+    if not args.dry_run:
+        _check_for_update_after_scheduled_run(_resolve_source(args.source), logger)
+
+
 def _check_for_update_after_scheduled_run(source: str, logger: logging.Logger) -> None:
     """Run the installed build's update check once, after a SCHEDULED run. Never raises, never changes the run.
 
@@ -679,6 +685,7 @@ def _cli(argv: list[str] | None) -> int:
     except SystemExit:
         # run_pipeline's own early exits (bad input dir / bad config) already
         # recorded a failed run; let cli() translate the code verbatim.
+        _check_for_update_after_run(args, logger)
         raise
     except Exception as e:
         print(f"\nError: {e}")
@@ -686,14 +693,15 @@ def _cli(argv: list[str] | None) -> int:
         # depend on the Flet UI layer (it would pull flet into every headless run).
         # Second spelling of the same address — keep in step with that constant.
         print("Check etl_tool.log for details. Contact hello@spacesedu.com for help.")
+        _check_for_update_after_run(args, logger)
         return 1
 
-    # Update check after the app's OWN scheduled run (plan 0054 S4). Decided here, after the run's
-    # result is in hand and before the exit code is chosen, but it cannot influence either: it never
-    # raises, applies nothing, and the code below is computed from ``result`` alone. A hand-run CLI,
+    # Update check after the app's OWN scheduled run (plan 0054 S4), here and on the two failure paths
+    # above: a build whose every nightly fails (the bug the next release fixes) must still be able to take
+    # that release. The run's result is decided before this and cannot be touched by it: the check never
+    # raises, applies only after exit, and the code below is computed from ``result`` alone. A hand-run CLI,
     # a district's own cron and --dry-run never trigger it.
-    if not args.dry_run:
-        _check_for_update_after_scheduled_run(_resolve_source(args.source), logger)
+    _check_for_update_after_run(args, logger)
 
     # Exit code 3: SFTP was requested and attempted but delivery failed.
     # The ETL output (CSV files) is already written and intact — only the

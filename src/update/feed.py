@@ -13,10 +13,12 @@ another key: a test passes its own ``FeedTarget`` to the check function, and pro
 
 from __future__ import annotations
 
+import importlib
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Final
 
+from src.utils.build_flavor import is_e2e_build
 from src.utils.validators import ALLOWED_UPDATE_HOSTS
 
 #: Trusted manifest public keys, ``key_id`` -> uncompressed SEC1 P-256 point (65 bytes). Two slots
@@ -41,8 +43,27 @@ class FeedTarget:
     allow_loopback_http: bool = False
 
 
+_E2E_TARGET_MODULE: Final = "src._e2e_target"  # a variable: only the e2e build carries it
+
+
+def _e2e_target() -> FeedTarget | None:
+    """The loopback feed and test key stamped into the e2e test build, or ``None`` if the stamp is unusable."""
+    try:
+        stamped = importlib.import_module(_E2E_TARGET_MODULE)
+        keys = {str(k): bytes.fromhex(v) for k, v in stamped.KEYS.items()}
+        return FeedTarget(host=str(stamped.HOST), trusted_keys=keys, allow_loopback_http=True) if keys else None
+    except (ImportError, AttributeError, ValueError, TypeError):
+        return None
+
+
 def production_target() -> FeedTarget | None:
-    """The configured feed, or ``None`` while the host or the key is not set (no connection is made)."""
+    """The configured feed, or ``None`` while the host or the key is not set (no connection is made).
+
+    The e2e test build is the ONE exception: it reads the loopback host and test key stamped into it. No other build,
+    environment variable or setting can point the check anywhere else.
+    """
+    if is_e2e_build():
+        return _e2e_target()
     if len(ALLOWED_UPDATE_HOSTS) != 1 or not TRUSTED_KEYS:
         return None
     (host,) = ALLOWED_UPDATE_HOSTS

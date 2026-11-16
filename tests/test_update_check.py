@@ -303,6 +303,33 @@ class TestAfterScheduledRun:
             monkeypatch.setattr(check, "run_update_check", behaviour)
             assert main_module.cli([*base, "--source", "scheduled"]) == 0
 
+    def test_a_failed_run_still_checks_so_the_fix_can_arrive(self, cli, monkeypatch):
+        """A build whose every nightly fails must still be able to take the release that fixes it."""
+        calls, base = cli
+
+        def failing(*_a, **_k):
+            raise RuntimeError("a GDE file is missing")
+
+        monkeypatch.setattr(main_module, "run_pipeline", failing)
+        assert main_module.cli([*base, "--source", "scheduled"]) == 1
+        assert calls == ["after_run"]
+
+    def test_a_run_that_exits_early_still_checks(self, cli, monkeypatch):
+        calls, base = cli
+
+        def exits(*_a, **_k):
+            raise SystemExit(1)
+
+        monkeypatch.setattr(main_module, "run_pipeline", exits)
+        assert main_module.cli([*base, "--source", "scheduled"]) == 1
+        assert calls == ["after_run"]
+
+    def test_a_failed_manual_run_does_not_check(self, cli, monkeypatch):
+        calls, base = cli
+        monkeypatch.setattr(main_module, "run_pipeline", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
+        assert main_module.cli([*base, "--source", "manual"]) == 1
+        assert calls == []
+
     def test_a_failed_delivery_still_exits_3_with_the_check_made(self, cli, monkeypatch):
         calls, base = cli
         monkeypatch.setattr(

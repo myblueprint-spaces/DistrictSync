@@ -49,7 +49,7 @@ from src.update.feed import FeedTarget, production_target
 from src.update.package import app_identity, load_updater
 from src.update.startup import install_root
 from src.utils import paths
-from src.utils.build_flavor import is_installed_build
+from src.utils.build_flavor import is_e2e_build, is_installed_build
 from src.utils.version import app_version
 
 logger = logging.getLogger(__name__)
@@ -132,7 +132,7 @@ def skip_reason(
         return "not_installed"
     if _in_machine_scope():
         return "machine_scope"
-    if paths.data_dir_override_active():
+    if paths.data_dir_override_active() and not is_e2e_build():
         return "data_dir_override"
     if not (AppConfig.load() if config is None else config).update_enabled:
         return "off_in_settings"

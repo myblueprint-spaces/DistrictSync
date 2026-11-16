@@ -8,6 +8,11 @@
 2. Anything else — an unbuilt source checkout, the one-file exe, the macOS and Linux binaries,
    a stamp whose value is not one of the two names — is ``"portable"``.
 
+A third value, ``"e2e"``, exists for ONE purpose: the unsigned test build the updater's end-to-end proof installs
+(``scripts/updater_e2e.py``). It behaves as the installed flavour and additionally trusts a loopback feed and a test key
+stamped beside it (``src/update/feed.py``). Only that script's build stamps it; the release build and the one-folder CI job
+never do, and tests pin that no release path mentions it.
+
 The default is ``"portable"`` on purpose. The installed flavour is the only one that starts the
 Velopack runtime and (in later slices) checks for updates, so an unreadable or unexpected stamp
 must fall to the flavour that does neither. Never the other way round.
@@ -19,7 +24,8 @@ from typing import Final
 
 INSTALLED: Final = "installed"
 PORTABLE: Final = "portable"
-_FLAVORS: Final = (INSTALLED, PORTABLE)
+E2E: Final = "e2e"
+_FLAVORS: Final = (INSTALLED, PORTABLE, E2E)
 
 
 def build_flavor() -> str:
@@ -32,4 +38,9 @@ def build_flavor() -> str:
 
 
 def is_installed_build() -> bool:
-    return build_flavor() == INSTALLED
+    """True for the installed flavour AND the e2e test build (which is the installed flavour plus a test feed)."""
+    return build_flavor() in (INSTALLED, E2E)
+
+
+def is_e2e_build() -> bool:
+    return build_flavor() == E2E
