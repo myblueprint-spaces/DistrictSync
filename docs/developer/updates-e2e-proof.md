@@ -4,7 +4,7 @@ Output of `scripts/updater_e2e.py` on a real Velopack install (vpk 1.2.161, unsi
 
 ```
 [15:51:28] work folder: <scratch>\e2e
-[15:51:28] PASS  nothing is installed at C:\Users\shan.peiris\AppData\Local\myBlueprint.DistrictSync before the proof starts
+[15:51:28] PASS  nothing is installed at %LOCALAPPDATA%\myBlueprint.DistrictSync before the proof starts
 [15:51:28] PASS  no other DistrictSync process is running
 [15:51:28] building 3.99.1 (e2e flavour)
 [15:52:48] packing 3.99.1 with vpk (unsigned)
@@ -42,6 +42,6 @@ Output of `scripts/updater_e2e.py` on a real Velopack install (vpk 1.2.161, unsi
 [16:03:18] PASS  the feed still offers 3.99.3 but it is not offered to this app again ({'at': '2026-11-16T22:03:18.784142+00:00', 'reason': 'up_to_date', 'status': 'none', 'trigger': 'after_run', 'version': None})
 [16:03:18] PASS  and 3.99.2 stays
 [16:03:19] cleaning up
-[16:03:59] PASS  C:\Users\shan.peiris\AppData\Local\myBlueprint.DistrictSync is gone (the test install was removed)
+[16:03:59] PASS  %LOCALAPPDATA%\myBlueprint.DistrictSync is gone (the test install was removed)
 [16:03:59] RESULT: ALL ASSERTIONS HELD
 ```
