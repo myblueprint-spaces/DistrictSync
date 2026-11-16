@@ -81,3 +81,6 @@ site/
 # Local reference docs (partner/SIS spec PDFs & DOCXs — kept locally, not in git)
 /*.pdf
 /*.docx
+
+# The private shared updater package's checkout (plan 0054 S3): created by CI only, never tracked.
+/.shared-updater/

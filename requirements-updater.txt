@@ -1,0 +1,8 @@
+# The updater the INSTALLED Windows build needs (plan 0054 S3, DSYNC-62). Kept out of requirements.txt on
+# purpose: the private shared package myb_desktop_updater is not on any index, and a job that cannot read
+# it (a fork or Dependabot pull request) must still be able to install everything else.
+#
+# myb_desktop_updater itself is NOT listed here: it is built from a pinned commit of the private repository
+# and checked against a pinned SHA-256 by scripts/updater_package.py (the pins live in that script).
+# Its one runtime dependency is pinned here to the exact version both myBlueprint desktop tools verify with.
+cryptography==50.0.2

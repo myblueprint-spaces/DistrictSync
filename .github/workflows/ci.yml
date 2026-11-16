@@ -41,6 +41,49 @@ jobs:
           pip install -r requirements.txt -r requirements-dev.txt
           pip install paramiko keyring  # optional SFTP deps (needed by sftp/scheduler modules)
 
+      # The private shared updater package (plan 0054 S3, DSYNC-62). The read key is a REPO-level
+      # secret, so a fork or Dependabot pull request never receives it: there the steps below are
+      # skipped, the package-dependent tests skip with them (pytest.importorskip), and nothing
+      # else changes. This repo never uses `pull_request_target`, so a fork cannot reach the key
+      # any other way. On a push to main the key MUST be present and the package MUST import
+      # (DISTRICTSYNC_REQUIRE_UPDATER below), so a skipped proof can never read as a green one.
+      # The package is built from the pinned commit and checked against the pinned tree hash by
+      # scripts/updater_package.py; the key is passed only to the checkout step.
+      - name: Is the shared-package read key available here
+        id: updater-key
+        shell: bash
+        env:
+          HAS_KEY: ${{ secrets.MYB_DESKTOP_SHARED_DEPLOY_KEY != '' }}
+        run: |
+          echo "present=$HAS_KEY" >> "$GITHUB_OUTPUT"
+          if [ "$HAS_KEY" != "true" ] && [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            echo "FAIL: the read key for the shared updater package is missing on a push to main"
+            exit 1
+          fi
+
+      - name: Read the pinned shared-package commit
+        id: updater-pin
+        if: steps.updater-key.outputs.present == 'true'
+        shell: bash
+        run: echo "commit=$(python scripts/updater_package.py commit)" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the shared updater package at the pinned commit
+        if: steps.updater-key.outputs.present == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: myblueprint-spaces/myb-desktop-shared
+          ref: ${{ steps.updater-pin.outputs.commit }}
+          ssh-key: ${{ secrets.MYB_DESKTOP_SHARED_DEPLOY_KEY }}
+          path: .shared-updater
+          persist-credentials: false
+
+      - name: Install the shared updater package (built from the pin, tree hash checked)
+        if: steps.updater-key.outputs.present == 'true'
+        shell: bash
+        run: |
+          python -m pip install -r requirements-updater.txt
+          python scripts/updater_package.py install --source .shared-updater
+
       - name: Lint with ruff
         run: ruff check src/ tests/
 
@@ -54,6 +97,8 @@ jobs:
         run: bandit -r src/ -q -c pyproject.toml
 
       - name: Run tests with coverage
+        env:
+          DISTRICTSYNC_REQUIRE_UPDATER: ${{ github.event_name == 'push' && '1' || '' }}
         run: python -m pytest tests/ --cov=src --cov-report=term-missing --cov-fail-under=80
 
       # Validate EVERY discoverable mapping config, derived from available_configs()
@@ -123,7 +168,52 @@ jobs:
           pip install -r requirements.txt -r requirements-dev.txt
           pip install paramiko keyring  # optional SFTP deps (needed by sftp/scheduler modules)
 
+      # The private shared updater package (plan 0054 S3, DSYNC-62). The read key is a REPO-level
+      # secret, so a fork or Dependabot pull request never receives it: there the steps below are
+      # skipped, the package-dependent tests skip with them (pytest.importorskip), and nothing
+      # else changes. This repo never uses `pull_request_target`, so a fork cannot reach the key
+      # any other way. On a push to main the key MUST be present and the package MUST import
+      # (DISTRICTSYNC_REQUIRE_UPDATER below), so a skipped proof can never read as a green one.
+      # The package is built from the pinned commit and checked against the pinned tree hash by
+      # scripts/updater_package.py; the key is passed only to the checkout step.
+      - name: Is the shared-package read key available here
+        id: updater-key
+        shell: bash
+        env:
+          HAS_KEY: ${{ secrets.MYB_DESKTOP_SHARED_DEPLOY_KEY != '' }}
+        run: |
+          echo "present=$HAS_KEY" >> "$GITHUB_OUTPUT"
+          if [ "$HAS_KEY" != "true" ] && [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            echo "FAIL: the read key for the shared updater package is missing on a push to main"
+            exit 1
+          fi
+
+      - name: Read the pinned shared-package commit
+        id: updater-pin
+        if: steps.updater-key.outputs.present == 'true'
+        shell: bash
+        run: echo "commit=$(python scripts/updater_package.py commit)" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the shared updater package at the pinned commit
+        if: steps.updater-key.outputs.present == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: myblueprint-spaces/myb-desktop-shared
+          ref: ${{ steps.updater-pin.outputs.commit }}
+          ssh-key: ${{ secrets.MYB_DESKTOP_SHARED_DEPLOY_KEY }}
+          path: .shared-updater
+          persist-credentials: false
+
+      - name: Install the shared updater package (built from the pin, tree hash checked)
+        if: steps.updater-key.outputs.present == 'true'
+        shell: bash
+        run: |
+          python -m pip install -r requirements-updater.txt
+          python scripts/updater_package.py install --source .shared-updater
+
       - name: Run tests
+        env:
+          DISTRICTSYNC_REQUIRE_UPDATER: ${{ github.event_name == 'push' && '1' || '' }}
         run: python -m pytest tests/ -q
 
   # The schema-drift matrix (plan 0053 S13b): every bundled config x every headered source
