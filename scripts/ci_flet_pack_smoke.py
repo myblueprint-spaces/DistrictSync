@@ -96,14 +96,14 @@ import sys
 import tempfile
 import time
 import zipfile
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, Literal
 
 # Which of a pack's artifacts a caller means. macOS produces two (see
 # ``resolve_artifact``); Windows and Linux produce one, so ``auto`` is right there.
-ArtifactKind = Literal["auto", "binary", "bundle"]
+ArtifactKind = Literal["auto", "binary", "bundle", "onedir"]
 
 # --- single-source, env-overridable timeouts (seconds) ---------------------- #
 # Embed and close are SEPARATE axes with independent budgets (R3/R6/R7): a slow
@@ -141,6 +141,10 @@ def resolve_artifact(dist: Path, name: str, kind: ArtifactKind = "auto") -> Path
       Windows/Linux callers keep byte-identical behaviour.
     * ``binary`` — ONLY the bare binary (or ``.exe``). Never the bundle.
     * ``bundle`` — ONLY the ``.app``'s inner executable.
+    * ``onedir`` — ONLY the exe inside a one-folder build (``dist/<name>/<name>.exe``,
+      DSYNC-60). Its own kind because ``auto`` tries the bare ``dist/<name>`` candidate,
+      which for a one-folder build is the DIRECTORY and exists: it would resolve to a
+      folder and the launch would fail for the wrong reason.
 
     The selector exists instead of a reordered ``auto`` list because macOS ships both
     artifacts: the ``.app`` (inside the DMG, the district's download) and the bare
@@ -158,11 +162,63 @@ def resolve_artifact(dist: Path, name: str, kind: ArtifactKind = "auto") -> Path
         "auto": [exe, binary, bundle],
         "binary": [exe, binary],
         "bundle": [bundle],
+        "onedir": [dist / name / f"{name}.exe"],
     }[kind]
     for cand in candidates:
-        if cand.exists():
+        if cand.exists() and not (kind == "onedir" and cand.is_dir()):
             return cand
     return None
+
+
+def bundled_client_dir(art: Path) -> Path:
+    """Where a one-folder build keeps its Flet client, as an ABSOLUTE path.
+
+    Absolute on purpose: the smoke is often handed a relative ``dist`` and psutil reports each
+    view's image path absolute, so a relative bundle path never matches and a genuinely
+    bundled client would read as "ran from outside" (the first CI run of DSYNC-60 did exactly
+    that).
+    """
+    return art.resolve().parent / "_internal" / "flet_view"
+
+
+def onedir_client_problems(art: Path) -> list[str]:
+    """Reasons a one-folder build does NOT carry its own Flet client (empty list = it does).
+
+    The client lives at ``<folder>/_internal/flet_view/flet.exe`` (PyInstaller 6 puts data
+    under ``_internal``); the frozen launcher points ``FLET_VIEW_PATH`` at it. Pure:
+    filesystem ``is_file`` checks only.
+    """
+    client = art.parent / "_internal" / "flet_view" / "flet.exe"
+    if not client.is_file():
+        return [f"bundled Flet client missing: {client}"]
+    return []
+
+
+def _parts(path: str) -> tuple[str, ...]:
+    return tuple(p.casefold() for p in PureWindowsPath(path).parts)
+
+
+def bundled_boot_verdict(view_exes: Sequence[str], bundle_client_dir: str, flet_home_exists: bool) -> tuple[bool, str]:
+    """Did the window boot off the client SHIPPED IN THE FOLDER, with nothing dropped in the profile?
+
+    ``view_exes`` are the image paths of the running Flet view processes. PASS needs at least
+    one of them inside ``bundle_client_dir``, none anywhere else (a view run from ``~/.flet`` is
+    the exact behaviour the one-folder build exists to remove), and no ``~/.flet`` folder.
+    Returns ``(passed, reason)``. Pure: the strict replacement for the one-file build's "the
+    cache repopulated" proof, which here would be a FAILURE.
+    """
+    if not view_exes:
+        return False, "no Flet view process was running"
+    root = _parts(bundle_client_dir)
+    inside = [p for p in view_exes if _parts(p)[: len(root)] == root]
+    outside = [p for p in view_exes if _parts(p)[: len(root)] != root]
+    if outside:
+        return False, f"a Flet view ran from outside the bundled client: {outside[0]}"
+    if not inside:
+        return False, "no Flet view ran from the bundled client"
+    if flet_home_exists:
+        return False, "~/.flet exists: the client was extracted into the user profile"
+    return True, "window booted from the bundled client; ~/.flet absent"
 
 
 def mounted_app_problems(mount: Path, name: str) -> list[str]:
@@ -319,6 +375,21 @@ def _view_pids() -> set[int]:
         if nm in _VIEW_NAMES:
             pids.add(proc.info["pid"])
     return pids
+
+
+def _bundled_view_exes(root_pid: int) -> list[str]:
+    """Image paths of the Flet view process(es) in ``root_pid``'s tree (psutil, side-effecting)."""
+    import psutil
+
+    exes: list[str] = []
+    for pid in _tree_pids(root_pid):
+        try:
+            proc = psutil.Process(pid)
+            if (proc.name() or "").lower() in _VIEW_NAMES:
+                exes.append(proc.exe())
+        except Exception:  # nosec B112 — a vanished/inaccessible proc is simply skipped
+            continue
+    return exes
 
 
 def _tree_pids(root_pid: int) -> set[int]:
@@ -581,6 +652,36 @@ def _phase_embed(art: Path) -> tuple[bool, subprocess.Popen[str] | None]:
     return False, None
 
 
+def _phase_embed_bundled(art: Path) -> tuple[bool, subprocess.Popen[str] | None]:
+    """The one-folder build's boot proof (DSYNC-60), replacing "the cache repopulated".
+
+    PASS = a Flet view process runs from ``<folder>/_internal/flet_view`` while ``~/.flet`` is
+    absent and the client URL is unreachable. Same one slow-boot retry as the one-file phase.
+    """
+    bundle = bundled_client_dir(art)
+    for attempt in (1, 2):
+        proc = _launch(art)
+        deadline = time.time() + EMBED_TIMEOUT_S
+        while time.time() < deadline:
+            exes = _bundled_view_exes(proc.pid)
+            if exes:  # a view is up: the verdict is final, it cannot get better by waiting
+                ok, why = bundled_boot_verdict(exes, str(bundle), _FLET_HOME.exists())
+                print(f"bundled-client boot: {'PASS' if ok else 'FAIL'} (attempt {attempt}): {why}")
+                return ok, proc
+            if proc.poll() is not None:
+                break
+            time.sleep(0.5)
+        if proc.poll() is None and attempt == 1:
+            print("bundled-client boot: inconclusive (alive but slow) — retrying launch once")
+            _kill_tree(proc.pid, timeout=10)
+            continue
+        print(
+            f"bundled-client boot: FAIL (attempt {attempt}; {'still alive' if proc.poll() is None else 'process died'}, no view)"
+        )
+        return False, proc
+    return False, None
+
+
 def _phase_close(proc: subprocess.Popen[str], baseline: set[int], gating: bool) -> bool:
     """Zero-orphan close phase.
 
@@ -670,8 +771,12 @@ def run_smoke(dist: Path, name: str, require_close: bool, kind: ArtifactKind = "
     try:
         moved = _move_flet_aside()
 
-        # Phase 2 — offline embed (gating, all OS).
-        embed_ok, proc = _phase_embed(art)
+        # Phase 2 — offline embed (gating, all OS). A one-folder build proves the opposite
+        # thing: it boots off the client in its own folder and must leave ~/.flet absent.
+        if kind == "onedir":
+            embed_ok, proc = _phase_embed_bundled(art)
+        else:
+            embed_ok, proc = _phase_embed(art)
         if not embed_ok:
             _print_etl_log()
 
@@ -679,6 +784,12 @@ def run_smoke(dist: Path, name: str, require_close: bool, kind: ArtifactKind = "
         if proc is not None:
             close_gating = require_close and _OSN == "Windows"
             close_ok = _phase_close(proc, baseline, gating=close_gating)
+
+        # One-folder: ~/.flet must STILL be absent after the whole run (a late extraction
+        # would be the profile drop the build exists to remove). Before the restore below.
+        if kind == "onedir" and embed_ok and _FLET_HOME.exists():
+            print("bundled-client boot: FAIL — ~/.flet appeared during the run")
+            embed_ok = False
     finally:
         # Ensure the tree is dead before restoring ~/.flet (R2): if the embed phase
         # bailed before close ran, the process may still hold the extracted client.
@@ -1390,6 +1501,19 @@ def _assert_mounted_app(mount: Path, name: str) -> int:
     return 1
 
 
+def _assert_bundled_client(dist: Path, name: str) -> int:
+    art = resolve_artifact(dist, name, "onedir")
+    if art is None:
+        print(f"FAIL: no one-folder build under {dist} for base name '{name}'")
+        return 1
+    problems = onedir_client_problems(art)
+    for problem in problems:
+        print(f"FAIL: {problem}")
+    if not problems:
+        print(f"bundled Flet client present beside {art.name}")
+    return 1 if problems else 0
+
+
 def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Smoke the packed DistrictSync exe.")
     parser.add_argument(
@@ -1409,16 +1533,22 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
             "NAME.app beside an /Applications symlink, then exit."
         ),
     )
+    parser.add_argument(
+        "--assert-bundled-client",
+        nargs=2,
+        metavar=("DIST", "NAME"),
+        help="one-folder build gate: assert DIST/NAME carries its own Flet client, then exit.",
+    )
     parser.add_argument("dist", type=Path, nargs="?", help="dist directory containing the artifact")
     parser.add_argument("name", nargs="?", help="artifact base name (e.g. DistrictSync)")
     parser.add_argument(
         "--artifact",
-        choices=["auto", "binary", "bundle"],
+        choices=["auto", "binary", "bundle", "onedir"],
         default="auto",
         help=(
             "which packed artifact to smoke when a pack produced more than one (macOS): "
-            "`binary` = the bare CLI binary, `bundle` = the .app. Default `auto` keeps "
-            "the historical candidate order."
+            "`binary` = the bare CLI binary, `bundle` = the .app, `onedir` = the exe in a "
+            "one-folder Windows build. Default `auto` keeps the historical candidate order."
         ),
     )
     parser.add_argument(
@@ -1464,6 +1594,9 @@ def main(argv: list[str] | None = None) -> int:
     args = _parse_args(sys.argv[1:] if argv is None else argv)
     if args.assert_embed is not None:
         return _assert_embed(args.assert_embed)
+    if args.assert_bundled_client is not None:
+        dist, art_name = args.assert_bundled_client
+        return _assert_bundled_client(Path(dist), art_name)
     if args.assert_mounted_app is not None:
         mount, app_name = args.assert_mounted_app
         return _assert_mounted_app(Path(mount), app_name)

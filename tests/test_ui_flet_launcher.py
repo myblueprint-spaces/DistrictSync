@@ -141,3 +141,33 @@ class TestWriteTraceback:
         monkeypatch.setattr(launcher, "resolve_log_path", lambda: Path("/this/does/not/exist/x.log"))
         # Must swallow its own failure — logging the error can't mask the original.
         launcher._write_traceback(RuntimeError("x"))
+
+
+class TestResolveBundledClient:
+    """DSYNC-60: a one-folder Windows build ships its Flet client at <bundle>/flet_view."""
+
+    def _bundle(self, tmp_path, *, with_exe=True):
+        client = tmp_path / "flet_view"
+        client.mkdir()
+        if with_exe:
+            (client / "flet.exe").write_bytes(b"x")
+        return tmp_path
+
+    def test_finds_the_client_on_windows(self, tmp_path):
+        root = self._bundle(tmp_path)
+        assert launcher.resolve_bundled_client(root, windows=True) == root / "flet_view"
+
+    def test_none_when_the_folder_has_no_flet_exe(self, tmp_path):
+        root = self._bundle(tmp_path, with_exe=False)
+        assert launcher.resolve_bundled_client(root, windows=True) is None
+
+    def test_none_when_there_is_no_client_folder(self, tmp_path):
+        # the one-file exe's extraction dir looks like this: the behaviour must not change
+        assert launcher.resolve_bundled_client(tmp_path, windows=True) is None
+
+    def test_none_off_windows_even_with_the_folder(self, tmp_path):
+        root = self._bundle(tmp_path)
+        assert launcher.resolve_bundled_client(root, windows=False) is None
+
+    def test_none_when_not_frozen(self):
+        assert launcher.resolve_bundled_client(None, windows=True) is None

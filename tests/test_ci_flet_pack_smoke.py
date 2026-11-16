@@ -950,3 +950,105 @@ def test_the_user_overlay_phase_converts_its_copy_from_source(tmp_path: Path, ca
     student_id_only = smoke.input_with_base_student_id(smoke.DEFAULT_SMOKE_INPUT, tmp_path / "student_id")
     twin = run_pipeline(smoke._SD93_OVERLAY_SIS, str(student_id_only), str(tmp_path / "out2"), dry_run=True)
     assert twin.entity_counts["Students"] > 0 and twin.entity_counts.get("Family", 0) == 0
+
+
+# --------------------------------------------------------------------------- #
+#  one-folder build (DSYNC-60): resolve_artifact(kind="onedir"), the bundled-client
+#  checks and the boot verdict
+# --------------------------------------------------------------------------- #
+
+_BUNDLE = r"C:\dist\DistrictSync\_internal\flet_view"
+
+
+def _onedir_tree(tmp_path: Path, *, client: bool = True) -> Path:
+    folder = tmp_path / "DistrictSync"
+    (folder / "_internal").mkdir(parents=True)
+    (folder / "DistrictSync.exe").write_bytes(b"x")
+    if client:
+        (folder / "_internal" / "flet_view").mkdir()
+        (folder / "_internal" / "flet_view" / "flet.exe").write_bytes(b"x")
+    return folder
+
+
+def test_resolve_artifact_onedir_finds_the_inner_exe(tmp_path: Path) -> None:
+    folder = _onedir_tree(tmp_path)
+    assert smoke.resolve_artifact(tmp_path, "DistrictSync", "onedir") == folder / "DistrictSync.exe"
+
+
+def test_resolve_artifact_onedir_never_returns_the_folder_itself(tmp_path: Path) -> None:
+    """The trap plan 0041 named: `auto` would match the directory `dist/DistrictSync` first."""
+    (tmp_path / "DistrictSync").mkdir()
+    assert smoke.resolve_artifact(tmp_path, "DistrictSync", "onedir") is None
+    # positive twin: `auto` really does hand back that directory, which is why `onedir` exists
+    assert smoke.resolve_artifact(tmp_path, "DistrictSync", "auto") == tmp_path / "DistrictSync"
+
+
+def test_resolve_artifact_onedir_ignores_a_one_file_exe(tmp_path: Path) -> None:
+    (tmp_path / "DistrictSync.exe").write_bytes(b"x")
+    assert smoke.resolve_artifact(tmp_path, "DistrictSync", "onedir") is None
+
+
+def test_onedir_client_problems_clean(tmp_path: Path) -> None:
+    folder = _onedir_tree(tmp_path)
+    assert smoke.onedir_client_problems(folder / "DistrictSync.exe") == []
+
+
+def test_onedir_client_problems_flags_a_missing_client(tmp_path: Path) -> None:
+    folder = _onedir_tree(tmp_path, client=False)
+    problems = smoke.onedir_client_problems(folder / "DistrictSync.exe")
+    assert len(problems) == 1 and "flet_view" in problems[0]
+
+
+def test_boot_verdict_passes_from_the_bundled_client() -> None:
+    ok, why = smoke.bundled_boot_verdict([_BUNDLE + r"\flet.exe"], _BUNDLE, flet_home_exists=False)
+    assert ok, why
+
+
+def test_boot_verdict_is_case_insensitive_like_windows() -> None:
+    ok, _ = smoke.bundled_boot_verdict([_BUNDLE.upper() + r"\FLET.EXE"], _BUNDLE, flet_home_exists=False)
+    assert ok
+
+
+def test_boot_verdict_fails_with_no_view_process() -> None:
+    ok, why = smoke.bundled_boot_verdict([], _BUNDLE, flet_home_exists=False)
+    assert not ok and "no Flet view" in why
+
+
+def test_boot_verdict_fails_when_the_view_ran_from_the_profile() -> None:
+    """The exact behaviour the one-folder build exists to remove (the Bitdefender quarantine)."""
+    profile = r"C:\Users\x\.flet\client\flet-desktop-light-0.85.3\flet\flet.exe"
+    ok, why = smoke.bundled_boot_verdict([profile], _BUNDLE, flet_home_exists=True)
+    assert not ok and "outside" in why
+
+
+def test_boot_verdict_fails_when_a_second_view_runs_elsewhere() -> None:
+    ok, _ = smoke.bundled_boot_verdict(
+        [_BUNDLE + r"\flet.exe", r"C:\Users\x\.flet\client\flet.exe"], _BUNDLE, flet_home_exists=False
+    )
+    assert not ok
+
+
+def test_boot_verdict_fails_when_the_profile_folder_exists() -> None:
+    ok, why = smoke.bundled_boot_verdict([_BUNDLE + r"\flet.exe"], _BUNDLE, flet_home_exists=True)
+    assert not ok and "~/.flet" in why
+
+
+def test_boot_verdict_a_sibling_folder_with_the_same_prefix_is_not_inside() -> None:
+    ok, _ = smoke.bundled_boot_verdict([_BUNDLE + r"_other\flet.exe"], _BUNDLE, flet_home_exists=False)
+    assert not ok
+
+
+def test_bundled_client_dir_is_absolute_even_for_a_relative_dist(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression (DSYNC-60 first CI run): a relative `dist` made a bundled client read as 'outside'."""
+    _onedir_tree(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    art = smoke.resolve_artifact(Path("."), "DistrictSync", "onedir")
+    assert art is not None and not art.is_absolute()
+    client = smoke.bundled_client_dir(art)
+    assert client.is_absolute()
+    assert client == (tmp_path / "DistrictSync" / "_internal" / "flet_view").resolve()
+    # the verdict agrees when psutil reports the absolute image path
+    ok, why = smoke.bundled_boot_verdict([str(client / "flet.exe")], str(client), flet_home_exists=False)
+    assert ok, why
