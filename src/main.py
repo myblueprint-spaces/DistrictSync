@@ -435,6 +435,26 @@ def cli(argv: list[str] | None = None) -> int:
         return _exit_code_from(exc)
 
 
+def _check_for_update_after_scheduled_run(source: str, logger: logging.Logger) -> None:
+    """Run the installed build's update check once, after a SCHEDULED run. Never raises, never changes the run.
+
+    The broad ``except`` is deliberate and is the one place this layer swallows: the conversion has already
+    finished and its exit code is decided from its own result, so an update problem is a separate axis. It is
+    logged with its traceback, not hidden.
+    """
+    if source != "scheduled":
+        return
+    try:
+        from src.update.check import TRIGGER_AFTER_RUN, run_update_check
+
+        outcome = run_update_check(TRIGGER_AFTER_RUN)
+        # Counts and codes only; a skip is routine (portable build, nothing configured) so it stays at debug.
+        level = logging.DEBUG if outcome.status == "skipped" else logging.INFO
+        logger.log(level, "update check after run: %s (%s)", outcome.status, outcome.reason)
+    except Exception:
+        logger.warning("update check failed; the run's result is unaffected", exc_info=True)
+
+
 def _cli(argv: list[str] | None) -> int:
     args_list = sys.argv[1:] if argv is None else list(argv)
 
@@ -654,6 +674,13 @@ def _cli(argv: list[str] | None) -> int:
         # Second spelling of the same address — keep in step with that constant.
         print("Check etl_tool.log for details. Contact hello@spacesedu.com for help.")
         return 1
+
+    # Update check after the app's OWN scheduled run (plan 0054 S4). Decided here, after the run's
+    # result is in hand and before the exit code is chosen, but it cannot influence either: it never
+    # raises, applies nothing, and the code below is computed from ``result`` alone. A hand-run CLI,
+    # a district's own cron and --dry-run never trigger it.
+    if not args.dry_run:
+        _check_for_update_after_scheduled_run(_resolve_source(args.source), logger)
 
     # Exit code 3: SFTP was requested and attempted but delivery failed.
     # The ETL output (CSV files) is already written and intact — only the
