@@ -1036,3 +1036,19 @@ def test_boot_verdict_fails_when_the_profile_folder_exists() -> None:
 def test_boot_verdict_a_sibling_folder_with_the_same_prefix_is_not_inside() -> None:
     ok, _ = smoke.bundled_boot_verdict([_BUNDLE + r"_other\flet.exe"], _BUNDLE, flet_home_exists=False)
     assert not ok
+
+
+def test_bundled_client_dir_is_absolute_even_for_a_relative_dist(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression (DSYNC-60 first CI run): a relative `dist` made a bundled client read as 'outside'."""
+    _onedir_tree(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    art = smoke.resolve_artifact(Path("."), "DistrictSync", "onedir")
+    assert art is not None and not art.is_absolute()
+    client = smoke.bundled_client_dir(art)
+    assert client.is_absolute()
+    assert client == (tmp_path / "DistrictSync" / "_internal" / "flet_view").resolve()
+    # the verdict agrees when psutil reports the absolute image path
+    ok, why = smoke.bundled_boot_verdict([str(client / "flet.exe")], str(client), flet_home_exists=False)
+    assert ok, why

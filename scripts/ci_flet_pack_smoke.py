@@ -170,6 +170,17 @@ def resolve_artifact(dist: Path, name: str, kind: ArtifactKind = "auto") -> Path
     return None
 
 
+def bundled_client_dir(art: Path) -> Path:
+    """Where a one-folder build keeps its Flet client, as an ABSOLUTE path.
+
+    Absolute on purpose: the smoke is often handed a relative ``dist`` and psutil reports each
+    view's image path absolute, so a relative bundle path never matches and a genuinely
+    bundled client would read as "ran from outside" (the first CI run of DSYNC-60 did exactly
+    that).
+    """
+    return art.resolve().parent / "_internal" / "flet_view"
+
+
 def onedir_client_problems(art: Path) -> list[str]:
     """Reasons a one-folder build does NOT carry its own Flet client (empty list = it does).
 
@@ -647,7 +658,7 @@ def _phase_embed_bundled(art: Path) -> tuple[bool, subprocess.Popen[str] | None]
     PASS = a Flet view process runs from ``<folder>/_internal/flet_view`` while ``~/.flet`` is
     absent and the client URL is unreachable. Same one slow-boot retry as the one-file phase.
     """
-    bundle = art.parent / "_internal" / "flet_view"
+    bundle = bundled_client_dir(art)
     for attempt in (1, 2):
         proc = _launch(art)
         deadline = time.time() + EMBED_TIMEOUT_S
