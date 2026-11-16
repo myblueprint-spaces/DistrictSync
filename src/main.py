@@ -479,6 +479,17 @@ def _cli(argv: list[str] | None) -> int:
 
         return run_diagnose()
 
+    # Velopack start-up (plan 0054 S2): the installed build's runtime must see the process
+    # before any other work, because Velopack's own hooks (--veloapp-install/-updated/
+    # -obsolete) arrive as argv and expect it to handle them and exit. Placed AFTER the three
+    # dispatch-first modes on purpose (R17): the elevated child, the schedule check and
+    # --diagnose never start it. A portable build (and the unzipped CI folder) skips it
+    # entirely; see src/update/startup.py. Imported lazily so the portable build never
+    # imports velopack.
+    from src.update.startup import run_velopack_startup
+
+    run_velopack_startup()
+
     # No arguments → launch the UI (e.g. double-clicked from Explorer).
     # The launcher configures its own logging sink (launcher.boot_logging).
     # NOTE: the console attach below is deliberately AFTER this branch — the

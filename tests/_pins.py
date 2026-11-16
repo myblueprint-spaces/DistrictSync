@@ -27,3 +27,8 @@ from typing import Final
 
 #: The number of bundled mapping configs (``config/mappings/*_mapping.yaml``).
 BUNDLED_CONFIG_COUNT: Final = 21
+
+#: The exact ``velopack`` Python package (and, from slice S6a, the ``vpk`` tool) both tools ship
+#: against (plan 0054 S2, DSYNC-61). Raised together with RosterGate's; ``requirements.txt`` is
+#: tied to this by ``tests/test_installed_flavour.py``.
+VELOPACK_VERSION: Final = "1.2.161"
