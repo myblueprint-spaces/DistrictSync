@@ -10,7 +10,12 @@ name: flet-verify
 # and this caller leaves its `upload` input off: the exe is built and smoked, never
 # uploaded (DSYNC-54 — nobody downloads a PR build; ~415 MB of storage per run).
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      onedir_only:
+        description: "Build + smoke ONLY the one-folder Windows app (DSYNC-60); skips the three-OS matrix"
+        type: boolean
+        default: false
   pull_request:
     paths:
       - "src/ui_flet/**"
@@ -42,3 +47,7 @@ jobs:
     uses: ./.github/workflows/flet-pack.yml
     with:
       linux_only: ${{ github.event_name == 'pull_request' }}
+      # DSYNC-60: the one-folder Windows build runs on a manual dispatch only (a pull request
+      # stays Linux-only, DSYNC-56). release.yml does not ask for it yet.
+      windows_onedir: ${{ github.event_name == 'workflow_dispatch' }}
+      onedir_only: ${{ github.event_name == 'workflow_dispatch' && inputs.onedir_only }}
