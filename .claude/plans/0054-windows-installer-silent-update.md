@@ -428,9 +428,9 @@ One ask, sent once, at the very end (owner ruling 2026-11-17), after every slice
 
 **If Doug cannot do rows 4 or 5 quickly:** the interim host `mybpdesktopupdates.blob.core.windows.net` works technically but would be baked into every installed copy for good; it is not recommended, and choosing it is the owner's call, not a default.
 
-## Known limits after S5 (shared-package work queued, not in the pinned 0.3.1)
+## Known limits after S5 and the start-guard follow-up
 
-Pinned: `myb_desktop_updater` 0.3.1, commit `a585e90`, tree hash `15e6fe14...` (G-097 fixed: the start-up hook switches the installer's own auto-apply off; `check_for_update` has an overall deadline and does not re-download a staged package). Not pinned, so not claimed: (1) recovery from a crash before `begin_start` (an import-time failure); (2) failed starts exit instead of showing a blocking error box (found by running: a crashed window-less exe hangs on its box, so an unattended failed start can hang until ended); (3) the orphaned Flet client window is closed and counted. Until each lands in the shared repository and is pinned, a build that dies at import time cannot be rolled back by the health mechanism and relies on a new release, or an uninstall and install of an older `Setup.exe`.
+Pinned: `myb_desktop_updater` 0.4.0, commit `98964ed`, tree hash `12a0bc4a...` (G-097 fixed; overall check deadline; no repeat download; the start guard `myb_start_guard`; a crash exits 1 with no blocking dialog; a kill-on-close job object for the Flet window). Closed by DSYNC-66, proven on a real install (`docs/developer/updates-e2e-proof.md`): recovery from a crash before `begin_start` (a build that fails at import is counted, recovered to the kept copy and never offered again); failed starts exit instead of waiting on an error box; the orphaned Flet window. **Still unrecoverable (recorded, not claimed):** the frozen runtime, the entry script or `myb_start_guard` failing to load; a process killed before the count is written; no kept copy of an earlier version; a stuck copy still running (restore is refused while another copy runs). Open request to the shared repository: a direct "record this version bad" call (DistrictSync runs the package's start-up check to its verdict to record it).
 
 ## Still needed from the owner
 

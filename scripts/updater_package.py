@@ -37,13 +37,13 @@ import sys
 import tempfile
 from pathlib import Path
 
-#: The commit of ``myblueprint-spaces/myb-desktop-shared`` the package is built from (0.3.1: the G-097 fix, an
-#: overall time limit on ``check_for_update``, no repeat download of a staged package, ``run_startup_hook``).
-#: Not 0e6fec5 (0.3.0): it has the start-up hook but lacks 0.3.1's "only when installed" and header-phase deadline.
-PINNED_COMMIT = "a585e90ca443c072eb6104dff1cd6aa53eab73f1"
+#: The commit of ``myblueprint-spaces/myb-desktop-shared`` the package is built from (0.4.0: the start guard
+#: ``myb_start_guard``, crash exit without a dialog, the kill-on-close child job; on top of 0.3.1's G-097 fix, overall
+#: check deadline and no repeat download).
+PINNED_COMMIT = "98964edd2dd9b11fb102819d077b6a3bcfcff286"
 #: The tree hash of ``packages/myb_desktop_updater`` at that commit, as the shared repo's own CI prints it.
-PINNED_TREE_SHA256 = "15e6fe1452a0489ab3806d99dcde806f0d4e5c2f61fb4cc3e2b75d885a54dabd"
-PINNED_VERSION = "0.3.1"
+PINNED_TREE_SHA256 = "12a0bc4a241e2b0296c9b7fc5e5418a7c5da4169282dc2e454dcf522e5fe04d9"
+PINNED_VERSION = "0.4.0"
 
 #: Build settings (same as the shared repository's own CI).
 SOURCE_DATE_EPOCH = "1763337600"

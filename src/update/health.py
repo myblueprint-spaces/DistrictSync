@@ -30,15 +30,14 @@ from typing import Any
 
 from src.update import apply
 from src.update.check import _in_machine_scope, updater_state_dir
-from src.update.package import app_identity, load_updater
+from src.update.entry import confirm_start
+from src.update.package import HEALTH_FILE, app_identity, load_updater
 from src.update.startup import install_root
 from src.utils import paths
 from src.utils.build_flavor import is_e2e_build, is_installed_build
 from src.utils.version import app_version
 
 logger = logging.getLogger(__name__)
-
-HEALTH_FILE = "health.json"
 
 
 @dataclass(frozen=True)
@@ -126,6 +125,7 @@ def _restore(record: StartRecord, identity: Any, installer: Any | None, running:
 
 def mark_healthy(record: StartRecord | None = None) -> bool:
     """Mark the current start healthy (start-up completed). ``True`` if it was recorded. Never raises."""
+    confirm_start()  # the start guard's count is cleared whether or not the health store is in use (no-op without it)
     target = _CURRENT if record is None else record
     if target is None:
         return False

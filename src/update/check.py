@@ -46,7 +46,7 @@ from typing import Any, Final
 from src.config.app_config import AppConfig
 from src.update import apply
 from src.update.feed import FeedTarget, production_target
-from src.update.package import app_identity, load_updater
+from src.update.package import HEALTH_FILE, UPDATER_STATE_FOLDER, app_identity, load_updater
 from src.update.startup import install_root
 from src.utils import paths
 from src.utils.build_flavor import is_e2e_build, is_installed_build
@@ -65,9 +65,7 @@ REQUEST_TIMEOUT_SECONDS: Final = 15.0
 MIN_INTERVAL: Final = timedelta(hours=6)
 
 LAST_CHECK_FILE: Final = "last-check.json"
-HEALTH_FILE: Final = "health.json"
 STAGING_FOLDER: Final = "staging"
-STATE_FOLDER: Final = "updater"
 
 # Outcome statuses.
 SKIPPED: Final = "skipped"
@@ -87,7 +85,7 @@ class CheckOutcome:
 
 def updater_state_dir() -> Path:
     """Where the update state lives: inside the profile, so ``DISTRICTSYNC_DATA_DIR`` and uninstall behave."""
-    return paths.user_data_dir() / STATE_FOLDER
+    return paths.user_data_dir() / UPDATER_STATE_FOLDER
 
 
 def _in_machine_scope() -> bool:

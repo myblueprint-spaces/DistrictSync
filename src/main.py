@@ -24,6 +24,19 @@ from datetime import date
 from pathlib import Path
 from typing import IO, Callable
 
+# The START GUARD (plan 0054 S5 follow-up). As a frozen script this module runs as ``__main__``, and this block is the FIRST
+# thing it does, before the heavy imports below: the start is counted before pandas, the ETL or Flet are imported, so an
+# update that breaks those imports is still counted and recovered (see src/update/entry.py). Applies to the installed flavour
+# under a Velopack install only; everywhere else ``run_entry`` returns None and the module carries on exactly as before. The
+# guarded run imports ``src.main`` and calls ``cli`` itself, so nothing below runs a second time.
+if __name__ == "__main__":
+    from src.update.entry import run_entry
+
+    _guarded_exit = run_entry()
+    if _guarded_exit is not None:
+        sys.exit(_guarded_exit)
+
+
 from src.config.app_config import AppConfig
 from src.etl.pipeline import (
     ANOMALY_THRESHOLD,

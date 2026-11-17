@@ -56,7 +56,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import flet_pack_args  # noqa: E402  (scripts/ is not a package)
 
 PACK_ID = "myBlueprint.DistrictSync"
-VERSIONS = ("3.99.1", "3.99.2", "3.99.3")
+VERSIONS = ("3.99.1", "3.99.2", "3.99.3", "3.99.4")  # 3.99.3 dies in start-up; 3.99.4 fails at import
 # RFC 6979 appendix A.2.5 test key: public, published, worthless. It signs only this script's feeds.
 TEST_PRIVATE = bytes.fromhex("C9AFA9D845BA75166B5C215767B1D6934E50C3DB36E89B127B8A622B120F6721")
 STAMPED = ("src/_version.py", "src/_build_flavor.py", "src/_e2e_target.py")
@@ -136,16 +136,24 @@ def unstamp() -> None:
         (REPO / name).unlink(missing_ok=True)
 
 
-def build(python: str, version: str, dist: Path, *, break_start: bool) -> Path:
-    say(f"building {version} (e2e flavour){' - BAD BUILD: corrupt logging.conf' if break_start else ''}")
+def build(python: str, version: str, dist: Path, *, break_start: bool, break_import: bool = False) -> Path:
+    say(
+        f"building {version} (e2e flavour)"
+        + (" - BAD BUILD: corrupt logging.conf" if break_start else "")
+        + (" - BAD BUILD: pandas removed (fails at import)" if break_import else "")
+    )
+    client = Path.home() / ".flet" / "client" / "flet-desktop-light-0.85.3" / "flet"
+    if not (client / "flet.exe").is_file():
+        raise SystemExit(f"the Flet client is not cached at {client}: run flet_desktop.ensure_client_cached() first")
     flet = str(Path(python).parent / "flet.exe")
     flags = flet_pack_args.as_flags("windows", installed=True).split()
-    for module in (*flet_pack_args.E2E_EXTRA, "myb_desktop_updater", "myb_desktop_updater.velopack_installer"):
+    for module in flet_pack_args.E2E_EXTRA:
         flags += ["--hidden-import", module]
     env = {**os.environ, "FLET_DESKTOP_FLAVOR": "light"}
     cmd = [
         flet, "pack", "src/main.py", "--name", "DistrictSync", "--yes", "-D", "--distpath", str(dist),
         "--icon", "assets/districtsync.ico", "--add-data", "config;config", "--add-data", "assets;assets",
+        "--add-data", f"{client};flet_view",
         *flags,
         "--pyinstaller-build-args=--paths", "--pyinstaller-build-args=.",
         "--pyinstaller-build-args=--exclude-module", "--pyinstaller-build-args=streamlit",
@@ -157,6 +165,8 @@ def build(python: str, version: str, dist: Path, *, break_start: bool) -> Path:
         (folder / "_internal" / "config" / "logging.conf").write_text(
             "[[[ this is not a logging config\n", encoding="utf8"
         )
+    if break_import:
+        shutil.rmtree(folder / "_internal" / "pandas")  # the app's own import of pandas now fails, inside the guard
     return folder
 
 
@@ -260,6 +270,32 @@ def other_districtsync_running() -> bool:
 # ---------------------------------------------------------------------------------------------- the scenarios
 
 
+def image_count(name: str) -> int:
+    ran = subprocess.run(
+        ["tasklist", "/FI", f"IMAGENAME eq {name}", "/NH"], capture_output=True, text=True, check=False
+    )  # noqa: S603, S607
+    return sum(1 for line in ran.stdout.splitlines() if line.lower().startswith(name.lower()))
+
+
+def window_kill(app: Installed, work: Path) -> None:
+    """Open the real window, end the app by force, and require that the Flet window process goes with it."""
+    Check.that(image_count("flet.exe") == 0, "no flet.exe is running before the window test")
+    proc = subprocess.Popen([str(app.exe)], env=app.env, cwd=work)  # noqa: S603 - no arguments: the window
+    end = time.time() + 60
+    while time.time() < end and image_count("flet.exe") == 0:
+        time.sleep(1)
+    Check.that(image_count("flet.exe") >= 1, "the window process (flet.exe) is up")
+    time.sleep(8)  # first screen: the child is adopted and the start confirmed
+    subprocess.run(["taskkill", "/F", "/PID", str(proc.pid)], capture_output=True, check=False)  # noqa: S603, S607 - the app only, not its children
+    time.sleep(8)
+    Check.that(image_count("flet.exe") == 0, "after the app was forcibly ended, no window process is left")
+    Check.that(image_count("DistrictSync.exe") == 0, "and no DistrictSync process is left")
+    Check.that(
+        not (app.profile / "updater" / "starts.json").exists(),
+        "the window start was confirmed at the first screen (count cleared)",
+    )
+
+
 def scenarios(vpk: str, python: str, work: Path, reuse: bool = False) -> None:
     from myb_desktop_updater import p256
 
@@ -284,7 +320,13 @@ def scenarios(vpk: str, python: str, work: Path, reuse: bool = False) -> None:
                 continue
             stamp(version, port, public_hex)
             try:
-                folder = build(python, version, work / f"dist-{version}", break_start=(version == "3.99.3"))
+                folder = build(
+                    python,
+                    version,
+                    work / f"dist-{version}",
+                    break_start=(version == "3.99.3"),
+                    break_import=(version == "3.99.4"),
+                )
             finally:
                 unstamp()
             pack(vpk, version, folder, out)
@@ -299,6 +341,9 @@ def scenarios(vpk: str, python: str, work: Path, reuse: bool = False) -> None:
         Check.that(
             app.wait_for_version("3.99.1", 60), "3.99.1 is installed under %LOCALAPPDATA%\\myBlueprint.DistrictSync"
         )
+
+        say("--- f. the window: a forcibly ended app leaves no window or process behind")
+        window_kill(app, work)
 
         say("--- a. a tampered manifest is refused")
         feed.manifest, feed.files = manifest_for("3.99.2", packs["3.99.2"], host, tamper=True)
@@ -360,6 +405,39 @@ def scenarios(vpk: str, python: str, work: Path, reuse: bool = False) -> None:
             last.get("status") == "none",
             f"the feed still offers 3.99.3 but it is not offered to this app again ({last})",
         )
+        Check.that(app.version() == "3.99.2", "and 3.99.2 stays")
+
+        say(
+            "--- e. a build that fails at IMPORT: counted, exits at once with no dialog, recovered, never offered again"
+        )
+        app.forget_last_check()
+        feed.manifest, feed.files = manifest_for("3.99.4", packs["3.99.4"], host)
+        app.nightly()
+        Check.that(app.wait_for_version("3.99.4"), "the import-broken 3.99.4 was taken (signed, verified, newer)")
+        for number in (1, 2, 3):
+            started = time.time()
+            result = app.nightly()
+            took = time.time() - started
+            Check.that(
+                result.returncode == 1 and took < 20,
+                f"start {number} of 3.99.4 fails at import and EXITS 1 at once, no error box (exit {result.returncode}, {took:.1f}s)",
+            )
+        crash = profile / "updater" / "startup-crash.log"
+        text = crash.read_text(encoding="utf8") if crash.exists() else ""
+        Check.that(
+            "ModuleNotFoundError" in text or "ImportError" in text,
+            f"the crash was logged by type and place ({text.splitlines()[:2]})",
+        )
+        Check.that("No module named" not in text and "pandas" not in text, "and the log carries no message text")
+        result = app.nightly()
+        Check.that(result.returncode == 1, f"the fourth start stops before the app runs (exit {result.returncode})")
+        Check.that(app.wait_for_version("3.99.2"), "recovered: the kept copy 3.99.2 is back after exit")
+        health = app.updater_file("health.json")
+        Check.that("3.99.4" in [str(v) for v in health.get("bad", [])], f"3.99.4 is recorded bad ({health.get('bad')})")
+        app.forget_last_check()
+        app.nightly()
+        last = app.updater_file("last-check.json")
+        Check.that(last.get("status") == "none", f"3.99.4 is still offered but never taken again ({last})")
         Check.that(app.version() == "3.99.2", "and 3.99.2 stays")
 
         say("--- d. G-097: a package that is only WAITING in the install folder is not applied by a restart")
