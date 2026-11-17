@@ -220,8 +220,12 @@ class TestWorkflowShape:
     def test_the_key_is_named_in_ci_yml_only_and_only_by_those_two_jobs(self):
         ci = (_WORKFLOWS / "ci.yml").read_text(encoding="utf8")
         assert ci.count(_KEY) == 4  # per job: the presence probe and the checkout's ssh-key
-        for name in ("flet-pack.yml", "flet-verify.yml", "release.yml"):
+        for name in ("flet-pack.yml", "flet-verify.yml"):
             assert _KEY not in (_WORKFLOWS / name).read_text(encoding="utf8"), name
+        # release.yml (DSYNC-67): only the installer rehearsal's BUILD job, and only as the checkout's ssh-key
+        release = _workflow("release.yml")["jobs"]
+        assert {n for n, j in release.items() if _KEY in yaml.safe_dump(j)} == {"installer-build"}
+        assert (_WORKFLOWS / "release.yml").read_text(encoding="utf8").count(_KEY) == 1
 
     def test_other_ci_jobs_do_not_get_the_key(self):
         jobs = _workflow("ci.yml")["jobs"]

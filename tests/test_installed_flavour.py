@@ -230,8 +230,13 @@ class TestWorkflowShape:
         assert "echo \"flavor = 'installed'\" > src/_build_flavor.py" in job
         assert "flet_pack_args.py windows --installed" in job
 
-    def test_release_workflow_never_mentions_the_flavour(self):
-        assert "_build_flavor" not in self._text("release.yml")
+    def test_in_release_workflow_only_the_installer_build_job_writes_the_flavour(self):
+        """The signing jobs and the one-file/Mac/Linux build never stamp it (DSYNC-67: the rehearsal's build job does)."""
+        text = self._text("release.yml")
+        head, rest = text.split("  installer-build:", 1)
+        job, tail = rest.split("  installer-windows:", 1)
+        assert "_build_flavor" not in head and "_build_flavor" not in tail
+        assert "_build_flavor" in job  # positive twin
 
 
 def test_diagnose_reports_the_flavour(monkeypatch):

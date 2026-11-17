@@ -3,6 +3,12 @@
 **Convention (adopted 2026-09-23):** every new entry carries a line `Supersedes: <date — title of the replaced entry>` (or `Supersedes: nothing`) directly under its heading, so a replaced decision is found by search rather than by reading prose.
 
 
+## 2026-11-17 (S6a) - DSYNC-67: the installer rehearsal lives in release.yml, in two dispatch-only jobs; flet-pack.yml stays secret-free
+
+Supersedes: nothing (plan 0054 section 7 said S6a might narrow the reusable workflow's secret-free rule; it does not).
+
+The installed-flavour build needs the private shared package, so it needs the read key. `flet-pack.yml` is called on every pull request and packs arbitrary PR code, so it must never hold that key; the one-folder build for the installer therefore moves into a `release.yml` job (`installer-build`, no Azure scope, key to the checkout step only) and the signing job (`installer-windows`, `environment: release`) consumes its artifact. Both run on `workflow_dispatch` only: a tag release is untouched. `flet-pack.yml`'s one-folder job is left as a package-less test build. Authorised by the owner 2026-11-17 (relayed by the orchestrator session).
+
 ## 2026-11-17 - DSYNC-16: a Velopack installer with signed auto-update, shared with RosterGate; S1 approved
 
 Supersedes: 2026-08-05 and 2026-08-05 (later) - plan 0041's Inno Setup, per-machine installer and its "no auto-update" non-goal (0041 Goal 4, the Flet client inside the install folder, is kept). Narrows the 2026-09-02 entry only in that `release.yml` gains a second signing job; signing still never happens in `flet-pack.yml`.
