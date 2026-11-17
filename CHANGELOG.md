@@ -9,6 +9,15 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+### Changed
+
+- **Co-taught classes keep every teacher.** When MyEd lists more than one primary teacher on
+  the same regular class (one section, two teachers), every one of them is now enrolled as a
+  teacher of that class in SpacesEDU. Before, only the teacher on the student schedule was
+  enrolled and the other was left out. Class IDs, class names and student enrollments do not
+  change, and blended classes work as before. Other districts' files came out the same
+  before and after this change (output contract 4.1.0, DSYNC-59).
+
 ## [3.29.0] - 2026-11-09
 
 ### Changed
