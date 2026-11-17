@@ -3,6 +3,14 @@
 **Convention (adopted 2026-09-23):** every new entry carries a line `Supersedes: <date — title of the replaced entry>` (or `Supersedes: nothing`) directly under its heading, so a replaced decision is found by search rather than by reading prose.
 
 
+## 2026-11-17 (later) - DSYNC-16: the feed and downloads are served from the partner site; no new domains; RosterGate shares the signing identity
+
+Supersedes: nothing (answers the open item "the feed host name" of the entry below; replaces rows 4 and 5 of plan 0054 "Provisions needed from Doug" and reverses its O3 advice that RosterGate get its own identity).
+
+**Decisions (owner).** (1) No new domains are provisioned. DistrictSync's downloads and its update feed are served from the partner site's host, `integration.crm.myblueprint.org`, on an anonymous path (proposed `/downloads/districtsync/`; final path confirmed when the site builds it), which reads container `mybpdesktopupdates/districtsync` with the partner app's managed identity. The feed host baked into installed copies is `https://integration.crm.myblueprint.org/downloads/districtsync/`. The partner app needs Storage Blob Data Reader on the container; the release identity still writes it; the container stays private. (2) The release workflow uploads every release file to the container under the SAME names as the GitHub release assets plus the Velopack files, so the site switches by configuration only; once that works the DistrictSync repository can go private and the GitHub release assets are no longer needed (order: site serves and the workflow uploads, then partner links move, then private). (3) RosterGate shares DistrictSync's signing identity: Doug adds a federated credential for RosterGate's release environment on `github-districtsync-signing`.
+
+**Consequences.** Nothing in DistrictSync's signing set-up changes (repository-level variables; the existing credential's subject stays pinned to this repository). The Signer role covers the whole profile, and one identity writing both containers means either tool's release job could write the other's feed: keep grants per container and both `release` environments protected. Plan only: no Azure change, no variable change, no release. Detail: plan 0054, "Provisions needed from Doug".
+
 ## 2026-11-17 - DSYNC-16: a Velopack installer with signed auto-update, shared with RosterGate; S1 approved
 
 Supersedes: 2026-08-05 and 2026-08-05 (later) - plan 0041's Inno Setup, per-machine installer and its "no auto-update" non-goal (0041 Goal 4, the Flet client inside the install folder, is kept). Narrows the 2026-09-02 entry only in that `release.yml` gains a second signing job; signing still never happens in `flet-pack.yml`.
