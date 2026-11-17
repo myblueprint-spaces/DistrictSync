@@ -525,16 +525,9 @@ def _cli(argv: list[str] | None) -> int:
     # --diagnose never start it. A portable build (and the unzipped CI folder) skips it
     # entirely; see src/update/startup.py. Imported lazily so the portable build never
     # imports velopack.
-    from src.update.health import begin_start, counts_as_a_start
     from src.update.startup import run_velopack_startup
 
     run_velopack_startup()
-
-    # Start-up health (plan 0054 S5): record that a start has BEGUN, as early as possible, so a build that
-    # dies in its own start-up leaves a failed start behind. Only a start that will reach a healthy mark
-    # counts (the window, and a conversion run); --version, the SFTP subcommands and the rest never do.
-    if counts_as_a_start(args_list):
-        begin_start()
 
     # No arguments → launch the UI (e.g. double-clicked from Explorer).
     # The launcher configures its own logging sink (launcher.boot_logging).

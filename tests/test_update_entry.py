@@ -161,83 +161,43 @@ class TestRunEntry:
         assert entry.confirm_start() is False and entry.adopt_window_children() == 0
 
 
-class _FakeUpdater(types.ModuleType):
-    def __init__(self, kept_version: str | None, *, refuse: bool = False) -> None:
-        super().__init__("myb_desktop_updater")
-        self.begin_calls: list[tuple[str, str]] = []
-        self.refuse = refuse
-        outer = self
-
-        class Action:
-            ROLL_BACK = "roll_back"
-            CONTINUE = "continue"
-
-        class HealthStore:
-            max_failed_starts = 2
-
-            def __init__(self, path, max_failed_starts=2):
-                self.path = path
-
-            def begin_start(self, version, previous):
-                outer.begin_calls.append((version, previous))
-                return Action.ROLL_BACK if len(outer.begin_calls) >= 4 else Action.CONTINUE
-
-        class LastGoodStore:
-            def __init__(self, root):
-                pass
-
-            def get(self):
-                return SimpleNamespace(version=kept_version) if kept_version else None
-
-        self.HealthAction = Action
-        self.HealthStore = HealthStore
-        self.LastGoodStore = LastGoodStore
-        self.HandoffRefused = type("HandoffRefused", (), {"__init__": lambda s, reason: setattr(s, "reason", reason)})
-        self.AppIdentity = lambda *a: SimpleNamespace(name=a[0])
-        self.parse_version = lambda v: (1,)
-
-
 class TestRecovery:
+    """The package does the whole recovery (restore AND record the version bad); this module only calls it."""
+
     @pytest.fixture
     def world(self, eligible, monkeypatch):
-        monkeypatch.setattr("src.utils.version.app_version", lambda: "3.30.0")
-        recovered: list[tuple] = []
+        calls: list[tuple] = []
+        updater = types.ModuleType("myb_desktop_updater")
+        updater.AppIdentity = lambda *a: SimpleNamespace(name=a[0])
+        updater.HandoffRefused = type(
+            "HandoffRefused", (), {"__init__": lambda s, reason: setattr(s, "reason", reason)}
+        )
         recovery = types.ModuleType("myb_desktop_updater.recovery")
+        outcome = {"refuse": False}
 
-        def make(updater):
-            def recover_broken_start(identity, state_dir, exe_names, **_k):
-                recovered.append((identity.name, Path(state_dir), list(exe_names)))
-                if updater.refuse:
-                    return updater.HandoffRefused("app_running")
-                return SimpleNamespace(version="3.29.0", restore=True)
+        def recover_broken_start(identity, state_dir, exe_names, **_k):
+            calls.append((identity.name, Path(state_dir), list(exe_names)))
+            if outcome["refuse"]:
+                return updater.HandoffRefused("app_running")
+            return SimpleNamespace(version="3.29.0", restore=True)
 
-            recovery.recover_broken_start = recover_broken_start
-            monkeypatch.setitem(sys.modules, "myb_desktop_updater", updater)
-            monkeypatch.setitem(sys.modules, "myb_desktop_updater.recovery", recovery)
-            return updater
+        recovery.recover_broken_start = recover_broken_start
+        monkeypatch.setitem(sys.modules, "myb_desktop_updater", updater)
+        monkeypatch.setitem(sys.modules, "myb_desktop_updater.recovery", recovery)
+        return SimpleNamespace(calls=calls, state=eligible.state, outcome=outcome)
 
-        return SimpleNamespace(make=make, recovered=recovered, state=eligible.state)
-
-    def test_the_broken_build_is_recorded_bad_then_the_kept_copy_is_restored_and_the_start_stops(self, world):
-        updater = world.make(_FakeUpdater("3.29.0"))
-        assert entry._record_bad_then_restore(world.state) == 1
-        assert len(updater.begin_calls) == 4  # run to the package's own verdict (more than two failed starts)
-        assert updater.begin_calls[0] == ("3.30.0", "3.29.0")
-        assert world.recovered == [("DistrictSync", world.state, [Path(sys.executable).name])]
+    def test_the_kept_copy_is_restored_and_the_start_stops(self, world):
+        assert entry._restore_kept_copy(world.state) == 1
+        assert world.calls == [("DistrictSync", world.state, [Path(sys.executable).name])]
 
     def test_a_refused_restore_lets_the_app_try_again(self, world):
-        world.make(_FakeUpdater("3.29.0", refuse=True))
-        assert entry._record_bad_then_restore(world.state) is None
+        world.outcome["refuse"] = True
+        assert entry._restore_kept_copy(world.state) is None
 
-    def test_with_no_kept_copy_nothing_is_recorded_and_the_app_tries_again(self, world):
-        updater = world.make(_FakeUpdater(None, refuse=True))
-        assert entry._record_bad_then_restore(world.state) is None
-        assert updater.begin_calls == []
-
-    def test_a_kept_copy_of_the_same_version_is_not_a_rollback_target(self, world):
-        updater = world.make(_FakeUpdater("3.30.0", refuse=True))
-        entry._record_bad_then_restore(world.state)
-        assert updater.begin_calls == []
+    def test_this_module_keeps_no_crash_count_of_its_own(self):
+        """DSYNC-66: the package's guard is the only counter; no begin_start loop, no record-bad workaround here."""
+        text = Path(entry.__file__).read_text(encoding="utf8")
+        assert ".begin_start(" not in text and "HealthStore(" not in text
 
 
 class TestSourceOrder:

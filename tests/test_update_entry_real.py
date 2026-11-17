@@ -49,7 +49,7 @@ def _start(world, *, confirm: bool = False, counted: bool = True):
         main,
         state_dir=world.state,
         build="broken-build",
-        recover=lambda: entry._record_bad_then_restore(world.state),
+        recover=lambda: entry._restore_kept_copy(world.state),
         counted=counted,
     )
 

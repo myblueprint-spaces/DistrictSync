@@ -40,9 +40,9 @@ from pathlib import Path
 #: The commit of ``myblueprint-spaces/myb-desktop-shared`` the package is built from (0.4.0: the start guard
 #: ``myb_start_guard``, crash exit without a dialog, the kill-on-close child job; on top of 0.3.1's G-097 fix, overall
 #: check deadline and no repeat download).
-PINNED_COMMIT = "98964edd2dd9b11fb102819d077b6a3bcfcff286"
+PINNED_COMMIT = "22e70eb1829b250150023e89125e8c7c04683cbe"
 #: The tree hash of ``packages/myb_desktop_updater`` at that commit, as the shared repo's own CI prints it.
-PINNED_TREE_SHA256 = "12a0bc4a241e2b0296c9b7fc5e5418a7c5da4169282dc2e454dcf522e5fe04d9"
+PINNED_TREE_SHA256 = "eab4da7e073b2441e268f032087f7af59e8f51ffadc79d6d18cdcac9457f5a8a"
 PINNED_VERSION = "0.4.0"
 
 #: Build settings (same as the shared repository's own CI).

@@ -60,6 +60,7 @@ from enum import StrEnum
 from typing import Any, Callable
 
 from src.scheduler.messages import carries_foreign_marker
+from src.update.startup import install_root
 from src.utils.validators import validate_gmsa_account, validate_run_as_user
 
 logger = logging.getLogger(__name__)
@@ -305,6 +306,27 @@ def honours_run_highest(kind: PrincipalKind) -> bool:
     return kind is not PrincipalKind.INTERACTIVE_TOKEN
 
 
+def runs_from_user_writable_install(exe: str) -> bool:
+    """Whether ``exe`` is a copy the installer put in a per-user install folder (``Update.exe`` beside ``current``).
+
+    Any unelevated process of that user can replace the files there, so a task that runs such an exe with HIGHEST privileges
+    would hand that process the administrator token at the next run: a UAC bypass (DSYNC-66). Such a task is registered Limited.
+    """
+    return install_root(exe) is not None
+
+
+def run_level_for(kind: PrincipalKind, *, run_highest: bool, exe: str) -> int:
+    """The ``TASK_RUNLEVEL_*`` a task registers with: Highest only when asked, honoured, and the exe is not user-writable."""
+    if not (run_highest and honours_run_highest(kind)):
+        return TASK_RUNLEVEL_LUA
+    if runs_from_user_writable_install(exe):
+        logger.warning(
+            "the scheduled run is registered at the limited run level: the program is in a per-user install folder"
+        )
+        return TASK_RUNLEVEL_LUA
+    return TASK_RUNLEVEL_HIGHEST
+
+
 def validate_principal_account(kind: PrincipalKind, user: str) -> str:
     """Validate an account against its DECLARED kind — the ONE kind→validator dispatch.
 
@@ -541,9 +563,8 @@ def _new_definition(service: Any, params: RegisterParams, *, arguments: str) -> 
 
     # Highest only where the kind honours it; the interactive-token path is ALWAYS Limited
     # (row 2) — and ``run_highest`` is ignored there rather than refused, as it always was.
-    definition.Principal.RunLevel = (
-        TASK_RUNLEVEL_HIGHEST if (params.run_highest and honours_run_highest(params.kind)) else TASK_RUNLEVEL_LUA
-    )
+    # DSYNC-66: and never Highest for a per-user (user-writable) install folder; see ``run_level_for``.
+    definition.Principal.RunLevel = run_level_for(params.kind, run_highest=params.run_highest, exe=params.exe)
     return definition
 
 

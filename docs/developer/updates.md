@@ -66,11 +66,10 @@ release that fixes it; the exit code is computed from the run alone.
 
 ## Health and rollback (S5)
 
-`begin_start()` runs right after the Velopack start-up call, only for a start that will reach a healthy mark (the window, and any
-run with `--sis`; never `--version`, `--diagnose`, the SFTP subcommands or the elevated helpers). `mark_healthy()` is called before ETL
-begins and when the first screen is up: **healthy is start-up completing, never "the conversion succeeded"**. After more than two
-failed starts the package records the version bad (the feed never offers it again) and `restore_last_good` puts the kept copy back,
-applied after exit; this works while updates are switched off.
+`mark_healthy()` is called before ETL begins and when the first screen is up: **healthy is start-up completing, never "the
+conversion succeeded"**. It clears the start guard's count and records the version healthy in the shared `HealthStore` (which also
+clears a bad mark). DistrictSync keeps NO crash counter of its own (removed in DSYNC-66): counting crashed starts and rolling back
+is the start guard's job alone, below.
 
 ## The start guard (DSYNC-66, shared 0.4.0)
 
@@ -85,10 +84,9 @@ per-user profile, no `DISTRICTSYNC_DATA_DIR` (except the e2e build); everywhere 
   window, the first screen. A failing nightly returns its proper exit code (the guard returns `cli`'s code) and its start is confirmed.
 - **A crash,** import errors included, is logged by exception type and file/line/function (never the message) to
   `<profile>/updater/startup-crash.log` and exits 1 at once: no blocking error box.
-- **Recovery:** after more than two unconfirmed starts of the same build, before the app is imported again, DistrictSync records the build bad in
-  the health store (so the feed never offers it again) and the package restores the kept copy, applied after exit. Recording bad is done
-  by running the package's own start-up check to its verdict, because the package has no direct "record bad" call (gap reported to the
-  shared repository).
+- **Recovery:** after more than two unconfirmed starts of the same build, before the app is imported again, the package's
+  `recover_broken_start` restores the kept copy (applied after exit) and records the build bad (`HealthStore.record_bad`, shared
+  commit `22e70eb`), so the feed never offers it again. DistrictSync only calls it.
 - **The child job:** for the window only, a kill-on-close job object holds the Flet window process (adopted when the client is up and at the
   first screen), never the app and never the installer's apply helper, so a forced end leaves no window behind and a later update can apply.
 

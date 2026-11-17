@@ -21,10 +21,9 @@ missing GDE file is a data problem, not a bad build, and its start is confirmed.
 ``DISTRICTSYNC_DATA_DIR`` (except the e2e test build). Everywhere else this returns ``None`` and the app starts exactly as before.
 Failing to load the guard or the profile also returns ``None``: the guard must never be the reason an app does not start.
 
-**Recovery** restores the kept copy through the package (applied after this process exits). Before it does, the broken version is
-recorded BAD in the health store, because recovery happens before the app's own health check could: without that record the
-feed would offer the same broken update again at the next check. A restore that is refused (no kept copy, another copy running)
-lets the app try again.
+**Recovery** is the package's ``recover_broken_start``: it restores the kept copy (applied after this process exits) and records the
+broken version BAD in the health store, so the feed never offers it again. A restore that is refused (no kept copy, another copy
+running) lets the app try again. This guard is the ONLY crash counter: DistrictSync keeps no count of its own.
 
 **The child job.** For the window only, ``start_child_job()`` runs first and ``adopt_children()`` is called when the Flet
 client process is up and again at the first screen. The job holds only the window's process, never this process and never the
@@ -43,7 +42,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any, Final
 
-from src.update.package import HEALTH_FILE, UPDATER_STATE_FOLDER, app_identity
+from src.update.package import UPDATER_STATE_FOLDER, app_identity
 from src.update.startup import install_root
 from src.utils.build_flavor import is_e2e_build, is_installed_build
 
@@ -92,24 +91,15 @@ def guard_state_dir() -> Path:
     return paths.user_data_dir() / UPDATER_STATE_FOLDER
 
 
-def _record_bad_then_restore(state_dir: Path) -> int | None:
-    """Recovery step for the guard: record this build bad, then restore the kept copy. ``1`` to stop, ``None`` to go on."""
+def _restore_kept_copy(state_dir: Path) -> int | None:
+    """Recovery step for the guard: restore the kept copy. ``1`` to stop this start, ``None`` to let the app try again.
+
+    The package does the whole job: it hands the kept copy to the installer (applied after this process exits) and records the
+    version that could not start as BAD in the health store (``HealthStore.record_bad``), so the feed never offers it again.
+    """
     updater = importlib.import_module(_UPDATER_MODULE)
     recovery = importlib.import_module(_RECOVERY_MODULE)
-    from src.utils.version import app_version
-
-    identity = app_identity(updater)
-    version = app_version()
-    kept = updater.LastGoodStore(state_dir).get()
-    if kept is not None and kept.version != version and updater.parse_version(version) is not None:
-        store = updater.HealthStore(state_dir / HEALTH_FILE)
-        # The package records a version bad only through its start-up check, which counts failed starts. Recovery runs
-        # before the app's own check could, so run that check to its verdict here: more than two failed starts.
-        for _ in range(store.max_failed_starts + 3):
-            action = store.begin_start(version, kept.version)
-            if action is updater.HealthAction.ROLL_BACK:
-                break
-    result = recovery.recover_broken_start(identity, state_dir, [Path(sys.executable).name])
+    result = recovery.recover_broken_start(app_identity(updater), state_dir, [Path(sys.executable).name])
     if isinstance(result, updater.HandoffRefused):
         logger.warning("recovery of a broken start was refused: %s", result.reason)
         return None
@@ -146,7 +136,7 @@ def run_entry(args: list[str] | None = None) -> int | None:
             app,
             state_dir=state_dir,
             build=guard.build_fingerprint(),
-            recover=lambda: _record_bad_then_restore(state_dir),
+            recover=lambda: _restore_kept_copy(state_dir),
             counted=start_counts(argv),
         )
     )
