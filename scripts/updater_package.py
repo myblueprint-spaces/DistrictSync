@@ -37,13 +37,13 @@ import sys
 import tempfile
 from pathlib import Path
 
-#: The commit of ``myblueprint-spaces/myb-desktop-shared`` the package is built from (0.2.0).
-#: A newer commit with the G-097 fix (a package taken in but not applied must not apply at next start) is NOT
-#: pinned yet; when RosterGate reports it, these three change together.
-PINNED_COMMIT = "d9648d7c9d2f30c9d6f671aef10bf121bf4cd96c"
+#: The commit of ``myblueprint-spaces/myb-desktop-shared`` the package is built from (0.3.1: the G-097 fix, an
+#: overall time limit on ``check_for_update``, no repeat download of a staged package, ``run_startup_hook``).
+#: Not 0e6fec5 (0.3.0): it has the start-up hook but lacks 0.3.1's "only when installed" and header-phase deadline.
+PINNED_COMMIT = "a585e90ca443c072eb6104dff1cd6aa53eab73f1"
 #: The tree hash of ``packages/myb_desktop_updater`` at that commit, as the shared repo's own CI prints it.
-PINNED_TREE_SHA256 = "672d866c1553f17dcff8a935d7e4a494e5051f70eeae10062968be83f0e048a5"
-PINNED_VERSION = "0.2.0"
+PINNED_TREE_SHA256 = "15e6fe1452a0489ab3806d99dcde806f0d4e5c2f61fb4cc3e2b75d885a54dabd"
+PINNED_VERSION = "0.3.1"
 
 #: Build settings (same as the shared repository's own CI).
 SOURCE_DATE_EPOCH = "1763337600"

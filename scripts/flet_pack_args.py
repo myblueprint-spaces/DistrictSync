@@ -82,6 +82,9 @@ INSTALLED_EXTRA: tuple[str, ...] = (
     "velopack",
 )
 
+# The e2e test build also carries the stamped feed target (scripts/updater_e2e.py only; no release path).
+E2E_EXTRA: tuple[str, ...] = ("src._e2e_target",)
+
 
 def hidden_imports(os_name: str) -> tuple[str, ...]:
     """The modules for ``os_name`` (``windows`` / ``macos`` / ``linux``). Raises on anything else."""

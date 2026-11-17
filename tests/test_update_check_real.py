@@ -16,6 +16,7 @@ import http.server
 import json
 import sys
 import threading
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -52,11 +53,13 @@ class _Feed:
     def __init__(self, manifest: bytes, files: dict[str, bytes]) -> None:
         feed = self
         self.hits: list[str] = []
+        self.delay = 0.0  # seconds the server waits before answering (a slow feed)
         self.manifest, self.files = manifest, files
 
         class Handler(http.server.BaseHTTPRequestHandler):
             def do_GET(self) -> None:  # noqa: N802 - http.server's name
                 feed.hits.append(self.path)
+                time.sleep(feed.delay)
                 body = feed.manifest if self.path == "/manifest.json" else feed.files.get(self.path.lstrip("/"))
                 if body is None:
                     self.send_response(404)
@@ -124,7 +127,7 @@ def setup(monkeypatch, tmp_path):
         started.append(feed)
         return feed
 
-    def run(feed_host: str, *, target_host: str | None = None, allow_http: bool = True):
+    def run(feed_host: str, *, target_host: str | None = None, allow_http: bool = True, budget: float = 30.0):
         target = FeedTarget(
             host=target_host or feed_host,
             trusted_keys={"k1": mdu.p256.public_key(PRIVATE) if hasattr(mdu, "p256") else _public()},
@@ -140,13 +143,20 @@ def setup(monkeypatch, tmp_path):
                 updater=mdu,
                 state_dir=tmp_path / "state",
                 now=NOW,
-                budget=30.0,
+                budget=budget,
+                # This file is about the check and the staging. Applying is covered in test_update_apply_real.py, so
+                # the hand-off is made to refuse deterministically (a copy is running) on every OS, and no installer is touched.
+                installer=object(),
+                running=lambda: 1,
             )
             return outcome, list(_RECORD)
         finally:
             _RECORD = None
 
-    yield SimpleNamespace(serve=serve, run=run, state=tmp_path / "state")
+    def forget_last_check():
+        (tmp_path / "state" / check.LAST_CHECK_FILE).unlink(missing_ok=True)
+
+    yield SimpleNamespace(serve=serve, run=run, forget_last_check=forget_last_check, state=tmp_path / "state")
     for feed in started:
         feed.close()
 
@@ -166,7 +176,7 @@ class TestAgainstALoopbackFeed:
         """Positive twin of the zero-connection guards: an eligible build connects to exactly the feed."""
         feed = setup.serve(lambda host: _manifest(host))
         outcome, connections = setup.run(feed.host)
-        assert outcome == check.CheckOutcome("staged", "staged", "3.31.0")
+        assert outcome == check.CheckOutcome("staged", "not_applied_app_running", "3.31.0")  # staged, apply refused
         staged = setup.state / check.STAGING_FOLDER / "DistrictSync-3.31.0-full.nupkg"
         assert staged.read_bytes() == PAYLOAD
         assert connections, "the audit hook recorded nothing: the proof would be vacuous"
@@ -210,6 +220,29 @@ class TestAgainstALoopbackFeed:
         outcome, connections = setup.run("127.0.0.1:9")  # the discard port: nothing listens
         assert outcome == check.CheckOutcome("refused", "unreachable")
         assert _destinations(connections) <= {("127.0.0.1", 9)}
+
+    def test_a_slow_feed_is_cut_off_by_the_packages_overall_deadline(self, setup):
+        """The package bounds the WHOLE check; the wiring only passes ``deadline_seconds``."""
+        feed = setup.serve(lambda host: _manifest(host))
+        feed.delay = 5.0
+        started = time.monotonic()
+        outcome, _ = setup.run(feed.host, budget=1.0)
+        assert outcome == check.CheckOutcome("refused", "timed_out")
+        assert (
+            time.monotonic() - started < 4.5
+        )  # well inside the feed's 5 s delay: the deadline, not the answer, ended it
+
+    def test_a_package_already_staged_is_not_downloaded_again(self, setup):
+        feed = setup.serve(lambda host: _manifest(host))
+        first, _ = setup.run(feed.host)
+        assert first.status in {"staged", "handed_off"}
+        feed.hits.clear()
+        setup.forget_last_check()
+        second, _ = setup.run(feed.host)
+        assert second.status in {"staged", "handed_off"}
+        assert (
+            "/DistrictSync-3.31.0-full.nupkg" not in feed.hits
+        )  # the manifest is read, the package is not fetched again
 
     def test_a_feed_that_answers_404_is_a_refusal(self, setup):
         feed = setup.serve(lambda host: b"", files={})

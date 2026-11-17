@@ -17,6 +17,9 @@ __pycache__/
 # (flet-pack.yml). Exists only inside a build; absent means portable (plan 0054 S2).
 /src/_build_flavor.py
 
+# The e2e updater test build's loopback feed + test key (scripts/updater_e2e.py); never in a release build.
+/src/_e2e_target.py
+
 # Logs
 *.log
 

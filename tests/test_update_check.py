@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import logging
-import time
 import types
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -21,7 +20,7 @@ from src import main as main_module
 from src.config.app_config import AppConfig
 from src.update import check, feed, status
 from src.update.feed import FeedTarget
-from tests.test_installed_flavour import _install_layout, _stamp, _unstamped
+from tests.test_installed_flavour import _install_layout, _unstamped
 
 NOW = datetime(2026, 11, 17, 12, 0, tzinfo=UTC)
 TARGET = FeedTarget(host="feed.example.invalid", trusted_keys={"k1": b"\x04" + b"\x01" * 64})
@@ -40,6 +39,11 @@ class Raises:
         self.error = error
 
 
+class _HandoffRefused:
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+
+
 class _Staged:
     def __init__(self, version: str) -> None:
         self.version = version
@@ -56,6 +60,7 @@ class FakeUpdater(types.ModuleType):
         self.enabled = enabled
         self.parseable = parseable
         self.checks: list[tuple[str, str]] = []  # (host, manifest path)
+        self.deadlines: list[float | None] = []  # the deadline_seconds the check was given
         outer = self
 
         class FeedFetcher:
@@ -72,8 +77,12 @@ class FakeUpdater(types.ModuleType):
             def bad_versions(self):
                 return ()
 
-        def check_for_update(fetcher, manifest_path, *_rest):
+            def is_healthy(self, version):
+                return True
+
+        def check_for_update(fetcher, manifest_path, *_rest, deadline_seconds=None):
             outer.checks.append((fetcher.host, manifest_path))
+            outer.deadlines.append(deadline_seconds)
             if isinstance(outer.result, Raises):
                 raise outer.result.error
             if callable(outer.result):
@@ -83,21 +92,18 @@ class FakeUpdater(types.ModuleType):
         self.FeedFetcher = FeedFetcher
         self.HealthStore = HealthStore
         self.check_for_update = check_for_update
+        self.HandoffRefused = _HandoffRefused
+        self.handoffs: list[tuple[str, int | None]] = []  # (staged version, others running as the package saw it)
+        self.handoff_result: object | None = None
+
+        def hand_off(staged, installer, identity, state_dir, running_count, healthy):
+            outer.handoffs.append((staged.version, running_count()))
+            return outer.handoff_result if outer.handoff_result is not None else SimpleNamespace(version=staged.version)
+
+        self.hand_off = hand_off
         self.AppIdentity = lambda *a: SimpleNamespace(name=a[0])
         self.updates_enabled = lambda _identity, _dir: outer.enabled
         self.parse_version = lambda v: (1,) if outer.parseable else None
-
-
-@pytest.fixture
-def eligible(monkeypatch, tmp_path):
-    """An installed build under a Velopack install, per-user profile, everything configured."""
-    _stamp(monkeypatch, "installed")
-    monkeypatch.setattr("sys.executable", _install_layout(tmp_path))
-    monkeypatch.setattr(check.paths, "is_machine_scope", lambda: False)
-    monkeypatch.setattr(check.paths, "data_dir_override_active", lambda: False)
-    monkeypatch.setattr(check, "app_version", lambda: "3.30.0")
-    state = tmp_path / "state"
-    return SimpleNamespace(state=state, config=AppConfig())
 
 
 def _run(eligible, updater, **kw):
@@ -108,6 +114,8 @@ def _run(eligible, updater, **kw):
         updater=updater,
         state_dir=eligible.state,
         now=NOW,
+        installer=kw.pop("installer", object()),
+        running=kw.pop("running", lambda: 0),
         **kw,
     )
 
@@ -212,8 +220,10 @@ class TestGuards:
 
 
 class TestOutcomes:
-    def test_staged(self, eligible):
-        assert _run(eligible, FakeUpdater(result=_Staged("3.31.0"))) == check.CheckOutcome("staged", "staged", "3.31.0")
+    def test_a_staged_update_is_handed_to_the_installer(self, eligible):
+        assert _run(eligible, FakeUpdater(result=_Staged("3.31.0"))) == check.CheckOutcome(
+            "handed_off", "handed_off", "3.31.0"
+        )
 
     def test_a_refusal_is_a_result_with_its_code(self, eligible):
         assert _run(eligible, FakeUpdater(result=_Refused("unreachable"))) == check.CheckOutcome(
@@ -226,9 +236,16 @@ class TestOutcomes:
         assert outcome == check.CheckOutcome("error", "raised")
         assert any("RuntimeError" in r.getMessage() for r in caplog.records)
 
-    def test_a_slow_check_is_cut_off_by_the_budget(self, eligible):
-        outcome = _run(eligible, FakeUpdater(result=lambda: time.sleep(2)), budget=0.05)
-        assert outcome == check.CheckOutcome("error", "budget_exceeded")
+    def test_the_whole_check_is_bounded_by_the_packages_deadline(self, eligible):
+        """The package enforces the time limit and reports a cut-off as the refusal ``timed_out``."""
+        fake = FakeUpdater(result=_Refused("timed_out"))
+        assert _run(eligible, fake, budget=42.0) == check.CheckOutcome("refused", "timed_out")
+        assert fake.deadlines == [42.0]
+
+    def test_the_default_deadline_is_the_plans_five_minutes(self, eligible):
+        fake = FakeUpdater(result=None)
+        _run(eligible, fake)
+        assert fake.deadlines == [300.0] == [check.BUDGET_SECONDS]
 
     def test_nothing_unexpected_escapes(self, eligible, monkeypatch):
         def boom(*_a, **_k):
@@ -243,8 +260,8 @@ class TestOutcomes:
         assert skipped.status == "skipped" and not (_unstamp_state / check.LAST_CHECK_FILE).exists()
         _run(eligible, FakeUpdater(result=_Staged("3.31.0")))  # positive twin
         record = json.loads((_unstamp_state / check.LAST_CHECK_FILE).read_text(encoding="utf8"))
-        assert record["status"] == "staged" and record["version"] == "3.31.0" and record["trigger"] == "window"
-        assert check.last_check_summary(_unstamp_state)["status"] == "staged"
+        assert record["status"] == "handed_off" and record["version"] == "3.31.0" and record["trigger"] == "window"
+        assert check.last_check_summary(_unstamp_state)["status"] == "handed_off"
 
     def test_the_record_carries_no_address_or_path(self, eligible):
         _run(eligible, FakeUpdater(result=_Refused("unreachable")))
@@ -293,6 +310,33 @@ class TestAfterScheduledRun:
         ):
             monkeypatch.setattr(check, "run_update_check", behaviour)
             assert main_module.cli([*base, "--source", "scheduled"]) == 0
+
+    def test_a_failed_run_still_checks_so_the_fix_can_arrive(self, cli, monkeypatch):
+        """A build whose every nightly fails must still be able to take the release that fixes it."""
+        calls, base = cli
+
+        def failing(*_a, **_k):
+            raise RuntimeError("a GDE file is missing")
+
+        monkeypatch.setattr(main_module, "run_pipeline", failing)
+        assert main_module.cli([*base, "--source", "scheduled"]) == 1
+        assert calls == ["after_run"]
+
+    def test_a_run_that_exits_early_still_checks(self, cli, monkeypatch):
+        calls, base = cli
+
+        def exits(*_a, **_k):
+            raise SystemExit(1)
+
+        monkeypatch.setattr(main_module, "run_pipeline", exits)
+        assert main_module.cli([*base, "--source", "scheduled"]) == 1
+        assert calls == ["after_run"]
+
+    def test_a_failed_manual_run_does_not_check(self, cli, monkeypatch):
+        calls, base = cli
+        monkeypatch.setattr(main_module, "run_pipeline", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
+        assert main_module.cli([*base, "--source", "manual"]) == 1
+        assert calls == []
 
     def test_a_failed_delivery_still_exits_3_with_the_check_made(self, cli, monkeypatch):
         calls, base = cli
