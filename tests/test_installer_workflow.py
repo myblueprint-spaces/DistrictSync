@@ -108,7 +108,7 @@ class TestThePackAndTheTools:
     def test_the_installed_stamp_is_written_and_the_package_modules_are_asserted_present(self):
         text = _steps_text("installer-build")
         assert "flavor = 'installed'" in text
-        for module in ("velopack", "myb_desktop_updater", "myb_start_guard"):
+        for module in ("velopack", "myb_desktop_updater", "myb_start_guard", "ci_assert_frozen_modules"):
             assert module in text
 
     def test_the_signed_files_are_verified_with_a_timestamp_and_the_install_is_smoked_then_removed(self):
@@ -116,3 +116,15 @@ class TestThePackAndTheTools:
         assert "TimeStamperCertificate" in text and "signtool.exe" in text
         assert "--artifact installed" in text and "uninstall --silent" in text
         assert "flet_view" in text and "flet.exe" in text and "Update.exe" in text
+
+
+def test_the_frozen_module_check_names_what_is_missing():
+    import importlib.util
+
+    path = Path(__file__).resolve().parent.parent / "scripts" / "ci_assert_frozen_modules.py"
+    spec = importlib.util.spec_from_file_location("ci_assert_frozen_modules", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.missing_modules({"a", "b"}, ["a", "c"]) == ["c"]
+    assert module.missing_modules({"a"}, ["a"]) == []  # positive twin

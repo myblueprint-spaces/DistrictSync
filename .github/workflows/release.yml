@@ -274,16 +274,14 @@ jobs:
         run: python scripts/ci_flet_pack_smoke.py --assert-bundled-client dist DistrictSync
 
       # The installed flavour must carry the Velopack runtime AND both shared packages: without them the app
-      # silently runs with no updater and no start guard, and no smoke would notice.
-      - name: Assert the folder carries the Velopack runtime and the shared updater packages
+      # silently runs with no updater and no start guard, and no smoke would notice. The pure-Python modules live
+      # inside the exe's archive, so they are read from its table of contents (scripts/ci_assert_frozen_modules.py).
+      - name: Assert the build carries the Velopack runtime and the shared updater packages
         shell: bash
         run: |
           set -euo pipefail
-          for want in 'velopack*' 'myb_desktop_updater*' 'myb_start_guard*'; do
-            FOUND=$(find dist/DistrictSync -iname "$want" | head -3)
-            echo "$want: $FOUND"
-            [ -n "$FOUND" ] || { echo "FAIL: nothing named $want in the one-folder app"; exit 1; }
-          done
+          [ -n "$(find dist/DistrictSync -iname 'velopack*' | head -1)" ] || { echo "FAIL: no velopack in the one-folder app"; exit 1; }
+          python scripts/ci_assert_frozen_modules.py dist/DistrictSync/DistrictSync.exe             myb_start_guard myb_desktop_updater myb_desktop_updater.recovery myb_desktop_updater.velopack_installer             src.update.entry src.update.startup
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
