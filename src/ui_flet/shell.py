@@ -571,14 +571,26 @@ def _check_for_update_in_window() -> None:
         logging.getLogger(__name__).debug("window update check failed", exc_info=True)
 
 
+def _adopt_window_process() -> None:
+    """Total wrapper over the guard's ``adopt_children``; advisory, never raises."""
+    try:
+        from src.update.entry import adopt_window_children
+
+        adopt_window_children()
+    except Exception:  # noqa: BLE001 - advisory; the window must not notice
+        logging.getLogger(__name__).debug("could not adopt the window process", exc_info=True)
+
+
 def _mark_start_healthy() -> None:
     """The first screen is up (the launch page or the app body): that is a healthy start (plan 0054 S5).
 
     Total and a no-op outside the installed build; "healthy" here is start-up completing, never a conversion's result.
     """
     try:
+        from src.update.entry import adopt_window_children
         from src.update.health import mark_healthy
 
+        adopt_window_children()  # the Flet window process, if it has not been adopted yet (plan 0054, DSYNC-66)
         mark_healthy()
     except Exception:  # noqa: BLE001 - advisory; the window must not notice
         logging.getLogger(__name__).debug("could not mark the start healthy", exc_info=True)
@@ -615,6 +627,10 @@ def main(page: ft.Page) -> None:
     through to the app body. Identification can never fail closed: the cost of a bug here
     is an unfiltered district list, never a locked-out admin.
     """
+    # The Flet client process is up by the time this runs: put it in the start guard's kill-on-close job now (and again
+    # at the first screen), so a killed or crashed app never leaves its window behind. No-op outside the guarded build.
+    _adopt_window_process()
+
     # --- 1. paint themed chrome FIRST (no flash of unstyled window) -------- #
     page.title = "DistrictSync"
     page.padding = 0

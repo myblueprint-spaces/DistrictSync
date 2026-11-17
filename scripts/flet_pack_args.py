@@ -79,7 +79,15 @@ INSTALLED_EXTRA: tuple[str, ...] = (
     "src._build_flavor",
     "src.update",
     "src.update.startup",
+    "src.update.entry",
     "velopack",
+    # The shared packages are imported by name (variable), so PyInstaller must be told. Needs the private package
+    # installed in the pack environment: the CI one-folder job gets it with S6a; until then it warns and the e2e script
+    # (which has it) builds a complete one.
+    "myb_start_guard",
+    "myb_desktop_updater",
+    "myb_desktop_updater.recovery",
+    "myb_desktop_updater.velopack_installer",
 )
 
 # The e2e test build also carries the stamped feed target (scripts/updater_e2e.py only; no release path).

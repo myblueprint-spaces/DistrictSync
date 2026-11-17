@@ -41,6 +41,10 @@ STATE_FOLDER: Final = "DistrictSync"
 #: The Velopack pack id (install folder ``%LOCALAPPDATA%\myBlueprint.DistrictSync``). Permanent once an
 #: installer ships; it must never equal the profile folder name (plan 0054, section 3).
 PACK_ID: Final = "myBlueprint.DistrictSync"
+#: The updater's state folder inside the profile, and the package's health file in it. One spelling, here, because the
+#: start guard (``src.update.entry``) needs them before the app's own heavy imports and must not import ``check``.
+UPDATER_STATE_FOLDER: Final = "updater"
+HEALTH_FILE: Final = "health.json"
 
 
 def load_updater() -> ModuleType | None:

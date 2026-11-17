@@ -127,54 +127,20 @@ class TestHandOff:
         assert world.hand_off().reason == "not_applied_not_installed"
 
 
-class TestCrashLoopRollback:
-    """The package's own policy (more than two failed starts), driven through DistrictSync's wiring."""
+class TestHealthyMark:
+    """The only health DistrictSync records itself; counting crashed starts is the start guard's (``test_update_entry_real``)."""
 
-    @pytest.fixture
-    def after_an_update(self, world, monkeypatch):
-        world.hand_off()  # keeps 3.30.0 as the last good copy
-        # The app now runs the NEW version (3.31.0), whose installer package is what ``installed_package`` reports.
-        world.installer.version = "3.31.0"
+    def test_a_healthy_start_is_recorded_in_the_real_store_and_clears_a_bad_mark(self, world, monkeypatch):
         monkeypatch.setattr(health, "app_version", lambda: "3.31.0")
-        health.forget_current()
-        world.installer.applied.clear()
-        world.installer.prepared.clear()
-        return world
+        monkeypatch.setattr(health, "updater_state_dir", lambda: world.state)
+        store = mdu.HealthStore(world.state / check.HEALTH_FILE)
+        store.record_bad("3.31.0", "3.30.0")
+        assert "3.31.0" in store.bad_versions()
+        assert health.mark_healthy() is True
+        assert store.is_healthy("3.31.0") and store.bad_versions() == ()
 
-    def _begin(self, w):
-        return health.begin_start(updater=mdu, state_dir=w.state, installer=w.installer, running=lambda: 0)
+    def test_it_records_nothing_outside_the_installed_build(self, monkeypatch):
+        from tests.test_installed_flavour import _unstamped
 
-    def test_a_build_that_dies_at_start_is_rolled_back_and_never_offered_again(self, after_an_update):
-        w = after_an_update
-        for _ in range(3):  # three starts, none ever marked healthy: the build exits in its own start-up
-            self._begin(w)
-        assert w.installer.applied == []  # up to two failed starts are tolerated
-        self._begin(w)  # the fourth start sees more than two failures before it
-        assert w.installer.applied == ["3.30.0"]  # the kept copy is restored, applied after exit
-        assert w.installer.prepared == [("restore", [f"{APP_ID}-3.30.0-full.nupkg"])]
-        store = mdu.HealthStore(w.state / check.HEALTH_FILE)
-        assert "3.31.0" in store.bad_versions()  # recorded bad: the feed will not offer it again
-
-    def test_a_start_that_reaches_the_healthy_mark_is_never_rolled_back_even_if_every_run_fails(self, after_an_update):
-        """Healthy is start-up completing, never the conversion succeeding: nightly runs that exit 1 are not crashes."""
-        w = after_an_update
-        for _ in range(6):
-            self._begin(w)
-            assert health.mark_healthy() is True  # reached before ETL; the conversion itself may then fail
-        assert w.installer.applied == []
-        assert mdu.HealthStore(w.state / check.HEALTH_FILE).bad_versions() == ()
-
-    def test_with_no_kept_copy_there_is_nothing_to_roll_back_to(self, world, monkeypatch):
-        monkeypatch.setattr(health, "app_version", lambda: "3.30.0")
-        health.forget_current()
-        for _ in range(6):
-            health.begin_start(updater=mdu, state_dir=world.state, installer=world.installer, running=lambda: 0)
-        assert world.installer.applied == []
-
-    def test_rollback_works_while_updates_are_switched_off(self, after_an_update, monkeypatch):
-        """A safety step, not an update check."""
-        monkeypatch.setenv("DISTRICTSYNC_UPDATES", "off")
-        w = after_an_update
-        for _ in range(4):
-            self._begin(w)
-        assert w.installer.applied == ["3.30.0"]
+        _unstamped(monkeypatch)
+        assert health.mark_healthy() is False

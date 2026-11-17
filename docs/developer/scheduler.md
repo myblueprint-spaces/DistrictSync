@@ -56,3 +56,19 @@ The run-time failures above are found at 3 AM; for a managed service account the
 ## The seasonal sync window
 
 - `src/etl/sync_window.py` — **Seasonal sync window** (v3.8.0): pure `today`-injected `in_sync_window(today, start_md, end_md)` (MM-DD bounds, wrap-around Aug→Jul, boundary-inclusive, leap-safe via `(month, day)` tuple compare — never builds a date, so `02-29` can't raise) + `next_resume_date`. The window lives in the APP, NOT the OS schedule: the task stays a plain daily trigger and `main._cli` skips a run whose resolved source is `scheduled` when the window is enabled and today is outside it (exit **0** — a paused night is healthy, not a failure; no ETL/write/delivery, no run record). So it recurs yearly with **nothing to re-arm** — no scheduler change, no elevation. Opt-in (`AppConfig.sync_window_enabled` default off → year-round, byte-identical). Manual Convert / hand-run CLI / headless cron BYPASS. A malformed enabled window fails LOUD and runs (never silently stops the sync). **Fields are named `sync_window_*` deliberately — `window_*` is the geometry-exclusion prefix in `app_config._carries_chosen_settings`.** The paused fact is single-sourced at `ui_flet/home_status.sync_window_paused` and read by Home, the Run History banner AND the Setup nav badge so they cannot disagree; a confirmed-MISSING schedule OUTRANKS the pause (a gone task won't resume, so "resumes <date>" would be a lie).
+
+## Run level for an installed copy (DSYNC-66)
+
+`task_com.run_level_for` is the ONE place the task's run level is decided (the nightly and the DSYNC-33 schedule-check task both
+go through `_new_definition`). Highest is registered only when it is asked for, the principal kind honours it, AND the program is
+not a per-user Velopack install (`Update.exe` beside `current`, `runs_from_user_writable_install`). An installed copy lives under the
+user's `%LOCALAPPDATA%`, which any unelevated process of that user can write: an elevated task running that exe would give such a
+process the administrator token at the next run (a UAC bypass), so the task is registered Limited and a warning is logged. The caller's
+`run_highest=True` default is unchanged and is simply not honoured for that exe; nothing is refused.
+
+**What still needs elevation, and how it is handled.** Registering a task for another account (a stored password or a gMSA) still
+takes the one UAC prompt it always did (`elevated_apply`). What is lost is only the elevated token at RUN time: a Limited nightly
+cannot write to a protected folder (Program Files, HKLM). Its input and output folders must be writable by the account that runs it
+(the usual case: a district share or a folder under the profile). A portable exe placed in a user-writable folder (Downloads,
+the Desktop) and registered Highest has the same weakness; it is recorded, not changed here (the rule keys on the installed layout).
+

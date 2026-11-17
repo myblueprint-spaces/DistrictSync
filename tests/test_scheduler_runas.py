@@ -19,6 +19,7 @@ The COM seam is ``task_com.apply_definition``'s (service, folder) pair — faked
 MagicMocks, so these run identically on Windows dev hosts and Linux CI (no pywin32).
 """
 
+import dataclasses
 import logging
 import os
 from contextlib import contextmanager
@@ -1563,3 +1564,51 @@ class TestPrincipalKindFromRecord:
 
     def test_surrounding_whitespace_on_a_recorded_value_is_tolerated(self):
         assert task_com.principal_kind_from_record("  password  ", user="") is PrincipalKind.PASSWORD
+
+
+class TestNoHighestRunLevelForAUserWritableInstall:
+    """DSYNC-66: an installed copy lives where any unelevated process of the user can write; Highest there is a UAC bypass."""
+
+    @pytest.fixture
+    def installed_exe(self, tmp_path):
+        root = tmp_path / "myBlueprint.DistrictSync"
+        (root / "current").mkdir(parents=True)
+        (root / "Update.exe").write_bytes(b"")
+        exe = root / "current" / "DistrictSync.exe"
+        exe.write_bytes(b"")
+        return str(exe)
+
+    @pytest.mark.parametrize(
+        ("kind", "user", "password"),
+        [(PrincipalKind.PASSWORD, _SERVICE_ACCOUNT, "pw"), (PrincipalKind.MANAGED_SERVICE_ACCOUNT, _GMSA, None)],
+        ids=["stored-password", "managed-service-account"],
+    )
+    def test_an_installed_exe_is_registered_limited_even_when_highest_is_asked_for(
+        self, installed_exe, kind, user, password
+    ):
+        service, folder = _fake_com()
+        params = _params_for(kind, user=user, password=password, run_highest=True)
+        apply_definition(service, folder, dataclasses.replace(params, exe=installed_exe))
+        _n, definition, *_rest = _register_call(folder)
+        assert definition.Principal.RunLevel == task_com.TASK_RUNLEVEL_LUA
+
+    def test_the_positive_twin_the_same_request_for_a_program_outside_an_install_is_still_highest(self):
+        service, folder = _fake_com()
+        apply_definition(service, folder, _params(run_highest=True))  # exe is C:\DistrictSync\DistrictSync.exe
+        _n, definition, *_rest = _register_call(folder)
+        assert definition.Principal.RunLevel == task_com.TASK_RUNLEVEL_HIGHEST
+
+    def test_the_schedule_check_task_gets_the_same_run_level_as_the_nightly(self, installed_exe):
+        """One place sets the level (``_new_definition``), so the check proves the same thing about the nightly."""
+        service, _folder = _fake_com()
+        params = dataclasses.replace(_params(run_highest=True), exe=installed_exe)
+        definition = task_com._new_definition(service, params, arguments="--schedule-check x")
+        assert definition.Principal.RunLevel == task_com.TASK_RUNLEVEL_LUA
+
+    def test_the_rule_is_the_one_function_for_every_caller(self, installed_exe):
+        assert task_com.runs_from_user_writable_install(installed_exe) is True
+        assert task_com.runs_from_user_writable_install(r"C:\Program Files\DistrictSync\DistrictSync.exe") is False
+        assert (
+            task_com.run_level_for(PrincipalKind.PASSWORD, run_highest=True, exe=installed_exe)
+            == task_com.TASK_RUNLEVEL_LUA
+        )

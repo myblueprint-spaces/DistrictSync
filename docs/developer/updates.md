@@ -66,22 +66,39 @@ release that fixes it; the exit code is computed from the run alone.
 
 ## Health and rollback (S5)
 
-`begin_start()` runs right after the Velopack start-up call, only for a start that will reach a healthy mark (the window, and any
-run with `--sis`; never `--version`, `--diagnose`, the SFTP subcommands or the elevated helpers). `mark_healthy()` is called before ETL
-begins and when the first screen is up: **healthy is start-up completing, never "the conversion succeeded"**. After more than two
-failed starts the package records the version bad (the feed never offers it again) and `restore_last_good` puts the kept copy back,
-applied after exit; this works while updates are switched off.
+`mark_healthy()` is called before ETL begins and when the first screen is up: **healthy is start-up completing, never "the
+conversion succeeded"**. It clears the start guard's count and records the version healthy in the shared `HealthStore` (which also
+clears a bad mark). DistrictSync keeps NO crash counter of its own (removed in DSYNC-66): counting crashed starts and rolling back
+is the start guard's job alone, below.
 
-**Known limits (shared-package work queued, NOT in the pinned 0.3.1; do not claim them):** (1) a crash before `begin_start` runs (an
-import-time failure while `src.main` loads its modules) leaves no record and cannot be rolled back; (2) a start that dies in its own
-start-up shows a blocking error box instead of exiting (a window-less exe), so an unattended run can hang until it is ended; (3) the
-orphaned Flet client window is not closed or counted as a failed start. Each waits for the shared repository.
+## The start guard (DSYNC-66, shared 0.4.0)
+
+`src/main.py` calls `src.update.entry.run_entry()` as its FIRST statement (before pandas, the ETL or Flet are imported), so the shared
+`myb_start_guard` counts a start before the app's own imports run. Applies to the installed flavour under a Velopack install,
+per-user profile, no `DISTRICTSYNC_DATA_DIR` (except the e2e build); everywhere else it returns `None` and the app starts as before.
+
+- **Which starts count:** the window and a conversion run (`--sis`). `--version`, `--diagnose`, `--schedule-check`, `--elevated-apply`,
+  the SFTP subcommands and Velopack's `--veloapp-*` hooks are `counted=False` (they open no window and never confirm), but still run inside
+  the guard, so a crash in them also logs and exits at once.
+- **What a confirmed start is:** start-up completing, never the conversion succeeding. For a conversion, the moment before ETL; for the
+  window, the first screen. A failing nightly returns its proper exit code (the guard returns `cli`'s code) and its start is confirmed.
+- **A crash,** import errors included, is logged by exception type and file/line/function (never the message) to
+  `<profile>/updater/startup-crash.log` and exits 1 at once: no blocking error box.
+- **Recovery:** after more than two unconfirmed starts of the same build, before the app is imported again, the package's
+  `recover_broken_start` restores the kept copy (applied after exit) and records the build bad (`HealthStore.record_bad`, shared
+  commit `22e70eb`), so the feed never offers it again. DistrictSync only calls it.
+- **The child job:** for the window only, a kill-on-close job object holds the Flet window process (adopted when the client is up and at the
+  first screen), never the app and never the installer's apply helper, so a forced end leaves no window behind and a later update can apply.
+
+**Still unrecoverable (the package says so; recorded, not claimed):** the frozen runtime, the entry script or `myb_start_guard` failing to
+load (the bootloader fails before any Python runs); a process killed before the count is written; no kept copy of an earlier version; an app
+the installer did not install; a stuck copy still running (restore is refused while another copy runs, so it must be ended first).
 
 ## The end-to-end proof
 
 `scripts/updater_e2e.py` builds three unsigned one-folder copies in the **e2e flavour** (the installed flavour plus a stamped
 loopback feed and a published RFC 6979 TEST key, `src/_e2e_target.py`, git-ignored), packs them with `vpk` under the real pack id,
 installs 3.99.1 for the current user and drives the nightly through: a tampered manifest refused; a good update applied after exit; a
-bad build that dies at start rolled back and never offered again; and (G-097) a package that is only waiting in the install folder is not applied by a restart. It uses `DISTRICTSYNC_DATA_DIR` for a throwaway profile and removes the
+bad build that dies at start, and one that fails at import, rolled back and never offered again; a forced end of the window leaving no process; and (G-097) a package that is only waiting in the install folder is not applied by a restart. It uses `DISTRICTSYNC_DATA_DIR` for a throwaway profile and removes the
 install afterwards. The e2e flavour exists for that script alone; tests (`tests/test_update_e2e_flavour.py`) pin that no release path can
 stamp it or point the release build at loopback or a test key. Not run in CI yet (it needs the private package in the pack job).

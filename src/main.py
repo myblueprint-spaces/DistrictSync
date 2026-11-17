@@ -24,6 +24,19 @@ from datetime import date
 from pathlib import Path
 from typing import IO, Callable
 
+# The START GUARD (plan 0054 S5 follow-up). As a frozen script this module runs as ``__main__``, and this block is the FIRST
+# thing it does, before the heavy imports below: the start is counted before pandas, the ETL or Flet are imported, so an
+# update that breaks those imports is still counted and recovered (see src/update/entry.py). Applies to the installed flavour
+# under a Velopack install only; everywhere else ``run_entry`` returns None and the module carries on exactly as before. The
+# guarded run imports ``src.main`` and calls ``cli`` itself, so nothing below runs a second time.
+if __name__ == "__main__":
+    from src.update.entry import run_entry
+
+    _guarded_exit = run_entry()
+    if _guarded_exit is not None:
+        sys.exit(_guarded_exit)
+
+
 from src.config.app_config import AppConfig
 from src.etl.pipeline import (
     ANOMALY_THRESHOLD,
@@ -512,16 +525,9 @@ def _cli(argv: list[str] | None) -> int:
     # --diagnose never start it. A portable build (and the unzipped CI folder) skips it
     # entirely; see src/update/startup.py. Imported lazily so the portable build never
     # imports velopack.
-    from src.update.health import begin_start, counts_as_a_start
     from src.update.startup import run_velopack_startup
 
     run_velopack_startup()
-
-    # Start-up health (plan 0054 S5): record that a start has BEGUN, as early as possible, so a build that
-    # dies in its own start-up leaves a failed start behind. Only a start that will reach a healthy mark
-    # counts (the window, and a conversion run); --version, the SFTP subcommands and the rest never do.
-    if counts_as_a_start(args_list):
-        begin_start()
 
     # No arguments → launch the UI (e.g. double-clicked from Explorer).
     # The launcher configures its own logging sink (launcher.boot_logging).
