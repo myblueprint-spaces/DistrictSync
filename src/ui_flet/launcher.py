@@ -78,6 +78,26 @@ def resolve_frozen_cwd() -> Path | None:
     return None
 
 
+def resolve_bundled_client(bundle_root: Path | None, *, windows: bool | None = None) -> Path | None:
+    """The Flet client folder shipped INSIDE a one-folder Windows build, else None (DSYNC-60).
+
+    A one-folder build carries the client at ``<bundle>/flet_view`` and points ``FLET_VIEW_PATH``
+    at it, so ``flet.exe`` is a signable file in the install tree and nothing is extracted into
+    ``~/.flet`` at first launch (plan 0041 Goal 4). The one-file exe, macOS, Linux and a source
+    checkout carry no such folder, so this returns None for them and nothing changes.
+
+    Pure/inspectable: returns the path WITHOUT touching the environment.
+    """
+    if bundle_root is None:
+        return None
+    if windows is None:
+        windows = sys.platform == "win32"
+    if not windows:
+        return None
+    client = bundle_root / "flet_view"
+    return client if (client / "flet.exe").is_file() else None
+
+
 def resolve_log_path() -> Path:
     """Canonical ETL log path — the same sink the ETL writes to.
 
@@ -247,6 +267,12 @@ def main() -> None:  # pragma: no cover - view glue (ft.run + dialog)
     frozen_cwd = resolve_frozen_cwd()
     if frozen_cwd is not None:
         os.chdir(frozen_cwd)
+        # One-folder Windows build: use the client shipped beside the exe, never the
+        # per-user cache. Set unconditionally so a stray FLET_VIEW_PATH in the
+        # environment cannot redirect an installed copy to some other flet.exe.
+        bundled_client = resolve_bundled_client(frozen_cwd)
+        if bundled_client is not None:
+            os.environ["FLET_VIEW_PATH"] = str(bundled_client)
 
     try:
         # Relocate a legacy ~/.districtsync profile, THEN open the log sink in the

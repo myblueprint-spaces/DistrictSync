@@ -33,6 +33,7 @@ impossible, but the wrapper matches ``home.py`` / ``run_history.py``).
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 
 import flet as ft
@@ -41,7 +42,10 @@ from src.config.app_config import AppConfig
 from src.ui_flet import about, components, tokens
 from src.ui_flet.humanize import friendly_district_name
 from src.ui_flet.identity_gate import stored_identity_email
+from src.update.status import update_status_line
 from src.utils.version import app_version
+
+logger = logging.getLogger(__name__)
 
 # The single canonical support article — the "org knowledge-article base" the scope-lock
 # points IA-7 at. Grepped canonical value (byte-identical across release.yml / README.md /
@@ -218,6 +222,18 @@ def _reassurance_card(app_config: AppConfig) -> ft.Control:
     )
 
 
+def _update_status_controls() -> list[ft.Control]:
+    """One muted line about updates, installed build only (empty for the portable build)."""
+    try:
+        line = update_status_line()
+    except Exception:  # noqa: BLE001 - Help must always render; the line is advisory
+        logger.debug("update status line unavailable", exc_info=True)
+        return []
+    if not line:
+        return []
+    return [ft.Text(line, size=tokens.type_body, color=tokens.color_muted)]
+
+
 def _about_card(page: ft.Page) -> ft.Control:
     """The About block (0032 T1 #9) — the exact facts support asks for first.
 
@@ -250,6 +266,7 @@ def _about_card(page: ft.Page) -> ft.Control:
                         components.copy_button(page, version, tooltip="Copy version"),
                     ],
                 ),
+                *_update_status_controls(),
                 ft.Text(
                     "Include the version when you contact support — it tells us exactly what you're running.",
                     size=tokens.type_body,

@@ -33,6 +33,7 @@ from typing import IO
 
 from src.utils import paths
 from src.utils.accounts import process_account
+from src.utils.build_flavor import build_flavor
 from src.utils.version import app_version
 
 # The grep anchor, in the bracketed form ``main._report_machine_scope_refusal`` established:
@@ -323,6 +324,7 @@ def diagnose_lines() -> list[str]:
         _guarded("version", app_version),
         _row("platform", sys.platform),
         _row("packaged exe", _yes_no(getattr(sys, "frozen", False))),
+        _guarded("build flavour", build_flavor),
         "",
         *_profile_lines(),
         "",

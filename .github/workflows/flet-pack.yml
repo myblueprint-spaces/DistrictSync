@@ -32,6 +32,14 @@ on:
         description: "Pack + smoke ubuntu-22.04 only (flet-verify.yml on pull_request)"
         type: boolean
         default: false
+      windows_onedir:
+        description: "Also build + smoke the one-folder Windows app (DSYNC-60): unsigned, uploaded as a test artifact only, never published"
+        type: boolean
+        default: false
+      onedir_only:
+        description: "Skip the three-OS matrix; build the one-folder Windows app alone (a cheap test run)"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -41,6 +49,7 @@ env:
 
 jobs:
   pack:
+    if: ${{ !inputs.onedir_only }}
     strategy:
       fail-fast: false
       matrix:
@@ -391,4 +400,152 @@ jobs:
         with:
           name: DistrictSync-${{ matrix.os }}
           path: dist/DistrictSync*
+          retention-days: 1
+
+  # -------------------------------------------------------------------------
+  # ONE-FOLDER Windows app (DSYNC-60, plan 0054 slice S1) - the build the Velopack
+  # installer will package. UNSIGNED and UNPUBLISHED: signing lives only in release.yml
+  # (DECISIONS 2026-09-02), and nothing here is attached to a Release.
+  #
+  # Its OWN job, not another step of `pack`: a failure here must not be able to fail or delay
+  # the job that builds the one-file exe districts use today (owner priority 2026-11-17). It
+  # runs only when a caller asks (`windows_onedir`): flet-verify.yml on workflow_dispatch.
+  # release.yml does NOT ask in S1, so a release is not touched by this job at all.
+  #
+  # Differences from the one-file pack, all deliberate:
+  #   * `-D` (one folder): no %TEMP% self-extraction, a stable path for the scheduled task.
+  #   * the Flet client is copied INTO the folder (`--add-data ...;flet_view`) and the frozen
+  #     launcher points FLET_VIEW_PATH at it (plan 0041 Goal 4): flet.exe becomes a file in
+  #     our tree and nothing is extracted into ~/.flet at first launch.
+  #   * the smoke proves the opposite of the one-file embed check: the window boots from the
+  #     bundled client and ~/.flet stays ABSENT (`--artifact onedir`), plus a negative twin.
+  #   * the hidden-import list comes from scripts/flet_pack_args.py (parity-tested against the
+  #     one-file step above).
+  # -------------------------------------------------------------------------
+  pack-windows-onedir:
+    if: ${{ inputs.windows_onedir }}
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      FLET_DESKTOP_FLAVOR: light
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Stamp version (real on a tag, else dev)
+        shell: bash
+        run: |
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            echo "version = '${GITHUB_REF_NAME#v}'" > src/_version.py
+          else
+            echo "version = 'dev'" > src/_version.py
+          fi
+          cat src/_version.py
+
+      # The INSTALLED flavour (plan 0054 S2): the one-folder build is the one Velopack packs.
+      # Only this job writes the stamp; the one-file exe and the macOS/Linux builds never do,
+      # and an absent stamp means portable (src/utils/build_flavor.py).
+      - name: Stamp build flavour (installed)
+        shell: bash
+        run: |
+          echo "flavor = 'installed'" > src/_build_flavor.py
+          cat src/_build_flavor.py
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+
+      - name: Install pinned stack (runtime + build/smoke deps)
+        run: python -m pip install -r requirements.txt -r requirements-dev.txt
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.flet
+          key: flet-client-${{ runner.os }}-${{ env.FLET_VERSION }}-${{ env.FLET_DESKTOP_FLAVOR }}
+
+      - name: Warm Flet client cache (headless, no window)
+        run: python -c "import flet_desktop; print('cached at:', flet_desktop.ensure_client_cached())"
+
+      - name: Pack the one-folder app with the Flet client inside it
+        shell: bash
+        run: |
+          set -euo pipefail
+          CLIENT="$HOME/.flet/client/flet-desktop-${FLET_DESKTOP_FLAVOR}-${FLET_VERSION}/flet"
+          if [ ! -f "$CLIENT/flet.exe" ]; then
+            echo "FAIL: no flet.exe in the warmed client cache at $CLIENT"
+            ls -la "$HOME/.flet/client" || true
+            exit 1
+          fi
+          flet pack src/main.py --name DistrictSync \
+            --yes -D \
+            --icon assets/districtsync.ico \
+            --add-data "config;config" \
+            --add-data "assets;assets" \
+            --add-data "$(cygpath -w "$CLIENT");flet_view" \
+            $(python scripts/flet_pack_args.py windows --installed) \
+            --pyinstaller-build-args="--paths" --pyinstaller-build-args="." \
+            --pyinstaller-build-args="--exclude-module" --pyinstaller-build-args="streamlit" \
+            --pyinstaller-build-args="--exclude-module" --pyinstaller-build-args="src.ui"
+
+      - name: Assert the folder carries its own Flet client
+        shell: bash
+        run: python scripts/ci_flet_pack_smoke.py --assert-bundled-client dist DistrictSync
+
+      # The installed flavour must carry the Velopack runtime: without it the app silently runs
+      # with no updater. (Outside an install the runtime is never started, so no smoke below
+      # would notice its absence.)
+      - name: Assert the folder carries the Velopack runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          FOUND=$(find dist/DistrictSync -iname 'velopack*' | head -5)
+          echo "$FOUND"
+          [ -n "$FOUND" ] || { echo "FAIL: no velopack module in the one-folder app"; exit 1; }
+
+      - name: Echo measured size
+        shell: bash
+        run: |
+          SIZES=$(python -c "import os,sys;p=sys.argv[1];t=sum(os.path.getsize(os.path.join(r,f)) for r,_d,fs in os.walk(p) for f in fs);n=sum(len(fs) for _r,_d,fs in os.walk(p));print(t, f'{t/1e6:.1f}', n)" dist/DistrictSync)
+          set -- $SIZES
+          echo "one-folder size: $1 bytes ($2 MB), $3 files"
+          {
+            echo "### One-folder Windows app (unsigned, unpublished)"
+            echo ""
+            echo "| bytes | MB | files |"
+            echo "|---|---|---|"
+            echo "| $1 | $2 | $3 |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: CLI smokes on the one-folder exe - version, dry run, write run, user overlay, corrupt profile
+        shell: bash
+        env:
+          DISTRICTSYNC_DATA_DIR: ${{ runner.temp }}/dsync-onedir-profile
+        run: |
+          python scripts/ci_flet_pack_smoke.py "$GITHUB_WORKSPACE/dist" DistrictSync \
+            --cli-smoke --phase all --artifact onedir \
+            --work-dir "$RUNNER_TEMP/dsync-onedir-work"
+
+      # The window boots from the client IN the folder, ~/.flet absent before and after.
+      - name: GUI smoke on the one-folder exe (bundled client, ~/.flet stays absent)
+        run: python scripts/ci_flet_pack_smoke.py dist DistrictSync --artifact onedir --require-close
+
+      # NEGATIVE TWIN: the same smoke against a copy with the bundled client DELETED must FAIL.
+      # Without it the check above could pass by running flet from somewhere else entirely.
+      - name: Negative twin - the smoke must fail when the bundled client is removed
+        shell: bash
+        run: |
+          TWIN="$RUNNER_TEMP/onedir-no-client"
+          rm -rf "$TWIN" && mkdir -p "$TWIN"
+          cp -r dist/DistrictSync "$TWIN/DistrictSync"
+          rm -rf "$TWIN/DistrictSync/_internal/flet_view"
+          if python scripts/ci_flet_pack_smoke.py "$TWIN" DistrictSync --artifact onedir; then
+            echo "FAIL: the smoke PASSED without the bundled client - the check proves nothing"
+            exit 1
+          fi
+          echo "negative twin: the smoke failed as it must"
+
+      # A test artifact for a human to download and run (1 day). Never attached to a Release.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: DistrictSync-windows-onedir
+          path: dist/DistrictSync
           retention-days: 1

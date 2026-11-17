@@ -3,6 +3,19 @@
 **Convention (adopted 2026-09-23):** every new entry carries a line `Supersedes: <date — title of the replaced entry>` (or `Supersedes: nothing`) directly under its heading, so a replaced decision is found by search rather than by reading prose.
 
 
+## 2026-11-17 - DSYNC-16: a Velopack installer with signed auto-update, shared with RosterGate; S1 approved
+
+Supersedes: 2026-08-05 and 2026-08-05 (later) - plan 0041's Inno Setup, per-machine installer and its "no auto-update" non-goal (0041 Goal 4, the Flet client inside the install folder, is kept). Narrows the 2026-09-02 entry only in that `release.yml` gains a second signing job; signing still never happens in `flet-pack.yml`.
+
+**Why.** Fixes do not reach districts that set up once and never open the app; the one-file exe keeps the `%TEMP%` self-extraction and the first-launch `flet.exe` drop. RosterGate is the only other Windows exe the department ships, so the two tools should not differ without a reason.
+
+**Decisions (owner, 2026-11-12 to 2026-11-17).** The installer is an ADDITIONAL format: every current release asset stays. Velopack per-user install with our own signed manifest in front of it (ECDSA P-256 signed inside Key Vault `mybp-desktop-signing`, verified with `cryptography`); signing is the mechanism `release.yml` already uses (tag-only, `release` environment, OIDC, Azure Trusted Signing, sign then verify then re-smoke), and a rehearsal run signs for real and publishes nothing in both tools. Pack id `myBlueprint.DistrictSync`, `--packTitle DistrictSync`. The updater is one shared package, `myb_desktop_updater`, first package of a private shared repository (working name `myblueprint-spaces/myb-desktop-shared`) pinned by built wheel and SHA-256; DistrictSync keeps wiring only. Both tools get the update off switch. DistrictSync's Jira-first way of work applies to both. **Slice S1 only (the one-folder Windows build in CI, its own job, unsigned, unpublished) is approved; nothing is signed or published until it has been tested and the owner says so.** Plan: `.claude/plans/0054-windows-installer-silent-update.md`.
+
+**Open, not decided here.** The feed host name (the owner is taking it to Doug); how CI reads the private repo (Doug); the Azure role grants; whether a machine-wide install for service-account districts is a later plan.
+
+**Cost.** A third repository to secure and release; a narrowed `flet-pack.yml` secret rule when the installed build needs the private package (S3); a second Windows job on every release.
+
+
 ## 2026-11-06 - DSYNC-57: every conversion writes the import-ready Advanced CSV zip; the loose roster CSVs move into `csv/`
 
 Supersedes: nothing. Narrows plan 0049 S-1a-ii.2 (the scheduled nightly's `runs/tmp` zip staging, now removed with the delivery-time zip) and the 2026-08-26 entry's delivery envelope (the zip's name and where it is built; the standalone-feed split is unchanged).

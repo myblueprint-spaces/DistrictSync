@@ -25,6 +25,11 @@ ALLOWED_SFTP_HOSTS: frozenset[str] = frozenset(
     }
 )
 
+#: The ONE host the installed build's update check may contact (plan 0054, DSYNC-63). Empty until the
+#: owner chooses the feed's host name (and fronts it); while it is empty the check opens no connection.
+#: Exactly one entry or none: ``src.update.feed.production_target`` refuses anything else.
+ALLOWED_UPDATE_HOSTS: frozenset[str] = frozenset()
+
 # ---------------------------------------------------------------------------
 # Patterns
 # ---------------------------------------------------------------------------

@@ -46,6 +46,7 @@ from src.ui_flet.screens.run_history import build_run_history
 from src.ui_flet.screens.setup import build_setup
 from src.ui_flet.theme import build_theme
 from src.utils import paths
+from src.utils.build_flavor import is_installed_build
 
 logger = logging.getLogger(__name__)
 
@@ -504,6 +505,13 @@ def build_app_body(
         with contextlib.suppress(Exception):
             page.run_thread(_refresh_setup_badge)
 
+    # The window trigger of the update check (plan 0054 S4): off-thread, installed build only, and
+    # advisory like the badge. ``run_update_check`` never raises, applies nothing and opens no
+    # connection unless every guard passes (see src/update/check.py).
+    if is_installed_build():
+        with contextlib.suppress(Exception):
+            page.run_thread(_check_for_update_in_window)
+
     return body
 
 
@@ -553,6 +561,29 @@ def _gate_frame(view: ft.Control) -> ft.Control:
 # --------------------------------------------------------------------------- #
 # App shell + lifecycle                                                        #
 # --------------------------------------------------------------------------- #
+def _check_for_update_in_window() -> None:
+    """Off-thread body of the window trigger. Total: any failure is the check's own, never the window's."""
+    try:
+        from src.update.check import TRIGGER_WINDOW, run_update_check
+
+        run_update_check(TRIGGER_WINDOW)
+    except Exception:  # noqa: BLE001 - advisory; the window must not notice
+        logging.getLogger(__name__).debug("window update check failed", exc_info=True)
+
+
+def _mark_start_healthy() -> None:
+    """The first screen is up (the launch page or the app body): that is a healthy start (plan 0054 S5).
+
+    Total and a no-op outside the installed build; "healthy" here is start-up completing, never a conversion's result.
+    """
+    try:
+        from src.update.health import mark_healthy
+
+        mark_healthy()
+    except Exception:  # noqa: BLE001 - advisory; the window must not notice
+        logging.getLogger(__name__).debug("could not mark the start healthy", exc_info=True)
+
+
 def main(page: ft.Page) -> None:
     """Build the DistrictSync shell. Called by ``ft.run`` from ``launcher.py``.
 
@@ -747,6 +778,7 @@ def main(page: ft.Page) -> None:
 
     if not show_gate:
         _enter_app(app_cfg)
+        _mark_start_healthy()
         return
 
     try:
@@ -754,3 +786,4 @@ def main(page: ft.Page) -> None:
     except Exception:  # noqa: BLE001 - the floor: a broken launch page opens the app unfiltered
         logger.warning("The launch page could not be built; opening DistrictSync as usual.", exc_info=True)
         _enter_app(app_cfg)
+    _mark_start_healthy()

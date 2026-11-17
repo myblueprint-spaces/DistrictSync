@@ -435,6 +435,32 @@ def cli(argv: list[str] | None = None) -> int:
         return _exit_code_from(exc)
 
 
+def _check_for_update_after_run(args: argparse.Namespace, logger: logging.Logger) -> None:
+    """The after-run trigger, for every way a run can end. Only the app's OWN scheduled, non-dry run counts."""
+    if not args.dry_run:
+        _check_for_update_after_scheduled_run(_resolve_source(args.source), logger)
+
+
+def _check_for_update_after_scheduled_run(source: str, logger: logging.Logger) -> None:
+    """Run the installed build's update check once, after a SCHEDULED run. Never raises, never changes the run.
+
+    The broad ``except`` is deliberate and is the one place this layer swallows: the conversion has already
+    finished and its exit code is decided from its own result, so an update problem is a separate axis. It is
+    logged with its traceback, not hidden.
+    """
+    if source != "scheduled":
+        return
+    try:
+        from src.update.check import TRIGGER_AFTER_RUN, run_update_check
+
+        outcome = run_update_check(TRIGGER_AFTER_RUN)
+        # Counts and codes only; a skip is routine (portable build, nothing configured) so it stays at debug.
+        level = logging.DEBUG if outcome.status == "skipped" else logging.INFO
+        logger.log(level, "update check after run: %s (%s)", outcome.status, outcome.reason)
+    except Exception:
+        logger.warning("update check failed; the run's result is unaffected", exc_info=True)
+
+
 def _cli(argv: list[str] | None) -> int:
     args_list = sys.argv[1:] if argv is None else list(argv)
 
@@ -478,6 +504,24 @@ def _cli(argv: list[str] | None) -> int:
         from src.utils.diagnostics import run_diagnose
 
         return run_diagnose()
+
+    # Velopack start-up (plan 0054 S2): the installed build's runtime must see the process
+    # before any other work, because Velopack's own hooks (--veloapp-install/-updated/
+    # -obsolete) arrive as argv and expect it to handle them and exit. Placed AFTER the three
+    # dispatch-first modes on purpose (R17): the elevated child, the schedule check and
+    # --diagnose never start it. A portable build (and the unzipped CI folder) skips it
+    # entirely; see src/update/startup.py. Imported lazily so the portable build never
+    # imports velopack.
+    from src.update.health import begin_start, counts_as_a_start
+    from src.update.startup import run_velopack_startup
+
+    run_velopack_startup()
+
+    # Start-up health (plan 0054 S5): record that a start has BEGUN, as early as possible, so a build that
+    # dies in its own start-up leaves a failed start behind. Only a start that will reach a healthy mark
+    # counts (the window, and a conversion run); --version, the SFTP subcommands and the rest never do.
+    if counts_as_a_start(args_list):
+        begin_start()
 
     # No arguments → launch the UI (e.g. double-clicked from Explorer).
     # The launcher configures its own logging sink (launcher.boot_logging).
@@ -621,6 +665,12 @@ def _cli(argv: list[str] | None) -> int:
     if _resolve_source(args.source) == "scheduled" and _paused_by_sync_window(AppConfig.load(), _today(), logger):
         return 0
 
+    # Healthy = start-up COMPLETED, written BEFORE ETL begins. Never "the conversion succeeded": a run that
+    # exits 1 over a missing GDE file is a data problem, not a bad build (plan 0054 section 6).
+    from src.update.health import mark_healthy
+
+    mark_healthy()
+
     try:
         result = run_pipeline(
             sis,
@@ -635,6 +685,7 @@ def _cli(argv: list[str] | None) -> int:
     except SystemExit:
         # run_pipeline's own early exits (bad input dir / bad config) already
         # recorded a failed run; let cli() translate the code verbatim.
+        _check_for_update_after_run(args, logger)
         raise
     except Exception as e:
         print(f"\nError: {e}")
@@ -642,7 +693,15 @@ def _cli(argv: list[str] | None) -> int:
         # depend on the Flet UI layer (it would pull flet into every headless run).
         # Second spelling of the same address — keep in step with that constant.
         print("Check etl_tool.log for details. Contact hello@spacesedu.com for help.")
+        _check_for_update_after_run(args, logger)
         return 1
+
+    # Update check after the app's OWN scheduled run (plan 0054 S4), here and on the two failure paths
+    # above: a build whose every nightly fails (the bug the next release fixes) must still be able to take
+    # that release. The run's result is decided before this and cannot be touched by it: the check never
+    # raises, applies only after exit, and the code below is computed from ``result`` alone. A hand-run CLI,
+    # a district's own cron and --dry-run never trigger it.
+    _check_for_update_after_run(args, logger)
 
     # Exit code 3: SFTP was requested and attempted but delivery failed.
     # The ETL output (CSV files) is already written and intact — only the
