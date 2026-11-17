@@ -547,7 +547,7 @@ def _class_info(**drop: bool) -> pd.DataFrame:
 
 def _coteacher(ctx: TransformContext):
     return EnrollmentTransformer()._classinfo_coteacher_enrollments(
-        "teacher id", "Teacher ID", {}, ctx.class_artifacts, ctx
+        "teacher id", "Teacher ID", {}, ctx.class_artifacts, ctx, regular_subject_classes={}
     )
 
 

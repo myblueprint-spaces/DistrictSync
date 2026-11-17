@@ -505,7 +505,7 @@ class TestRoleVocabularyIsWhatTheReadSitesRead:
             blended_teacher_map={},
         )
         EnrollmentTransformer()._classinfo_coteacher_enrollments(
-            "teacher id", "Teacher ID", roles, ctx.class_artifacts, ctx
+            "teacher id", "Teacher ID", roles, ctx.class_artifacts, ctx, regular_subject_classes={}
         )
         assert roles.asked == EnrollmentTransformer.SOURCE_COLUMN_ROLES == source_column_roles("Enrollments")
         assert OutcomeNote.COTEACHER_SOURCE_UNUSABLE not in dict(ctx.outcome_notes_for("Enrollments"))
