@@ -67,3 +67,43 @@ Output of `scripts/updater_e2e.py` on a real Velopack install (vpk 1.2.161, unsi
 [11:14:13] PASS  %LOCALAPPDATA%\myBlueprint.DistrictSync is gone (the test install was removed)
 [11:14:13] RESULT: ALL ASSERTIONS HELD
 ```
+
+## The SIGNED installer from the rehearsal, on a real machine (DSYNC-67 step 3, 2026-11-18)
+
+The Setup is the artifact `DistrictSync-windows-installer-signed` of release-rehearsal run 44143958304 (installed flavour, vpk 1.2.161, signed through Azure Trusted Signing). It is installed per user with a throwaway `DISTRICTSYNC_DATA_DIR`, then run, then removed. **What it does not cover:** the installed flavour's feed host and trusted keys are empty on purpose (inert until the feed exists), so a local-feed update and rollback cannot run against THIS artifact; those are proven above on the e2e flavour. The nightly is registered live for the INSTALLED exe through the app's own code (the interactive-token kind), read back through COM, and deleted; it was not run, because a scheduled task cannot carry `DISTRICTSYNC_DATA_DIR` and would write the real profile. The stored-password branch is shown on a real COM task definition that is never registered (a dummy value, no credential). The first attempt of this script failed one check of its own (Task Scheduler omits the limited default `RunLevel` from the task XML); the check was corrected to read the level through COM and the whole proof re-run: the transcript below is that second, complete run.
+
+```
+[08:22:21] PASS  nothing is installed before the proof starts
+[08:22:21] PASS  no DistrictSync process before the proof starts
+[08:22:22] Setup signature: Valid|CN=myBlueprint Corp., O=myBlueprint Corp., L=Toronto, S=Ontario, C=CA|ts=True
+[08:22:22] PASS  the downloaded Setup is validly signed and timestamped
+[08:22:22] installing the signed Setup (per user, silent)
+[08:22:30] PASS  installed: myBlueprint.DistrictSync\current\DistrictSync.exe exists
+[08:22:40] PASS  the post-install first start was ended
+[08:22:40] PASS  installed current/DistrictSync.exe: Valid, timestamped
+[08:22:40] PASS  installed current/_internal/flet_view/flet.exe: Valid, timestamped
+[08:22:41] PASS  installed Update.exe: Valid, timestamped
+[08:22:41] PASS  the install carries Velopack's version record
+[08:22:42] --version -> exit 0: DistrictSync 0.0.49
+[08:22:42] PASS  the installed exe runs (--version)
+[08:22:50] CLI smoke: version: PASS | dry-run: PASS | write-run: PASS | user-overlay: PASS | corrupt-profile: PASS | cli smoke: PASS
+[08:22:50] PASS  CLI smoke on the installed signed copy (version, dry-run, write-run, user-overlay, corrupt-profile)
+[08:22:53] window smoke: bundled-client boot: PASS (attempt 1): window booted from the bundled client; ~/.flet absent | close: PASS � zero new-view orphans | embed: PASS  |  close: PASS
+[08:22:53] PASS  window smoke on the installed signed copy (bundled client, no orphans)
+[08:22:53] PASS  no DistrictSync/flet process left after the smokes
+[08:22:53] registering the nightly as a live Task Scheduler task through the app's own code
+[08:22:54] live task: RunLevel=None Command=%LOCALAPPDATA%\myBlueprint.DistrictSync\current\DistrictSync.exe Arguments=--sis myedbc --source scheduled
+[08:22:54] live task RunLevel read back through COM: 0 (0 = limited, 1 = highest); XML element: None (absent = the limited default)
+[08:22:54] PASS  the live task runs at the LIMITED run level although Highest was requested
+[08:22:54] PASS  the live task runs the INSTALLED exe
+[08:22:54] PASS  the live task carries the scheduled-run arguments
+[08:22:54] PASS  a REAL COM definition for a stored-password principal is LIMITED for the installed exe (not registered)
+[08:22:54] PASS  positive twin: the same request for an exe outside an install is still Highest
+[08:22:54] PASS  the proof task is deleted
+[08:22:54] uninstalling and cleaning up
+[08:23:05] PASS  uninstalled: the install's current folder is gone
+[08:23:08] PASS  no process left
+[08:23:08] PASS  throwaway profile and work folders removed
+[08:23:08] RESULT: ALL ASSERTIONS HELD
+```
+
