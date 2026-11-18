@@ -103,7 +103,7 @@ from typing import Any, Literal
 
 # Which of a pack's artifacts a caller means. macOS produces two (see
 # ``resolve_artifact``); Windows and Linux produce one, so ``auto`` is right there.
-ArtifactKind = Literal["auto", "binary", "bundle", "onedir"]
+ArtifactKind = Literal["auto", "binary", "bundle", "onedir", "installed"]
 
 # --- single-source, env-overridable timeouts (seconds) ---------------------- #
 # Embed and close are SEPARATE axes with independent budgets (R3/R6/R7): a slow
@@ -141,6 +141,7 @@ def resolve_artifact(dist: Path, name: str, kind: ArtifactKind = "auto") -> Path
       Windows/Linux callers keep byte-identical behaviour.
     * ``binary`` — ONLY the bare binary (or ``.exe``). Never the bundle.
     * ``bundle`` — ONLY the ``.app``'s inner executable.
+    * ``installed`` — ONLY the exe in ``<dist>/current`` of a Velopack install (DSYNC-67); ``dist`` is the install root.
     * ``onedir`` — ONLY the exe inside a one-folder build (``dist/<name>/<name>.exe``,
       DSYNC-60). Its own kind because ``auto`` tries the bare ``dist/<name>`` candidate,
       which for a one-folder build is the DIRECTORY and exists: it would resolve to a
@@ -163,9 +164,11 @@ def resolve_artifact(dist: Path, name: str, kind: ArtifactKind = "auto") -> Path
         "binary": [exe, binary],
         "bundle": [bundle],
         "onedir": [dist / name / f"{name}.exe"],
+        # A Velopack install (DSYNC-67): ``dist`` is the install root, the app runs from ``current``.
+        "installed": [dist / "current" / f"{name}.exe"],
     }[kind]
     for cand in candidates:
-        if cand.exists() and not (kind == "onedir" and cand.is_dir()):
+        if cand.exists() and not (kind in ("onedir", "installed") and cand.is_dir()):
             return cand
     return None
 
@@ -773,7 +776,7 @@ def run_smoke(dist: Path, name: str, require_close: bool, kind: ArtifactKind = "
 
         # Phase 2 — offline embed (gating, all OS). A one-folder build proves the opposite
         # thing: it boots off the client in its own folder and must leave ~/.flet absent.
-        if kind == "onedir":
+        if kind in ("onedir", "installed"):
             embed_ok, proc = _phase_embed_bundled(art)
         else:
             embed_ok, proc = _phase_embed(art)
@@ -787,7 +790,7 @@ def run_smoke(dist: Path, name: str, require_close: bool, kind: ArtifactKind = "
 
         # One-folder: ~/.flet must STILL be absent after the whole run (a late extraction
         # would be the profile drop the build exists to remove). Before the restore below.
-        if kind == "onedir" and embed_ok and _FLET_HOME.exists():
+        if kind in ("onedir", "installed") and embed_ok and _FLET_HOME.exists():
             print("bundled-client boot: FAIL — ~/.flet appeared during the run")
             embed_ok = False
     finally:
@@ -1543,12 +1546,12 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("name", nargs="?", help="artifact base name (e.g. DistrictSync)")
     parser.add_argument(
         "--artifact",
-        choices=["auto", "binary", "bundle", "onedir"],
+        choices=["auto", "binary", "bundle", "onedir", "installed"],
         default="auto",
         help=(
             "which packed artifact to smoke when a pack produced more than one (macOS): "
             "`binary` = the bare CLI binary, `bundle` = the .app, `onedir` = the exe in a "
-            "one-folder Windows build. Default `auto` keeps the historical candidate order."
+            "one-folder Windows build, `installed` = the exe in `<install root>/current` of a Velopack install. Default `auto` keeps the historical candidate order."
         ),
     )
     parser.add_argument(

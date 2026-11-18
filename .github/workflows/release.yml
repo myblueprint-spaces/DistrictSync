@@ -177,6 +177,266 @@ jobs:
           retention-days: 1
 
   # -----------------------------------------------------------------------
+  # The Windows INSTALLER, rehearsal only (plan 0054 S6a, DSYNC-67). Publishes NOTHING.
+  # -----------------------------------------------------------------------
+  # Two jobs, both `workflow_dispatch`-only: a tag release does not run them and does not
+  # wait for them, so every existing asset above is built, signed and attached exactly as
+  # before. (The installer joins the Release in S8, once the build can update itself.)
+  #
+  # installer-build holds NO Azure scope: it builds the INSTALLED-flavour one-folder app with the
+  # private shared updater package (the read key is a repo-level secret and goes only to the
+  # checkout step), and hands the unsigned folder to installer-windows, the job that signs.
+  installer-build:
+    needs: ci-green
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    env:
+      FLET_VERSION: "0.85.3" # keep in lockstep with flet-pack.yml and the pinned flet
+      FLET_DESKTOP_FLAVOR: light
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # A rehearsal is never a version tag. Velopack needs a SemVer version; a throwaway one
+      # that cannot collide with a real release (0.0.<run number>).
+      - name: Stamp the rehearsal version
+        shell: bash
+        run: |
+          echo "version = '0.0.${{ github.run_number }}'" > src/_version.py
+          cat src/_version.py
+
+      - name: Stamp build flavour (installed)
+        shell: bash
+        run: |
+          echo "flavor = 'installed'" > src/_build_flavor.py
+          cat src/_build_flavor.py
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+
+      - name: Install pinned stack (runtime + build/smoke deps)
+        run: python -m pip install -r requirements.txt -r requirements-dev.txt -r requirements-updater.txt
+
+      # The private shared updater package, from the pinned commit, checked against the pinned tree hash
+      # (scripts/updater_package.py). The installed flavour NEEDS it: this job fails closed without the key.
+      - name: Read the pinned shared-package commit
+        id: updater-pin
+        shell: bash
+        run: echo "commit=$(python scripts/updater_package.py commit)" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the shared updater package at the pinned commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: myblueprint-spaces/myb-desktop-shared
+          ref: ${{ steps.updater-pin.outputs.commit }}
+          ssh-key: ${{ secrets.MYB_DESKTOP_SHARED_DEPLOY_KEY }}
+          path: .shared-updater
+          persist-credentials: false
+
+      - name: Install the shared updater package (built from the pin, tree hash checked)
+        shell: bash
+        run: python scripts/updater_package.py install --source .shared-updater
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.flet
+          key: flet-client-${{ runner.os }}-${{ env.FLET_VERSION }}-${{ env.FLET_DESKTOP_FLAVOR }}
+
+      - name: Warm Flet client cache (headless, no window)
+        run: python -c "import flet_desktop; print('cached at:', flet_desktop.ensure_client_cached())"
+
+      # The same pack as flet-pack.yml's one-folder job (kept identical by tests/test_installer_workflow.py).
+      - name: Pack the one-folder app with the Flet client inside it
+        shell: bash
+        run: |
+          set -euo pipefail
+          CLIENT="$HOME/.flet/client/flet-desktop-${FLET_DESKTOP_FLAVOR}-${FLET_VERSION}/flet"
+          if [ ! -f "$CLIENT/flet.exe" ]; then
+            echo "FAIL: no flet.exe in the warmed client cache at $CLIENT"
+            exit 1
+          fi
+          flet pack src/main.py --name DistrictSync \
+            --yes -D \
+            --icon assets/districtsync.ico \
+            --add-data "config;config" \
+            --add-data "assets;assets" \
+            --add-data "$(cygpath -w "$CLIENT");flet_view" \
+            $(python scripts/flet_pack_args.py windows --installed) \
+            --pyinstaller-build-args="--paths" --pyinstaller-build-args="." \
+            --pyinstaller-build-args="--exclude-module" --pyinstaller-build-args="streamlit" \
+            --pyinstaller-build-args="--exclude-module" --pyinstaller-build-args="src.ui"
+
+      - name: Assert the folder carries its own Flet client
+        shell: bash
+        run: python scripts/ci_flet_pack_smoke.py --assert-bundled-client dist DistrictSync
+
+      # The installed flavour must carry the Velopack runtime AND both shared packages: without them the app
+      # silently runs with no updater and no start guard, and no smoke would notice. The pure-Python modules live
+      # inside the exe's archive, so they are read from its table of contents (scripts/ci_assert_frozen_modules.py).
+      - name: Assert the build carries the Velopack runtime and the shared updater packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ -n "$(find dist/DistrictSync -iname 'velopack*' | head -1)" ] || { echo "FAIL: no velopack in the one-folder app"; exit 1; }
+          python scripts/ci_assert_frozen_modules.py dist/DistrictSync/DistrictSync.exe             myb_start_guard myb_desktop_updater myb_desktop_updater.recovery myb_desktop_updater.velopack_installer             src.update.entry src.update.startup
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: DistrictSync-windows-installed-onedir
+          path: dist/DistrictSync
+          retention-days: 1
+          if-no-files-found: error
+
+  # Signs with the SAME identity as sign-windows (`environment: release`, OIDC, Azure Trusted Signing), packs with
+  # vpk, then proves the signed installer the way a customer meets it: install, run, uninstall.
+  installer-windows:
+    needs: installer-build
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    timeout-minutes: 45
+    environment: release
+    permissions:
+      id-token: write # OIDC token for azure/login - the ONLY elevated scope here
+      contents: read
+    env:
+      PACK_ID: myBlueprint.DistrictSync
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - run: pip install -r requirements.txt -r requirements-dev.txt
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: DistrictSync-windows-installed-onedir
+          path: dist/DistrictSync
+
+      # The absence assert, as in sign-windows: the folder must arrive UNSIGNED, or "sign the unsigned build" is silently false.
+      - name: Assert the downloaded exe is UNSIGNED
+        shell: pwsh
+        run: |
+          $sig = Get-AuthenticodeSignature dist/DistrictSync/DistrictSync.exe
+          Write-Output "pre-sign status: $($sig.Status)"
+          if ($sig.Status -eq 'Valid') { Write-Error "dist/DistrictSync/DistrictSync.exe is ALREADY signed before the signing step"; exit 1 }
+
+      - name: Azure login (OIDC - no stored secret)
+        uses: azure/login@7ddb5af1ef8758cf1353cf3b42f940aee27ba21c # v3.0.2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      # vpk's version must equal the pinned `velopack` Python package (tests/test_installer_workflow.py).
+      - name: Install vpk 1.2.161
+        run: dotnet tool install --global vpk --version 1.2.161
+
+      - name: Write the signing metadata file (the signer reads a file, not three values)
+        shell: pwsh
+        env:
+          SIGNING_ENDPOINT: ${{ vars.SIGNING_ENDPOINT }}
+          SIGNING_ACCOUNT_NAME: ${{ vars.SIGNING_ACCOUNT_NAME }}
+          SIGNING_CERTIFICATE_PROFILE_NAME: ${{ vars.SIGNING_CERTIFICATE_PROFILE_NAME }}
+        run: |
+          @{ Endpoint = $env:SIGNING_ENDPOINT; CodeSigningAccountName = $env:SIGNING_ACCOUNT_NAME; CertificateProfileName = $env:SIGNING_CERTIFICATE_PROFILE_NAME } |
+            ConvertTo-Json | Set-Content -Encoding utf8 signing-metadata.json
+
+      - name: Pack and sign with vpk (Azure Trusted Signing)
+        shell: pwsh
+        run: |
+          $version = "0.0.${{ github.run_number }}"  # the same rehearsal version installer-build stamped
+          Write-Output "packing version $version"
+          vpk pack --packId $env:PACK_ID --packTitle DistrictSync --packVersion $version --packDir dist/DistrictSync `
+            --mainExe DistrictSync.exe --runtime win-x64 --outputDir releases `
+            --azureTrustedSignFile signing-metadata.json
+          if ($LASTEXITCODE -ne 0) { Write-Error "vpk pack failed"; exit 1 }
+          Get-ChildItem releases | Format-Table Name, Length
+
+      # Signature AND timestamp on the Setup (a Trusted Signing certificate lives ~3 days: the timestamp keeps it valid).
+      - name: Verify the signature and the timestamp on the Setup
+        shell: pwsh
+        run: |
+          $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" | Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $signtool) { Write-Error "signtool.exe not found on the runner"; exit 1 }
+          $setup = "releases\$($env:PACK_ID)-win-Setup.exe"
+          & $signtool.FullName verify /pa /v $setup
+          if ($LASTEXITCODE -ne 0) { Write-Error "signtool verify FAILED on the Setup"; exit 1 }
+          $sig = Get-AuthenticodeSignature $setup
+          Write-Output "Setup status: $($sig.Status); subject: $($sig.SignerCertificate.Subject)"
+          if ($sig.Status -ne 'Valid') { Write-Error "Setup signature is not Valid"; exit 1 }
+          if ($null -eq $sig.TimeStamperCertificate) { Write-Error "Setup signature carries NO timestamp"; exit 1 }
+
+      # Install exactly as a customer does (per user, silent). Velopack starts the app after a silent install;
+      # that first start is ended before the smokes so they own the process table.
+      - name: Install the signed Setup on the runner
+        shell: pwsh
+        run: |
+          $setup = (Resolve-Path "releases\$($env:PACK_ID)-win-Setup.exe").Path
+          Start-Process -FilePath $setup -ArgumentList "--silent" -Wait
+          $root = Join-Path $env:LOCALAPPDATA $env:PACK_ID
+          Write-Output "install root: $root"
+          Get-ChildItem $root | Format-Table Name
+          for ($i = 0; $i -lt 30 -and -not (Test-Path "$root\current\DistrictSync.exe"); $i++) { Start-Sleep -Seconds 2 }
+          if (-not (Test-Path "$root\current\DistrictSync.exe")) { Write-Error "the installed exe is missing"; exit 1 }
+          Start-Sleep -Seconds 5
+          Get-Process DistrictSync, flet -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep -Seconds 2
+
+      # Every file the plan names must carry a valid, timestamped signature in the INSTALLED copy. A file vpk did not
+      # sign is a failure, not a warning.
+      - name: Verify the installed files are signed (exe, Flet client, Update.exe)
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:LOCALAPPDATA $env:PACK_ID
+          $bad = @()
+          foreach ($rel in @("current\DistrictSync.exe", "current\_internal\flet_view\flet.exe", "Update.exe")) {
+            $sig = Get-AuthenticodeSignature (Join-Path $root $rel)
+            Write-Output ("{0}: {1}; timestamp: {2}; subject: {3}" -f $rel, $sig.Status, ($null -ne $sig.TimeStamperCertificate), $sig.SignerCertificate.Subject)
+            if ($sig.Status -ne 'Valid' -or $null -eq $sig.TimeStamperCertificate) { $bad += $rel }
+          }
+          $unsigned = Get-ChildItem "$root\current" -Recurse -Include *.exe, *.dll | Where-Object { (Get-AuthenticodeSignature $_.FullName).Status -eq 'NotSigned' }
+          Write-Output "installed PE files not signed (information): $($unsigned.Count)"
+          if ($bad.Count -gt 0) { Write-Error "not validly signed and timestamped: $($bad -join ', ')"; exit 1 }
+
+      - name: CLI smokes on the INSTALLED signed copy
+        shell: bash
+        env:
+          DISTRICTSYNC_DATA_DIR: ${{ runner.temp }}/dsync-installed-profile
+        run: |
+          python scripts/ci_flet_pack_smoke.py "$LOCALAPPDATA/$PACK_ID" DistrictSync \
+            --cli-smoke --phase all --artifact installed \
+            --work-dir "$RUNNER_TEMP/dsync-installed-work"
+
+      - name: GUI smoke on the INSTALLED signed copy
+        shell: bash
+        run: python scripts/ci_flet_pack_smoke.py "$LOCALAPPDATA/$PACK_ID" DistrictSync --artifact installed --require-close
+
+      # Uninstall, then assert it is gone (the throwaway profile is not part of the install and stays).
+      - name: Uninstall and assert nothing is left
+        if: always()
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:LOCALAPPDATA $env:PACK_ID
+          Get-Process DistrictSync, flet -ErrorAction SilentlyContinue | Stop-Process -Force
+          if (Test-Path "$root\Update.exe") {
+            & "$root\Update.exe" uninstall --silent
+            for ($i = 0; $i -lt 30 -and (Test-Path "$root\current"); $i++) { Start-Sleep -Seconds 2 }
+          }
+          if (Test-Path "$root\current") { Write-Error "the install folder is still there after uninstall"; exit 1 }
+          Write-Output "uninstalled: $root\current is gone"
+
+      # A test artifact for a human to download and install like a customer (1 day). NEVER attached to a Release.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: DistrictSync-windows-installer-signed
+          path: releases/myBlueprint.DistrictSync-win-Setup.exe
+          retention-days: 1
+          if-no-files-found: error
+
+  # -----------------------------------------------------------------------
   # Publish release — attach the Flet-default exe (1/OS) + SHA-256 checksums.
   # The download `name:` values MUST byte-match flet-pack.yml's upload names
   # (DistrictSync-<matrix.os>): windows-latest / ubuntu-22.04 / macos-latest.

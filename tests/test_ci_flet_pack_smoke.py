@@ -1052,3 +1052,13 @@ def test_bundled_client_dir_is_absolute_even_for_a_relative_dist(
     # the verdict agrees when psutil reports the absolute image path
     ok, why = smoke.bundled_boot_verdict([str(client / "flet.exe")], str(client), flet_home_exists=False)
     assert ok, why
+
+
+def test_resolve_artifact_installed_finds_the_exe_in_current(tmp_path: Path) -> None:
+    """DSYNC-67: a Velopack install keeps the app in ``<root>/current``; ``dist`` is the install root."""
+    current = tmp_path / "current"
+    current.mkdir()
+    (current / "DistrictSync.exe").write_bytes(b"")
+    assert smoke.resolve_artifact(tmp_path, "DistrictSync", "installed") == current / "DistrictSync.exe"
+    # positive twin of the negative: a one-folder layout is NOT an install
+    assert smoke.resolve_artifact(tmp_path, "DistrictSync", "onedir") is None
