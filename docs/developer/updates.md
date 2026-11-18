@@ -86,7 +86,7 @@ per-user profile, no `DISTRICTSYNC_DATA_DIR` (except the e2e build); everywhere 
   `<profile>/updater/startup-crash.log` and exits 1 at once: no blocking error box.
 - **Recovery:** after more than two unconfirmed starts of the same build, before the app is imported again, the package's
   `recover_broken_start` restores the kept copy (applied after exit) and records the build bad (`HealthStore.record_bad`, shared
-  commit `22e70eb`), so the feed never offers it again. DistrictSync only calls it.
+  since 0.4.0, now pinned at 0.4.1 / commit `05ce456`), so the feed never offers it again. DistrictSync only calls it.
 - **The child job:** for the window only, a kill-on-close job object holds the Flet window process (adopted when the client is up and at the
   first screen), never the app and never the installer's apply helper, so a forced end leaves no window behind and a later update can apply.
 
