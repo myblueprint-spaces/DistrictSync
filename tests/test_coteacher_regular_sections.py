@@ -12,8 +12,8 @@ The safety properties pinned here (every other district must be untouched):
   Path 3; a single-teacher section yields byte-identical Enrollments;
 * never a class of its own — an MTID no subject row carries adds nothing;
 * blended sections are unchanged (Path 2 owns them);
-* every teacher ClassInformation lists on the section, whatever its ``Primary Teacher`` flag (DSYNC-86,
-  owner 2026-11-19; until then Y only);
+* primary = Y only, as on Paths 1/2 - unless the config sets ``coteachers_include_non_primary``
+  (DSYNC-86; SD74), when every teacher listed on the section is added, whatever the flag;
 * a missing Master Timetable ID column is the same optional-column posture as Path 2 (one
   warning + ``OutcomeNote.COTEACHER_SOURCE_UNUSABLE``), never a failure.
 
@@ -21,6 +21,7 @@ The safety properties pinned here (every other district must be untouched):
 class map (exactly what it received before Path 3 existed).
 """
 
+from pathlib import Path
 from unittest.mock import patch
 
 import pandas as pd
@@ -156,24 +157,33 @@ class TestRegularSectionCoTeachers:
         _c, after = self._run(info)
         pd.testing.assert_frame_equal(_canon(after), _canon(before))
 
+    @pytest.mark.parametrize("flag", ["N", ""])
+    def test_by_default_non_primary_rows_are_not_added(self, flag):
+        info = _class_info([_row("MT004", "T003"), _row("MT004", "T005", primary=flag)])
+        _c, before = self._run(info, legacy=True)
+        _c, after = self._run(info)
+        pd.testing.assert_frame_equal(_canon(after), _canon(before))
+        assert "T005" not in set(after["User ID"])
+
     @pytest.mark.parametrize("flag", ["N", "", "n", " "])
-    def test_every_listed_teacher_is_added_whatever_the_primary_flag(self, flag):
-        # DSYNC-86, owner 2026-11-19: "Yes, blank and N alike" - every teacher MyEd lists on the class is
-        # enrolled, with the same teacher role as the primary ("Same as primary"). SD74 lists added staff
-        # with a BLANK flag. Additive only: students, Class IDs and Classes.csv are untouched.
+    def test_with_the_switch_on_every_listed_teacher_is_added(self, flag):
+        # DSYNC-86, owner 2026-11-19: a config switch (SD74 only): "blank and N alike", role "Same as primary".
+        # Additive only: students, Class IDs and Classes.csv are untouched.
+        self.global_config = {**self.global_config, "coteachers_include_non_primary": True}
         info = _class_info([_row("MT004", "T003"), _row("MT004", "T005", primary=flag)])
         classes_before, before = self._run(info, legacy=True)
         classes_after, after = self._run(info)
-        added = after[(after["User ID"] == "T005")]
+        added = after[after["User ID"] == "T005"]
         assert len(added) == 1
-        assert added.iloc[0]["Role"] == after[after["User ID"] == "T003"].iloc[0]["Role"]
-        assert added.iloc[0]["Class ID"] == after[after["User ID"] == "T003"].iloc[0]["Class ID"]
+        primary = after[after["User ID"] == "T003"].iloc[0]
+        assert added.iloc[0]["Role"] == primary["Role"] and added.iloc[0]["Class ID"] == primary["Class ID"]
         pd.testing.assert_frame_equal(
             _canon(after[after["Role"] == "student"]), _canon(before[before["Role"] == "student"])
         )
         pd.testing.assert_frame_equal(_canon(classes_after), _canon(classes_before))
 
-    def test_a_row_with_no_teacher_id_adds_nothing(self):
+    def test_with_the_switch_on_a_row_with_no_teacher_id_adds_nothing(self):
+        self.global_config = {**self.global_config, "coteachers_include_non_primary": True}
         info = _class_info([_row("MT004", "T003"), _row("MT004", "", primary="")])
         _c, before = self._run(info, legacy=True)
         _c, after = self._run(info)
@@ -253,3 +263,15 @@ class TestBlendedSectionsUnchanged:
         assert added.iloc[0]["User ID"] == "T030" and added.iloc[0]["Role"] == "teacher"
         assert added.iloc[0]["Class ID"] not in blended_ids
         assert added.iloc[0]["Class ID"] in set(before["Class ID"])
+
+
+def test_only_sd74_switches_non_primary_coteachers_on():
+    """DSYNC-86: the opt-in is SD74's alone; every other bundled config keeps Y-only (default False)."""
+    from src.config.loader import load_config
+
+    bundled = Path(__file__).resolve().parents[1] / "config" / "mappings"
+    configs = [f.name.removesuffix("_mapping.yaml") for f in bundled.glob("*_mapping.yaml")]
+    assert "sd74myedbc" in configs and len(configs) > 10
+    on = {sis for sis in configs if load_config(sis).global_config.coteachers_include_non_primary}
+    assert on == {"sd74myedbc"}
+    assert load_config("sd74myedbc").to_raw_dict()["global_config"]["coteachers_include_non_primary"] is True

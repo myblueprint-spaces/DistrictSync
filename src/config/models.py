@@ -837,6 +837,12 @@ class GlobalConfig(BaseModel):
     # always "1", e.g. SD51) makes distinct secondary courses collide into
     # false blends. The general fix is tracked on the DSYNC Jira board.
     blended_classes: bool = True
+    # Opt-in (DSYNC-86, owner 2026-11-19: "since this is a sd74 reported issue can this be config
+    # mapping driven?"): enrol EVERY teacher Class Information lists on a class as a co-teacher,
+    # whatever its Primary Teacher flag (blank and N alike), with the same `teacher` role. Default
+    # False keeps every other district byte-identical: only `Primary Teacher = Y` rows are linked.
+    # First and only consumer: sd74myedbc (config 1.16).
+    coteachers_include_non_primary: bool = False
     # Opt-in CLASS-rostering scope: the COMPLETE set of grades that receive class
     # rostering, in CEDS OUTPUT space ("KG", "01", ... — NOT raw MyEd values like
     # "K"/"3"). `homeroom_grades` must be a SUBSET of it (validated below), which
@@ -1396,6 +1402,7 @@ class MappingConfig(BaseModel):
                 self.global_config.cross_enrollment.model_dump() if self.global_config.cross_enrollment else None
             ),
             "blended_classes": self.global_config.blended_classes,
+            "coteachers_include_non_primary": self.global_config.coteachers_include_non_primary,
             "class_id_year": self.global_config.class_id_year,
             # The sentinel passes through as the string; a list is copied. None
             # (absent) must survive as None — the ETL distinguishes "not set"

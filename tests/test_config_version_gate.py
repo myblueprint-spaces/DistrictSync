@@ -263,7 +263,8 @@ class TestDeclaredRangeVersusSupported:
     alongside its only consumer), 1.14 (sd45's `class_id_year`, released in
     v3.26.0, likewise) and 1.15 (sd40's Classes `session_components`
     declaration, plan 0053 S10 — built as 1.14 and moved up on merging
-    v3.26.0, likewise). What must always hold: no bundled
+    v3.26.0, likewise) and 1.16 (sd74's `coteachers_include_non_primary`, DSYNC-86,
+    likewise). What must always hold: no bundled
     config declares ABOVE the supported minor, and the prose matches the real
     declared range rather than the constant.
     """
@@ -288,7 +289,7 @@ class TestDeclaredRangeVersusSupported:
         makes the second assertion a strict <= again; a config declaring past the
         constant fails here before it can ship a warning to every install."""
         highest = max(self._declared_versions())
-        assert highest == (SUPPORTED_CONFIG_MAJOR, 15)
+        assert highest == (SUPPORTED_CONFIG_MAJOR, 16)
         assert highest <= (SUPPORTED_CONFIG_MAJOR, SUPPORTED_CONFIG_MINOR)
 
     def test_the_loader_prose_matches_the_range_the_bundled_configs_DECLARE(self):

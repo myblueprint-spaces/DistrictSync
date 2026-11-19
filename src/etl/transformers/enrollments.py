@@ -468,7 +468,7 @@ class EnrollmentTransformer(BaseTransformer):
         *,
         regular_subject_classes: Mapping[str, str],
     ) -> Optional[pd.DataFrame]:
-        """Teacher enrollments for every teacher ClassInformation lists on a class, or None.
+        """Teacher enrollments for the teachers ClassInformation lists on a class, or None.
 
         Captures teachers (e.g. MADST modular-program teachers) who are not
         derived from student_schedule. Matches by (school_number, section
@@ -481,13 +481,13 @@ class EnrollmentTransformer(BaseTransformer):
         it adds teacher rows to a class that already ships and never creates,
         re-keys or re-rosters one (students are untouched).
 
-        **Every listed teacher, whatever the ``Primary Teacher`` flag (DSYNC-86, owner
-        2026-11-19: "Yes, blank and N alike"; role "Same as primary").** Until then only
-        ``Y`` rows were read, so the teachers SD74 adds to existing classes (listed with a
-        BLANK flag) never reached SpacesEDU. Every row with a teacher id is now read on all
-        three paths and enrolled with the same ``teacher`` role. The flag COLUMN is still one
-        of the three entry columns below (its absence leaves co-teachers out, as before), so
-        the §5 #15 posture is unchanged. Rows that don't
+        **Which rows:** ``Primary Teacher = Y`` rows, as on every district by default. A config
+        that sets ``global_config.coteachers_include_non_primary: true`` (DSYNC-86, owner
+        2026-11-19: "can this be config mapping driven?"; first consumer SD74, which lists the
+        teachers it adds to existing classes with a BLANK flag) reads every row naming a
+        teacher instead, blank and ``N`` alike, on all three paths, with the same ``teacher``
+        role. The flag COLUMN is one of the three entry columns below either way, so the
+        §5 #15 posture is unchanged. Rows that don't
         resolve to any known class are skipped. The outer
         drop_duplicates(subset=["Class ID","User ID","Role"]) in transform()
         deduplicates against any teacher rows already produced by the
@@ -536,6 +536,9 @@ class EnrollmentTransformer(BaseTransformer):
         # but take a copy so we don't mutate the published artifact frame.
         class_info_df = class_info_df.copy()
 
+        primary_col = resolve_source_column(
+            source_columns, CLASS_INFO_PRIMARY_TEACHER_ROLE, default=PRIMARY_TEACHER, previously=Previously.DEFAULT
+        )
         section_col = resolve_source_column(
             source_columns, CLASS_INFO_SECTION_LETTER_ROLE, default=SECTION_LETTER, previously=Previously.DEFAULT
         )
@@ -557,9 +560,14 @@ class EnrollmentTransformer(BaseTransformer):
             self._note_coteachers_left_out(context, entry_missing, unused_rows=len(class_info_df))
             return None
 
-        # Every row naming a teacher, whatever its Primary Teacher flag (DSYNC-86). The flag column is
-        # still one of the entry columns checked above; its VALUE is no longer read.
-        primary_rows: pd.DataFrame = class_info_df[~is_blank_series(class_info_df[staff_id_col])].copy()  # type: ignore[assignment]
+        # `Primary Teacher = Y` rows, or - for a config that opts in with
+        # `global_config.coteachers_include_non_primary` (DSYNC-86; SD74) - every row naming a teacher,
+        # whatever its flag. The flag column is one of the entry columns checked above either way.
+        if context.global_config.get("coteachers_include_non_primary", False) is True:
+            listed = ~is_blank_series(class_info_df[staff_id_col])
+        else:
+            listed = normalize_id_series(class_info_df[primary_col]).str.upper() == "Y"
+        primary_rows: pd.DataFrame = class_info_df[listed].copy()  # type: ignore[assignment]
         if primary_rows.empty:
             return None
 
