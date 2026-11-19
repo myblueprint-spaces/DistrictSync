@@ -9,6 +9,19 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+### Added
+
+- **A Windows installer.** Each release now also has `DistrictSync-Setup.exe`, signed by
+  myBlueprint Corp. It installs DistrictSync for the signed-in Windows user without
+  administrator rights, adds a Start menu entry, and can be removed from Windows Settings ›
+  Apps. Your settings, run history and saved SFTP password stay where they are, so a computer
+  that used the single-file `DistrictSync-windows.exe` keeps them; schedule the nightly sync
+  again from the installed app so it runs the installed copy. **Automatic updates are not
+  switched on yet:** to update, download the newer release's `DistrictSync-Setup.exe` and run
+  it. When a later release switches updates on, run that release's installer once and it
+  will keep itself up to date from then on. The single-file `DistrictSync-windows.exe` is
+  still published and works as before (DSYNC-60 to DSYNC-68, DSYNC-87).
+
 ### Changed
 
 - **SD74: every teacher MyEd lists on a class is enrolled.** A class can have more than one

@@ -1,9 +1,11 @@
-"""DSYNC-67 (plan 0054 S6a): the shape of the installer rehearsal jobs in ``release.yml``.
+"""DSYNC-67 (plan 0054 S6a) and DSYNC-87: the shape of the installer jobs in ``release.yml``.
 
 The workflow is proven by running it (a dispatch, quoted in the pull request); these tests pin the properties that must
-hold on every future edit: nothing here can touch a tag release, only the signing jobs hold ``id-token: write`` and both sit
-in the ``release`` environment, the read key for the private package reaches only a checkout step, vpk matches the pinned
-``velopack`` package, and the one-folder pack cannot drift from the one in ``flet-pack.yml``.
+hold on every future edit: the installer is built on a dispatch (the rehearsal, which publishes nothing) and on a ``v*`` tag
+(the release attaches it as ``DistrictSync-Setup.exe`` with its checksum - owner decision 2026-11-19, the R15 exception), no
+job ever publishes a feed file, only the signing jobs hold ``id-token: write`` and both sit in the ``release`` environment,
+the read key for the private package reaches only a checkout step, vpk matches the pinned ``velopack`` package, and the
+one-folder pack cannot drift from the one in ``flet-pack.yml``.
 """
 
 from __future__ import annotations
@@ -32,16 +34,37 @@ def _steps_text(job: str) -> str:
     return "\n".join(str(s.get("run", "")) + str(s.get("with", "")) for s in JOBS[job]["steps"])
 
 
-class TestTheRehearsalCannotTouchARelease:
-    def test_both_installer_jobs_run_on_a_dispatch_only(self):
-        for job in ("installer-build", "installer-windows"):
-            assert JOBS[job]["if"] == "github.event_name == 'workflow_dispatch'", job
+_PUBLISH_TEXT = (_WORKFLOWS / "release.yml").read_text(encoding="utf8").split("  publish-release:", 1)[1]
 
-    def test_publish_release_does_not_wait_for_or_use_them(self):
-        assert set(JOBS["publish-release"]["needs"]) == {"build-flet", "sign-windows"}
-        text = (_WORKFLOWS / "release.yml").read_text(encoding="utf8")
-        publish = text.split("  publish-release:", 1)[1]
-        assert "installer" not in publish.lower()
+
+class TestWhenTheInstallerIsBuiltAndPublished:
+    def test_both_installer_jobs_run_on_a_dispatch_and_on_a_version_tag_only(self):
+        for job in ("installer-build", "installer-windows"):
+            assert (
+                JOBS[job]["if"] == "github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')"
+            ), job
+
+    def test_publish_release_stays_tag_only_so_a_rehearsal_publishes_nothing(self):
+        assert JOBS["publish-release"]["if"] == "startsWith(github.ref, 'refs/tags/v')"
+
+    def test_publish_release_attaches_the_signed_setup_with_its_checksum(self):
+        assert set(JOBS["publish-release"]["needs"]) == {"build-flet", "sign-windows", "installer-windows"}
+        assert "name: DistrictSync-windows-installer-signed" in _PUBLISH_TEXT
+        assert "artifacts/DistrictSync-Setup.exe" in _PUBLISH_TEXT  # the files: list
+        assert "sha256sum DistrictSync-Setup.exe " in _PUBLISH_TEXT  # and SHA256SUMS.txt
+
+    def test_no_feed_file_is_published(self):
+        # Until S8 the build carries no feed host or trusted key; a published nupkg or manifest would be a feed nobody reads.
+        for forbidden in (".nupkg", "releases.win.json", "manifest.json", "RELEASES", "az storage", "upload-batch"):
+            assert forbidden not in _PUBLISH_TEXT, forbidden
+
+    def test_the_release_body_says_automatic_updates_are_not_on(self):
+        assert "Automatic updates are not switched on yet" in _PUBLISH_TEXT
+
+    def test_a_tag_build_takes_the_tags_version_and_a_rehearsal_a_throwaway_one(self):
+        build, sign = _steps_text("installer-build"), _steps_text("installer-windows")
+        assert "${GITHUB_REF_NAME#v}" in build and "0.0.${{ github.run_number }}" in build
+        assert "GITHUB_REF_NAME.TrimStart('v')" in sign and "0.0.${{ github.run_number }}" in sign
 
     def test_there_is_no_pull_request_trigger_and_the_tag_trigger_is_unchanged(self):
         assert "pull_request" not in TRIGGERS and "pull_request_target" not in TRIGGERS
@@ -87,7 +110,7 @@ class TestThePackAndTheTools:
         assert JOBS["installer-windows"]["env"]["PACK_ID"] == "myBlueprint.DistrictSync"
         assert "--packTitle DistrictSync" in _steps_text("installer-windows")
 
-    def test_it_packs_signed_and_never_uploads_to_a_release_or_the_feed(self):
+    def test_the_signing_job_packs_signed_and_never_uploads_to_a_release_or_the_feed_itself(self):
         text = _steps_text("installer-windows")
         assert "--azureTrustedSignFile" in text
         for forbidden in ("gh release", "action-gh-release", "az storage", "upload-batch"):
