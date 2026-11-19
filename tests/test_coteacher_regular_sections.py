@@ -12,7 +12,8 @@ The safety properties pinned here (every other district must be untouched):
   Path 3; a single-teacher section yields byte-identical Enrollments;
 * never a class of its own — an MTID no subject row carries adds nothing;
 * blended sections are unchanged (Path 2 owns them);
-* primary = Y only, as on Paths 1/2;
+* every teacher ClassInformation lists on the section, whatever its ``Primary Teacher`` flag (DSYNC-86,
+  owner 2026-11-19; until then Y only);
 * a missing Master Timetable ID column is the same optional-column posture as Path 2 (one
   warning + ``OutcomeNote.COTEACHER_SOURCE_UNUSABLE``), never a failure.
 
@@ -155,13 +156,28 @@ class TestRegularSectionCoTeachers:
         _c, after = self._run(info)
         pd.testing.assert_frame_equal(_canon(after), _canon(before))
 
-    @pytest.mark.parametrize("flag", ["N", ""])
-    def test_non_primary_rows_are_not_added(self, flag):
+    @pytest.mark.parametrize("flag", ["N", "", "n", " "])
+    def test_every_listed_teacher_is_added_whatever_the_primary_flag(self, flag):
+        # DSYNC-86, owner 2026-11-19: "Yes, blank and N alike" - every teacher MyEd lists on the class is
+        # enrolled, with the same teacher role as the primary ("Same as primary"). SD74 lists added staff
+        # with a BLANK flag. Additive only: students, Class IDs and Classes.csv are untouched.
         info = _class_info([_row("MT004", "T003"), _row("MT004", "T005", primary=flag)])
+        classes_before, before = self._run(info, legacy=True)
+        classes_after, after = self._run(info)
+        added = after[(after["User ID"] == "T005")]
+        assert len(added) == 1
+        assert added.iloc[0]["Role"] == after[after["User ID"] == "T003"].iloc[0]["Role"]
+        assert added.iloc[0]["Class ID"] == after[after["User ID"] == "T003"].iloc[0]["Class ID"]
+        pd.testing.assert_frame_equal(
+            _canon(after[after["Role"] == "student"]), _canon(before[before["Role"] == "student"])
+        )
+        pd.testing.assert_frame_equal(_canon(classes_after), _canon(classes_before))
+
+    def test_a_row_with_no_teacher_id_adds_nothing(self):
+        info = _class_info([_row("MT004", "T003"), _row("MT004", "", primary="")])
         _c, before = self._run(info, legacy=True)
         _c, after = self._run(info)
         pd.testing.assert_frame_equal(_canon(after), _canon(before))
-        assert "T005" not in set(after["User ID"])
 
     def test_an_mtid_no_subject_row_carries_creates_nothing(self):
         # MT999 is in ClassInformation only: Path 3 must never make (or enrol into) a class.
