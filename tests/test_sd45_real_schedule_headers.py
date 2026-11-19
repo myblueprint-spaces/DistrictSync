@@ -311,7 +311,8 @@ def test_the_missing_emergency_contact_file_only_leaves_family_out(tmp_path: Pat
 def test_class_information_enhanced_links_the_homeroom_coteacher(tmp_path: Path) -> None:
     """The co-teacher who appears only in ClassInformationEnhanced.csv (Primary Teacher = Y on
     homeroom `A1`, school 100) is enrolled as a teacher of that homeroom class and published on
-    Staff. The non-primary row links nothing, and blended detection stays off (no BLENDED class)."""
+    Staff. The non-primary row is linked too since DSYNC-86 (every listed teacher, whatever the flag), and
+    blended detection stays off (no BLENDED class)."""
     inp, out = _inputs(tmp_path)
     run_pipeline(SD45, str(inp), str(out))
 
@@ -319,9 +320,10 @@ def test_class_information_enhanced_links_the_homeroom_coteacher(tmp_path: Path)
     homeroom = enrollments[enrollments["Class ID"].str.startswith("100_A1_")]
     pairs = set(zip(homeroom["User ID"], homeroom["Role"], strict=True))
     assert {(_HOMEROOM_COTEACHER, "teacher"), ("S001", "student")} <= pairs
-    # The `N` row (T004 on MT002) links nothing: MT002's teachers come from the schedule alone.
+    # The `N` row (T004 on MT002) is linked since DSYNC-86 (owner 2026-11-19: "blank and N alike"), with the
+    # same teacher role as the schedule's T003.
     mt002 = enrollments[enrollments["Class ID"].str.startswith("MT002_")]
-    assert set(mt002.loc[mt002["Role"] == "teacher", "User ID"]) == {"T003"}
+    assert set(mt002.loc[mt002["Role"] == "teacher", "User ID"]) == {"T003", "T004"}
     classes = pd.read_csv(output_layout.csv_path(out, "Classes.csv"), dtype=str, keep_default_na=False)
     assert not classes["Class ID"].str.startswith("BLENDED_").any()
     staff = pd.read_csv(output_layout.csv_path(out, "Staff.csv"), dtype=str, keep_default_na=False)

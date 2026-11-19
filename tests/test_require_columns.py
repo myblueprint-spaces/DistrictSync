@@ -704,10 +704,12 @@ class TestCoteacherSites:
         assert _SENTINEL_HEADER not in line.lower()
         assert _SENTINEL_HEADER not in caplog.text.lower()
 
-    def test_twin_no_primary_teacher_rows_reads_neither_path_column(self) -> None:
-        """No ``Y`` row means neither path runs, so neither path's column is read — unchanged."""
+    def test_twin_no_teacher_rows_reads_neither_path_column(self) -> None:
+        """No row naming a teacher means neither path runs, so neither path's column is read. (Until DSYNC-86
+        the trigger was "no ``Y`` row"; every listed teacher now counts, whatever the flag.)"""
         class_info = _class_info(**{"section letter": True, "master timetable id": True})
         class_info["primary teacher"] = "N"
+        class_info["teacher id"] = ""
         ctx = _coteacher_context(class_info=class_info, homerooms=True, blended=True)
         assert _coteacher(ctx) is None
         assert ctx.outcome_notes_for("Enrollments") == ()

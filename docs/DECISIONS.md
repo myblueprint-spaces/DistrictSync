@@ -3,6 +3,12 @@
 **Convention (adopted 2026-09-23):** every new entry carries a line `Supersedes: <date — title of the replaced entry>` (or `Supersedes: nothing`) directly under its heading, so a replaced decision is found by search rather than by reading prose.
 
 
+## 2026-11-19 - DSYNC-86: every teacher Class Information lists on a class is enrolled, whatever the Primary Teacher flag
+
+Supersedes: 2026-11-13 - DSYNC-59's "primary only, as on Paths 1/2" clause (the co-teacher builder read `Primary Teacher = Y` rows only).
+
+Owner 2026-11-19, verbatim (relayed by the orchestrator session): "Build it, then release"; role "Same as primary"; the `N` flag "Yes, blank and N alike"; and, on seeing that SD40 and SD45 change too: "if a class has multiple teachers they will all be added as teachers to the class since a class can have multiple teachers ... if the enrolment exists we should add them i suppose". The co-teacher builder now reads every Class Information row with a teacher id on all three paths and enrols it with the same `teacher` role; the flag column is still one of the three entry columns (§5 #15 unchanged). Checked before merging, as the owner's "i suppose" asked: of the 81 people the change adds (SD40 34, SD45 43, SD74 4), 64 are flagged teaching staff in their staff export and carry 371 of the 415 added rows; 12 are flagged non-teaching (25 rows, 21 of them SD45 people who teach no other class); 5 SD45 people are absent from the staff export (19 rows naming a user `Staff.csv` does not carry - SD40 and SD45 already shipped 10 and 9 such rows for primary teachers). Every added person already in `Staff.csv` is there as a teacher. SD74's 46 blank-flag rows: 45 are now on the class holding their section's students (most were already enrolled through the schedule); one section's students are not held together by any shipped class (DSYNC-89). An earlier figure on the ticket ("46, none enrolled") was a measurement error (a join on Master Timetable ID that missed blended Class IDs). Contract `4.2.0`.
+
 ## 2026-11-17 (S6a) - DSYNC-67: the installer rehearsal lives in release.yml, in two dispatch-only jobs; flet-pack.yml stays secret-free
 
 Supersedes: nothing (plan 0054 section 7 said S6a might narrow the reusable workflow's secret-free rule; it does not).
