@@ -100,4 +100,4 @@ Uninstall removes the program only. Settings, history, the log and the saved pas
 
 - A failed night: **Run History** names what failed; the log has the detail. A missing or empty SD74 file stops the night with nothing sent, and SpacesEDU keeps the previous import.
 - Rolling back to an older version: uninstall, then install the older release's `DistrictSync-Setup.exe` by its tag URL. Settings and history are kept.
-- Known gap (DSYNC-86): a teacher MyEd lists on a class **without** the Primary Teacher flag is not enrolled in that class yet. On the 2026-11-13 SD74 drop that was 46 teacher rows on 43 classes.
+- Every teacher MyEd lists on a class is enrolled as a teacher of it, whatever the Primary Teacher flag (DSYNC-86, v3.30.0). One known gap (DSYNC-89): on the 2026-11-13 SD74 drop, one section's listed teacher has no class to join because no class holds that section's students.
