@@ -481,12 +481,11 @@ class EnrollmentTransformer(BaseTransformer):
         it adds teacher rows to a class that already ships and never creates,
         re-keys or re-rosters one (students are untouched).
 
-        **Which rows:** ``Primary Teacher = Y`` rows, as on every district by default. A config
-        that sets ``global_config.coteachers_include_non_primary: true`` (DSYNC-86, owner
-        2026-11-19: "can this be config mapping driven?"; first consumer SD74, which lists the
-        teachers it adds to existing classes with a BLANK flag) reads every row naming a
-        teacher instead, blank and ``N`` alike, on all three paths, with the same ``teacher``
-        role. The flag COLUMN is one of the three entry columns below either way, so the
+        **Which rows** (``global_config.coteachers_include_non_primary``, DSYNC-86): ``"none"``
+        (the default, every district but SD74) reads ``Primary Teacher = Y`` rows only;
+        ``"blank"`` adds rows whose flag is blank; ``"all"`` (SD74, which lists the teachers it
+        adds to existing classes with a BLANK flag) reads every row naming a teacher, blank,
+        ``N`` or other. Added rows take the same ``teacher`` role on all three paths. The flag COLUMN is one of the three entry columns below either way, so the
         §5 #15 posture is unchanged. Rows that don't
         resolve to any known class are skipped. The outer
         drop_duplicates(subset=["Class ID","User ID","Role"]) in transform()
@@ -560,13 +559,21 @@ class EnrollmentTransformer(BaseTransformer):
             self._note_coteachers_left_out(context, entry_missing, unused_rows=len(class_info_df))
             return None
 
-        # `Primary Teacher = Y` rows, or - for a config that opts in with
-        # `global_config.coteachers_include_non_primary` (DSYNC-86; SD74) - every row naming a teacher,
-        # whatever its flag. The flag column is one of the entry columns checked above either way.
-        if context.global_config.get("coteachers_include_non_primary", False) is True:
+        # `Primary Teacher = Y` rows, widened by `global_config.coteachers_include_non_primary` (DSYNC-86):
+        # "blank" adds blank-flag rows, "all" every row naming a teacher. The flag column is one of the
+        # entry columns checked above either way.
+        include = context.global_config.get("coteachers_include_non_primary", "none")
+        flag = normalize_id_series(class_info_df[primary_col]).str.upper()
+        if include == "all":
             listed = ~is_blank_series(class_info_df[staff_id_col])
-        else:
-            listed = normalize_id_series(class_info_df[primary_col]).str.upper() == "Y"
+        elif include == "blank":
+            listed = (flag == "Y") | (
+                is_blank_series(class_info_df[primary_col]) & ~is_blank_series(class_info_df[staff_id_col])
+            )
+        elif include == "none":
+            listed = flag == "Y"
+        else:  # the model's Literal refuses anything else at load; a hand-built context must not widen silently
+            raise ValueError(f"coteachers_include_non_primary must be none, blank or all, not {include!r}")
         primary_rows: pd.DataFrame = class_info_df[listed].copy()  # type: ignore[assignment]
         if primary_rows.empty:
             return None

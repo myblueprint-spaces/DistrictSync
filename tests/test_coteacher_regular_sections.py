@@ -13,7 +13,7 @@ The safety properties pinned here (every other district must be untouched):
 * never a class of its own — an MTID no subject row carries adds nothing;
 * blended sections are unchanged (Path 2 owns them);
 * primary = Y only, as on Paths 1/2 - unless the config sets ``coteachers_include_non_primary``
-  (DSYNC-86; SD74), when every teacher listed on the section is added, whatever the flag;
+  (DSYNC-86): ``blank`` adds blank-flag teachers, ``all`` (SD74) every listed teacher;
 * a missing Master Timetable ID column is the same optional-column posture as Path 2 (one
   warning + ``OutcomeNote.COTEACHER_SOURCE_UNUSABLE``), never a failure.
 
@@ -165,11 +165,11 @@ class TestRegularSectionCoTeachers:
         pd.testing.assert_frame_equal(_canon(after), _canon(before))
         assert "T005" not in set(after["User ID"])
 
-    @pytest.mark.parametrize("flag", ["N", "", "n", " "])
-    def test_with_the_switch_on_every_listed_teacher_is_added(self, flag):
+    @pytest.mark.parametrize("flag", ["N", "", "n", " ", "S"])
+    def test_with_all_every_listed_teacher_is_added(self, flag):
         # DSYNC-86, owner 2026-11-19: a config switch (SD74 only): "blank and N alike", role "Same as primary".
         # Additive only: students, Class IDs and Classes.csv are untouched.
-        self.global_config = {**self.global_config, "coteachers_include_non_primary": True}
+        self.global_config = {**self.global_config, "coteachers_include_non_primary": "all"}
         info = _class_info([_row("MT004", "T003"), _row("MT004", "T005", primary=flag)])
         classes_before, before = self._run(info, legacy=True)
         classes_after, after = self._run(info)
@@ -182,8 +182,21 @@ class TestRegularSectionCoTeachers:
         )
         pd.testing.assert_frame_equal(_canon(classes_after), _canon(classes_before))
 
-    def test_with_the_switch_on_a_row_with_no_teacher_id_adds_nothing(self):
-        self.global_config = {**self.global_config, "coteachers_include_non_primary": True}
+    @pytest.mark.parametrize("flag, added", [("", True), (" ", True), ("N", False), ("S", False)])
+    def test_with_blank_only_blank_flag_teachers_are_added(self, flag, added):
+        self.global_config = {**self.global_config, "coteachers_include_non_primary": "blank"}
+        info = _class_info([_row("MT004", "T003"), _row("MT004", "T005", primary=flag)])
+        _c, after = self._run(info)
+        assert ("T005" in set(after["User ID"])) is added
+
+    def test_an_unknown_mode_fails_loudly(self):
+        self.global_config = {**self.global_config, "coteachers_include_non_primary": "some"}
+        info = _class_info([_row("MT004", "T003"), _row("MT004", "T005", primary="")])
+        with pytest.raises(ValueError, match="none, blank or all"):
+            self._run(info)
+
+    def test_with_all_a_row_with_no_teacher_id_adds_nothing(self):
+        self.global_config = {**self.global_config, "coteachers_include_non_primary": "all"}
         info = _class_info([_row("MT004", "T003"), _row("MT004", "", primary="")])
         _c, before = self._run(info, legacy=True)
         _c, after = self._run(info)
@@ -272,6 +285,6 @@ def test_only_sd74_switches_non_primary_coteachers_on():
     bundled = Path(__file__).resolve().parents[1] / "config" / "mappings"
     configs = [f.name.removesuffix("_mapping.yaml") for f in bundled.glob("*_mapping.yaml")]
     assert "sd74myedbc" in configs and len(configs) > 10
-    on = {sis for sis in configs if load_config(sis).global_config.coteachers_include_non_primary}
-    assert on == {"sd74myedbc"}
-    assert load_config("sd74myedbc").to_raw_dict()["global_config"]["coteachers_include_non_primary"] is True
+    modes = {sis: load_config(sis).global_config.coteachers_include_non_primary for sis in configs}
+    assert {sis for sis, mode in modes.items() if mode != "none"} == {"sd74myedbc"}
+    assert load_config("sd74myedbc").to_raw_dict()["global_config"]["coteachers_include_non_primary"] == "all"

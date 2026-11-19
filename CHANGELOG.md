@@ -29,7 +29,7 @@ Per-release download links and auto-generated commit notes live on the
   class's primary teacher. For SD74 those teachers are now enrolled as teachers of the class
   in SpacesEDU, the same as the primary teacher. Students, class IDs and class names do not
   change, and every other district's files are unchanged. A new mapping setting,
-  `coteachers_include_non_primary`, turns this on for a district (output contract 4.2.0,
+  `coteachers_include_non_primary` (`none`, `blank` or `all`), turns this on for a district (output contract 4.2.0,
   DSYNC-86).
 
 - **Co-taught classes keep every teacher.** When MyEd lists more than one primary teacher on
