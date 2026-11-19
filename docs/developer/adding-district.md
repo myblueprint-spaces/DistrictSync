@@ -348,7 +348,7 @@ Set `blended_classes: false` when a district's `Day` column doesn't rotate
 (or you otherwise can't trust the session key to disambiguate sections).
 `ClassInformation` still loads, still feeds `Classes.csv`'s
 `class_info_df` output, and still produces `Enrollments.csv` co-teacher rows
-(a Class Information teacher row - any `Primary Teacher` flag since DSYNC-86 - whose `Section Letter` matches a homeroom) — only
+(a `Primary Teacher: Y` row - any flag on a config that sets `coteachers_include_non_primary`, DSYNC-86 - whose `Section Letter` matches a homeroom) — only
 blend DETECTION is skipped, so nothing merges. Default `true` keeps every
 existing district byte-identical.
 
