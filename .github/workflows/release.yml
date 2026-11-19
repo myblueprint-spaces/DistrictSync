@@ -177,18 +177,20 @@ jobs:
           retention-days: 1
 
   # -----------------------------------------------------------------------
-  # The Windows INSTALLER, rehearsal only (plan 0054 S6a, DSYNC-67). Publishes NOTHING.
+  # The Windows INSTALLER (plan 0054 S6a, DSYNC-67; on tags since DSYNC-87).
   # -----------------------------------------------------------------------
-  # Two jobs, both `workflow_dispatch`-only: a tag release does not run them and does not
-  # wait for them, so every existing asset above is built, signed and attached exactly as
-  # before. (The installer joins the Release in S8, once the build can update itself.)
+  # Two jobs. On a manual dispatch they are the REHEARSAL (throwaway version 0.0.<run>, nothing
+  # published). On a `v*` tag they build the release's installer at the tag's version and
+  # `publish-release` attaches it as `DistrictSync-Setup.exe` (owner decision 2026-11-19, "Ship
+  # installer, updates off": the R15 exception, DECISIONS 2026-11-19). No feed file is published
+  # on either path; until the first feed-enabled release (S8) the installed build cannot update itself.
   #
   # installer-build holds NO Azure scope: it builds the INSTALLED-flavour one-folder app with the
   # private shared updater package (the read key is a repo-level secret and goes only to the
   # checkout step), and hands the unsigned folder to installer-windows, the job that signs.
   installer-build:
     needs: ci-green
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
     runs-on: windows-latest
     timeout-minutes: 40
     permissions:
@@ -199,12 +201,16 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # A rehearsal is never a version tag. Velopack needs a SemVer version; a throwaway one
-      # that cannot collide with a real release (0.0.<run number>).
-      - name: Stamp the rehearsal version
+      # Velopack needs a SemVer version. A tag build uses the tag's (v3.30.0 -> 3.30.0); a rehearsal
+      # is never a version tag and uses a throwaway one that cannot collide with a release (0.0.<run number>).
+      - name: Stamp the version (the tag's, or the rehearsal's)
         shell: bash
         run: |
-          echo "version = '0.0.${{ github.run_number }}'" > src/_version.py
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            echo "version = '${GITHUB_REF_NAME#v}'" > src/_version.py
+          else
+            echo "version = '0.0.${{ github.run_number }}'" > src/_version.py
+          fi
           cat src/_version.py
 
       - name: Stamp build flavour (installed)
@@ -294,7 +300,7 @@ jobs:
   # vpk, then proves the signed installer the way a customer meets it: install, run, uninstall.
   installer-windows:
     needs: installer-build
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
     runs-on: windows-latest
     timeout-minutes: 45
     environment: release
@@ -347,7 +353,8 @@ jobs:
       - name: Pack and sign with vpk (Azure Trusted Signing)
         shell: pwsh
         run: |
-          $version = "0.0.${{ github.run_number }}"  # the same rehearsal version installer-build stamped
+          # The same version installer-build stamped: the tag's, or the rehearsal's 0.0.<run number>.
+          $version = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME.TrimStart('v') } else { "0.0.${{ github.run_number }}" }
           Write-Output "packing version $version"
           vpk pack --packId $env:PACK_ID --packTitle DistrictSync --packVersion $version --packDir dist/DistrictSync `
             --mainExe DistrictSync.exe --runtime win-x64 --outputDir releases `
@@ -428,7 +435,7 @@ jobs:
           if (Test-Path "$root\current") { Write-Error "the install folder is still there after uninstall"; exit 1 }
           Write-Output "uninstalled: $root\current is gone"
 
-      # A test artifact for a human to download and install like a customer (1 day). NEVER attached to a Release.
+      # The signed Setup, kept 1 day. A rehearsal never attaches it to a Release; on a tag `publish-release` does.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: DistrictSync-windows-installer-signed
@@ -443,7 +450,7 @@ jobs:
   # -----------------------------------------------------------------------
 
   publish-release:
-    needs: [build-flet, sign-windows]
+    needs: [build-flet, sign-windows, installer-windows]
     # Tag-only: a workflow_dispatch rehearses build+sign and stops here.
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
@@ -462,6 +469,10 @@ jobs:
         with:
           name: DistrictSync-macos-latest
           path: artifacts/macos
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: DistrictSync-windows-installer-signed
+          path: artifacts/installer
 
       # macOS publishes TWO assets (plan 0045): the .dmg is the district-facing
       # download — a disk image whose .app survives with its executable bit intact —
@@ -475,6 +486,7 @@ jobs:
           mv artifacts/linux/DistrictSync                artifacts/DistrictSync-linux
           mv artifacts/macos/DistrictSync-macos.dmg      artifacts/DistrictSync-macos.dmg
           mv artifacts/macos/DistrictSync                artifacts/DistrictSync-macos
+          mv artifacts/installer/myBlueprint.DistrictSync-win-Setup.exe artifacts/DistrictSync-Setup.exe
           chmod +x artifacts/DistrictSync-linux artifacts/DistrictSync-macos
 
       # Integrity anchor (RC9): SHA-256 of every released binary, attached to the
@@ -482,7 +494,7 @@ jobs:
       - name: Compute SHA-256 checksums
         run: |
           cd artifacts
-          sha256sum DistrictSync-windows.exe DistrictSync-linux \
+          sha256sum DistrictSync-Setup.exe DistrictSync-windows.exe DistrictSync-linux \
                     DistrictSync-macos.dmg DistrictSync-macos > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
@@ -495,19 +507,21 @@ jobs:
 
             | Platform | File | Notes |
             |----------|------|-------|
-            | Windows | `DistrictSync-windows.exe` | Code-signed by **myBlueprint Corp.** Double-click to open the app, or run with `--sis`/`--input`/`--output` args for CLI use |
+            | Windows (installer) | `DistrictSync-Setup.exe` | Code-signed by **myBlueprint Corp.** Installs DistrictSync for the current Windows user (no administrator rights needed) with a Start menu entry; uninstall from Windows **Settings › Apps**. **Automatic updates are not switched on yet:** to update, download the newer release's `DistrictSync-Setup.exe` and run it (it upgrades in place and keeps your settings). |
+            | Windows (single file) | `DistrictSync-windows.exe` | Code-signed by **myBlueprint Corp.** Double-click to open the app, or run with `--sis`/`--input`/`--output` args for CLI use |
             | Linux   | `DistrictSync-linux`       | `chmod +x` before first run |
             | macOS   | `DistrictSync-macos.dmg`   | Double-click, then drag **DistrictSync** into **Applications** |
             | macOS (headless/CLI) | `DistrictSync-macos` | Command-line only — `chmod +x` before first run |
 
             **First launch on macOS.** Because the macOS build is unsigned (see below), macOS will say it cannot check the app for malicious software. Open **System Settings › Privacy & Security**, scroll to the message about DistrictSync, and click **Open Anyway**. On macOS 15 and later that is the only route — the old Control-click → Open shortcut no longer works for unsigned apps.
 
-            **Signing.** The Windows executable is code-signed by **myBlueprint Corp.** via Azure Trusted Signing, so Windows names the publisher instead of warning about an unknown one. SmartScreen builds download reputation separately, so a brand-new version can still show a warning for a while. The **macOS and Linux** builds are **not** signed — signing those needs an Apple Developer ID and notarization, which we do not have yet.
+            **Signing.** The Windows installer and executable are code-signed by **myBlueprint Corp.** via Azure Trusted Signing, so Windows names the publisher instead of warning about an unknown one. SmartScreen builds download reputation separately, so a brand-new version can still show a warning for a while. The **macOS and Linux** builds are **not** signed — signing those needs an Apple Developer ID and notarization, which we do not have yet.
 
             Verify any download against `SHA256SUMS.txt` (e.g. `sha256sum -c SHA256SUMS.txt`).
 
             See the [SpacesEDU Help Centre article](https://help.spacesedu.com/en-ca/article/mx56qo) for setup basics.
           files: |
+            artifacts/DistrictSync-Setup.exe
             artifacts/DistrictSync-windows.exe
             artifacts/DistrictSync-linux
             artifacts/DistrictSync-macos.dmg

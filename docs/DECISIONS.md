@@ -3,6 +3,12 @@
 **Convention (adopted 2026-09-23):** every new entry carries a line `Supersedes: <date — title of the replaced entry>` (or `Supersedes: nothing`) directly under its heading, so a replaced decision is found by search rather than by reading prose.
 
 
+## 2026-11-19 - DSYNC-87: the signed installer ships on releases from v3.30.0 with auto-update OFF (the R15 exception)
+
+Supersedes: 2026-11-17 (S6a) - DSYNC-67, in part: the two installer jobs now also run on a `v*` tag, and `publish-release` attaches their Setup. The rehearsal (dispatch) is unchanged and still publishes nothing.
+
+Owner, 2026-11-19, verbatim (relayed by the orchestrator session): "Ship installer, updates off". Plan 0054's R15 kept `DistrictSync-Setup.exe` off public Releases until the build could update itself (S8), because a copy installed before the feed host and trusted key are baked in can never update itself. The feed (S6b) is blocked on the Azure provisions in plan 0054 ("Provisions needed from Doug"), and the owner wants the installer now (the hosted SD74 server is its acceptance test). So: from v3.30.0 every tag release attaches the signed `DistrictSync-Setup.exe` and its `SHA256SUMS.txt` line; no feed file is published; the release body says automatic updates are not switched on yet. **Consequence, accepted:** every copy installed from a release before the first feed-enabled one makes no update connection and needs ONE manual upgrade (running a newer `DistrictSync-Setup.exe`) to reach a build that updates itself. **Exit condition:** the exception ends with the first feed-enabled release (S8); from then on the plan's order applies unchanged. Measured before tagging (v3.29.0 vs `main` 98f2898, real drops): identical output on SD40, SD45, SD51, SD60, SD74 and Unity. Found while checking the release scope: DSYNC-59 enrols extra PRIMARY teachers only; teachers MyEd lists without the Primary Teacher flag were not enrolled, fixed by DSYNC-86 (its own entry) before v3.30.0.
+
 ## 2026-11-17 (S6a) - DSYNC-67: the installer rehearsal lives in release.yml, in two dispatch-only jobs; flet-pack.yml stays secret-free
 
 Supersedes: nothing (plan 0054 section 7 said S6a might narrow the reusable workflow's secret-free rule; it does not).
