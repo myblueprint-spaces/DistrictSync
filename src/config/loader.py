@@ -69,7 +69,7 @@ from src.utils.paths import bundle_mappings_dir, user_mappings_dir
 logger = logging.getLogger(__name__)
 
 # Supported mapping-config format version (derived from the bundled configs,
-# which declare 1.0–1.15 today). Bump MINOR when the bundled configs start
+# which declare 1.0–1.16 today). Bump MINOR when the bundled configs start
 # using new same-major ETL-AFFECTING features; bump MAJOR only on a breaking
 # config-format change (and migrate every bundled config in the same release,
 # so the bundled set always loads clean against these constants).
@@ -107,10 +107,12 @@ logger = logging.getLogger(__name__)
 # consumer, sd40myedbc, which declares quoted '1.15'. S10 was built as 1.14
 # and moved up when v3.26.0 released 1.14 first — one minor per feature, so a
 # v3.26.0 build warns about a config that needs `session_components` instead
-# of silently ignoring the key (DECISIONS 2026-09-30, the v3.26.0 merge).
+# of silently ignoring the key (DECISIONS 2026-09-30, the v3.26.0 merge). 1.16
+# (DSYNC-86, 2026-11-19) likewise: the `coteachers_include_non_primary` opt-in ships
+# with its first and only consumer, sd74myedbc, which declares quoted '1.16'.
 # (Pinned by tests/test_config_version_gate.py::TestDeclaredRangeVersusSupported.)
 SUPPORTED_CONFIG_MAJOR = 1
-SUPPORTED_CONFIG_MINOR = 15
+SUPPORTED_CONFIG_MINOR = 16
 
 
 def _search_dirs(explicit: Optional[Path]) -> list[Path]:

@@ -56,7 +56,7 @@ from src.etl.transformers.columns import (
 from src.etl.transformers.context import ClassArtifacts, TransformContext
 from src.etl.transformers.course_codes import note_unapplied_exclusions
 from src.etl.transformers.grades import resolve_timetable_scope, split_by_homeroom_grades
-from src.etl.transformers.ids import normalize_id_series
+from src.etl.transformers.ids import is_blank_series, normalize_id_series
 from src.etl.transformers.required_values import leave_out_rows_missing_required_values
 
 logger = logging.getLogger(__name__)
@@ -468,7 +468,7 @@ class EnrollmentTransformer(BaseTransformer):
         *,
         regular_subject_classes: Mapping[str, str],
     ) -> Optional[pd.DataFrame]:
-        """Teacher enrollments for ClassInformation rows with Primary Teacher=Y, or None.
+        """Teacher enrollments for the teachers ClassInformation lists on a class, or None.
 
         Captures teachers (e.g. MADST modular-program teachers) who are not
         derived from student_schedule. Matches by (school_number, section
@@ -477,10 +477,16 @@ class EnrollmentTransformer(BaseTransformer):
         against ``regular_subject_classes`` — the non-blended subject classes
         ``_subject_enrollments`` built, under the Class IDs it gave them (Path 3).
         Path 3 is what gives a co-taught REGULAR section every teacher MyEd lists
-        as primary on it, where the schedule carries only one teacher per row:
+        on it, where the schedule carries only one teacher per row:
         it adds teacher rows to a class that already ships and never creates,
-        re-keys or re-rosters one (students are untouched). Primary=Y rows only,
-        as on Paths 1/2 — a blank or N flag is not a teacher of record. Rows that don't
+        re-keys or re-rosters one (students are untouched).
+
+        **Which rows** (``global_config.coteachers_include_non_primary``, DSYNC-86): ``"none"``
+        (the default, every district but SD74) reads ``Primary Teacher = Y`` rows only;
+        ``"blank"`` adds rows whose flag is blank; ``"all"`` (SD74, which lists the teachers it
+        adds to existing classes with a BLANK flag) reads every row naming a teacher, blank,
+        ``N`` or other. Added rows take the same ``teacher`` role on all three paths. The flag COLUMN is one of the three entry columns below either way, so the
+        §5 #15 posture is unchanged. Rows that don't
         resolve to any known class are skipped. The outer
         drop_duplicates(subset=["Class ID","User ID","Role"]) in transform()
         deduplicates against any teacher rows already produced by the
@@ -553,9 +559,22 @@ class EnrollmentTransformer(BaseTransformer):
             self._note_coteachers_left_out(context, entry_missing, unused_rows=len(class_info_df))
             return None
 
-        primary_rows: pd.DataFrame = class_info_df[
-            normalize_id_series(class_info_df[primary_col]).str.upper() == "Y"
-        ].copy()  # type: ignore[assignment]
+        # `Primary Teacher = Y` rows, widened by `global_config.coteachers_include_non_primary` (DSYNC-86):
+        # "blank" adds blank-flag rows, "all" every row naming a teacher. The flag column is one of the
+        # entry columns checked above either way.
+        include = context.global_config.get("coteachers_include_non_primary", "none")
+        flag = normalize_id_series(class_info_df[primary_col]).str.upper()
+        if include == "all":
+            listed = ~is_blank_series(class_info_df[staff_id_col])
+        elif include == "blank":
+            listed = (flag == "Y") | (
+                is_blank_series(class_info_df[primary_col]) & ~is_blank_series(class_info_df[staff_id_col])
+            )
+        elif include == "none":
+            listed = flag == "Y"
+        else:  # the model's Literal refuses anything else at load; a hand-built context must not widen silently
+            raise ValueError(f"coteachers_include_non_primary must be none, blank or all, not {include!r}")
+        primary_rows: pd.DataFrame = class_info_df[listed].copy()  # type: ignore[assignment]
         if primary_rows.empty:
             return None
 
@@ -653,7 +672,7 @@ class EnrollmentTransformer(BaseTransformer):
                         }
                     )
             logger.info(
-                f"[Enrollments] {path_3_rows} ClassInformation primary-teacher row(s) matched a regular "
+                f"[Enrollments] {path_3_rows} ClassInformation teacher row(s) matched a regular "
                 f"subject class (before de-duplication against the schedule's teacher rows)"
             )
 

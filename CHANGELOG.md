@@ -24,6 +24,14 @@ Per-release download links and auto-generated commit notes live on the
 
 ### Changed
 
+- **SD74: every teacher MyEd lists on a class is enrolled.** A class can have more than one
+  teacher, and SD74 lists teachers it adds to existing classes without marking them as the
+  class's primary teacher. For SD74 those teachers are now enrolled as teachers of the class
+  in SpacesEDU, the same as the primary teacher. Students, class IDs and class names do not
+  change, and every other district's files are unchanged. A new mapping setting,
+  `coteachers_include_non_primary` (`none`, `blank` or `all`), turns this on for a district (output contract 4.2.0,
+  DSYNC-86).
+
 - **Co-taught classes keep every teacher.** When MyEd lists more than one primary teacher on
   the same regular class (one section, two teachers), every one of them is now enrolled as a
   teacher of that class in SpacesEDU. Before, only the teacher on the student schedule was

@@ -2,7 +2,7 @@
 # Differences: source file names, column casing, custom email, fixed dates,
 #              different Name config for classes, swapped legal/usual name fields
 _base: myedbc
-version: '1.9'
+version: '1.16'
 sis: MyEducationBC
 district_name: SD74 - Gold Trail School District
 # The district's PUBLIC staff email domain. It scopes which district rows this
@@ -13,6 +13,10 @@ district_name: SD74 - Gold Trail School District
 district_domains: ["sd74.bc.ca"]
 
 global_config:
+  # Every teacher Class Information lists on a class is enrolled as its teacher, whatever the
+  # Primary Teacher flag: blank (how SD74 lists teachers it adds to existing classes), "N" or other
+  # (DSYNC-86, owner 2026-11-19, config 1.16). "none" (Y only) for every other district.
+  coteachers_include_non_primary: all
   school_year_sources:
     student_schedule: "studentcourseselection.txt"
 
