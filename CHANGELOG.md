@@ -9,6 +9,8 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+## [3.30.0] - 2026-11-19
+
 ### Added
 
 - **A Windows installer.** Each release now also has `DistrictSync-Setup.exe`, signed by
