@@ -95,7 +95,22 @@ class TestTheKinds:
             raise OSError("denied")
 
         monkeypatch.setattr("sys.executable", str(_msi_layout(tmp_path)))
+        monkeypatch.setattr(ik, "_owner_sid", lambda _path: TRUSTED_INSTALLER)  # so the DACL read is what decides
         monkeypatch.setattr(ik, "_dacl_entries", unreadable)
+        assert ik.install_kind() is InstallKind.PER_USER
+
+    def test_an_unreadable_owner_is_never_machine_wide(self, installed, tmp_path, monkeypatch):
+        def unreadable(_path):
+            raise OSError("denied")
+
+        monkeypatch.setattr("sys.executable", str(_msi_layout(tmp_path)))
+        monkeypatch.setattr(ik, "_owner_sid", unreadable)
+        monkeypatch.setattr(ik, "_dacl_entries", lambda _path: PROGRAM_FILES)
+        assert ik.install_kind() is InstallKind.PER_USER
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="the off-Windows path")
+    def test_off_windows_the_real_readers_answer_per_user_and_never_raise(self, installed, tmp_path, monkeypatch):
+        monkeypatch.setattr("sys.executable", str(_msi_layout(tmp_path)))
         assert ik.install_kind() is InstallKind.PER_USER
 
 

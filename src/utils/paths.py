@@ -414,6 +414,9 @@ def _read_dir_security(path: Path) -> tuple[str, int]:  # pragma: no cover - Win
     ``LocalFree`` in a ``finally``. Raises ``OSError`` on any failure — the caller turns
     that into an ``INACCESSIBLE`` refusal, never into a pass.
     """
+    if sys.platform != "win32":
+        # Fail closed with the exception callers catch (plan 0055 M1: install_kind reads the owner off Windows too in tests).
+        raise OSError("Directory owners can only be read on Windows.")
     advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)  # type: ignore[attr-defined]
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
 
@@ -567,6 +570,11 @@ def read_dacl_entries(path: Path) -> tuple[tuple[int, int, int, str], ...]:  # p
             ace_type = ctypes.cast(ace, ctypes.POINTER(ctypes.c_uint8))[0]
             ace_flags = ctypes.cast(ace, ctypes.POINTER(ctypes.c_uint8))[1]
             ace_mask = ctypes.cast(ctypes.c_void_p((ace.value or 0) + 4), ctypes.POINTER(ctypes.c_uint32))[0]
+            if ace_type not in (_ACCESS_ALLOWED_ACE_TYPE, 1):
+                # Object, callback and conditional aces keep their SID at a different offset. Reported with no SID: the
+                # open-group walk ignores non-ALLOW types, and install_kind treats any such ALLOW-family ace as doubt.
+                aces.append((int(ace_type), int(ace_flags), int(ace_mask), ""))
+                continue
             sid_ptr = ctypes.c_void_p((ace.value or 0) + _ACE_SID_OFFSET)
             sid_text = ctypes.c_wchar_p()
             if not advapi32.ConvertSidToStringSidW(sid_ptr, ctypes.byref(sid_text)):
