@@ -135,11 +135,14 @@ class TestTheParentHalf:
 class TestTheCommandLine:
     @pytest.fixture
     def windows(self, monkeypatch):
-        monkeypatch.setattr(main_mod.sys, "platform", "win32")
+        monkeypatch.setattr(main_mod, "_is_windows", lambda: True)
         monkeypatch.setattr("src.scheduler.task_com.runs_from_per_user_install", lambda exe: False)
 
-    def _wire(self, monkeypatch, *, outcome: ProvisionOutcome, handed_over: bool) -> dict[str, object]:
+    def _wire(
+        self, monkeypatch, *, outcome: ProvisionOutcome, handed_over: bool, already_shared: bool = False, refused=None
+    ) -> dict[str, object]:
         seen: dict[str, object] = {}
+        monkeypatch.setattr(provision_session, "_switch_reads_on", lambda: already_shared)
 
         def request(**kw):
             seen["request"] = kw
@@ -147,7 +150,7 @@ class TestTheCommandLine:
 
         def handover(*, persist, reenter):
             seen["handover"] = True
-            return HandoverOutcome(handed_over=handed_over)
+            return HandoverOutcome(handed_over=handed_over, refused=refused)
 
         monkeypatch.setattr(provision_session, "request_machine_setup", request)
         monkeypatch.setattr(provision_session, "complete_handover", handover)
@@ -180,7 +183,7 @@ class TestTheCommandLine:
         assert cli(["--machine-setup"]) == 0
 
     def test_a_per_user_installed_copy_is_refused_before_any_prompt(self, monkeypatch, capsys):
-        monkeypatch.setattr(main_mod.sys, "platform", "win32")
+        monkeypatch.setattr(main_mod, "_is_windows", lambda: True)
         monkeypatch.setattr("src.scheduler.task_com.runs_from_per_user_install", lambda exe: True)
         seen = self._wire(monkeypatch, outcome=ProvisionOutcome.PROVISIONED, handed_over=True)
         assert cli(["--machine-setup"]) == 1
@@ -188,7 +191,7 @@ class TestTheCommandLine:
         assert seen == {}
 
     def test_it_is_refused_off_windows(self, monkeypatch, capsys):
-        monkeypatch.setattr(main_mod.sys, "platform", "linux")
+        monkeypatch.setattr(main_mod, "_is_windows", lambda: False)
         seen = self._wire(monkeypatch, outcome=ProvisionOutcome.PROVISIONED, handed_over=True)
         assert cli(["--machine-setup"]) == 1
         assert seen == {}
@@ -198,3 +201,93 @@ class TestTheCommandLine:
 
     def test_an_unknown_mode_is_a_usage_error(self):
         assert cli(["--machine-setup", "--updates", "auto"]) == 2
+
+
+class TestTheCommandLineOnAComputerAlreadySetUp:
+    """The switch is already on, so complete_handover says "handed over" whatever this run did: the child decides."""
+
+    @pytest.fixture
+    def windows(self, monkeypatch):
+        monkeypatch.setattr(main_mod, "_is_windows", lambda: True)
+        monkeypatch.setattr("src.scheduler.task_com.runs_from_per_user_install", lambda exe: False)
+
+    def _wire(self, monkeypatch, outcome: ProvisionOutcome) -> None:
+        monkeypatch.setattr(provision_session, "_switch_reads_on", lambda: True)
+        monkeypatch.setattr(provision_session, "request_machine_setup", lambda **kw: ProvisionAttempt(outcome=outcome))
+        monkeypatch.setattr(
+            provision_session, "complete_handover", lambda *, persist, reenter: HandoverOutcome(handed_over=True)
+        )
+
+    @pytest.mark.parametrize(
+        "outcome",
+        [
+            ProvisionOutcome.DECLINED,
+            ProvisionOutcome.LAUNCH_FAILED,
+            ProvisionOutcome.UNAVAILABLE,
+            ProvisionOutcome.UNCONFIRMED,
+        ],
+    )
+    def test_a_rerun_that_did_not_complete_exits_1_and_claims_no_mode(self, windows, monkeypatch, capsys, outcome):
+        self._wire(monkeypatch, outcome)
+        assert cli(["--machine-setup", "--updates", "off"]) == 1
+        out = capsys.readouterr().out
+        assert "Automatic updates" not in out
+        assert "this run changed nothing" in out
+
+    def test_positive_twin_a_completed_rerun_changes_the_mode_and_exits_0(self, windows, monkeypatch, capsys):
+        self._wire(monkeypatch, ProvisionOutcome.PROVISIONED)
+        assert cli(["--machine-setup", "--updates", "off"]) == 0
+        assert "Automatic updates: off." in capsys.readouterr().out
+
+
+class TestTheCommandLineEdges:
+    def test_a_committed_but_unusable_folder_is_reported_as_such(self, monkeypatch, capsys):
+        monkeypatch.setattr(main_mod, "_is_windows", lambda: True)
+        monkeypatch.setattr("src.scheduler.task_com.runs_from_per_user_install", lambda exe: False)
+        monkeypatch.setattr(provision_session, "_switch_reads_on", lambda: False)
+        monkeypatch.setattr(
+            provision_session,
+            "request_machine_setup",
+            lambda **kw: ProvisionAttempt(outcome=ProvisionOutcome.PROVISIONED),
+        )
+        reason = provision_session.paths.MachineScopeRefusedReason.FOREIGN_OWNER
+        monkeypatch.setattr(
+            provision_session,
+            "complete_handover",
+            lambda *, persist, reenter: HandoverOutcome(handed_over=False, refused=reason),
+        )
+        assert cli(["--machine-setup"]) == 1
+        out = capsys.readouterr().out
+        assert "cannot use the folder" in out and reason.value in out
+        assert "per Windows account" not in out
+
+    def test_updates_without_machine_setup_is_a_usage_error(self):
+        assert cli(["--updates", "off"]) == 2
+
+    def test_machine_setup_with_a_conversion_is_a_usage_error(self, tmp_path):
+        assert cli(["--machine-setup", "--sis", "myedbc", "--input", str(tmp_path)]) == 2
+
+
+class TestTheElevatedDispatch:
+    def _run(self, tmp_path, payload: dict[str, object]) -> dict[str, object]:
+        import json
+        from unittest.mock import patch
+
+        req, res = tmp_path / "r.req", tmp_path / "r.res"
+        req.write_bytes(b"sealed")
+        with patch("src.scheduler.elevation.unprotect_blob", return_value=json.dumps(payload).encode()):
+            elevated_apply.run_elevated_apply([str(req), str(res)])
+        return json.loads(res.read_text(encoding="utf-8"))
+
+    def test_the_op_is_dispatched_and_reports_ok(self, tmp_path, monkeypatch):
+        calls: list[object] = []
+        monkeypatch.setattr(provisioning, "apply_machine_setup", lambda payload: calls.append(payload))
+        out = self._run(tmp_path, {"op": "machine_setup", "source_data_dir": "C:/p", "user": "", "update_mode": "on"})
+        assert out["ok"] is True and len(calls) == 1
+
+    def test_a_bad_mode_is_an_invalid_request_and_nothing_runs(self, tmp_path, monkeypatch):
+        calls: list[object] = []
+        monkeypatch.setattr(provisioning, "apply_machine_setup", lambda payload: calls.append(payload))
+        out = self._run(tmp_path, {"op": "machine_setup", "source_data_dir": "C:/p", "user": "", "update_mode": "x"})
+        assert out["ok"] is False and out["message"] == elevated_apply._MSG_REQUEST_INVALID
+        assert calls == []

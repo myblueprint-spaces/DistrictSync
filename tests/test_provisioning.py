@@ -172,7 +172,7 @@ def _run(payload: dict[str, Any], rig: _Rig) -> None:
     def _register() -> None:
         rig.registered += 1
 
-    provisioning.apply_provision(payload, register=_register)
+    provisioning.apply_provision(payload, register=_register, update_mode=None)
 
 
 # --------------------------------------------------------------------------- #
@@ -464,7 +464,7 @@ class TestRollback:
             raise task_com.TaskComError(task_com.HR_LOGON_FAILURE, task_com.MSG_LOGON_FAILURE)
 
         with pytest.raises(task_com.TaskComError) as exc:
-            provisioning.apply_provision(_payload(source_profile), register=_register)
+            provisioning.apply_provision(_payload(source_profile), register=_register, update_mode=None)
         assert exc.value.message == task_com.MSG_LOGON_FAILURE
         assert machine_root.exists()  # the switch is committed; the directory is valid
         assert rig.committed
@@ -551,7 +551,9 @@ class TestCommit:
             staged(provisioned_by, update_mode=update_mode)
 
         monkeypatch.setattr(provisioning, "_commit_machine_switch", _spy)
-        provisioning.apply_provision(_payload(source_profile), register=lambda: order.append("register"))
+        provisioning.apply_provision(
+            _payload(source_profile), register=lambda: order.append("register"), update_mode=None
+        )
         assert order == ["commit", "register"]
 
     def test_a_commit_failure_reports_the_commit_step(self, rig, source_profile, machine_root):
@@ -1087,3 +1089,41 @@ class TestRealCreateWithSddl:
         assert [p.name for p in root.iterdir()] == ["probe.txt"]
         shutil.rmtree(root)
         assert not root.exists()
+
+
+# --------------------------------------------------------------------------- #
+# Plan 0055 M2a - machine setup through the REAL sequence (only the OS seams are faked).
+# --------------------------------------------------------------------------- #
+def _machine_payload(source: Path, mode: str = "on") -> dict[str, Any]:
+    return {"op": "machine_setup", "source_data_dir": str(source), "user": "", "update_mode": mode}
+
+
+class TestMachineSetupThroughTheRealSequence:
+    def test_the_mode_reaches_the_commit_and_nothing_is_registered_or_granted(self, rig, source_profile, machine_root):
+        provisioning.apply_machine_setup(_machine_payload(source_profile, "on"))
+        assert rig.update_modes == ["on"]
+        assert rig.committed == [("MachineScope", "CORP\\jane")]
+        assert rig.registered == 0  # no nightly
+        assert rig.icacls == []  # the setup admin is the only principal: nobody else is granted anything
+
+    def test_the_schedule_time_provision_leaves_the_mode_alone(self, rig, source_profile, machine_root):
+        provisioning.apply_provision(_payload(source_profile), register=lambda: None, update_mode=None)
+        assert rig.update_modes == [None]
+
+    def test_a_rerun_resumes_and_changes_the_mode(self, rig, source_profile, machine_root, monkeypatch):
+        provisioning.apply_machine_setup(_machine_payload(source_profile, "on"))
+        provisioning.apply_machine_setup(_machine_payload(source_profile, "off"))
+        assert rig.update_modes == ["on", "off"]
+
+    def test_a_bad_mode_is_refused_before_step_one(self, rig, source_profile, machine_root):
+        with pytest.raises(ValueError):
+            provisioning.apply_provision(_machine_payload(source_profile), register=lambda: None, update_mode="auto")
+        assert rig.committed == [] and rig.update_modes == []
+        assert not machine_root.exists()
+
+    def test_the_mode_is_written_before_the_switch(self):
+        """``MachineScope`` is the commit point: the mode is written before it, in the same key."""
+        import inspect
+
+        source = inspect.getsource(provisioning._commit_machine_switch)
+        assert source.index("MACHINE_SETTING_VALUE_NAME") < source.index("MACHINE_SCOPE_VALUE_NAME")

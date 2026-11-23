@@ -60,7 +60,7 @@ under `DISTRICTSYNC_DATA_DIR`, and an unknown mode, before any prompt) → the e
 (validates before `apply_machine_setup`, so a bad request never switches the computer) → `apply_provision(...,
 update_mode=)`. The update mode (`src/update/policy.py`; default `notify`, owner decision O1) is written as `UpdateMode`
 (REG_SZ) by `_commit_machine_switch` in the same commit, BEFORE `MachineScope`; the schedule-time provision passes `None`
-and leaves it. Re-running on a provisioned computer is the resume path, which is how the mode is changed later. The
+and leaves it. Re-running it, as the administrator who set the computer up, is the resume path, which is how the mode is changed later (any other account is refused earlier, at the profile pin). A re-run exits 0 only when the elevated child reports it completed: on a computer already set up the switch is on either way, so a declined prompt exits 1 and claims no mode. The
 parent runs unelevated, as the window does: `provision_session.request_machine_setup` (shares `_elevate_and_read` with
 `request_provision`) and then `complete_handover` on EVERY outcome, whose own switch read decides the exit code (0 only
 when this session now uses the shared profile). A per-user installed copy is refused before any prompt. Reading the mode,

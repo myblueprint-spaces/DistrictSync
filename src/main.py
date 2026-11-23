@@ -362,6 +362,18 @@ MACHINE_SETUP_COPY: dict[str, str] = {
 }
 
 
+#: What a committed but unusable shared folder means (the child committed against a folder the app refuses).
+MACHINE_SETUP_REFUSED_FOLDER = (
+    "The shared profile was switched on, but DistrictSync cannot use the folder C:\\ProgramData\\DistrictSync "
+    "(reason: {reason}). Run DistrictSync.exe --diagnose and send the report to your support contact."
+)
+
+
+def _is_windows() -> bool:
+    """A seam: the platform check without patching the global ``sys.platform`` the preamble also reads."""
+    return sys.platform == "win32"
+
+
 def _machine_setup(args: argparse.Namespace) -> int:
     """``--machine-setup [--updates off|notify|on]`` (plan 0055 M2). Exit 0 only when the shared profile is in use.
 
@@ -370,7 +382,7 @@ def _machine_setup(args: argparse.Namespace) -> int:
     press. No nightly is registered; schedule it afterwards. A per-user installed copy is refused: a shared profile is
     for accounts that cannot read one person's profile, and that copy lives in one.
     """
-    if sys.platform != "win32":
+    if not _is_windows():
         print("Error: --machine-setup is for Windows.")
         return 1
     from src.scheduler import provision_session
@@ -382,9 +394,11 @@ def _machine_setup(args: argparse.Namespace) -> int:
             "computer. Install the machine-wide DistrictSync, then run --machine-setup from it."
         )
         return 1
+    mode = args.updates or policy.DEFAULT_UPDATE_MODE
+    already_shared = provision_session._switch_reads_on()
     cfg = AppConfig.load()
     attempt = provision_session.request_machine_setup(
-        update_mode=args.updates,
+        update_mode=mode,
         sftp=bool(cfg.sftp_enabled),
         sftp_host=cfg.sftp_host or "",
         sftp_username=cfg.sftp_username or "",
@@ -397,11 +411,23 @@ def _machine_setup(args: argparse.Namespace) -> int:
     elif outcome != "provisioned":
         print(MACHINE_SETUP_COPY.get(outcome, MACHINE_SETUP_COPY["failed"]))
     handover = provision_session.complete_handover(persist=lambda: None, reenter=lambda: None)
-    if handover.handed_over:
+    if handover.refused is not None:
+        print(MACHINE_SETUP_REFUSED_FOLDER.format(reason=handover.refused.value))
+        return 1
+    if not handover.handed_over:
+        print("This computer still keeps DistrictSync settings per Windows account.")
+        return 1
+    # The switch is on. Whether THIS run did anything is the child's answer, never the switch's: on a computer that was
+    # already set up (a re-run to change the update mode) a declined prompt still leaves the switch on.
+    if outcome == "provisioned":
         print(MACHINE_SETUP_DONE)
-        print(f"Automatic updates: {args.updates}.")
+        print(f"Automatic updates: {mode}.")
         return 0
-    print("This computer still keeps DistrictSync settings per Windows account.")
+    if outcome == "unconfirmed" and not already_shared:
+        print(MACHINE_SETUP_DONE)
+        print("The update setting could not be confirmed; run --machine-setup again to set it.")
+        return 0
+    print("This computer already keeps one shared DistrictSync profile; this run changed nothing.")
     return 1
 
 
@@ -710,7 +736,7 @@ def _cli(argv: list[str] | None) -> int:
     machine_group.add_argument(
         "--updates",
         choices=list(policy.UPDATE_MODES),
-        default=policy.DEFAULT_UPDATE_MODE,
+        default=None,
         help=f"With --machine-setup: off, notify or on (default: {policy.DEFAULT_UPDATE_MODE})",
     )
 
@@ -721,7 +747,13 @@ def _cli(argv: list[str] | None) -> int:
     if sum(sftp_actions) + int(args.machine_setup) > 1:
         print("Error: choose only one of --sftp-configure, --sftp-test, --sftp-show, --machine-setup.")
         return 2
+    if args.updates is not None and not args.machine_setup:
+        print("Error: --updates is used with --machine-setup.")
+        return 2
     if args.machine_setup:
+        if args.sis or args.input or args.dry_run or args.sftp:
+            print("Error: --machine-setup sets the computer up only; run a conversion separately.")
+            return 2
         return _machine_setup(args)
     if args.sftp_configure:
         return _sftp_configure(args)

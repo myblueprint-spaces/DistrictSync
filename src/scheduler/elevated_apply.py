@@ -341,7 +341,9 @@ def _do_provision(payload: dict[str, object]) -> None:
     # Plan 0055 G0: refused BEFORE the HKLM commit too - registration is step 8, after the switch, the
     # DACLs and the sealed secret, so a refusal there would leave a provisioned computer with no nightly.
     _refuse_per_user_install(kind, str(payload["user"]), str(payload["exe"]))
-    provisioning.apply_provision(payload, register=lambda: _do_register({**payload, "op": "register"}))
+    provisioning.apply_provision(
+        payload, register=lambda: _do_register({**payload, "op": "register"}), update_mode=None
+    )
 
 
 #: Plan 0055 M2: what a ``machine_setup`` request must carry.

@@ -801,9 +801,7 @@ def _principal_account(payload: Mapping[str, object], *, setup_account: str) -> 
         raise ProvisionRefused(ProvisionStep.PRINCIPAL) from exc
 
 
-def apply_provision(
-    payload: Mapping[str, object], *, register: Callable[[], None], update_mode: str | None = None
-) -> None:
+def apply_provision(payload: Mapping[str, object], *, register: Callable[[], None], update_mode: str | None) -> None:
     """Provision this computer for a shared profile, fail-closed, in S-1b-i.3's order.
 
     ``register`` is injected rather than called here so the registration keeps going
@@ -815,6 +813,9 @@ def apply_provision(
     Raises:
         ProvisionRefused: at any step up to and including the commit.
     """
+    if update_mode is not None:
+        # Parsed BEFORE step 1, so a bad mode can never reach the commit after the display values are written.
+        update_mode = policy.parse_update_mode(update_mode)
     _refuse_under_override()  # 1a
     root = _machine_root()
     source = _agreed_source(payload)  # 1b
