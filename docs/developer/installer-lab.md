@@ -2,8 +2,10 @@
 
 The throwaway Azure lab that proves the machine-wide installer where a workstation cannot: a domain, a gMSA, a
 stored-password service account, Windows Server with Desktop Experience and Server Core. Owner decision 2026-11-23
-(plan 0055 O4): the lab runs under the owner's Azure login, in its OWN resource group, small, tagged, shut down when
-idle, and deleted when the matrix is done. It holds synthetic data only: the repo's test fixtures, never a district
+(plan 0055 O4): the lab runs under the owner's Azure login, small, tagged, shut down when idle, and deleted when the
+matrix is done. The owner's login can create resources in `customer-experience-ca` but not new resource groups, so the
+lab lives there, beside production resources: every lab resource is named `dsynclab-*` and tagged, sits in its own
+VNet with no peering, and is deleted BY NAME, never by deleting the resource group. It holds synthetic data only: the repo's test fixtures, never a district
 drop, and no real account, host or district name.
 
 ## Cost (named before anything is created)
@@ -23,10 +25,9 @@ disk and IP.
 
 ## Shape
 
-- Resource group `dsync-installer-lab` (canadacentral), tags `purpose=districtsync-installer-lab`,
-  `ticket=DSYNC-92`, `delete-after=<date>`. Everything below is created inside it, so one `az group delete` removes all
-  of it.
-- One VNet `10.55.0.0/16`, subnet `10.55.1.0/24`. The domain controller has the static address `10.55.1.4` and the VNet's
+- Resource group `customer-experience-ca` (canadacentral, shared). Every resource is named `dsynclab-*` and tagged
+  `purpose=districtsync-installer-lab`, `ticket=DSYNC-92`, `delete-after=<date>`.
+- One VNet `dsynclab-vnet`, `10.55.0.0/16`, subnet `10.55.1.0/24`. The domain controller has the static address `10.55.1.4` and the VNet's
   DNS points at it once it is promoted.
 - **No inbound access.** Each VM has a Standard public IP only for OUTBOUND traffic (downloading the MSI from a GitHub
   run artifact, and the update feed later). Standard IPs deny inbound unless a rule allows it, and no rule is added.
@@ -43,18 +44,17 @@ disk and IP.
 PowerShell, signed in with `az login`, from any folder:
 
 ```powershell
-$rg = "dsync-installer-lab"; $loc = "canadacentral"
+$rg = "customer-experience-ca"; $loc = "canadacentral"
 $tags = "purpose=districtsync-installer-lab", "ticket=DSYNC-92", "delete-after=$((Get-Date).AddDays(14).ToString('yyyy-MM-dd'))"
 $adminUser = "labadmin"
 $pw = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 24 | ForEach-Object { [char]$_ }) + "!a1"
 
-az group create -n $rg -l $loc --tags $tags
-az network vnet create -g $rg -n lab-vnet --address-prefixes 10.55.0.0/16 --subnet-name lab --subnet-prefixes 10.55.1.0/24 --tags $tags
+az network vnet create -g $rg -n dsynclab-vnet --address-prefixes 10.55.0.0/16 --subnet-name lab --subnet-prefixes 10.55.1.0/24 --tags $tags
 $core = "MicrosoftWindowsServer:WindowsServer:2022-datacenter-azure-edition-core:latest"
 $desk = "MicrosoftWindowsServer:WindowsServer:2022-datacenter-azure-edition:latest"
-foreach ($vm in @(@("dc1", $core, "Standard_B2s", "10.55.1.4"), @("mem1", $desk, "Standard_B2ms", ""), @("core1", $core, "Standard_B2s", ""))) {
+foreach ($vm in @(@("dsynclab-dc1", $core, "Standard_B2s", "10.55.1.4"), @("dsynclab-mem1", $desk, "Standard_B2ms", ""), @("dsynclab-core1", $core, "Standard_B2s", ""))) {
   $ipArgs = if ($vm[3]) { @("--private-ip-address", $vm[3]) } else { @() }
-  az vm create -g $rg -n $vm[0] --image $vm[1] --size $vm[2] --vnet-name lab-vnet --subnet lab @ipArgs `
+  az vm create -g $rg -n $vm[0] --image $vm[1] --size $vm[2] --vnet-name dsynclab-vnet --subnet lab @ipArgs `
     --public-ip-sku Standard --nsg '""' --admin-username $adminUser --admin-password $pw --tags $tags --only-show-errors
   az vm auto-shutdown -g $rg -n $vm[0] --time 0300   # 03:00 UTC = evening in Canada
 }
@@ -63,10 +63,10 @@ foreach ($vm in @(@("dc1", $core, "Standard_B2s", "10.55.1.4"), @("mem1", $desk,
 Promote the domain controller, point the VNet at it, and join the members:
 
 ```powershell
-az vm run-command invoke -g $rg -n dc1 --command-id RunPowerShellScript --scripts `
+az vm run-command invoke -g $rg -n dsynclab-dc1 --command-id RunPowerShellScript --scripts `
   "Install-WindowsFeature AD-Domain-Services -IncludeManagementTools; Install-ADDSForest -DomainName lab.dsync.test -SafeModeAdministratorPassword (ConvertTo-SecureString '$pw' -AsPlainText -Force) -Force -NoRebootOnCompletion; Restart-Computer -Force"
-az network vnet update -g $rg -n lab-vnet --dns-servers 10.55.1.4
-foreach ($m in "mem1", "core1") {
+az network vnet update -g $rg -n dsynclab-vnet --dns-servers 10.55.1.4
+foreach ($m in "dsynclab-mem1", "dsynclab-core1") {
   az vm restart -g $rg -n $m
   az vm run-command invoke -g $rg -n $m --command-id RunPowerShellScript --scripts `
     "`$c = New-Object PSCredential('LAB\$adminUser', (ConvertTo-SecureString '$pw' -AsPlainText -Force)); Add-Computer -DomainName lab.dsync.test -Credential `$c -Restart -Force"
@@ -76,15 +76,15 @@ foreach ($m in "mem1", "core1") {
 Accounts, the gMSA and the stored-password service account (on `dc1`), then install the gMSA on each member:
 
 ```powershell
-az vm run-command invoke -g $rg -n dc1 --command-id RunPowerShellScript --scripts @"
+az vm run-command invoke -g $rg -n dsynclab-dc1 --command-id RunPowerShellScript --scripts @"
 Add-KdsRootKey -EffectiveTime ((Get-Date).AddHours(-10))
 New-ADGroup -Name DSyncHosts -GroupScope Global
-Add-ADGroupMember DSyncHosts -Members 'mem1$','core1$'
+Add-ADGroupMember DSyncHosts -Members 'dsynclab-mem1$','dsynclab-core1$'
 New-ADServiceAccount -Name svc_dsync -DNSHostName svc_dsync.lab.dsync.test -PrincipalsAllowedToRetrieveManagedPassword DSyncHosts
 New-ADUser -Name svc_dsyncpw -AccountPassword (ConvertTo-SecureString '$pw' -AsPlainText -Force) -Enabled `$true -PasswordNeverExpires `$true
 New-ADUser -Name lab_user -AccountPassword (ConvertTo-SecureString '$pw' -AsPlainText -Force) -Enabled `$true
 "@
-foreach ($m in "mem1", "core1") {
+foreach ($m in "dsynclab-mem1", "dsynclab-core1") {
   az vm restart -g $rg -n $m   # picks up the DSyncHosts membership
   az vm run-command invoke -g $rg -n $m --command-id RunPowerShellScript --scripts `
     "Install-WindowsFeature RSAT-AD-PowerShell; Install-ADServiceAccount svc_dsync; Test-ADServiceAccount svc_dsync"
@@ -104,7 +104,7 @@ the VM:
 $run = "<rehearsal run id>"
 $id = gh api "repos/myblueprint-spaces/DistrictSync/actions/runs/$run/artifacts" --jq '.artifacts[] | select(.name=="DistrictSync-windows-msi-rehearsal") | .id'
 $url = (gh api -i "repos/myblueprint-spaces/DistrictSync/actions/artifacts/$id/zip" | Select-String '^Location: (.*)$').Matches[0].Groups[1].Value.Trim()
-foreach ($m in "mem1", "core1") {
+foreach ($m in "dsynclab-mem1", "dsynclab-core1") {
   az vm run-command invoke -g $rg -n $m --command-id RunPowerShellScript --scripts `
     "New-Item -ItemType Directory -Force C:\lab | Out-Null; Invoke-WebRequest '$url' -OutFile C:\lab\msi.zip; Expand-Archive C:\lab\msi.zip C:\lab -Force; Get-ChildItem C:\lab"
 }
@@ -122,10 +122,19 @@ the point of the lab).
 
 ## Stop, start, delete
 
+The lab shares its resource group with production resources, so every command names the lab's resources explicitly:
+
 ```powershell
-az vm deallocate -g dsync-installer-lab --ids $(az vm list -g dsync-installer-lab --query "[].id" -o tsv)   # idle: disks and IPs only
-az vm start -g dsync-installer-lab --ids $(az vm list -g dsync-installer-lab --query "[].id" -o tsv)
-az group delete -n dsync-installer-lab --yes --no-wait   # when the matrix is recorded: removes everything
+$rg = "customer-experience-ca"
+$vms = az vm list -g $rg --query "[?starts_with(name, 'dsynclab-')].id" -o tsv
+az vm deallocate --ids $vms   # idle: disks and IPs only
+az vm start --ids $vms
+# Delete (when the matrix is recorded): the VMs, then everything else carrying the lab tag, then check nothing is left.
+az vm delete --ids $vms --yes --force-deletion none
+$rest = az resource list --tag purpose=districtsync-installer-lab --query "[?starts_with(name, 'dsynclab-')].id" -o tsv
+az resource delete --ids $rest   # NICs, disks, IPs, then the VNet (rerun once if a dependency was still attached)
+az resource list --tag purpose=districtsync-installer-lab -o table   # must be empty
 ```
 
-Deleting the resource group is the last step of L1 and of R1's matrix run; the ticket records the date it was deleted.
+Never `az group delete` here: the resource group holds production services. Deleting the lab is the last step of L1
+and of R1's matrix run; the ticket records the date it was deleted.
