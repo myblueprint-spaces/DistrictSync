@@ -8,10 +8,11 @@ version is restored before the broken code is imported again.
 What this module decides (the package decides nothing about DistrictSync):
 
 **Which starts count.** Only a start that will reach a confirmed start: the window (no arguments) and a conversion run
-(``--sis``). ``--version``, ``--diagnose``, ``--schedule-check``, ``--elevated-apply``, the SFTP subcommands and Velopack's own
-``--veloapp-*`` hooks are ``counted=False``: they open no window and never confirm, so counting them would make a quiet admin's
-``--version`` (or an installer hook) look like a crash loop. They still run inside the guard, so a crash in them also logs
-and exits at once instead of waiting on an error box.
+(``--sis``). ``--version``, ``--diagnose``, ``--schedule-check``, ``--elevated-apply`` and the SFTP subcommands are ``counted=False``: they open
+no window and never confirm, so counting them would make a quiet admin's ``--version`` look like a crash loop. They still run inside
+the guard, so a crash in them also logs and exits at once instead of waiting on an error box. Velopack's own ``--veloapp-*`` hooks
+never reach this module from ``src.main`` (plan 0055 M1 dispatches them first, before any profile is resolved); ``start_counts``
+still refuses to count one, as a floor for any other caller.
 
 **What a confirmed start is.** "Start-up completed", never "the conversion succeeded": for a conversion, the moment before
 ETL begins (profile pinned, logging up, configs loadable); for the window, the first screen. A nightly that exits 1 over a
@@ -43,15 +44,12 @@ from types import ModuleType
 from typing import Any, Final
 
 from src.update.package import UPDATER_STATE_FOLDER, app_identity
-from src.update.startup import install_root
+from src.update.startup import install_root, is_velopack_hook
 from src.utils.build_flavor import is_e2e_build, is_installed_build
 
 _GUARD_MODULE: Final = "myb_start_guard"
 _RECOVERY_MODULE: Final = "myb_desktop_updater.recovery"
 _UPDATER_MODULE: Final = "myb_desktop_updater"
-
-#: Argument that begins a Velopack-driven invocation (install, update, obsolete hooks).
-_VELOPACK_PREFIX: Final = "--veloapp-"
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +59,7 @@ _STATE_DIR: Path | None = None
 
 def start_counts(args: list[str]) -> bool:
     """Whether this invocation will reach a confirmed start: the window, or a conversion run (never a Velopack hook)."""
-    if any(a.startswith(_VELOPACK_PREFIX) for a in args):
+    if is_velopack_hook(args):
         return False
     return not args or "--sis" in args
 

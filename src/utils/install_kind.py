@@ -42,7 +42,12 @@ TRUSTED_WRITERS: Final = frozenset(
 #: WRITE_DAC, WRITE_OWNER, GENERIC_WRITE, GENERIC_ALL. Read and execute rights are not in the mask.
 WRITE_CLASS_MASK: Final = 0x2 | 0x4 | 0x10 | 0x40 | 0x100 | 0x10000 | 0x40000 | 0x80000 | 0x40000000 | 0x10000000
 
+#: Rights on the FOLDER ABOVE the root that would let a holder swap the root out: delete a child, change the parent's
+#: DACL or owner, or everything.
+PARENT_SWAP_MASK: Final = 0x40 | 0x40000 | 0x80000 | 0x10000000
+
 _ACCESS_ALLOWED_ACE_TYPE: Final = 0
+_ACCESS_DENIED_ACE_TYPE: Final = 1
 _INHERIT_ONLY_ACE: Final = 0x08
 
 
@@ -59,16 +64,31 @@ def _dacl_entries(path: Path) -> tuple[tuple[int, int, int, str], ...]:
     return paths.read_dacl_entries(path)
 
 
-def writable_by_non_admin(path: Path) -> bool:
-    """Whether any account outside :data:`TRUSTED_WRITERS` holds a write-class ALLOW right on ``path`` itself.
+def _owner_sid(path: Path) -> str:
+    """The owner SID string of ``path``. A seam for tests; raises ``OSError``."""
+    from src.utils import paths
 
-    INHERIT_ONLY aces are ignored: they apply to children created later (``CREATOR OWNER`` on Program Files), not to this
-    folder. A DENY ace never makes a folder writable. Raises ``OSError`` when the DACL cannot be read.
+    return paths._read_dir_security(path)[0]
+
+
+def writable_by_non_admin(path: Path, *, mask_of_concern: int = WRITE_CLASS_MASK) -> bool:
+    """Whether anyone outside :data:`TRUSTED_WRITERS` can change ``path``: its OWNER, or an ALLOW ace with a right of concern.
+
+    * The owner can always rewrite the DACL (an implicit WRITE_DAC), so an untrusted owner is writing, whatever the DACL says
+      (a user who created the folder before an administrator installed into it).
+    * INHERIT_ONLY aces are ignored: they apply to children created later (``CREATOR OWNER`` on Program Files).
+    * A DENY ace never makes a folder writable.
+    * Any other ace type (object, callback, conditional) is doubt, and doubt is writing: this reader cannot evaluate it.
+    Raises ``OSError`` when the owner or the DACL cannot be read.
     """
+    if _owner_sid(path) not in TRUSTED_WRITERS:
+        return True
     for ace_type, flags, mask, sid in _dacl_entries(path):
-        if ace_type != _ACCESS_ALLOWED_ACE_TYPE or flags & _INHERIT_ONLY_ACE:
+        if flags & _INHERIT_ONLY_ACE or ace_type == _ACCESS_DENIED_ACE_TYPE:
             continue
-        if sid not in TRUSTED_WRITERS and mask & WRITE_CLASS_MASK:
+        if ace_type != _ACCESS_ALLOWED_ACE_TYPE:
+            return True
+        if sid not in TRUSTED_WRITERS and mask & mask_of_concern:
             return True
     return False
 
@@ -76,12 +96,16 @@ def writable_by_non_admin(path: Path) -> bool:
 def is_machine_wide_root(root: Path) -> bool:
     """Whether ``root`` (a Velopack install root) is a machine-wide install: the MSI marker AND no non-admin writer.
 
-    Checks the root and ``current`` (the program). Fails toward ``False``: an unreadable DACL is not machine-wide.
+    Checks the root and ``current`` (owner and DACL), and the folder above the root for a right that would let someone
+    swap the root out (:data:`PARENT_SWAP_MASK`). Out of scope until machine setup hardens the install (plan 0055 M2): an
+    explicit ace on an individual FILE under ``current``. Fails toward ``False``: anything unreadable is not machine-wide.
     """
     if not (root / MSI_MARKER).is_file():
         return False
     try:
-        return not any(writable_by_non_admin(folder) for folder in (root, root / "current"))
+        if any(writable_by_non_admin(folder) for folder in (root, root / "current")):
+            return False
+        return not writable_by_non_admin(root.parent, mask_of_concern=PARENT_SWAP_MASK)
     except OSError:
         return False
 

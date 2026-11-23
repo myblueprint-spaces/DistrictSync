@@ -7,6 +7,7 @@ PER_USER, the safer kind.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -58,8 +59,9 @@ def installed(monkeypatch):
     _stamp(monkeypatch, "installed")
 
 
-def _dacl(monkeypatch, entries):
+def _dacl(monkeypatch, entries, owner=TRUSTED_INSTALLER):
     monkeypatch.setattr(ik, "_dacl_entries", lambda _path: entries)
+    monkeypatch.setattr(ik, "_owner_sid", lambda _path: owner)
 
 
 class TestTheKinds:
@@ -110,7 +112,9 @@ class TestTheAclRule:
         _dacl(monkeypatch, ((ALLOW, 0, READ_EXECUTE, USERS),))
         assert ik.writable_by_non_admin(Path(".")) is False
 
-    @pytest.mark.parametrize("mask", [0x2, 0x4, 0x40, 0x10000, 0x40000, 0x80000, 0x40000000, GENERIC_ALL, MODIFY])
+    @pytest.mark.parametrize(
+        "mask", [0x2, 0x4, 0x10, 0x40, 0x100, 0x10000, 0x40000, 0x80000, 0x40000000, GENERIC_ALL, MODIFY]
+    )
     def test_any_write_class_right_for_another_account_is_writing(self, monkeypatch, mask):
         _dacl(monkeypatch, ((ALLOW, 0, mask, "S-1-5-21-1-2-3-1001"),))
         assert ik.writable_by_non_admin(Path(".")) is True
@@ -119,10 +123,34 @@ class TestTheAclRule:
         _dacl(monkeypatch, tuple((ALLOW, 0, FULL, sid) for sid in (SYSTEM, ADMINS, TRUSTED_INSTALLER)))
         assert ik.writable_by_non_admin(Path(".")) is False
 
+    def test_an_untrusted_owner_is_writing_whatever_the_dacl_says(self, monkeypatch):
+        """The owner can always rewrite the DACL: a user who created the folder first, then let an admin install into it."""
+        _dacl(monkeypatch, PROGRAM_FILES, owner="S-1-5-21-1-2-3-1001")
+        assert ik.writable_by_non_admin(Path(".")) is True
+
+    @pytest.mark.parametrize("ace_type", [5, 9, 0xB])  # object, callback, callback-object
+    def test_an_ace_this_reader_cannot_evaluate_is_doubt_and_doubt_is_writing(self, monkeypatch, ace_type):
+        _dacl(monkeypatch, ((ace_type, 0, READ_EXECUTE, USERS),))
+        assert ik.writable_by_non_admin(Path(".")) is True
+
+    def test_a_parent_that_lets_others_delete_the_root_is_not_machine_wide(self, tmp_path, monkeypatch):
+        root = Path(_msi_layout(tmp_path)).parent.parent
+        clean, swappable = PROGRAM_FILES, (*PROGRAM_FILES, (ALLOW, 0, 0x40, USERS))
+        monkeypatch.setattr(ik, "_owner_sid", lambda _path: TRUSTED_INSTALLER)
+        monkeypatch.setattr(ik, "_dacl_entries", lambda path: swappable if path == root.parent else clean)
+        assert ik.is_machine_wide_root(root) is False
+        monkeypatch.setattr(ik, "_dacl_entries", lambda path: clean)
+        assert ik.is_machine_wide_root(root) is True  # positive twin
+
     @pytest.mark.skipif(sys.platform != "win32", reason="reads a real DACL")
     def test_the_real_reader_sees_this_accounts_own_write_right_on_a_folder_it_created(self, tmp_path):
-        """A folder in the user's own temp folder is writable by that (non-trusted) account: the real reader agrees."""
+        """A folder in the user's own temp folder is owned and writable by that (non-trusted) account."""
         assert ik.writable_by_non_admin(tmp_path) is True
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="reads a real DACL")
+    def test_the_real_reader_finds_program_files_closed_to_non_admins(self):
+        """The negative twin only correct flag, mask and owner parsing passes: Program Files is admin-only."""
+        assert ik.writable_by_non_admin(Path(os.environ["PROGRAMFILES"])) is False
 
 
 class TestWhatTheKindChanges:
@@ -186,8 +214,15 @@ _WATCHED = ("src.update.entry", "src.utils.paths", "src.config.app_config", "pan
 
 _HOOK_PROBE = """
 import runpy, sys
+from pathlib import Path
 import src.update.startup as s
-s.run_velopack_startup = lambda: print("HOOK called")
+# The REAL run_velopack_startup runs: an installed build under an install, with Velopack's hook module faked.
+s.is_installed_build = lambda: True
+s.install_root = lambda executable=None: Path(".")
+import types
+fake = types.ModuleType(s._HOOK_MODULE)
+fake.run_startup_hook = lambda: print("HOOK called")
+sys.modules[s._HOOK_MODULE] = fake
 sys.argv = ["DistrictSync.exe", *ARGS]
 try:
     runpy.run_module("src.main", run_name="__main__")
@@ -221,3 +256,21 @@ def test_positive_twin_an_ordinary_invocation_still_goes_through_the_start_guard
     assert seen.get("src.update.entry") == "True"
     assert seen.get("src.config.app_config") == "True"
     assert seen.get("EXIT") == "0"
+
+
+class TestTheHookEntry:
+    def test_a_portable_build_given_a_hook_argument_exits_quietly(self, monkeypatch):
+        _stamp(monkeypatch, "portable")
+        assert startup.run_velopack_hook() == 0
+
+    def test_a_hook_that_raises_ends_with_1_instead_of_an_error_dialog(self, monkeypatch):
+        def boom() -> bool:
+            raise RuntimeError("velopack failed")
+
+        monkeypatch.setattr(startup, "run_velopack_startup", boom)
+        assert startup.run_velopack_hook() == 1
+
+    def test_one_spelling_of_the_hook_prefix(self):
+        assert startup.is_velopack_hook(["--veloapp-install", "1"]) is True
+        assert startup.is_velopack_hook(["--version"]) is False
+        assert entry.start_counts(["--veloapp-updated", "1"]) is False

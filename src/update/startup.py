@@ -71,7 +71,8 @@ def run_velopack_startup() -> bool:
     # own hook arguments only.
     from src.utils.install_kind import InstallKind, install_kind  # lazy: install_kind imports this module
 
-    if install_kind() is InstallKind.MACHINE and not is_velopack_hook(sys.argv[1:]):
+    # The hook test comes FIRST: a hook never reads the install's DACL (which would import src.utils.paths).
+    if not is_velopack_hook(sys.argv[1:]) and install_kind() is InstallKind.MACHINE:
         return False
     try:
         hook = importlib.import_module(_HOOK_MODULE).run_startup_hook
@@ -96,7 +97,13 @@ def run_velopack_hook() -> int:
     Windows Installer runs the hooks from the MSI, and a Group Policy or Intune install runs them as SYSTEM: anything that
     resolves a profile here would create one under ``systemprofile``. So the hook does exactly one thing, Velopack's
     ``App().run()`` (which handles the hook and exits the process), and touches nothing of DistrictSync's own: no profile,
-    no settings, no secret, no task, no registry. Returns 0 if nothing handled it (a portable build given a hook argument).
+    no settings, no secret, no task, no registry. It runs for EVERY install kind (the per-user ``Setup.exe`` runs hooks too),
+    so a hook no longer passes through the start guard; a hook that raises returns 1 here instead of the guard's handling,
+    so the installer is never left waiting on an error dialog. Returns 0 if nothing handled it: a portable build given a hook
+    argument exits 0 quietly (it used to be an argparse usage error, exit 2).
     """
-    run_velopack_startup()
+    try:
+        run_velopack_startup()
+    except Exception:  # noqa: BLE001 - an installer hook must end, never hang on an error dialog
+        return 1
     return 0
