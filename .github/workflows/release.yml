@@ -443,6 +443,218 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
+  # Plan 0055 slice B1 (DSYNC-93): the MACHINE-WIDE installer, Velopack's per-machine MSI. Rehearsal (dispatch)
+  # ONLY: nothing here is attached to a Release, and `publish-release` does not need it, so a failure here can
+  # never stop a release. Same signing identity as installer-windows. Proves, on the runner (an administrator):
+  # MSI N installs to Program Files with an ACL non-administrators cannot write, the CLI and window smokes pass on
+  # that copy, MSI N+1 upgrades it in place, and uninstall removes the program but never a profile or a task.
+  installer-msi:
+    needs: installer-build
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    timeout-minutes: 60
+    environment: release
+    permissions:
+      id-token: write # OIDC token for azure/login - the ONLY elevated scope here
+      contents: read
+    env:
+      PACK_ID: myBlueprint.DistrictSync
+      INSTALL_ROOT: C:\Program Files\myBlueprint.DistrictSync
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - run: pip install -r requirements.txt -r requirements-dev.txt
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: DistrictSync-windows-installed-onedir
+          path: dist/DistrictSync
+
+      - name: Assert the downloaded exe is UNSIGNED
+        shell: pwsh
+        run: |
+          $sig = Get-AuthenticodeSignature dist/DistrictSync/DistrictSync.exe
+          Write-Output "pre-sign status: $($sig.Status)"
+          if ($sig.Status -eq 'Valid') { Write-Error "dist/DistrictSync/DistrictSync.exe is ALREADY signed before the signing step"; exit 1 }
+
+      - name: Azure login (OIDC - no stored secret)
+        uses: azure/login@7ddb5af1ef8758cf1353cf3b42f940aee27ba21c # v3.0.2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Install vpk 1.2.161
+        run: dotnet tool install --global vpk --version 1.2.161
+
+      - name: Write the signing metadata file (the signer reads a file, not three values)
+        shell: pwsh
+        env:
+          SIGNING_ENDPOINT: ${{ vars.SIGNING_ENDPOINT }}
+          SIGNING_ACCOUNT_NAME: ${{ vars.SIGNING_ACCOUNT_NAME }}
+          SIGNING_CERTIFICATE_PROFILE_NAME: ${{ vars.SIGNING_CERTIFICATE_PROFILE_NAME }}
+        run: |
+          @{ Endpoint = $env:SIGNING_ENDPOINT; CodeSigningAccountName = $env:SIGNING_ACCOUNT_NAME; CertificateProfileName = $env:SIGNING_CERTIFICATE_PROFILE_NAME } |
+            ConvertTo-Json | Set-Content -Encoding utf8 signing-metadata.json
+
+      # Two versions, so the upgrade-over-an-install path is proven (MSI product versions are numeric: 0.<run>.0, 0.<run>.1).
+      - name: Pack MSI N and MSI N+1 (per-machine) and sign with vpk
+        shell: pwsh
+        run: |
+          $run = "${{ github.run_number }}"
+          foreach ($pair in @(@("0.$run.0", "msi-n"), @("0.$run.1", "msi-n1"))) {
+            vpk pack --packId $env:PACK_ID --packTitle DistrictSync --packVersion $pair[0] --packDir dist/DistrictSync `
+              --mainExe DistrictSync.exe --runtime win-x64 --outputDir $pair[1] --msi --instLocation PerMachine `
+              --shortcuts StartMenuRoot --azureTrustedSignFile signing-metadata.json
+            if ($LASTEXITCODE -ne 0) { Write-Error "vpk pack $($pair[0]) failed"; exit 1 }
+            Copy-Item "$($pair[1])\$($env:PACK_ID)-win.msi" "$($pair[1]).msi"
+          }
+          Get-ChildItem *.msi | Format-Table Name, Length
+          $status = (Get-AuthenticodeSignature msi-n.msi).Status
+          Write-Output "MSI signature after vpk: $status"
+          "MSI_SIGNED_BY_VPK=$($status -eq 'Valid')" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+
+      # Whether vpk signs the MSI itself is the plan's open question; if it does not, the same identity signs it here.
+      - name: Sign the MSIs with Azure Trusted Signing (only if vpk did not)
+        if: env.MSI_SIGNED_BY_VPK != 'True'
+        uses: azure/trusted-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          endpoint: ${{ vars.SIGNING_ENDPOINT }}
+          trusted-signing-account-name: ${{ vars.SIGNING_ACCOUNT_NAME }}
+          certificate-profile-name: ${{ vars.SIGNING_CERTIFICATE_PROFILE_NAME }}
+          files-folder: ${{ github.workspace }}
+          files-folder-filter: msi
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Verify the signature and the timestamp on both MSIs
+        shell: pwsh
+        run: |
+          $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" | Sort-Object FullName -Descending | Select-Object -First 1
+          foreach ($msi in @("msi-n.msi", "msi-n1.msi")) {
+            & $signtool.FullName verify /pa /v $msi
+            if ($LASTEXITCODE -ne 0) { Write-Error "signtool verify FAILED on $msi"; exit 1 }
+            $sig = Get-AuthenticodeSignature $msi
+            Write-Output "${msi}: $($sig.Status); subject: $($sig.SignerCertificate.Subject); timestamp: $($null -ne $sig.TimeStamperCertificate)"
+            if ($sig.Status -ne 'Valid' -or $null -eq $sig.TimeStamperCertificate) { Write-Error "$msi is not validly signed and timestamped"; exit 1 }
+          }
+
+      # Stand-ins for what an uninstall must NEVER remove (plan 0055 Goal 5): a ProgramData profile and a nightly task.
+      - name: Create the stand-in profile and task
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force C:\ProgramData\DistrictSync-ci-standin | Out-Null
+          Set-Content C:\ProgramData\DistrictSync-ci-standin\keep.txt "profile"
+          $a = New-ScheduledTaskAction -Execute "$env:INSTALL_ROOT\current\DistrictSync.exe" -Argument "--version"
+          Register-ScheduledTask -TaskName DistrictSync_CI_Standin -Action $a -Force | Out-Null
+          Disable-ScheduledTask -TaskName DistrictSync_CI_Standin | Out-Null
+
+      - name: Install MSI N machine-wide (silent) and check the folder and its ACL
+        shell: pwsh
+        run: |
+          $p = Start-Process msiexec.exe -ArgumentList "/i `"$PWD\msi-n.msi`" /qn /l*v `"$PWD\msi-install-n.log`"" -Wait -PassThru
+          Write-Output "msiexec exit: $($p.ExitCode)"
+          if ($p.ExitCode -ne 0) { Get-Content msi-install-n.log -Tail 60; exit 1 }
+          Start-Sleep -Seconds 3
+          Get-Process DistrictSync, flet -ErrorAction SilentlyContinue | Stop-Process -Force
+          if (-not (Test-Path "$env:INSTALL_ROOT\current\DistrictSync.exe")) { Write-Error "not installed at $env:INSTALL_ROOT"; exit 1 }
+          Get-ChildItem $env:INSTALL_ROOT | Format-Table Name
+          # No write-class right for a non-administrator group on the install root or current\ (plan 0055 install kind).
+          $writeRights = 'Write|Modify|FullControl|CreateFiles|AppendData|Delete|ChangePermissions|TakeOwnership'
+          $open = @('S-1-5-32-545', 'S-1-5-11', 'S-1-1-0')  # Users, Authenticated Users, Everyone
+          foreach ($dir in @($env:INSTALL_ROOT, "$env:INSTALL_ROOT\current")) {
+            foreach ($ace in (Get-Acl $dir).Access) {
+              $sid = try { $ace.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value } catch { '' }
+              $inheritOnly = ($ace.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0
+              if ($ace.AccessControlType -eq 'Allow' -and -not $inheritOnly -and $open -contains $sid -and $ace.FileSystemRights.ToString() -match $writeRights) {
+                Write-Error "$dir grants $($ace.FileSystemRights) to $sid"; exit 1
+              }
+            }
+          }
+          $arp = Get-ChildItem HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall | ForEach-Object { Get-ItemProperty $_.PsPath } | Where-Object { $_.DisplayName -eq 'DistrictSync' }
+          $arp | Format-List PSChildName, DisplayVersion, InstallLocation, SystemComponent
+
+      - name: Verify the installed files are signed (exe, Flet client, Update.exe)
+        shell: pwsh
+        run: |
+          $bad = @()
+          foreach ($rel in @("current\DistrictSync.exe", "current\_internal\flet_view\flet.exe", "Update.exe")) {
+            $sig = Get-AuthenticodeSignature (Join-Path $env:INSTALL_ROOT $rel)
+            Write-Output ("{0}: {1}; timestamp: {2}" -f $rel, $sig.Status, ($null -ne $sig.TimeStamperCertificate))
+            if ($sig.Status -ne 'Valid' -or $null -eq $sig.TimeStamperCertificate) { $bad += $rel }
+          }
+          if ($bad.Count -gt 0) { Write-Error "not validly signed and timestamped: $($bad -join ', ')"; exit 1 }
+
+      - name: CLI smokes on the machine-wide copy
+        shell: bash
+        env:
+          DISTRICTSYNC_DATA_DIR: ${{ runner.temp }}/dsync-msi-profile
+        run: |
+          python scripts/ci_flet_pack_smoke.py "$INSTALL_ROOT" DistrictSync \
+            --cli-smoke --phase all --artifact installed \
+            --work-dir "$RUNNER_TEMP/dsync-msi-work"
+
+      - name: GUI smoke on the machine-wide copy
+        shell: bash
+        run: python scripts/ci_flet_pack_smoke.py "$INSTALL_ROOT" DistrictSync --artifact installed --require-close
+
+      - name: Upgrade over the installed copy with MSI N+1
+        shell: pwsh
+        run: |
+          $p = Start-Process msiexec.exe -ArgumentList "/i `"$PWD\msi-n1.msi`" /qn /l*v `"$PWD\msi-install-n1.log`"" -Wait -PassThru
+          Write-Output "msiexec exit: $($p.ExitCode)"
+          if ($p.ExitCode -ne 0) { Get-Content msi-install-n1.log -Tail 60; exit 1 }
+          Start-Sleep -Seconds 3
+          Get-Process DistrictSync, flet -ErrorAction SilentlyContinue | Stop-Process -Force
+          $want = "0.${{ github.run_number }}.1"
+          $got = ([xml](Get-Content "$env:INSTALL_ROOT\current\sq.version")).package.metadata.version
+          Write-Output "installed version after upgrade: $got (want $want)"
+          if ($got -ne $want) { Write-Error "the upgrade did not land"; exit 1 }
+          # A windowed (GUI-subsystem) exe: `&` neither waits for it nor sets $LASTEXITCODE, so wait for the real exit
+          # code. A throwaway profile, as every smoke uses, so the check never writes the runner's own profile.
+          $env:DISTRICTSYNC_DATA_DIR = Join-Path $env:RUNNER_TEMP "dsync-msi-upgrade-profile"
+          New-Item -ItemType Directory -Force $env:DISTRICTSYNC_DATA_DIR | Out-Null
+          $p = Start-Process -FilePath "$env:INSTALL_ROOT\current\DistrictSync.exe" -ArgumentList "--version" -Wait -PassThru -NoNewWindow `
+            -RedirectStandardOutput "$env:RUNNER_TEMP\upgraded-version.txt"
+          Write-Output "upgraded --version exit $($p.ExitCode): $(Get-Content "$env:RUNNER_TEMP\upgraded-version.txt" -Raw)"
+          if ($p.ExitCode -ne 0) { Write-Error "the upgraded copy does not start"; exit 1 }
+
+      - name: Uninstall, then assert the program is gone and the profile and task are not
+        if: always()
+        shell: pwsh
+        run: |
+          Get-Process DistrictSync, flet -ErrorAction SilentlyContinue | Stop-Process -Force
+          $products = Get-ChildItem HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall | ForEach-Object { Get-ItemProperty $_.PsPath } |
+            Where-Object { $_.DisplayName -eq 'DistrictSync' -and $_.PSChildName -like '{*' }
+          foreach ($prod in $products) {
+            $p = Start-Process msiexec.exe -ArgumentList "/x $($prod.PSChildName) /qn /l*v `"$PWD\msi-uninstall.log`"" -Wait -PassThru
+            Write-Output "uninstall $($prod.PSChildName): exit $($p.ExitCode)"
+          }
+          for ($i = 0; $i -lt 15 -and (Test-Path "$env:INSTALL_ROOT\current"); $i++) { Start-Sleep -Seconds 2 }
+          $failed = $false
+          if (Test-Path "$env:INSTALL_ROOT\current") { Write-Output "FAIL: the program is still installed"; $failed = $true }
+          if (-not (Test-Path C:\ProgramData\DistrictSync-ci-standin\keep.txt)) { Write-Output "FAIL: uninstall removed the stand-in profile"; $failed = $true }
+          if (-not (Get-ScheduledTask -TaskName DistrictSync_CI_Standin -ErrorAction SilentlyContinue)) { Write-Output "FAIL: uninstall removed the stand-in task"; $failed = $true }
+          Unregister-ScheduledTask -TaskName DistrictSync_CI_Standin -Confirm:$false -ErrorAction SilentlyContinue
+          Remove-Item -Recurse -Force C:\ProgramData\DistrictSync-ci-standin -ErrorAction SilentlyContinue
+          if ($failed) { exit 1 }
+          Write-Output "uninstalled; stand-in profile and task kept"
+
+      # The MSI and its install logs, kept 1 day for the owner and for the lab (L1). Never attached to a Release.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: DistrictSync-windows-msi-rehearsal
+          path: |
+            msi-n.msi
+            msi-n1.msi
+            msi-*.log
+          retention-days: 1
+          if-no-files-found: warn
+
   # -----------------------------------------------------------------------
   # Publish release — attach the Flet-default exe (1/OS) + SHA-256 checksums.
   # The download `name:` values MUST byte-match flet-pack.yml's upload names
