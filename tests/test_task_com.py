@@ -273,12 +273,13 @@ class TestMessageInjectivity:
         assert duplicates == {}
 
     def test_the_sweep_sees_the_constants_at_all(self):
-        """Not vacuous: the reflection must actually find every producible message (24
-        today — 8 engine canonicals, 12 transport categories, 4 child refusals; the 12th
+        """Not vacuous: the reflection must actually find every producible message (25
+        today — 8 engine canonicals, 13 transport categories, 4 child refusals; the 12th
         transport category is _MSG_ELEVATED_ACCESS_DENIED, added with its classifier branch at
-        plan 0047 A2, and the 8th engine canonical is MSG_ACCOUNT_NOT_RECOGNIZED, added with the
+        plan 0047 A2, the 13th is _MSG_INSTALL_NOT_SHAREABLE, added with its classifier branch at
+        plan 0055 G0, and the 8th engine canonical is MSG_ACCOUNT_NOT_RECOGNIZED, added with the
         measured 0x80070534 row at plan 0046 B)."""
-        assert len(self._producible()) == 24
+        assert len(self._producible()) == 25
 
     def test_every_table_value_is_a_named_constant(self):
         produced = self._producible()
