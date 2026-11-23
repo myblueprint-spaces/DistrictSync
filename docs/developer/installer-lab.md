@@ -53,135 +53,35 @@ SpacesEDU host; (2) a local HTTPS server for a test update feed when U1/U2 are b
 Each VM: install from the ISO, take a clean snapshot, copy the MSI in (shared folder or a mounted ISO), run the row,
 record the result on its ticket, revert to the snapshot.
 
-## Azure fallback (paused)
+## Azure: one throwaway instance, only before a real release
 
-## Cost (named before anything is created)
+Owner decision 2026-11-23: "just 1 instance quickly test the requirement and end ... cad 1-5 is fine ... keep it minimal
+for the required test and do only when necessary before a real release". The three-VM lab built earlier that day was
+deleted the same day (every `dsynclab-*` resource, by name; the resource group listed empty of them afterwards).
 
-Prices: Azure retail, canadacentral, pay-as-you-go, Windows licence included, read 2026-11-23.
+**What it covers:** only the rows no local VM can, and only if the local domain pair has not already covered them:
+T4 (a domain password service account) and T5 (a gMSA) running the installed DistrictSync from Program Files as a
+scheduled task. **Caveat, in every result file:** the VM promotes ITSELF to a domain controller and runs the rows on
+itself, and a domain controller is not a typical member server (no local accounts, domain-controller policies apply). A
+pass proves the account kinds and the Program Files permissions, not member-server policy.
 
-| VM | Role | Size | CAD/hour |
-|---|---|---|---|
-| `dc1` | domain controller, Server 2022 Core | Standard_B2s | 0.0764 |
-| `mem1` | member, Server 2022 with Desktop Experience (window smokes) | Standard_B2ms | 0.1418 |
-| `core1` | member, Server 2022 Core | Standard_B2s | 0.0764 |
-
-All three running: CAD 0.29 per hour, **about CAD 215 a month if never stopped**, plus disks (3 × 127 GB Standard SSD,
-about CAD 30 a month) and three Standard public IPs (about CAD 11 a month). **As planned** (auto-shutdown every night,
-about 40 hours of matrix work, deleted after): **about CAD 45 in total.** A stopped (deallocated) VM costs only its
-disk and IP.
-
-## Shape
-
-- Resource group `customer-experience-ca` (canadacentral, shared). Every resource is named `dsynclab-*` and tagged
-  `purpose=districtsync-installer-lab`, `ticket=DSYNC-92`, `delete-after=<date>`.
-- One VNet `dsynclab-vnet`, `10.55.0.0/16`, subnet `10.55.1.0/24`. The domain controller has the static address `10.55.1.4` and the VNet's
-  DNS points at it once it is promoted.
-- **No inbound access.** Each VM has a Standard public IP only for OUTBOUND traffic (downloading the MSI from a GitHub
-  run artifact, and the update feed later). Standard IPs deny inbound unless a rule allows it, and no rule is added.
-  Every command runs through `az vm run-command invoke` (the Azure agent). For the window smokes on `mem1`, use Azure
-  Bastion Developer (free) if the region offers it; otherwise add ONE NSG rule allowing RDP from the operator's current
-  address for the session, and delete it afterwards.
-- Domain `lab.dsync.test` (IANA-reserved `.test`). Accounts: a lab administrator, the gMSA `svc_dsync$`, the
-  stored-password service account `svc_dsyncpw`, and a standard user `lab_user` (T20).
-- Passwords are generated on the operator's machine for this session, passed to `az` from a variable, and never
-  written to a file, a log, the repo or a ticket. Losing them is harmless: the lab is deleted A password passed inside a `run-command` script is visible in that VM's run-command history to anyone with access to the resource group; acceptable for a throwaway lab, and one more reason it is deleted.
-
-## Create
-
-PowerShell, signed in with `az login`, from any folder:
+**How:** one script, `scripts/lab/azure_domain_check.ps1`, run from the operator's PowerShell after `az login`:
 
 ```powershell
-$rg = "customer-experience-ca"; $loc = "canadacentral"
-$tags = "purpose=districtsync-installer-lab", "ticket=DSYNC-92", "delete-after=$((Get-Date).AddDays(14).ToString('yyyy-MM-dd'))"
-$adminUser = "labadmin"
-$pw = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 24 | ForEach-Object { [char]$_ }) + "!a1"
-
-az network vnet create -g $rg -n dsynclab-vnet --address-prefixes 10.55.0.0/16 --subnet-name lab --subnet-prefixes 10.55.1.0/24 --tags $tags
-$core = "MicrosoftWindowsServer:WindowsServer:2022-datacenter-azure-edition-core:latest"
-$desk = "MicrosoftWindowsServer:WindowsServer:2022-datacenter-azure-edition:latest"
-foreach ($vm in @(@("dsynclab-dc1", $core, "Standard_B2s", "10.55.1.4"), @("dsynclab-mem1", $desk, "Standard_B2ms", ""), @("dsynclab-core1", $core, "Standard_B2s", ""))) {
-  $ipArgs = if ($vm[3]) { @("--private-ip-address", $vm[3]) } else { @() }
-  az vm create -g $rg -n $vm[0] --image $vm[1] --size $vm[2] --vnet-name dsynclab-vnet --subnet lab @ipArgs `
-    --public-ip-sku Standard --nsg '""' --admin-username $adminUser --admin-password $pw --tags $tags --only-show-errors
-  az vm auto-shutdown -g $rg -n $vm[0] --time 0300   # 03:00 UTC = evening in Canada
-}
+.\scripts\lab\azure_domain_check.ps1 -MsiUrl '<short-lived URL of the B1 rehearsal artifact>' -ResultsDir .\lab-results
 ```
 
-Promote the domain controller, point the VNet at it, and join the members:
+Its limits are constants in the script, pinned by `tests/test_lab_script.py`, not just written here:
 
-```powershell
-az vm run-command invoke -g $rg -n dsynclab-dc1 --command-id RunPowerShellScript --scripts `
-  "Install-WindowsFeature AD-Domain-Services -IncludeManagementTools; Install-ADDSForest -DomainName lab.dsync.test -SafeModeAdministratorPassword (ConvertTo-SecureString '$pw' -AsPlainText -Force) -Force -NoRebootOnCompletion; Restart-Computer -Force"
-az network vnet update -g $rg -n dsynclab-vnet --dns-servers 10.55.1.4
-foreach ($m in "dsynclab-mem1", "dsynclab-core1") {
-  az vm restart -g $rg -n $m
-  az vm run-command invoke -g $rg -n $m --command-id RunPowerShellScript --scripts `
-    "`$c = New-Object PSCredential('LAB\$adminUser', (ConvertTo-SecureString '$pw' -AsPlainText -Force)); Add-Computer -DomainName lab.dsync.test -Credential `$c -Restart -Force"
-}
-```
+| Limit | Value |
+|---|---|
+| Instances | one VM, `dsynctest-dc`, Windows Server 2022 Core |
+| Size and pricing | `Standard_D2as_v5` on **Spot** (CAD 0.051/h; B-series cannot run on Spot, and an on-demand B2s costs more at CAD 0.076/h), eviction deletes it |
+| Disk | Standard HDD |
+| Network | no public IP, no inbound rule; the subnet keeps default outbound access only to download the MSI and the fixtures; commands go through `az vm run-command` |
+| Time box | 180 minutes: every wait checks the deadline, and an Azure auto-shutdown at the deadline stops the VM even if the operator's machine dies |
+| Cost ceiling | CAD 5 per run, checked before anything is created against the ON-DEMAND rate (worst case about CAD 0.62) |
+| Clean-up | everything `dsynctest-*` deleted by name in a `finally`, on success and on failure, and first thing on the next run; the resource group is never deleted |
 
-Accounts, the gMSA and the stored-password service account (on `dc1`), then install the gMSA on each member:
-
-```powershell
-az vm run-command invoke -g $rg -n dsynclab-dc1 --command-id RunPowerShellScript --scripts @"
-Add-KdsRootKey -EffectiveTime ((Get-Date).AddHours(-10))
-New-ADGroup -Name DSyncHosts -GroupScope Global
-Add-ADGroupMember DSyncHosts -Members 'dsynclab-mem1$','dsynclab-core1$'
-New-ADServiceAccount -Name svc_dsync -DNSHostName svc_dsync.lab.dsync.test -PrincipalsAllowedToRetrieveManagedPassword DSyncHosts
-New-ADUser -Name svc_dsyncpw -AccountPassword (ConvertTo-SecureString '$pw' -AsPlainText -Force) -Enabled `$true -PasswordNeverExpires `$true
-New-ADUser -Name lab_user -AccountPassword (ConvertTo-SecureString '$pw' -AsPlainText -Force) -Enabled `$true
-"@
-foreach ($m in "dsynclab-mem1", "dsynclab-core1") {
-  az vm restart -g $rg -n $m   # picks up the DSyncHosts membership
-  az vm run-command invoke -g $rg -n $m --command-id RunPowerShellScript --scripts `
-    "Install-WindowsFeature RSAT-AD-PowerShell; Install-ADServiceAccount svc_dsync; Test-ADServiceAccount svc_dsync"
-}
-```
-
-The 'Log on as a batch job' right is granted per test, not up front: T5 runs once WITHOUT it (the DSYNC-33 schedule
-check must report it) and once with it (`ntrights`-equivalent through `secedit` in the matrix script).
-
-## Get the MSI onto the members
-
-The MSI is the 1-day artifact `DistrictSync-windows-msi-rehearsal` of a `release.yml` dispatch (plan 0055 B1). GitHub
-answers an artifact download with a short-lived signed URL; fetch it on the operator's machine and hand it straight to
-the VM:
-
-```powershell
-$run = "<rehearsal run id>"
-$id = gh api "repos/myblueprint-spaces/DistrictSync/actions/runs/$run/artifacts" --jq '.artifacts[] | select(.name=="DistrictSync-windows-msi-rehearsal") | .id'
-$url = (gh api -i "repos/myblueprint-spaces/DistrictSync/actions/artifacts/$id/zip" | Select-String '^Location: (.*)$').Matches[0].Groups[1].Value.Trim()
-foreach ($m in "dsynclab-mem1", "dsynclab-core1") {
-  az vm run-command invoke -g $rg -n $m --command-id RunPowerShellScript --scripts `
-    "New-Item -ItemType Directory -Force C:\lab | Out-Null; Invoke-WebRequest '$url' -OutFile C:\lab\msi.zip; Expand-Archive C:\lab\msi.zip C:\lab -Force; Get-ChildItem C:\lab"
-}
-```
-
-The URL expires within minutes and grants nothing else; it is never written to a file or a ticket.
-
-## Run the matrix
-
-Each row of plan 0055's test matrix that is marked **L** is run here and its result (pass, fail, or the measured
-behaviour) recorded on the slice's ticket and, for L1's own questions, appended to plan 0055 under "L1 findings".
-Commands run through `az vm run-command invoke`; a row that needs the window runs on `mem1` over Bastion or RDP.
-Every run sets `DISTRICTSYNC_DATA_DIR` only where the row says so (most rows exercise the real machine profile, which is
-the point of the lab).
-
-## Stop, start, delete
-
-The lab shares its resource group with production resources, so every command names the lab's resources explicitly:
-
-```powershell
-$rg = "customer-experience-ca"
-$vms = az vm list -g $rg --query "[?starts_with(name, 'dsynclab-')].id" -o tsv
-az vm deallocate --ids $vms   # idle: disks and IPs only
-az vm start --ids $vms
-# Delete (when the matrix is recorded): the VMs, then everything else carrying the lab tag, then check nothing is left.
-az vm delete --ids $vms --yes --force-deletion none
-$rest = az resource list --tag purpose=districtsync-installer-lab --query "[?starts_with(name, 'dsynclab-')].id" -o tsv
-az resource delete --ids $rest   # NICs, disks, IPs, then the VNet (rerun once if a dependency was still attached)
-az resource list --tag purpose=districtsync-installer-lab -o table   # must be empty
-```
-
-Never `az group delete` here: the resource group holds production services. Deleting the lab is the last step of L1
-and of R1's matrix run; the ticket records the date it was deleted.
+The results (the rows' task results and console tails, the timings, any leftover) are saved as JSON in `-ResultsDir`
+and copied to the release ticket. A run that leaves anything behind says so in the JSON and on the console.
