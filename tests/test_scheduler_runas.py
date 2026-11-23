@@ -1612,3 +1612,112 @@ class TestNoHighestRunLevelForAUserWritableInstall:
             task_com.run_level_for(PrincipalKind.PASSWORD, run_highest=True, exe=installed_exe)
             == task_com.TASK_RUNLEVEL_LUA
         )
+
+
+class TestAPerUserInstallCannotRunAsAnotherAccount:
+    """Plan 0055 G0: a per-user installed copy sits in the installing user's ``%LOCALAPPDATA%``, which no
+    other account can read, so a nightly registered for a service account or gMSA against it would
+    register fine and then never start (DSYNC-32's run-time failure). The engine refuses it before any
+    prompt; the Setup gate (``setup_gates.INSTALL_NOT_SHAREABLE``) normally refuses first."""
+
+    @pytest.fixture
+    def installed_exe(self, tmp_path, monkeypatch):
+        """A per-user install: the installer's layout inside this account's profile (``tmp_path`` stands in)."""
+        monkeypatch.setattr(task_com, "_user_profile_roots", lambda: [tmp_path])
+        root = tmp_path / "myBlueprint.DistrictSync"
+        (root / "current").mkdir(parents=True)
+        (root / "Update.exe").write_bytes(b"")
+        exe = root / "current" / "DistrictSync.exe"
+        exe.write_bytes(b"")
+        return exe
+
+    @pytest.mark.parametrize(
+        ("kind", "user", "password"),
+        [
+            (PrincipalKind.PASSWORD, _SERVICE_ACCOUNT, "pw"),
+            (PrincipalKind.MANAGED_SERVICE_ACCOUNT, _GMSA, None),
+        ],
+        ids=["stored-password", "managed-service-account"],
+    )
+    def test_a_foreign_principal_is_refused_and_nothing_is_registered(
+        self, _setup_account, installed_exe, kind, user, password
+    ):
+        from src.scheduler.windows import _MSG_INSTALL_NOT_SHAREABLE
+
+        with _capture_registration() as reg:
+            ok, msg = _register(run_as_user=user, run_as_password=password, kind=kind, exe_path=installed_exe)
+        assert (ok, msg) == (False, _MSG_INSTALL_NOT_SHAREABLE)
+        reg.assert_not_called()
+
+    def test_a_foreign_logged_on_only_request_gets_the_install_refusal_not_the_password_one(
+        self, _setup_account, installed_exe
+    ):
+        """The engine decides in the gate's order: no password can make this copy runnable."""
+        from src.scheduler.windows import _MSG_INSTALL_NOT_SHAREABLE
+
+        with _capture_registration() as reg:
+            ok, msg = _register(run_as_user=_SERVICE_ACCOUNT, run_as_password=None, exe_path=installed_exe)
+        assert (ok, msg) == (False, _MSG_INSTALL_NOT_SHAREABLE)
+        reg.assert_not_called()
+
+    def test_positive_twin_the_same_layout_outside_this_accounts_profile_is_not_refused(
+        self, _setup_account, installed_exe, monkeypatch, tmp_path
+    ):
+        """The machine-wide MSI (plan 0055) uses the same layout in Program Files; only a copy in the
+        installing account's own profile is unreadable by another account."""
+        monkeypatch.setattr(task_com, "_user_profile_roots", lambda: [tmp_path / "somebody-else"])
+        with _capture_registration() as reg:
+            ok, _msg = _register(run_as_user=_SERVICE_ACCOUNT, run_as_password="pw", exe_path=installed_exe)
+        assert ok is True
+        assert _params_of(reg).user == _SERVICE_ACCOUNT
+
+    def test_the_refusal_comes_before_the_elevation_prompt(self, _setup_account, installed_exe):
+        """Unelevated, an unattended register goes through UAC; the refusal must not cost a prompt."""
+        from src.scheduler.windows import _MSG_INSTALL_NOT_SHAREABLE
+
+        with (
+            patch("src.scheduler.windows.is_elevated", return_value=False),
+            patch("src.scheduler.windows.sys.platform", "win32"),
+            patch("src.scheduler.windows._register_elevated") as elevated,
+        ):
+            ok, msg = _register(run_as_user=_SERVICE_ACCOUNT, run_as_password="pw", exe_path=installed_exe)
+        assert (ok, msg) == (False, _MSG_INSTALL_NOT_SHAREABLE)
+        elevated.assert_not_called()
+
+    @pytest.mark.parametrize("password", [None, "pw"], ids=["logged-on-only", "whether-or-not-signed-in"])
+    def test_positive_twin_the_signed_in_account_still_registers_from_an_installed_copy(
+        self, _setup_account, installed_exe, password
+    ):
+        with _capture_registration() as reg:
+            ok, _msg = _register(run_as_user=_SETUP_ACCOUNT, run_as_password=password, exe_path=installed_exe)
+        assert ok is True
+        assert _params_of(reg).exe == str(installed_exe)
+
+    def test_positive_twin_a_foreign_principal_still_registers_for_a_program_outside_an_install(
+        self, _setup_account, tmp_path
+    ):
+        exe = tmp_path / "DistrictSync" / "DistrictSync-windows.exe"
+        with _capture_registration() as reg:
+            ok, _msg = _register(run_as_user=_SERVICE_ACCOUNT, run_as_password="pw", exe_path=exe)
+        assert ok is True
+        assert _params_of(reg).user == _SERVICE_ACCOUNT
+
+    def test_the_refusal_names_no_account_and_no_path(self, _setup_account, installed_exe, caplog):
+        from src.scheduler.windows import _MSG_INSTALL_NOT_SHAREABLE
+
+        with caplog.at_level(logging.DEBUG), _capture_registration():
+            _register(run_as_user=_SERVICE_ACCOUNT, run_as_password="pw", exe_path=installed_exe)
+        assert _MSG_INSTALL_NOT_SHAREABLE in caplog.text  # positive twin: the refusal WAS logged
+        assert _SERVICE_ACCOUNT not in caplog.text
+        assert _SERVICE_ACCOUNT not in _MSG_INSTALL_NOT_SHAREABLE
+        assert str(installed_exe.parent) not in caplog.text
+
+    def test_the_per_user_rule_is_the_layout_and_the_profile_together(self, installed_exe, monkeypatch, tmp_path):
+        assert task_com.runs_from_per_user_install(str(installed_exe)) is True
+        monkeypatch.setattr(task_com, "_user_profile_roots", lambda: [tmp_path / "somebody-else"])
+        assert task_com.runs_from_per_user_install(str(installed_exe)) is False
+        # DSYNC-66's layout-only rule is unchanged: still "user-writable" for the run level.
+        assert task_com.runs_from_user_writable_install(str(installed_exe)) is True
+        loose = tmp_path / "DistrictSync" / "DistrictSync-windows.exe"
+        monkeypatch.setattr(task_com, "_user_profile_roots", lambda: [tmp_path])
+        assert task_com.runs_from_per_user_install(str(loose)) is False

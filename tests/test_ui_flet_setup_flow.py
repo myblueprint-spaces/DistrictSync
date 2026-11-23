@@ -1422,6 +1422,8 @@ class TestReconcileSaveNote:
             "blocked_account",
             "blocked_account_switch",
             "blocked_delivery_secret",
+            # Plan 0055 G0: a per-user installed copy cannot run as another account.
+            "blocked_install",
         }
 
     def test_the_delivery_refusal_never_points_at_the_windows_account(self):

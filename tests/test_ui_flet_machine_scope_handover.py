@@ -291,6 +291,21 @@ class TestTheForeshadow:
         field.on_change(None)
         assert not _has_text(tree, setup_mod._SCOPE_FORESHADOW_NOTE)
 
+    def test_it_is_not_shown_under_the_per_user_install_refusal(self, tmp_path, stub_page, monkeypatch):
+        """Plan 0055 G0: the foreshadow describes a move that can never happen from a per-user installed
+        copy, so it must not sit under the sentence saying so. The refusal itself is on screen."""
+        from src.ui_flet.setup_errors import INSTALL_NOT_SHAREABLE_COPY
+
+        monkeypatch.setattr(setup_mod, "install_not_shareable", lambda: True)
+        cfg = _settings(tmp_path, monkeypatch, **_PLAIN_FOLDERS)
+        tree, _ = _schedule_section(cfg, stub_page)
+        field = _account_field(tree)
+        field.value = _SERVICE
+        field.on_change(None)
+        assert _has_text(tree, INSTALL_NOT_SHAREABLE_COPY)
+        assert not _has_text(tree, setup_mod._SCOPE_FORESHADOW_NOTE)
+        assert _button_by_content(tree, "Schedule nightly sync").disabled is True
+
     def test_it_shows_even_while_the_gate_is_closed(self, tmp_path, stub_page, monkeypatch):
         """A permanent machine-wide relocation must not first be mentioned at the point of no
         return — so it is keyed on the TYPED account, never on the gate. The pairing with the
@@ -1014,7 +1029,7 @@ def test_the_gate_block_and_the_note_are_one_decision(tmp_path, stub_page, monke
     # A live task on the signed-in account + a typed service account = the SWITCH refusal, which
     # outranks the delivery secret. The note on screen must be that one, not the cheaper rung.
     assert (
-        register_block(True, "03:00", account=facts, delivery_secret_unreadable=True)
+        register_block(True, "03:00", account=facts, delivery_secret_unreadable=True, install_not_shareable=False)
         is RegisterBlock.ACCOUNT_SWITCH_NEEDS_REMOVE
     )
     assert _has_text_containing(tree, "already scheduled to run as")

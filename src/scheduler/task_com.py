@@ -52,11 +52,14 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import os
+import sys
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import StrEnum
+from pathlib import Path
 from typing import Any, Callable
 
 from src.scheduler.messages import carries_foreign_marker
@@ -313,6 +316,71 @@ def runs_from_user_writable_install(exe: str) -> bool:
     would hand that process the administrator token at the next run: a UAC bypass (DSYNC-66). Such a task is registered Limited.
     """
     return install_root(exe) is not None
+
+
+def _profiles_directory() -> Path | None:
+    """The folder that holds EVERY account's profile (``ProfileList\\ProfilesDirectory``, else ``%SystemDrive%\\Users``).
+
+    Windows only; ``None`` elsewhere. A copy under any profile is per-user for this rule: a service account
+    cannot read another account's profile, whichever account installed it.
+    """
+    if sys.platform != "win32":
+        return None
+    try:
+        import winreg
+
+        key = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList"
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key, 0, winreg.KEY_READ | winreg.KEY_WOW64_64KEY) as handle:
+            value, _kind = winreg.QueryValueEx(handle, "ProfilesDirectory")
+        return Path(os.path.expandvars(str(value)))
+    except OSError:
+        drive = os.environ.get("SYSTEMDRIVE")
+        return Path(drive + "\\", "Users") if drive else None
+
+
+def _user_profile_roots() -> list[Path]:
+    """Profile folders: ``%LOCALAPPDATA%``, ``%USERPROFILE%``, the home folder and the profiles directory.
+
+    A seam for tests. Environment variables are good enough here: the answer only decides whether THIS
+    account may schedule ANOTHER account against a per-user copy, so a process that lies about its own
+    profile can only hurt itself (the nightly it registers would not start).
+    """
+    roots = [Path(value) for value in (os.environ.get("LOCALAPPDATA"), os.environ.get("USERPROFILE")) if value]
+    with contextlib.suppress(RuntimeError, KeyError):
+        roots.append(Path.home())
+    profiles = _profiles_directory()
+    if profiles is not None:
+        roots.append(profiles)
+    return roots
+
+
+def runs_from_per_user_install(exe: str) -> bool:
+    """Whether ``exe`` is a PER-USER installed copy: the installer's layout AND a root inside this account's profile.
+
+    Plan 0055 G0. Such a copy cannot be run by any other account (a service account or managed service
+    account cannot read another user's profile), so a nightly for another account must not be registered
+    against it. The layout alone is not enough: the machine-wide MSI (plan 0055) puts the same layout in
+    Program Files, which every account can read. :func:`runs_from_user_writable_install` stays the
+    layout-only rule DSYNC-66's run level uses; this is the narrower question.
+    """
+    root = install_root(exe)
+    if root is None:
+        return False
+    try:
+        resolved = root.resolve()
+    except OSError:
+        resolved = root
+    roots = _user_profile_roots()
+    if not roots:
+        # Fail toward the safe answer: with the installer's layout present and no way to tell where the
+        # profiles are, refuse a foreign principal rather than register a nightly that may never start.
+        return True
+    for base in roots:
+        with contextlib.suppress(OSError):
+            base = base.resolve()
+        if resolved == base or base in resolved.parents:
+            return True
+    return False
 
 
 def run_level_for(kind: PrincipalKind, *, run_highest: bool, exe: str) -> int:

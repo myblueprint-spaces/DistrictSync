@@ -171,6 +171,12 @@ _MSG_ACCOUNT_NEEDS_PASSWORD = (  # nosec B105
     "A password is required to schedule the task for a different account."
 )
 
+# Plan 0055 G0, a PRE-FLIGHT refusal like the one above: the program is a PER-USER installed copy
+# (``Update.exe`` beside ``current``, in the installing user's own profile), which another account
+# cannot read, so a nightly registered for a service account or managed service account against it
+# would register and then never start. Refused before any prompt. Names no account and no path.
+_MSG_INSTALL_NOT_SHAREABLE = "This copy is installed for one Windows account and cannot run as a different account."
+
 # The sentinel the elevated child writes to its result file when it cannot READ the request
 # (the owner-only DACL refuses a DIFFERENT administrator) or when the DPAPI unprotect FAILS
 # (a cross-SID / different-admin UAC consent) — fail closed either way. The parent detects it
@@ -481,6 +487,17 @@ def register_task(
     run_as_password = principal.password
     requested = principal.user.strip()
     current = current_run_as_user()
+
+    # Plan 0055 G0: the Setup gate (``INSTALL_NOT_SHAREABLE``) normally refuses this first; this is the
+    # engine floor for every other caller. It is decided BEFORE the per-kind branch, in the gate's own
+    # order, so a foreign logged-on-only request is not first told to supply a password that cannot
+    # help, and BEFORE the elevation prompt. The signed-in account (either logon type) is never
+    # refused: it can read its own profile.
+    foreign = kind is PrincipalKind.MANAGED_SERVICE_ACCOUNT or (
+        bool(requested) and requested.casefold() != current.casefold()
+    )
+    if foreign and task_com.runs_from_per_user_install(str(exe_path)):
+        return _fail(task_name, _MSG_INSTALL_NOT_SHAREABLE, verb="register")
 
     # One branch per KIND, and each account goes through its OWN validator. The shapes are
     # mutually exclusive by construction (``Principal`` refuses a ``$``-suffixed password
