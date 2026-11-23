@@ -3,6 +3,28 @@
 **Convention (adopted 2026-09-23):** every new entry carries a line `Supersedes: <date — title of the replaced entry>` (or `Supersedes: nothing`) directly under its heading, so a replaced decision is found by search rather than by reading prose.
 
 
+## 2026-11-23 - Plan 0055: installer v2 is one machine-wide MSI that replaces the one-file exe; updates default to "notify", a SYSTEM task applies them, district IT can enforce "off"
+
+Supersedes: 2026-11-17 - DSYNC-16, in part: the per-user Velopack install stops being the installer shape (Velopack, the pack id `myBlueprint.DistrictSync`, the signed manifest and the shared updater package all stay). Plan 0054's non-goal "updating machine-scope installs" and its R1 exclusion are replaced by plan 0055.
+
+**Why.** Owner, 2026-11-23: "we need to migrate all functionality from the onefile exe over to this installer ... more robust and verbose and better than the one file and tested in everyway so that we can discard the onefile which was a v1 and not very legitimate". Districts run DistrictSync as a service account or gMSA, not as a named user, and do not want people's names in logs; some run it on internal servers where an update pushed from us is a security concern, so they must be able to turn updates on or off.
+
+**Decided (owner, two rounds on 2026-11-23; round 2 "i trust your best judgement. proceed", relayed by the orchestrator session).**
+1. Machine-wide ONLY: Velopack's per-machine MSI (`vpk pack --msi --instLocation PerMachine`), installed by an administrator to Velopack's default `C:\Program Files\myBlueprint.DistrictSync\`; the profile is plan 0049's `C:\ProgramData\DistrictSync`. The v3.30 per-user installs are migrated.
+2. Update mode `off` / `notify` / `on`. The default is `notify` (the signed manifest only, "you are behind" shown, nothing downloaded). Strict `off` means no connection at all. Sources in order: an HKLM policy key (Group Policy; the app never writes it and cannot override it), then an HKLM machine setting written only through the elevated provisioning op, then the default. The question is asked at first-run Setup and by `--machine-setup --updates`, because Velopack's MSI dialogs cannot ask it.
+3. `on` is carried out by one SYSTEM scheduled task, "DistrictSync Updater", present only while the mode is `on`. It reads only administrator-writable inputs, verifies the signed manifest and the files it hands to Velopack, never runs during a nightly, and is checked by a SYSTEM-run health probe after each apply. No non-SYSTEM process ever asks Velopack to apply on a machine-wide install (spike S0b: that prompts for UAC).
+4. A release that cannot start at all is fixed by installing the previous MSI; there is no separate updater copy.
+5. Run History tells accounts apart with a per-install keyed tag, not an account name or a SID.
+6. The one-file `DistrictSync-windows.exe` keeps shipping until every known district is confirmed migrated.
+7. gMSA, service-account and Server Core proofs run on throwaway Azure test VMs under the owner's login: small, tagged, shut down when idle, deleted when the matrix is done, with the monthly cost named before anything costly is created.
+
+**Evidence.** Spike S0b (plan 0055), on a toy app, unsigned, Velopack 1.2.161:
+- Proven: the MSI installs machine-wide to a chosen Program Files folder; a SYSTEM task applies an update without a prompt; MSI major upgrade, repair and uninstall work and leave a ProgramData profile alone.
+- Ruled out: `Setup.exe --installto` registers per-user.
+- Not yet run: the real DistrictSync build, gMSA and Server Core (slice L1).
+
+**Cost.** A SYSTEM-privileged updater (the reason it defaults off, reads only administrator-writable inputs, and has a policy kill switch). Two Windows downloads for a while, and the one-file exe until migration is complete. No converter change.
+
 ## 2026-11-19 - DSYNC-86: a config switch enrols every teacher Class Information lists on a class, whatever the Primary Teacher flag; on for SD74 only
 
 Supersedes: nothing (DSYNC-59's "primary only" rule stays the default).

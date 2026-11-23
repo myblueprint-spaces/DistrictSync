@@ -30,6 +30,7 @@ def register_block(
     *,
     account: ScheduleAccountFacts,
     delivery_secret_unreadable: bool = False,
+    install_not_shareable: bool = False,
 ) -> RegisterBlock:
     """The ONE call shape this file uses — the next required keyword is one edit here.
 
@@ -44,6 +45,7 @@ def register_block(
         run_time,
         account=account,
         delivery_secret_unreadable=delivery_secret_unreadable,
+        install_not_shareable=install_not_shareable,
     )
 
 
@@ -53,6 +55,7 @@ def can_register_schedule(
     *,
     account: ScheduleAccountFacts,
     delivery_secret_unreadable: bool = False,
+    install_not_shareable: bool = False,
 ) -> bool:
     """The bool form, through the same one call shape (see :func:`register_block`)."""
     return setup_gates.can_register_schedule(
@@ -60,6 +63,7 @@ def can_register_schedule(
         run_time,
         account=account,
         delivery_secret_unreadable=delivery_secret_unreadable,
+        install_not_shareable=install_not_shareable,
     )
 
 
@@ -331,6 +335,13 @@ class TestRegisterBlock:
                 account=_prefill(typed="CORP\\svc_x", password_supplied=True),
                 delivery_secret_unreadable=True,
             ),
+            # Plan 0055 G0: a foreign principal against a per-user installed copy.
+            register_block(
+                True,
+                "03:00",
+                account=_prefill(typed="CORP\\svc_x", password_supplied=True),
+                install_not_shareable=True,
+            ),
         }
         assert produced == set(RegisterBlock)
 
@@ -459,11 +470,14 @@ def test_the_new_keywords_are_required_in_production():
     brevity, which is exactly why the production signature is asserted rather than assumed.
     """
     for func in (setup_gates.register_block, setup_gates.can_register_schedule):
-        parameter = inspect.signature(func).parameters["delivery_secret_unreadable"]
-        assert parameter.kind is inspect.Parameter.KEYWORD_ONLY, func.__name__
-        assert parameter.default is inspect.Parameter.empty, func.__name__
+        for name in ("delivery_secret_unreadable", "install_not_shareable"):
+            parameter = inspect.signature(func).parameters[name]
+            assert parameter.kind is inspect.Parameter.KEYWORD_ONLY, (func.__name__, name)
+            assert parameter.default is inspect.Parameter.empty, (func.__name__, name)
         with pytest.raises(TypeError):
             func(True, "03:00", account=_prefill())  # type: ignore[call-arg]
+        with pytest.raises(TypeError):
+            func(True, "03:00", account=_prefill(), delivery_secret_unreadable=False)  # type: ignore[call-arg]
 
 
 def test_declaration_order_is_not_evaluation_order():
@@ -630,3 +644,48 @@ class TestAnMsaIsValidatedEvenWhenTheNameIsNotFOREIGN:
     def test_a_valid_gmsa_name_still_opens_the_gate(self) -> None:
         """So the fix refuses the wrong SHAPE, never the kind."""
         assert _block(typed=_GMSA, kind=_MSA_KIND, password_supplied=False) is RegisterBlock.NONE
+
+
+class TestAPerUserInstallCannotBeScheduledForAnotherAccount:
+    """Plan 0055 G0: a per-user installed copy lives in the installing user's own profile, which a
+    service account or gMSA cannot read, so the gate refuses before any prompt and names the fix."""
+
+    _BLOCK = RegisterBlock.INSTALL_NOT_SHAREABLE
+
+    def test_a_foreign_password_account_is_refused(self):
+        facts = _prefill(typed="CORP\\svc_x", password_supplied=True)
+        assert register_block(True, "03:00", account=facts, install_not_shareable=True) is self._BLOCK
+        assert can_register_schedule(True, "03:00", account=facts, install_not_shareable=True) is False
+
+    def test_a_managed_service_account_is_refused_even_with_the_prefilled_field(self):
+        """The gMSA path validates even the prefilled current account (S-4); the install refusal
+        is the more useful first answer, because no account name can fix it."""
+        for typed in ("CORP\\svc_districtsync$", _CURRENT, ""):
+            facts = _prefill(typed=typed, kind=PrincipalKind.MANAGED_SERVICE_ACCOUNT)
+            assert register_block(True, "03:00", account=facts, install_not_shareable=True) is self._BLOCK
+
+    @pytest.mark.parametrize("password_supplied", [False, True])
+    def test_positive_twin_the_signed_in_account_is_never_refused_for_the_install(self, password_supplied):
+        facts = _prefill(password_supplied=password_supplied)
+        assert register_block(True, "03:00", account=facts, install_not_shareable=True) is RegisterBlock.NONE
+
+    def test_positive_twin_a_shareable_program_keeps_todays_answer(self):
+        facts = _prefill(typed="CORP\\svc_x", password_supplied=True)
+        assert register_block(True, "03:00", account=facts, install_not_shareable=False) is RegisterBlock.NONE
+
+    def test_it_is_checked_after_the_run_time_and_before_the_account_rungs(self):
+        """Config and run time first (today's order); then the install, because no account name,
+        password or Remove can make a per-user copy readable by another account."""
+        malformed = _prefill(typed="CORP\\svc account", password_supplied=True)
+        assert register_block(False, "03:00", account=malformed, install_not_shareable=True) is RegisterBlock.INCOMPLETE
+        assert register_block(True, "", account=malformed, install_not_shareable=True) is RegisterBlock.RUN_TIME
+        assert register_block(True, "03:00", account=malformed, install_not_shareable=True) is self._BLOCK
+        switching = _prefill(typed="CORP\\svc_x", recorded="", schedule_registered=True)
+        assert register_block(True, "03:00", account=switching, install_not_shareable=True) is self._BLOCK
+        no_secret = _prefill(typed="CORP\\svc_x", password_supplied=True)
+        assert (
+            register_block(
+                True, "03:00", account=no_secret, delivery_secret_unreadable=True, install_not_shareable=True
+            )
+            is self._BLOCK
+        )

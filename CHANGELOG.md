@@ -22,6 +22,13 @@ Per-release download links and auto-generated commit notes live on the
   will keep itself up to date from then on. The single-file `DistrictSync-windows.exe` is
   still published and works as before (DSYNC-60 to DSYNC-68, DSYNC-87).
 
+### Fixed
+
+- **The installed copy can no longer be scheduled to run as a service account or managed service
+  account.** It is installed for one Windows account only, so another account cannot run it and
+  such a nightly sync registered fine but never started. Setup now says so before any permission
+  prompt and points to the single-file `DistrictSync-windows.exe` for those setups (plan 0055 G0).
+
 ### Changed
 
 - **SD74: every teacher MyEd lists on a class is enrolled.** A class can have more than one

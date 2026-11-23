@@ -118,8 +118,8 @@ class RegisterBlock(Enum):
     field note, the ``on_submit`` floor and the Settings reconcile all read.
 
     **DECLARATION order is not EVALUATION order.** The checks run
-    ``INCOMPLETE → RUN_TIME → ACCOUNT_SHAPE → ACCOUNT_SWITCH_NEEDS_REMOVE →
-    DELIVERY_SECRET_UNREADABLE → ACCOUNT_NEEDS_PASSWORD`` (see :func:`register_block`,
+    ``INCOMPLETE → RUN_TIME → INSTALL_NOT_SHAREABLE → ACCOUNT_SHAPE →
+    ACCOUNT_SWITCH_NEEDS_REMOVE → DELIVERY_SECRET_UNREADABLE → ACCOUNT_NEEDS_PASSWORD`` (see :func:`register_block`,
     where the order is argued and asserted); the members below are in the order they were
     ADDED. Do not "fix" one to match the other — reordering the members changes nothing,
     and reordering the checks changes which cause an admin is told about first.
@@ -148,6 +148,12 @@ class RegisterBlock(Enum):
     #: discoverable by guessing is not an escape.
     # nosec B105 — a gate reason naming a secret's READABILITY; the value is not a secret.
     DELIVERY_SECRET_UNREADABLE = "delivery_secret_unreadable"  # nosec B105
+    #: Plan 0055 G0. The running copy is a PER-USER install (``Update.exe`` beside ``current``, under
+    #: the installing user's own profile), which a service account or managed service account cannot
+    #: read. A nightly registered for one of them against this copy would register fine and then never
+    #: start (DSYNC-32's run-time failure). No account name, password or Remove can fix it, so it is
+    #: checked before every account rung. The view owns its note (``setup_errors.INSTALL_NOT_SHAREABLE_COPY``).
+    INSTALL_NOT_SHAREABLE = "install_not_shareable"
 
 
 def register_block(
@@ -156,6 +162,7 @@ def register_block(
     *,
     account: ScheduleAccountFacts,
     delivery_secret_unreadable: bool,
+    install_not_shareable: bool,
 ) -> RegisterBlock:
     """The Register-schedule gate with its REASON (pure, TOTAL).
 
@@ -206,7 +213,17 @@ def register_block(
     delivery secret is a real problem but it is the Delivery section's, not this gate's,
     and today's behaviour there stays byte-identical.
 
+    ``INSTALL_NOT_SHAREABLE`` (plan 0055 G0) sits right after the run time: a per-user installed
+    copy cannot run as another account whatever is typed, so telling the admin about a malformed
+    name or a missing password first would send them to fix something that cannot help. It fires
+    only for a principal that is not the signed-in account: a FOREIGN ``principal_key``, or any
+    managed service account (the signed-in account can never be one, S-4).
+
     Args:
+        install_not_shareable: the running program is a per-user installed copy
+            (``task_com.runs_from_per_user_install(sys.executable)``). Required, keyword-only
+            and UNDEFAULTED like the others: a defaulted ``False`` would let a forgotten call site
+            register a nightly that can never start.
         delivery_secret_unreadable: delivery is configured but its password cannot be
             produced, so there would be nothing to seal into the shared profile. Required,
             keyword-only and UNDEFAULTED for the same reason ``account`` is: this plan
@@ -223,6 +240,8 @@ def register_block(
         return RegisterBlock.RUN_TIME
 
     typed_key = principal_key(account.typed, account.current)
+    if bool(install_not_shareable) and (typed_key or account.kind is PrincipalKind.MANAGED_SERVICE_ACCOUNT):
+        return RegisterBlock.INSTALL_NOT_SHAREABLE
     # 0049 S-4 FIELD DEFECT (2026-09-21, found on the owner's first real attempt): the shape
     # rung is scoped to a FOREIGN account by 0046's G5 rule, so that a legitimate `PC\John
     # Smith` prefill keeps registering. That scoping is WRONG for a managed service account:
@@ -282,6 +301,7 @@ def can_register_schedule(
     *,
     account: ScheduleAccountFacts,
     delivery_secret_unreadable: bool,
+    install_not_shareable: bool,
 ) -> bool:
     """The Register-schedule gate (bool form) — ``register_block(...) is RegisterBlock.NONE``.
 
@@ -291,7 +311,7 @@ def can_register_schedule(
     the gate the Register button encodes so the button's ``disabled`` state and the run-time /
     account / Windows-password ``on_submit`` handlers agree.
 
-    ``account`` and ``delivery_secret_unreadable`` are required keyword-only and deliberately
+    ``account``, ``delivery_secret_unreadable`` and ``install_not_shareable`` are required keyword-only and deliberately
     UNDEFAULTED: a defaulted ``ScheduleAccountFacts`` would let a forgotten call site skip the
     principal gate silently, and a defaulted ``False`` would let one provision a computer with
     no delivery credential to seed — both the exact shape CLAUDE.md bans on a safety-relevant
@@ -303,6 +323,7 @@ def can_register_schedule(
             run_time,
             account=account,
             delivery_secret_unreadable=delivery_secret_unreadable,
+            install_not_shareable=install_not_shareable,
         )
         is RegisterBlock.NONE
     )

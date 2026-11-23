@@ -38,6 +38,8 @@ The middle row is what most districts use today. Two things push a district to t
 
 ---
 
+**Which download.** Use the single-file `DistrictSync-windows.exe`, saved in a folder the account can read (for example `C:\DistrictSync` or under `C:\Program Files`). The `DistrictSync-Setup.exe` installer installs DistrictSync for one Windows account only, so a managed service account cannot run that copy; DistrictSync says so and does not schedule it.
+
 ## The three prerequisites
 
 All three must be true **before** DistrictSync is asked to schedule the task. Windows answers

@@ -84,7 +84,7 @@ from src.scheduler.provision_session import (
 )
 from src.scheduler.provisioning import ProvisionStep
 from src.scheduler.schedule_check import ScheduleCheck
-from src.scheduler.task_com import Principal, PrincipalKind
+from src.scheduler.task_com import Principal, PrincipalKind, runs_from_per_user_install
 from src.sftp.uploader import LISTING_DENIED_NOTE, SFTPUploader
 from src.ui_flet import components, handover_result, tokens
 from src.ui_flet.config_editor import (
@@ -148,6 +148,8 @@ from src.ui_flet.screens.identity import log_resolve, matched_headline
 from src.ui_flet.setup_errors import (
     ACCOUNT_LOOKUP_FAILED_COPY,
     ACCOUNT_NOT_FOUND_COPY,
+    INSTALL_NOT_SHAREABLE_COPY,
+    INSTALL_NOT_SHAREABLE_REFUSAL_COPY,
     classify_provision_step,
     classify_schedule_error,
 )
@@ -540,7 +542,22 @@ def account_block_note(block: RegisterBlock, facts: ScheduleAccountFacts) -> str
         )
     if block is RegisterBlock.DELIVERY_SECRET_UNREADABLE:
         return _ACCOUNT_DELIVERY_SECRET_NOTE
+    if block is RegisterBlock.INSTALL_NOT_SHAREABLE:
+        return INSTALL_NOT_SHAREABLE_COPY
     return ""
+
+
+def install_not_shareable() -> bool:
+    """Plan 0055 G0: whether THIS program is a per-user installed copy another account cannot run.
+
+    The ONE spelling the Register gate's ``install_not_shareable`` input is computed with, so the
+    button, ``on_submit`` and the Settings reconcile agree. Total for a paint path: a failure reads
+    as "shareable", and the engine floor (``windows._MSG_INSTALL_NOT_SHAREABLE``) still refuses.
+    """
+    try:
+        return runs_from_per_user_install(sys.executable)
+    except Exception:  # noqa: BLE001 - a gate input may never break the surface; the engine floor holds
+        return False
 
 
 def _machine_scope_now() -> bool:
@@ -562,7 +579,11 @@ def _machine_scope_now() -> bool:
 #: DSYNC-33: the managed service account did not resolve BEFORE the prompt — nothing was asked of
 #: Windows, so the headline is the refusal's ("We didn't make that change"), not a failed attempt's.
 _PRE_PROMPT_REFUSALS: frozenset[ProvisionOutcome] = frozenset(
-    {ProvisionOutcome.ACCOUNT_NOT_FOUND, ProvisionOutcome.ACCOUNT_LOOKUP_FAILED}
+    {
+        ProvisionOutcome.ACCOUNT_NOT_FOUND,
+        ProvisionOutcome.ACCOUNT_LOOKUP_FAILED,
+        ProvisionOutcome.INSTALL_NOT_SHAREABLE,
+    }
 )
 
 #: A provisioning outcome that is not ``PROVISIONED``, ``REFUSED`` or ``FAILED`` maps onto the
@@ -2911,6 +2932,7 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
             run_time_field.value or "",
             account=facts,
             delivery_secret_unreadable=unreadable,
+            install_not_shareable=install_not_shareable(),
         )
 
     def _account_facts(*, force_blank_password: bool = False) -> ScheduleAccountFacts:
@@ -2983,7 +3005,9 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
         # the name, not first mentioned in the modal that is the point of no return. It is
         # therefore shown even while the gate is closed — including under the delivery-secret
         # note above, which is exactly the pairing that explains why that note matters.
-        if principal_key(facts.typed, facts.current) != "":
+        # Plan 0055 G0: not under the install refusal - it would describe a move that can never happen
+        # from this copy, directly under the sentence saying so.
+        if principal_key(facts.typed, facts.current) != "" and block is not RegisterBlock.INSTALL_NOT_SHAREABLE:
             controls.append(
                 ft.Text(
                     _SCOPE_FORESHADOW_NOTE_SHARED if _machine_scope_now() else _SCOPE_FORESHADOW_NOTE,
@@ -3346,6 +3370,8 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
                 return ACCOUNT_NOT_FOUND_COPY
             if attempt.outcome is ProvisionOutcome.ACCOUNT_LOOKUP_FAILED:
                 return ACCOUNT_LOOKUP_FAILED_COPY
+            if attempt.outcome is ProvisionOutcome.INSTALL_NOT_SHAREABLE:
+                return INSTALL_NOT_SHAREABLE_REFUSAL_COPY
             if attempt.outcome is ProvisionOutcome.REFUSED and attempt.step is not None:
                 detail = classify_provision_step(attempt.step)
                 if attempt.icacls_exit is not None:
@@ -3929,6 +3955,12 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
         facts = _account_facts()
         unreadable = _delivery_unreadable()
         block = _gate_block(facts, unreadable)
+        if block is RegisterBlock.INSTALL_NOT_SHAREABLE:
+            # Plan 0055 G0: decided before every other principal question - no dialog, name or
+            # password can make a per-user installed copy runnable by another account.
+            _paint_account_note(facts, unreadable)
+            page.update()
+            return ReconcileOutcome.BLOCKED_INSTALL
         if block is RegisterBlock.ACCOUNT_SWITCH_NEEDS_REMOVE:
             _paint_account_note(facts, unreadable)
             page.update()
@@ -3988,6 +4020,7 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
             run_time_field.value or "",
             account=_account_facts(),
             delivery_secret_unreadable=_delivery_unreadable(),
+            install_not_shareable=install_not_shareable(),
         ),
         icon=ft.Icons.SCHEDULE_ROUNDED,
     )

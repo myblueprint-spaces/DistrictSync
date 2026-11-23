@@ -1073,6 +1073,17 @@ _SFTP_RECONCILE_BLOCKED_DELIVERY_SECRET = (  # nosec B105 - the value is a banne
     "back, so it has nothing to give the other account. Enter it again above and save, or turn "
     "delivery off to schedule the sync without it."
 )
+# Plan 0055 G0. The nightly would run as a different account and this copy is a per-user install,
+# which that account cannot run; no field in this section can fix it, so the copy says where to look.
+_FOLDERS_SAVED_BLOCKED_INSTALL = (
+    "Saved — the nightly schedule wasn't updated. This copy of DistrictSync is installed for your "
+    "Windows account only, so it can't run the nightly sync as a different account. See the Daily "
+    "schedule section."
+)
+_SFTP_RECONCILE_BLOCKED_INSTALL = (
+    " The nightly schedule wasn't updated — this copy of DistrictSync is installed for your Windows "
+    "account only, so it can't run the nightly sync as a different account. See the Daily schedule section."
+)
 _SFTP_RECONCILE_BLOCKED_ACCOUNT_SWITCH = (
     " The nightly schedule wasn't updated — to run it as a different Windows account, choose Remove "
     "nightly sync in the Daily schedule section, then schedule it again."
@@ -1118,6 +1129,8 @@ class ReconcileOutcome(Enum):
     BLOCKED_ACCOUNT = "blocked_account"
     BLOCKED_ACCOUNT_SWITCH = "blocked_account_switch"
     BLOCKED_DELIVERY_SECRET = "blocked_delivery_secret"  # nosec B105 - an enum tag, not a credential
+    #: Plan 0055 G0: the requested principal is another account and this copy is a per-user install.
+    BLOCKED_INSTALL = "blocked_install"
 
 
 def folders_save_note(outcome: ReconcileOutcome) -> str:
@@ -1143,6 +1156,8 @@ def folders_save_note(outcome: ReconcileOutcome) -> str:
         return _FOLDERS_SAVED_BLOCKED_ACCOUNT_SWITCH
     if outcome is ReconcileOutcome.BLOCKED_DELIVERY_SECRET:
         return _FOLDERS_SAVED_BLOCKED_DELIVERY_SECRET
+    if outcome is ReconcileOutcome.BLOCKED_INSTALL:
+        return _FOLDERS_SAVED_BLOCKED_INSTALL
     if outcome is ReconcileOutcome.IN_FLIGHT:
         return _FOLDERS_SAVED_IN_FLIGHT
     return _FOLDERS_SAVED
@@ -1171,6 +1186,8 @@ def sftp_reconcile_suffix(outcome: ReconcileOutcome) -> str:
         return _SFTP_RECONCILE_BLOCKED_ACCOUNT_SWITCH
     if outcome is ReconcileOutcome.BLOCKED_DELIVERY_SECRET:
         return _SFTP_RECONCILE_BLOCKED_DELIVERY_SECRET
+    if outcome is ReconcileOutcome.BLOCKED_INSTALL:
+        return _SFTP_RECONCILE_BLOCKED_INSTALL
     if outcome is ReconcileOutcome.IN_FLIGHT:
         return _SFTP_RECONCILE_IN_FLIGHT
     return ""

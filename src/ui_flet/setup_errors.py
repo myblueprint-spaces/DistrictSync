@@ -69,6 +69,7 @@ from src.scheduler.windows import (
     _MSG_ELEVATION_LAUNCH_FAILED,
     _MSG_ELEVATION_NO_RESULT,
     _MSG_ELEVATION_TIMEOUT,
+    _MSG_INSTALL_NOT_SHAREABLE,
     _MSG_UAC_DECLINED,
 )
 from src.ui_flet.setup_flow import (
@@ -263,6 +264,10 @@ def classify_schedule_error(msg: str, elevated: bool, *, account_is_current: boo
             f"'{SCHEDULE_ACCOUNT_FIELD_LABEL}' box, and include the domain if the account has one — "
             "for example DOMAIN\\svc_districtsync. This is about the name, not the password." + _code(msg)
         )
+    if msg == _MSG_INSTALL_NOT_SHAREABLE:
+        # Our OWN pre-flight refusal (plan 0055 G0), so no code is shown. The Setup gate normally
+        # refuses first; this is the gate/engine drift floor.
+        return INSTALL_NOT_SHAREABLE_REFUSAL_COPY
     if msg == _MSG_ACCOUNT_NEEDS_PASSWORD:
         # Our OWN pre-flight refusal, not something Windows reported — so NO code is shown
         # (`hresult_for` returns None for it and the copy must not imply a Windows status).
@@ -475,6 +480,21 @@ ACCOUNT_NOT_FOUND_COPY = (
     "and that it's a domain account rather than one on this computer. If the name is right, this "
     "computer may not be able to reach a domain controller right now; try again once it's on the "
     "domain network."
+)
+# --------------------------------------------------------------------------- #
+# Plan 0055 G0 - a per-user installed copy cannot run as another account        #
+# --------------------------------------------------------------------------- #
+# ONE source for the Setup field note (before the press) and the refusal (after it, from the engine
+# floor or the pre-prompt provisioning check). Names the fix that exists today: the single-file
+# download in a folder the account can read. Echoes no account and no path from this computer.
+INSTALL_NOT_SHAREABLE_COPY = (
+    "This copy of DistrictSync is installed for your Windows account only, so a different account "
+    "can't run it and the nightly sync would never start. To run it as a service account or managed "
+    "service account, use the single-file download (DistrictSync-windows.exe) saved in a folder that "
+    "account can read, such as C:\\DistrictSync, and schedule it from there."
+)
+INSTALL_NOT_SHAREABLE_REFUSAL_COPY = (
+    INSTALL_NOT_SHAREABLE_COPY + " Nothing was changed and no permission prompt was shown."
 )
 ACCOUNT_LOOKUP_FAILED_COPY = (
     "Windows couldn't look up that managed service account right now — this computer may not be able "
