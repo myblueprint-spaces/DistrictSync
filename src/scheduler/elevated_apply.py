@@ -245,17 +245,8 @@ def _do_register(payload: dict[str, object]) -> None:
     # registration creates. It used to be validated only when a password was present — the
     # one input whose absence is exactly the case worth refusing.
     user = task_com.validate_principal_account(kind, str(payload["user"]))
-    # Plan 0055 G0, the privileged half's own floor: a per-user installed copy cannot run as another
-    # account. The child runs as the same user as the parent (elevated), so ``current_run_as_user`` is
-    # the parent's account. Refused as an invalid request; the parent's own check refuses first.
-    from src.scheduler.windows import current_run_as_user
-
     exe = str(payload["exe"])
-    foreign = (
-        kind is task_com.PrincipalKind.MANAGED_SERVICE_ACCOUNT or user.casefold() != current_run_as_user().casefold()
-    )
-    if foreign and task_com.runs_from_per_user_install(exe):
-        raise ValueError("a per-user installed copy cannot run as another account")
+    _refuse_per_user_install(kind, user, exe)
 
     task_com.register_task_definition(
         task_com.RegisterParams(
@@ -298,6 +289,24 @@ def _do_delete(payload: dict[str, object]) -> None:
 # --------------------------------------------------------------------------- #
 
 
+def _refuse_per_user_install(kind: object, user: str, exe: str) -> None:
+    """Plan 0055 G0, the privileged half's own floor: a per-user installed copy cannot run as another account.
+
+    Raises ``ValueError`` (``_apply`` maps it to ``_MSG_REQUEST_INVALID``); the parent's own checks refuse first.
+    The child runs as the same user as the parent (a different consenting administrator is refused earlier, at
+    the request read or the DPAPI unprotect), so ``current_run_as_user`` is the parent's account. Imported lazily:
+    ``windows`` imports this module at module level.
+    """
+    from src.scheduler import task_com
+    from src.scheduler.windows import current_run_as_user
+
+    foreign = (
+        kind is task_com.PrincipalKind.MANAGED_SERVICE_ACCOUNT or user.casefold() != current_run_as_user().casefold()
+    )
+    if foreign and task_com.runs_from_per_user_install(exe):
+        raise ValueError("a per-user installed copy cannot run as another account")
+
+
 def _do_provision(payload: dict[str, object]) -> None:
     """Provision this computer for a shared profile, then register the nightly into it.
 
@@ -327,6 +336,9 @@ def _do_provision(payload: dict[str, object]) -> None:
     validate_run_time(str(payload["run_time"]))
     task_com.PrincipalKind(str(payload["kind"]))  # an unknown kind refuses the whole op
     _strict_bool(payload["wake_to_run"])  # DSYNC-37: refused BEFORE the HKLM commit, like run_time
+    # Plan 0055 G0: refused BEFORE the HKLM commit too - registration is step 8, after the switch, the
+    # DACLs and the sealed secret, so a refusal there would leave a provisioned computer with no nightly.
+    _refuse_per_user_install(task_com.PrincipalKind(str(payload["kind"])), str(payload["user"]), str(payload["exe"]))
     provisioning.apply_provision(payload, register=lambda: _do_register({**payload, "op": "register"}))
 
 

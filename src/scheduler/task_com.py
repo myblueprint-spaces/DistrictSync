@@ -53,6 +53,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import sys
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -317,16 +318,39 @@ def runs_from_user_writable_install(exe: str) -> bool:
     return install_root(exe) is not None
 
 
-def _user_profile_roots() -> list[Path]:
-    """The running account's own profile folders: ``%LOCALAPPDATA%``, ``%USERPROFILE%`` and the home folder.
+def _profiles_directory() -> Path | None:
+    """The folder that holds EVERY account's profile (``ProfileList\\ProfilesDirectory``, else ``%SystemDrive%\\Users``).
 
-    A seam for tests. An environment variable is good enough here: the answer only decides whether THIS
-    account may schedule ANOTHER account against its own copy, so a process that lies about its own
+    Windows only; ``None`` elsewhere. A copy under any profile is per-user for this rule: a service account
+    cannot read another account's profile, whichever account installed it.
+    """
+    if sys.platform != "win32":
+        return None
+    try:
+        import winreg
+
+        key = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList"
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key, 0, winreg.KEY_READ | winreg.KEY_WOW64_64KEY) as handle:
+            value, _kind = winreg.QueryValueEx(handle, "ProfilesDirectory")
+        return Path(os.path.expandvars(str(value)))
+    except OSError:
+        drive = os.environ.get("SYSTEMDRIVE")
+        return Path(drive + "\\", "Users") if drive else None
+
+
+def _user_profile_roots() -> list[Path]:
+    """Profile folders: ``%LOCALAPPDATA%``, ``%USERPROFILE%``, the home folder and the profiles directory.
+
+    A seam for tests. Environment variables are good enough here: the answer only decides whether THIS
+    account may schedule ANOTHER account against a per-user copy, so a process that lies about its own
     profile can only hurt itself (the nightly it registers would not start).
     """
     roots = [Path(value) for value in (os.environ.get("LOCALAPPDATA"), os.environ.get("USERPROFILE")) if value]
     with contextlib.suppress(RuntimeError, KeyError):
         roots.append(Path.home())
+    profiles = _profiles_directory()
+    if profiles is not None:
+        roots.append(profiles)
     return roots
 
 
@@ -346,7 +370,12 @@ def runs_from_per_user_install(exe: str) -> bool:
         resolved = root.resolve()
     except OSError:
         resolved = root
-    for base in _user_profile_roots():
+    roots = _user_profile_roots()
+    if not roots:
+        # Fail toward the safe answer: with the installer's layout present and no way to tell where the
+        # profiles are, refuse a foreign principal rather than register a nightly that may never start.
+        return True
+    for base in roots:
         with contextlib.suppress(OSError):
             base = base.resolve()
         if resolved == base or base in resolved.parents:

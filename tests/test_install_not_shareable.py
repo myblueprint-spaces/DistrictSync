@@ -14,6 +14,7 @@ This file pins the view's input, the copy, the classifier branch and the provisi
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -211,3 +212,83 @@ class TestThePrivilegedHalfRefusesToo:
         with patch.object(task_com, "register_task_definition") as reg:
             elevated_apply._do_register(loose)
         assert reg.call_count == 1
+
+
+_REAL_PROFILE_ROOTS = task_com._user_profile_roots  # captured before the autouse fixture replaces it
+
+
+class TestTheProfileRoots:
+    """The real ``_user_profile_roots`` (every other test replaces it)."""
+
+    def test_the_account_folders_and_the_profiles_directory_are_included(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+        monkeypatch.setattr(task_com, "_profiles_directory", lambda: tmp_path / "Users")
+        roots = _REAL_PROFILE_ROOTS()
+        assert tmp_path / "local" in roots
+        assert tmp_path / "home" in roots
+        assert tmp_path / "Users" in roots
+
+    def test_nothing_set_and_no_home_never_raises(self, monkeypatch):
+        monkeypatch.delenv("LOCALAPPDATA", raising=False)
+        monkeypatch.delenv("USERPROFILE", raising=False)
+        monkeypatch.setattr(task_com, "_profiles_directory", lambda: None)
+
+        def no_home() -> Path:
+            raise RuntimeError("no home")
+
+        monkeypatch.setattr(task_com.Path, "home", staticmethod(no_home))
+        assert _REAL_PROFILE_ROOTS() == []
+
+    def test_no_roots_at_all_fails_closed_for_the_installer_layout(self, tmp_path, monkeypatch):
+        exe = _installed_layout(tmp_path)
+        monkeypatch.setattr(task_com, "_user_profile_roots", lambda: [])
+        assert task_com.runs_from_per_user_install(str(exe)) is True
+        # Positive twin: without the installer's layout there is nothing to refuse.
+        assert task_com.runs_from_per_user_install(str(_portable(tmp_path))) is False
+
+    def test_a_copy_in_another_accounts_profile_counts(self, tmp_path, monkeypatch):
+        other = tmp_path / "Users" / "someone-else" / "AppData" / "Local"
+        other.mkdir(parents=True)
+        exe = _installed_layout(other)
+        monkeypatch.setattr(task_com, "_user_profile_roots", lambda: [tmp_path / "me", tmp_path / "Users"])
+        assert task_com.runs_from_per_user_install(str(exe)) is True
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Windows paths compare case-insensitively")
+    def test_case_differences_still_match_on_windows(self, tmp_path, monkeypatch):
+        exe = _installed_layout(tmp_path)
+        monkeypatch.setattr(task_com, "_user_profile_roots", lambda: [Path(str(tmp_path).upper())])
+        assert task_com.runs_from_per_user_install(str(exe)) is True
+
+
+class TestTheProvisionOpRefusesBeforeAnyChange:
+    def test_a_foreign_principal_against_a_per_user_copy_never_reaches_apply_provision(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(windows, "current_run_as_user", lambda: "PC\admin")
+        payload = {
+            "op": "provision",
+            "task_name": "DistrictSync_Daily",
+            "exe": str(_installed_layout(tmp_path)),
+            "arguments": "--sis myedbc",
+            "working_dir": str(tmp_path),
+            "run_time": "03:00",
+            "user": _SERVICE,
+            "password": "pw",
+            "kind": PrincipalKind.PASSWORD.value,
+            "run_highest": False,
+            "wake_to_run": True,
+            "source_data_dir": str(tmp_path / "profile"),
+        }
+        from src.scheduler import provisioning
+
+        with (
+            patch.object(provisioning, "apply_provision") as apply,
+            pytest.raises(ValueError, match="per-user installed copy"),
+        ):
+            elevated_apply._do_provision(payload)
+        apply.assert_not_called()
+
+        # Positive twin: the single-file exe goes on to provisioning.
+        payload["exe"] = str(_portable(tmp_path))
+        with patch.object(provisioning, "apply_provision") as apply:
+            elevated_apply._do_provision(payload)
+        apply.assert_called_once()
