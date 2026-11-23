@@ -195,6 +195,18 @@ def complete_handover(
     )
 
 
+def switch_state() -> bool | None:
+    """The HKLM machine-scope switch as three states: on, off, or ``None`` when it cannot be read.
+
+    Plan 0055 M2a: ``--machine-setup`` must tell "the computer was already set up" from "I could not tell", because only a
+    child that reported success may claim a run changed anything on a computer that was already set up.
+    """
+    try:
+        return paths.machine_switch_on()
+    except paths.MachineScopeRefused:
+        return None
+
+
 def _switch_reads_on() -> bool:
     """The parent's own read of the HKLM switch. Unreadable counts as OFF, loudly.
 

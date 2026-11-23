@@ -142,7 +142,7 @@ class TestTheCommandLine:
         self, monkeypatch, *, outcome: ProvisionOutcome, handed_over: bool, already_shared: bool = False, refused=None
     ) -> dict[str, object]:
         seen: dict[str, object] = {}
-        monkeypatch.setattr(provision_session, "_switch_reads_on", lambda: already_shared)
+        monkeypatch.setattr(provision_session, "switch_state", lambda: already_shared)
 
         def request(**kw):
             seen["request"] = kw
@@ -212,7 +212,7 @@ class TestTheCommandLineOnAComputerAlreadySetUp:
         monkeypatch.setattr("src.scheduler.task_com.runs_from_per_user_install", lambda exe: False)
 
     def _wire(self, monkeypatch, outcome: ProvisionOutcome) -> None:
-        monkeypatch.setattr(provision_session, "_switch_reads_on", lambda: True)
+        monkeypatch.setattr(provision_session, "switch_state", lambda: True)
         monkeypatch.setattr(provision_session, "request_machine_setup", lambda **kw: ProvisionAttempt(outcome=outcome))
         monkeypatch.setattr(
             provision_session, "complete_handover", lambda *, persist, reenter: HandoverOutcome(handed_over=True)
@@ -232,7 +232,7 @@ class TestTheCommandLineOnAComputerAlreadySetUp:
         assert cli(["--machine-setup", "--updates", "off"]) == 1
         out = capsys.readouterr().out
         assert "Automatic updates" not in out
-        assert "this run changed nothing" in out
+        assert "already keeps one shared DistrictSync profile" in out or "may not have finished" in out
 
     def test_positive_twin_a_completed_rerun_changes_the_mode_and_exits_0(self, windows, monkeypatch, capsys):
         self._wire(monkeypatch, ProvisionOutcome.PROVISIONED)
@@ -244,7 +244,7 @@ class TestTheCommandLineEdges:
     def test_a_committed_but_unusable_folder_is_reported_as_such(self, monkeypatch, capsys):
         monkeypatch.setattr(main_mod, "_is_windows", lambda: True)
         monkeypatch.setattr("src.scheduler.task_com.runs_from_per_user_install", lambda exe: False)
-        monkeypatch.setattr(provision_session, "_switch_reads_on", lambda: False)
+        monkeypatch.setattr(provision_session, "switch_state", lambda: False)
         monkeypatch.setattr(
             provision_session,
             "request_machine_setup",
@@ -291,3 +291,60 @@ class TestTheElevatedDispatch:
         out = self._run(tmp_path, {"op": "machine_setup", "source_data_dir": "C:/p", "user": "", "update_mode": "x"})
         assert out["ok"] is False and out["message"] == elevated_apply._MSG_REQUEST_INVALID
         assert calls == []
+
+
+class TestTheMachineSetupEdgesRoundTwo:
+    @pytest.fixture
+    def windows(self, monkeypatch):
+        monkeypatch.setattr(main_mod, "_is_windows", lambda: True)
+        monkeypatch.setattr("src.scheduler.task_com.runs_from_per_user_install", lambda exe: False)
+
+    def _wire(self, monkeypatch, *, before, outcome):
+        monkeypatch.setattr(provision_session, "switch_state", lambda: before)
+        monkeypatch.setattr(provision_session, "request_machine_setup", lambda **kw: ProvisionAttempt(outcome=outcome))
+        monkeypatch.setattr(
+            provision_session, "complete_handover", lambda *, persist, reenter: HandoverOutcome(handed_over=True)
+        )
+
+    def test_an_unconfirmed_run_with_an_unreadable_switch_before_is_not_claimed(self, windows, monkeypatch, capsys):
+        self._wire(monkeypatch, before=None, outcome=ProvisionOutcome.UNCONFIRMED)
+        assert cli(["--machine-setup"]) == 1
+        assert main_mod.MACHINE_SETUP_DONE not in capsys.readouterr().out
+
+    def test_positive_twin_an_unconfirmed_first_run_is_settled_by_the_switch(self, windows, monkeypatch, capsys):
+        self._wire(monkeypatch, before=False, outcome=ProvisionOutcome.UNCONFIRMED)
+        assert cli(["--machine-setup", "--updates", "off"]) == 0
+        assert "Automatic updates: off." in capsys.readouterr().out
+
+    def test_a_declined_rerun_says_the_setting_was_not_changed_once(self, windows, monkeypatch, capsys):
+        self._wire(monkeypatch, before=True, outcome=ProvisionOutcome.DECLINED)
+        assert cli(["--machine-setup"]) == 1
+        out = capsys.readouterr().out
+        assert "the update setting was not changed" in out and "may not have finished" not in out
+
+    def test_a_failed_rerun_does_not_claim_nothing_changed(self, windows, monkeypatch, capsys):
+        self._wire(monkeypatch, before=True, outcome=ProvisionOutcome.FAILED)
+        assert cli(["--machine-setup"]) == 1
+        assert "may not have finished" in capsys.readouterr().out
+
+    @pytest.mark.parametrize(
+        "extra",
+        [["--output", "x"], ["--diff"], ["--quality"], ["--source", "manual"], ["--sftp-host", "h"], ["--output=x"]],
+    )
+    def test_any_conversion_or_sftp_flag_with_machine_setup_is_a_usage_error(self, windows, monkeypatch, extra):
+        self._wire(monkeypatch, before=False, outcome=ProvisionOutcome.PROVISIONED)
+        assert cli(["--machine-setup", *extra]) == 2
+
+    def test_the_switch_state_is_three_valued(self, monkeypatch):
+        monkeypatch.setattr(provision_session.paths, "machine_switch_on", lambda: True)
+        assert provision_session.switch_state() is True
+        monkeypatch.setattr(provision_session.paths, "machine_switch_on", lambda: False)
+        assert provision_session.switch_state() is False
+
+        def unreadable():
+            raise provision_session.paths.MachineScopeRefused(
+                provision_session.paths.MachineScopeRefusedReason.SWITCH_UNREADABLE, Path("x")
+            )
+
+        monkeypatch.setattr(provision_session.paths, "machine_switch_on", unreadable)
+        assert provision_session.switch_state() is None

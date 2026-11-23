@@ -364,8 +364,28 @@ MACHINE_SETUP_COPY: dict[str, str] = {
 
 #: What a committed but unusable shared folder means (the child committed against a folder the app refuses).
 MACHINE_SETUP_REFUSED_FOLDER = (
-    "The shared profile was switched on, but DistrictSync cannot use the folder C:\\ProgramData\\DistrictSync "
+    "The shared profile is switched on, but DistrictSync cannot use the folder C:\\ProgramData\\DistrictSync "
     "(reason: {reason}). Run DistrictSync.exe --diagnose and send the report to your support contact."
+)
+#: Outcomes in which the elevated step never ran, so nothing was changed.
+_MACHINE_SETUP_NOT_RUN = frozenset({"declined", "launch_failed", "different_account", "unavailable"})
+#: Flags that belong to a conversion or to SFTP setup; none of them may ride along with --machine-setup.
+_NOT_WITH_MACHINE_SETUP = frozenset(
+    {
+        "--sis",
+        "--input",
+        "--output",
+        "--dry-run",
+        "--diff",
+        "--quality",
+        "--sftp",
+        "--source",
+        "--sftp-host",
+        "--sftp-port",
+        "--sftp-user",
+        "--sftp-remote",
+        "--sftp-password-stdin",
+    }
 )
 
 
@@ -395,7 +415,7 @@ def _machine_setup(args: argparse.Namespace) -> int:
         )
         return 1
     mode = args.updates or policy.DEFAULT_UPDATE_MODE
-    already_shared = provision_session._switch_reads_on()
+    before = provision_session.switch_state()  # True, False, or None when it cannot be read
     cfg = AppConfig.load()
     attempt = provision_session.request_machine_setup(
         update_mode=mode,
@@ -423,11 +443,18 @@ def _machine_setup(args: argparse.Namespace) -> int:
         print(MACHINE_SETUP_DONE)
         print(f"Automatic updates: {mode}.")
         return 0
-    if outcome == "unconfirmed" and not already_shared:
+    if outcome == "unconfirmed" and before is False:
+        # The switch was provably off before and is on now, and the mode is written before the switch.
         print(MACHINE_SETUP_DONE)
-        print("The update setting could not be confirmed; run --machine-setup again to set it.")
+        print(f"Automatic updates: {mode}.")
         return 0
-    print("This computer already keeps one shared DistrictSync profile; this run changed nothing.")
+    if outcome in _MACHINE_SETUP_NOT_RUN:
+        print("This computer already keeps one shared DistrictSync profile; the update setting was not changed.")
+    else:
+        print(
+            "This computer keeps one shared DistrictSync profile, but this run may not have finished; "
+            "run DistrictSync.exe --diagnose to see the update setting."
+        )
     return 1
 
 
@@ -751,8 +778,8 @@ def _cli(argv: list[str] | None) -> int:
         print("Error: --updates is used with --machine-setup.")
         return 2
     if args.machine_setup:
-        if args.sis or args.input or args.dry_run or args.sftp:
-            print("Error: --machine-setup sets the computer up only; run a conversion separately.")
+        if any(arg.split("=", 1)[0] in _NOT_WITH_MACHINE_SETUP for arg in args_list):
+            print("Error: --machine-setup sets the computer up only; run a conversion or SFTP setup separately.")
             return 2
         return _machine_setup(args)
     if args.sftp_configure:
