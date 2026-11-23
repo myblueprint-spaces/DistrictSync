@@ -74,6 +74,12 @@ def _applicable() -> bool:
     """Installed flavour, under a Velopack install, per-user profile, no data-dir override (except the e2e build)."""
     if not is_installed_build() or install_root() is None:
         return False
+    from src.utils.install_kind import InstallKind, install_kind
+
+    if install_kind() is InstallKind.MACHINE:
+        # Plan 0055: a machine-wide install's start guard and recovery belong to the SYSTEM updater (U3); the per-user guard
+        # would keep its state in a folder the nightly principal can write.
+        return False
     from src.utils import paths  # light (platformdirs), but not needed anywhere else
 
     try:

@@ -50,6 +50,7 @@ from src.update.package import HEALTH_FILE, UPDATER_STATE_FOLDER, app_identity, 
 from src.update.startup import install_root
 from src.utils import paths
 from src.utils.build_flavor import is_e2e_build, is_installed_build
+from src.utils.install_kind import InstallKind, install_kind
 from src.utils.version import app_version
 
 logger = logging.getLogger(__name__)
@@ -129,6 +130,10 @@ def skip_reason(
         return "portable"
     if install_root() is None:
         return "not_installed"
+    if install_kind() is InstallKind.MACHINE:
+        # Plan 0055 M1 (spike S0b #4): a non-SYSTEM process that asks Velopack to apply on a machine-wide install gets a
+        # UAC prompt and drops Update.exe into the user's profile. Only the SYSTEM updater (U2) may check and apply there.
+        return "machine_wide"
     if _in_machine_scope():
         return "machine_scope"
     if paths.data_dir_override_active() and not is_e2e_build():

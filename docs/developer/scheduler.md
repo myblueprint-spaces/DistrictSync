@@ -68,7 +68,11 @@ go through `_new_definition`). Highest is registered only when it is asked for, 
 not a per-user Velopack install (`Update.exe` beside `current`, `runs_from_user_writable_install`). An installed copy lives under the
 user's `%LOCALAPPDATA%`, which any unelevated process of that user can write: an elevated task running that exe would give such a
 process the administrator token at the next run (a UAC bypass), so the task is registered Limited and a warning is logged. The caller's
-`run_highest=True` default is unchanged and is simply not honoured for that exe; nothing is refused.
+`run_highest=True` default is unchanged and is simply not honoured for that exe; nothing is refused. **Machine-wide (plan 0055
+M1):** the MSI install has the same layout, so `runs_from_user_writable_install` asks `install_kind.is_machine_wide_root`
+(the MSI marker AND no write-class right for anyone but SYSTEM, Administrators and TrustedInstaller on the root and
+`current\`, decided from the DACL, never the path); such a copy may run Highest. A layout a non-administrator can write
+(an unhardened `D:\` install, the per-user `Setup.exe` install) stays Limited.
 
 **What still needs elevation, and how it is handled.** Registering a task for another account (a stored password or a gMSA) still
 takes the one UAC prompt it always did (`elevated_apply`). What is lost is only the elevated token at RUN time: a Limited nightly

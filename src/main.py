@@ -29,6 +29,14 @@ from typing import IO, Callable
 # update that breaks those imports is still counted and recovered (see src/update/entry.py). Applies to the installed flavour
 # under a Velopack install only; everywhere else ``run_entry`` returns None and the module carries on exactly as before. The
 # guarded run imports ``src.main`` and calls ``cli`` itself, so nothing below runs a second time.
+# Plan 0055 M1: Velopack's hooks (``--veloapp-*``) are dispatched FIRST, before the start guard below, because the guard
+# resolves the profile and an MSI may run a hook as SYSTEM (a Group Policy or Intune install). The hook path imports only
+# ``src.update.startup`` and touches no profile, log, keyring or registry (pinned by tests/test_install_kind.py).
+if __name__ == "__main__" and any(arg.startswith("--veloapp-") for arg in sys.argv[1:]):
+    from src.update.startup import run_velopack_hook
+
+    sys.exit(run_velopack_hook())
+
 if __name__ == "__main__":
     from src.update.entry import run_entry
 

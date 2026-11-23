@@ -469,8 +469,19 @@ def _read_dir_security(path: Path) -> tuple[str, int]:  # pragma: no cover - Win
         kernel32.LocalFree(descriptor)
 
 
-def _read_dacl_aces(path: Path) -> tuple[tuple[int, str], ...]:  # pragma: no cover - Windows-only ctypes
-    """Return ``((ace type, trustee SID string), …)`` for ``path``'s DACL.
+def _read_dacl_aces(path: Path) -> tuple[tuple[int, str], ...]:
+    """Return ``((ace type, trustee SID string), …)`` for ``path``'s DACL: :func:`read_dacl_entries`, projected.
+
+    The open-group walk's seam (tests patch it). Raises ``OSError`` exactly as :func:`read_dacl_entries` does.
+    """
+    return tuple((ace_type, sid) for ace_type, _flags, _mask, sid in read_dacl_entries(path))
+
+
+def read_dacl_entries(path: Path) -> tuple[tuple[int, int, int, str], ...]:  # pragma: no cover - Windows-only ctypes
+    """Return ``((ace type, ace flags, access mask, trustee SID string), …)`` for ``path``'s DACL.
+
+    Plan 0055 M1 widened the reader (``install_kind`` needs the mask and the inherit-only flag); ``_read_dacl_aces`` is
+    its projection, so the open-group walk is unchanged.
 
     The second raw-syscall seam, beside :func:`_read_dir_security` — deliberately its own
     call rather than a widened return, because they answer two different questions and ten
@@ -533,8 +544,8 @@ def _read_dacl_aces(path: Path) -> tuple[tuple[int, str], ...]:  # pragma: no co
         raise OSError(f"GetNamedSecurityInfoW (DACL) failed for {path} (error {status}).")
     try:
         if not dacl:
-            # A NULL DACL grants everyone full control. Report it as exactly that.
-            return ((_ACCESS_ALLOWED_ACE_TYPE, "S-1-1-0"),)
+            # A NULL DACL grants everyone full control. Report it as exactly that (GENERIC_ALL).
+            return ((_ACCESS_ALLOWED_ACE_TYPE, 0, 0x10000000, "S-1-1-0"),)
 
         class _AclSizeInformation(ctypes.Structure):
             _fields_ = (
@@ -548,18 +559,20 @@ def _read_dacl_aces(path: Path) -> tuple[tuple[int, str], ...]:  # pragma: no co
         if not advapi32.GetAclInformation(dacl, ctypes.byref(info), ctypes.sizeof(info), 2):
             raise OSError(f"GetAclInformation failed for {path} (error {ctypes.get_last_error()}).")  # type: ignore[attr-defined]
 
-        aces: list[tuple[int, str]] = []
+        aces: list[tuple[int, int, int, str]] = []
         for index in range(info.AceCount):
             ace = ctypes.c_void_p()
             if not advapi32.GetAce(dacl, index, ctypes.byref(ace)):
                 raise OSError(f"GetAce({index}) failed for {path} (error {ctypes.get_last_error()}).")  # type: ignore[attr-defined]
             ace_type = ctypes.cast(ace, ctypes.POINTER(ctypes.c_uint8))[0]
+            ace_flags = ctypes.cast(ace, ctypes.POINTER(ctypes.c_uint8))[1]
+            ace_mask = ctypes.cast(ctypes.c_void_p((ace.value or 0) + 4), ctypes.POINTER(ctypes.c_uint32))[0]
             sid_ptr = ctypes.c_void_p((ace.value or 0) + _ACE_SID_OFFSET)
             sid_text = ctypes.c_wchar_p()
             if not advapi32.ConvertSidToStringSidW(sid_ptr, ctypes.byref(sid_text)):
                 raise OSError(f"ConvertSidToStringSidW failed for {path} (error {ctypes.get_last_error()}).")  # type: ignore[attr-defined]
             try:
-                aces.append((int(ace_type), str(sid_text.value)))
+                aces.append((int(ace_type), int(ace_flags), int(ace_mask), str(sid_text.value)))
             finally:
                 kernel32.LocalFree(sid_text)
         return tuple(aces)
