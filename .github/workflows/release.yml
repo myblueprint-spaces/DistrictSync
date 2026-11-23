@@ -613,8 +613,14 @@ jobs:
           $got = ([xml](Get-Content "$env:INSTALL_ROOT\current\sq.version")).package.metadata.version
           Write-Output "installed version after upgrade: $got (want $want)"
           if ($got -ne $want) { Write-Error "the upgrade did not land"; exit 1 }
-          & "$env:INSTALL_ROOT\current\DistrictSync.exe" --version
-          if ($LASTEXITCODE -ne 0) { Write-Error "the upgraded copy does not start"; exit 1 }
+          # A windowed (GUI-subsystem) exe: `&` neither waits for it nor sets $LASTEXITCODE, so wait for the real exit
+          # code. A throwaway profile, as every smoke uses, so the check never writes the runner's own profile.
+          $env:DISTRICTSYNC_DATA_DIR = Join-Path $env:RUNNER_TEMP "dsync-msi-upgrade-profile"
+          New-Item -ItemType Directory -Force $env:DISTRICTSYNC_DATA_DIR | Out-Null
+          $p = Start-Process -FilePath "$env:INSTALL_ROOT\current\DistrictSync.exe" -ArgumentList "--version" -Wait -PassThru -NoNewWindow `
+            -RedirectStandardOutput "$env:RUNNER_TEMP\upgraded-version.txt"
+          Write-Output "upgraded --version exit $($p.ExitCode): $(Get-Content "$env:RUNNER_TEMP\upgraded-version.txt" -Raw)"
+          if ($p.ExitCode -ne 0) { Write-Error "the upgraded copy does not start"; exit 1 }
 
       - name: Uninstall, then assert the program is gone and the profile and task are not
         if: always()
