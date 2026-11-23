@@ -192,6 +192,7 @@ class TestTheMachineWideMsiRehearsal:
             "/x ",  # uninstall
             "DistrictSync-ci-standin",  # the stand-in profile survives
             "DistrictSync_CI_Standin",  # the stand-in task survives
+            "install kind:",  # plan 0055 M1: the real install reports itself machine-wide
         ):
             assert needle in text, needle
 
