@@ -77,7 +77,7 @@ class TestWhenTheInstallerIsBuiltAndPublished:
 class TestWhoHoldsWhat:
     def test_only_the_signing_jobs_hold_id_token_and_both_are_in_the_release_environment(self):
         holders = {n for n, j in JOBS.items() if (j.get("permissions") or {}).get("id-token") == "write"}
-        assert holders == {"sign-windows", "installer-windows"}
+        assert holders == {"sign-windows", "installer-windows", "installer-msi"}
         for name in holders:
             assert JOBS[name]["environment"] == "release", name
 
@@ -151,3 +151,52 @@ def test_the_frozen_module_check_names_what_is_missing():
     spec.loader.exec_module(module)
     assert module.missing_modules({"a", "b"}, ["a", "c"]) == ["c"]
     assert module.missing_modules({"a"}, ["a"]) == []  # positive twin
+
+
+class TestTheMachineWideMsiRehearsal:
+    """Plan 0055 B1 (DSYNC-93): the per-machine MSI is built, signed, installed, upgraded and removed on a
+    dispatch ONLY, and nothing it builds can reach a Release."""
+
+    _JOB = "installer-msi"
+
+    def test_it_runs_on_a_dispatch_only_never_on_a_tag(self):
+        assert JOBS[self._JOB]["if"] == "github.event_name == 'workflow_dispatch'"
+
+    def test_publish_release_does_not_need_it_so_it_can_never_stop_or_feed_a_release(self):
+        assert self._JOB not in JOBS["publish-release"]["needs"]
+        assert "msi" not in _PUBLISH_TEXT.lower()
+
+    def test_it_signs_in_the_release_environment_with_the_pinned_vpk(self):
+        job = JOBS[self._JOB]
+        assert job["environment"] == "release"
+        assert job["env"]["PACK_ID"] == "myBlueprint.DistrictSync"
+        text = _steps_text(self._JOB)
+        assert f"dotnet tool install --global vpk --version {VELOPACK_VERSION}" in text
+        assert "--msi --instLocation PerMachine" in text
+        assert "--packTitle DistrictSync" in text
+        assert "--azureTrustedSignFile" in text
+
+    def test_both_msis_are_verified_signed_with_a_timestamp(self):
+        text = _steps_text(self._JOB)
+        assert "verify /pa" in text and "TimeStamperCertificate" in text
+        assert '@("msi-n.msi", "msi-n1.msi")' in text
+
+    def test_it_installs_checks_the_acl_smokes_upgrades_and_uninstalls_keeping_profile_and_task(self):
+        text = _steps_text(self._JOB)
+        for needle in (
+            "/i ",  # install
+            "S-1-5-32-545",  # the ACL check names the Users SID
+            "--cli-smoke --phase all --artifact installed",
+            "--require-close",
+            "msi-n1.msi",  # the upgrade
+            "/x ",  # uninstall
+            "DistrictSync-ci-standin",  # the stand-in profile survives
+            "DistrictSync_CI_Standin",  # the stand-in task survives
+        ):
+            assert needle in text, needle
+
+    def test_the_rehearsal_artifact_is_short_lived_and_not_the_release_name(self):
+        upload = [s for s in JOBS[self._JOB]["steps"] if str(s.get("uses", "")).startswith("actions/upload-artifact@")]
+        assert len(upload) == 1
+        assert upload[0]["with"]["retention-days"] == 1
+        assert upload[0]["with"]["name"] == "DistrictSync-windows-msi-rehearsal"
