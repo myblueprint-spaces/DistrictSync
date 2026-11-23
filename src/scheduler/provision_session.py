@@ -43,7 +43,12 @@ from src.config.app_config import CONFIG_FILENAME
 from src.scheduler import elevation, provisioning, schedule_check, task_com, windows
 from src.scheduler.elevated_apply import DIFFERENT_ACCOUNT_SENTINEL
 from src.scheduler.elevation import ElevationResult
-from src.scheduler.provisioning import ProvisionRefused, ProvisionStep, build_provision_payload
+from src.scheduler.provisioning import (
+    ProvisionRefused,
+    ProvisionStep,
+    build_machine_setup_payload,
+    build_provision_payload,
+)
 from src.scheduler.schedule_check import ScheduleCheck
 from src.scheduler.task_com import Principal, PrincipalKind, validate_principal_account
 from src.utils import paths
@@ -505,8 +510,6 @@ def request_provision(
         if refused is not None:
             return ProvisionAttempt(outcome=refused)
 
-    req_path: Path | None = None
-    res_path: Path | None = None
     try:
         # Validated in BOTH halves (the child re-validates every field): a request file is
         # attacker-influencable in ways argv is not, and the parent has the log sink.
@@ -531,7 +534,41 @@ def request_provision(
             sftp_username=sftp_username,
             sftp_password=_read_delivery_secret(enabled=sftp, host=sftp_host, username=sftp_username),
         )
+    except ProvisionRefused as exc:
+        return ProvisionAttempt(outcome=ProvisionOutcome.REFUSED, step=exc.step, icacls_exit=exc.icacls_exit)
+    except (OSError, RuntimeError, ValueError) as exc:
+        logger.error("Could not start the shared-settings change (%s).", type(exc).__name__)
+        return ProvisionAttempt(outcome=ProvisionOutcome.UNAVAILABLE)
+    return _elevate_and_read(payload, wants_check=wants_check)
 
+
+def request_machine_setup(*, update_mode: str, sftp: bool, sftp_host: str, sftp_username: str) -> ProvisionAttempt:
+    """Plan 0055 M2: provision this computer's shared profile with NO nightly task, behind one UAC prompt.
+
+    ``--machine-setup`` and (in M2b) the first-run Setup step call this. The setup administrator is the only principal;
+    the update mode is written in the same commit. **Call** :func:`complete_handover` **on every outcome**, exactly as
+    after :func:`request_provision`. Never raises.
+    """
+    try:
+        payload = build_machine_setup_payload(
+            update_mode=update_mode,
+            sftp_host=sftp_host,
+            sftp_username=sftp_username,
+            sftp_password=_read_delivery_secret(enabled=sftp, host=sftp_host, username=sftp_username),
+        )
+    except ProvisionRefused as exc:
+        return ProvisionAttempt(outcome=ProvisionOutcome.REFUSED, step=exc.step, icacls_exit=exc.icacls_exit)
+    except (OSError, RuntimeError, ValueError) as exc:
+        logger.error("Could not start the machine setup (%s).", type(exc).__name__)
+        return ProvisionAttempt(outcome=ProvisionOutcome.UNAVAILABLE)
+    return _elevate_and_read(payload, wants_check=False)
+
+
+def _elevate_and_read(payload: dict[str, object], *, wants_check: bool) -> ProvisionAttempt:
+    """Run one provisioning request in the elevated child and read its bounded result. Never raises."""
+    req_path: Path | None = None
+    res_path: Path | None = None
+    try:
         logger.info("Setting this computer up for shared DistrictSync settings via one-time elevation (UAC).")
         req_path = elevation.write_request(payload)
         res_path = req_path.with_suffix(".res")

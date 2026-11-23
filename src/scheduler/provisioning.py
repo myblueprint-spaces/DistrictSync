@@ -66,6 +66,7 @@ from pathlib import Path
 
 from src.scheduler import task_com
 from src.scheduler.windows import current_run_as_user
+from src.update import policy
 from src.utils import paths
 from src.utils.helpers import subprocess_no_window_flags, system_binary
 
@@ -324,7 +325,9 @@ def _run_icacls(args: list[str]) -> int:
     return completed.returncode
 
 
-def _commit_machine_switch(provisioned_by: str) -> None:  # pragma: no cover - Windows-only registry write
+def _commit_machine_switch(
+    provisioned_by: str, *, update_mode: str | None
+) -> None:  # pragma: no cover - registry write
     """Write ``HKLM\\SOFTWARE\\DistrictSync`` — the COMMIT POINT of the whole sequence.
 
     The access mask is :data:`src.utils.paths.MACHINE_SCOPE_KEY_ACCESS` **imported, never
@@ -335,7 +338,9 @@ def _commit_machine_switch(provisioned_by: str) -> None:  # pragma: no cover - W
 
     ``MachineScope`` is written LAST. The two display values mean nothing on their own, so
     a failure between them and the switch leaves the install un-provisioned, which is the
-    resume case rather than a half-committed one.
+    resume case rather than a half-committed one. ``update_mode`` (plan 0055 M2, machine setup) is
+    written with them, BEFORE the switch, for the same reason; ``None`` (the schedule-time provision)
+    leaves any existing value as it is. It is REQUIRED and undefaulted so no caller forgets to decide.
 
     The ``sys.platform`` guard is what lets a type-checker running on Linux skip this body —
     ``winreg``'s typeshed stubs mark every attribute Windows-only (the trap that reddened
@@ -352,6 +357,10 @@ def _commit_machine_switch(provisioned_by: str) -> None:  # pragma: no cover - W
             key, "ProvisionedAt", 0, winreg.REG_SZ, datetime.now().astimezone().isoformat(timespec="seconds")
         )
         winreg.SetValueEx(key, "ProvisionedBy", 0, winreg.REG_SZ, provisioned_by)
+        if update_mode is not None:
+            winreg.SetValueEx(
+                key, policy.MACHINE_SETTING_VALUE_NAME, 0, winreg.REG_SZ, policy.parse_update_mode(update_mode)
+            )
         winreg.SetValueEx(key, paths.MACHINE_SCOPE_VALUE_NAME, 0, winreg.REG_DWORD, 1)
 
 
@@ -684,6 +693,54 @@ def build_provision_payload(
     }
 
 
+def build_machine_setup_payload(
+    *,
+    update_mode: str,
+    sftp_host: str = "",
+    sftp_username: str = "",
+    sftp_password: str = "",
+) -> dict[str, object]:
+    """Build the ``machine_setup`` request (plan 0055 M2): provision the shared profile with NO nightly task.
+
+    The same profile, DACL, migration, secret and commit as ``provision``, with the signed-in administrator as the only
+    principal (``user`` blank: the shared folder grants nobody else anything until a nightly is scheduled for another
+    account, which grants that account then) and the update mode written in the same commit. Refuses under
+    ``DISTRICTSYNC_DATA_DIR`` exactly as :func:`build_provision_payload` does, and an unknown update mode with
+    ``ValueError`` before anything is asked of Windows.
+
+    Raises:
+        ProvisionRefused: with :attr:`ProvisionStep.OVERRIDE`.
+        ValueError: ``update_mode`` is not one of :data:`src.update.policy.UPDATE_MODES`.
+    """
+    _refuse_under_override()
+    return {
+        "op": "machine_setup",
+        "source_data_dir": str(paths.per_user_data_dir()),
+        "user": "",
+        "update_mode": policy.parse_update_mode(update_mode),
+        "sftp_host": sftp_host,
+        "sftp_username": sftp_username,
+        "sftp_password": sftp_password,
+    }
+
+
+def apply_machine_setup(payload: Mapping[str, object]) -> None:
+    """The child half of ``machine_setup``: :func:`apply_provision` with no task to register and the update mode.
+
+    A blank ``user`` makes the setup administrator the principal (``_principal_account``), so no other account is
+    granted anything. Re-running it on a provisioned computer is the resume path, which is how ``--machine-setup
+    --updates ...`` changes the update mode later.
+
+    Raises:
+        ProvisionRefused: at any step up to and including the commit.
+        ValueError: the payload names a principal or an unknown update mode.
+    """
+    if str(payload.get("user", "")).strip():
+        raise ValueError("machine setup grants no other account")
+    mode = policy.parse_update_mode(payload.get("update_mode"))
+    apply_provision(payload, register=lambda: None, update_mode=mode)
+
+
 # --------------------------------------------------------------------------- #
 # The child half — the three ops.                                             #
 # --------------------------------------------------------------------------- #
@@ -744,7 +801,9 @@ def _principal_account(payload: Mapping[str, object], *, setup_account: str) -> 
         raise ProvisionRefused(ProvisionStep.PRINCIPAL) from exc
 
 
-def apply_provision(payload: Mapping[str, object], *, register: Callable[[], None]) -> None:
+def apply_provision(
+    payload: Mapping[str, object], *, register: Callable[[], None], update_mode: str | None = None
+) -> None:
     """Provision this computer for a shared profile, fail-closed, in S-1b-i.3's order.
 
     ``register`` is injected rather than called here so the registration keeps going
@@ -782,7 +841,7 @@ def apply_provision(payload: Mapping[str, object], *, register: Callable[[], Non
         _seed_secret(payload)  # 5
         _verify_provisioned(root, source)  # 6
         try:
-            _commit_machine_switch(setup_account)  # 7 — the commit point
+            _commit_machine_switch(setup_account, update_mode=update_mode)  # 7 — the commit point
         except OSError as exc:
             raise ProvisionRefused(ProvisionStep.COMMIT) from exc
     except ProvisionRefused as exc:

@@ -168,6 +168,8 @@ def _apply(req_path: Path, res_path: Path) -> int:
         elif op == "provision":
             _do_provision(payload)
             check = _schedule_check(payload)
+        elif op == "machine_setup":
+            _do_machine_setup(payload)
         elif op == "grant_current_user":
             _do_grant_current_user(payload)
         elif op == "prune_principal":
@@ -340,6 +342,27 @@ def _do_provision(payload: dict[str, object]) -> None:
     # DACLs and the sealed secret, so a refusal there would leave a provisioned computer with no nightly.
     _refuse_per_user_install(kind, str(payload["user"]), str(payload["exe"]))
     provisioning.apply_provision(payload, register=lambda: _do_register({**payload, "op": "register"}))
+
+
+#: Plan 0055 M2: what a ``machine_setup`` request must carry.
+_REQUIRED_MACHINE_SETUP_FIELDS = frozenset({"op", "source_data_dir", "user", "update_mode"})
+
+
+def _do_machine_setup(payload: dict[str, object]) -> None:
+    """Provision the shared profile with no nightly task, and write the update mode (plan 0055 M2).
+
+    Validated BEFORE the sequence starts, as ``_do_provision`` is: an unknown update mode or a named principal must
+    refuse the whole op, never switch the computer to machine scope and then refuse.
+    """
+    from src.scheduler import provisioning
+    from src.update import policy
+
+    if not set(payload) >= _REQUIRED_MACHINE_SETUP_FIELDS:
+        raise ValueError("missing fields")
+    policy.parse_update_mode(payload["update_mode"])
+    if str(payload["user"]).strip():
+        raise ValueError("machine setup grants no other account")
+    provisioning.apply_machine_setup(payload)
 
 
 def _do_grant_current_user(payload: dict[str, object]) -> None:

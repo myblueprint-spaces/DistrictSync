@@ -68,6 +68,7 @@ class _Rig:
         self.icacls: list[list[str]] = []
         self.icacls_exit = 0
         self.committed: list[tuple[str, str]] = []
+        self.update_modes: list[str | None] = []
         self.registered = 0
         self.verify_raises: BaseException | None = None
         self.create_raises: BaseException | None = None
@@ -114,10 +115,11 @@ def rig(monkeypatch, machine_root):
         if r.verify_raises is not None:
             raise r.verify_raises
 
-    def _commit(provisioned_by: str) -> None:
+    def _commit(provisioned_by: str, *, update_mode: str | None) -> None:
         if r.commit_raises is not None:
             raise r.commit_raises
         r.committed.append(("MachineScope", provisioned_by))
+        r.update_modes.append(update_mode)
 
     def _delete(task_name: str) -> bool:
         r.deleted.append(task_name)
@@ -544,9 +546,9 @@ class TestCommit:
         order: list[str] = []
         staged = provisioning._commit_machine_switch
 
-        def _spy(provisioned_by: str) -> None:
+        def _spy(provisioned_by: str, *, update_mode: str | None) -> None:
             order.append("commit")
-            staged(provisioned_by)
+            staged(provisioned_by, update_mode=update_mode)
 
         monkeypatch.setattr(provisioning, "_commit_machine_switch", _spy)
         provisioning.apply_provision(_payload(source_profile), register=lambda: order.append("register"))
