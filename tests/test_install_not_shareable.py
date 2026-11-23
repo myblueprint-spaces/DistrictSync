@@ -263,7 +263,7 @@ class TestTheProfileRoots:
 
 class TestTheProvisionOpRefusesBeforeAnyChange:
     def test_a_foreign_principal_against_a_per_user_copy_never_reaches_apply_provision(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(windows, "current_run_as_user", lambda: "PC\admin")
+        monkeypatch.setattr(windows, "current_run_as_user", lambda: r"PC\admin")
         payload = {
             "op": "provision",
             "task_name": "DistrictSync_Daily",

@@ -334,11 +334,11 @@ def _do_provision(payload: dict[str, object]) -> None:
         raise ValueError("missing fields")
     validate_task_name(str(payload["task_name"]))
     validate_run_time(str(payload["run_time"]))
-    task_com.PrincipalKind(str(payload["kind"]))  # an unknown kind refuses the whole op
+    kind = task_com.PrincipalKind(str(payload["kind"]))  # an unknown kind refuses the whole op
     _strict_bool(payload["wake_to_run"])  # DSYNC-37: refused BEFORE the HKLM commit, like run_time
     # Plan 0055 G0: refused BEFORE the HKLM commit too - registration is step 8, after the switch, the
     # DACLs and the sealed secret, so a refusal there would leave a provisioned computer with no nightly.
-    _refuse_per_user_install(task_com.PrincipalKind(str(payload["kind"])), str(payload["user"]), str(payload["exe"]))
+    _refuse_per_user_install(kind, str(payload["user"]), str(payload["exe"]))
     provisioning.apply_provision(payload, register=lambda: _do_register({**payload, "op": "register"}))
 
 
