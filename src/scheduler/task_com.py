@@ -52,11 +52,13 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import os
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import StrEnum
+from pathlib import Path
 from typing import Any, Callable
 
 from src.scheduler.messages import carries_foreign_marker
@@ -313,6 +315,43 @@ def runs_from_user_writable_install(exe: str) -> bool:
     would hand that process the administrator token at the next run: a UAC bypass (DSYNC-66). Such a task is registered Limited.
     """
     return install_root(exe) is not None
+
+
+def _user_profile_roots() -> list[Path]:
+    """The running account's own profile folders: ``%LOCALAPPDATA%``, ``%USERPROFILE%`` and the home folder.
+
+    A seam for tests. An environment variable is good enough here: the answer only decides whether THIS
+    account may schedule ANOTHER account against its own copy, so a process that lies about its own
+    profile can only hurt itself (the nightly it registers would not start).
+    """
+    roots = [Path(value) for value in (os.environ.get("LOCALAPPDATA"), os.environ.get("USERPROFILE")) if value]
+    with contextlib.suppress(RuntimeError, KeyError):
+        roots.append(Path.home())
+    return roots
+
+
+def runs_from_per_user_install(exe: str) -> bool:
+    """Whether ``exe`` is a PER-USER installed copy: the installer's layout AND a root inside this account's profile.
+
+    Plan 0055 G0. Such a copy cannot be run by any other account (a service account or managed service
+    account cannot read another user's profile), so a nightly for another account must not be registered
+    against it. The layout alone is not enough: the machine-wide MSI (plan 0055) puts the same layout in
+    Program Files, which every account can read. :func:`runs_from_user_writable_install` stays the
+    layout-only rule DSYNC-66's run level uses; this is the narrower question.
+    """
+    root = install_root(exe)
+    if root is None:
+        return False
+    try:
+        resolved = root.resolve()
+    except OSError:
+        resolved = root
+    for base in _user_profile_roots():
+        with contextlib.suppress(OSError):
+            base = base.resolve()
+        if resolved == base or base in resolved.parents:
+            return True
+    return False
 
 
 def run_level_for(kind: PrincipalKind, *, run_highest: bool, exe: str) -> int:

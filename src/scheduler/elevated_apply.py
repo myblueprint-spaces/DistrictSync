@@ -245,11 +245,22 @@ def _do_register(payload: dict[str, object]) -> None:
     # registration creates. It used to be validated only when a password was present — the
     # one input whose absence is exactly the case worth refusing.
     user = task_com.validate_principal_account(kind, str(payload["user"]))
+    # Plan 0055 G0, the privileged half's own floor: a per-user installed copy cannot run as another
+    # account. The child runs as the same user as the parent (elevated), so ``current_run_as_user`` is
+    # the parent's account. Refused as an invalid request; the parent's own check refuses first.
+    from src.scheduler.windows import current_run_as_user
+
+    exe = str(payload["exe"])
+    foreign = (
+        kind is task_com.PrincipalKind.MANAGED_SERVICE_ACCOUNT or user.casefold() != current_run_as_user().casefold()
+    )
+    if foreign and task_com.runs_from_per_user_install(exe):
+        raise ValueError("a per-user installed copy cannot run as another account")
 
     task_com.register_task_definition(
         task_com.RegisterParams(
             task_name=task_name,
-            exe=str(payload["exe"]),
+            exe=exe,
             arguments=str(payload["arguments"]),
             working_dir=str(payload["working_dir"]),
             run_time=run_time,

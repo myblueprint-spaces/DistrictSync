@@ -389,6 +389,9 @@ class ProvisionOutcome(StrEnum):
     # versus the question could not be asked (a domain controller out of reach - not a typo).
     ACCOUNT_NOT_FOUND = "account_not_found"
     ACCOUNT_LOOKUP_FAILED = "account_lookup_failed"
+    # Plan 0055 G0 - PRE-UAC: the program is a per-user installed copy, which the account being
+    # provisioned for cannot read. Nothing is asked of Windows and no prompt is shown.
+    INSTALL_NOT_SHAREABLE = "install_not_shareable"
 
 
 def _lookup_outcome(winerror: int | None) -> ProvisionOutcome:
@@ -490,6 +493,11 @@ def request_provision(
         # Exactly what the child's ``_principal_account`` would refuse with, decided here so
         # the admin reads the account-name copy instead of a generic "couldn't start".
         return ProvisionAttempt(outcome=ProvisionOutcome.REFUSED, step=ProvisionStep.PRINCIPAL)
+
+    # Plan 0055 G0: provisioning is only ever for a FOREIGN principal, which cannot run a per-user
+    # installed copy. Refused before the account lookup and before any prompt.
+    if task_com.runs_from_per_user_install(str(exe_path)):
+        return ProvisionAttempt(outcome=ProvisionOutcome.INSTALL_NOT_SHAREABLE)
 
     wants_check = schedule_check.applies_to(principal.kind)
     if principal.kind is PrincipalKind.MANAGED_SERVICE_ACCOUNT:
