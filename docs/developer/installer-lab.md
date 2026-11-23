@@ -1,0 +1,131 @@
+# Installer lab runbook (plan 0055 L1, DSYNC-92)
+
+The throwaway Azure lab that proves the machine-wide installer where a workstation cannot: a domain, a gMSA, a
+stored-password service account, Windows Server with Desktop Experience and Server Core. Owner decision 2026-11-23
+(plan 0055 O4): the lab runs under the owner's Azure login, in its OWN resource group, small, tagged, shut down when
+idle, and deleted when the matrix is done. It holds synthetic data only: the repo's test fixtures, never a district
+drop, and no real account, host or district name.
+
+## Cost (named before anything is created)
+
+Prices: Azure retail, canadacentral, pay-as-you-go, Windows licence included, read 2026-11-23.
+
+| VM | Role | Size | CAD/hour |
+|---|---|---|---|
+| `dc1` | domain controller, Server 2022 Core | Standard_B2s | 0.0764 |
+| `mem1` | member, Server 2022 with Desktop Experience (window smokes) | Standard_B2ms | 0.1418 |
+| `core1` | member, Server 2022 Core | Standard_B2s | 0.0764 |
+
+All three running: CAD 0.29 per hour, **about CAD 215 a month if never stopped**, plus disks (3 × 127 GB Standard SSD,
+about CAD 30 a month) and three Standard public IPs (about CAD 11 a month). **As planned** (auto-shutdown every night,
+about 40 hours of matrix work, deleted after): **about CAD 45 in total.** A stopped (deallocated) VM costs only its
+disk and IP.
+
+## Shape
+
+- Resource group `dsync-installer-lab` (canadacentral), tags `purpose=districtsync-installer-lab`,
+  `ticket=DSYNC-92`, `delete-after=<date>`. Everything below is created inside it, so one `az group delete` removes all
+  of it.
+- One VNet `10.55.0.0/16`, subnet `10.55.1.0/24`. The domain controller has the static address `10.55.1.4` and the VNet's
+  DNS points at it once it is promoted.
+- **No inbound access.** Each VM has a Standard public IP only for OUTBOUND traffic (downloading the MSI from a GitHub
+  run artifact, and the update feed later). Standard IPs deny inbound unless a rule allows it, and no rule is added.
+  Every command runs through `az vm run-command invoke` (the Azure agent). For the window smokes on `mem1`, use Azure
+  Bastion Developer (free) if the region offers it; otherwise add ONE NSG rule allowing RDP from the operator's current
+  address for the session, and delete it afterwards.
+- Domain `lab.dsync.test` (IANA-reserved `.test`). Accounts: a lab administrator, the gMSA `svc_dsync$`, the
+  stored-password service account `svc_dsyncpw`, and a standard user `lab_user` (T20).
+- Passwords are generated on the operator's machine for this session, passed to `az` from a variable, and never
+  written to a file, a log, the repo or a ticket. Losing them is harmless: the lab is deleted A password passed inside a `run-command` script is visible in that VM's run-command history to anyone with access to the resource group; acceptable for a throwaway lab, and one more reason it is deleted.
+
+## Create
+
+PowerShell, signed in with `az login`, from any folder:
+
+```powershell
+$rg = "dsync-installer-lab"; $loc = "canadacentral"
+$tags = "purpose=districtsync-installer-lab", "ticket=DSYNC-92", "delete-after=$((Get-Date).AddDays(14).ToString('yyyy-MM-dd'))"
+$adminUser = "labadmin"
+$pw = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 24 | ForEach-Object { [char]$_ }) + "!a1"
+
+az group create -n $rg -l $loc --tags $tags
+az network vnet create -g $rg -n lab-vnet --address-prefixes 10.55.0.0/16 --subnet-name lab --subnet-prefixes 10.55.1.0/24 --tags $tags
+$core = "MicrosoftWindowsServer:WindowsServer:2022-datacenter-azure-edition-core:latest"
+$desk = "MicrosoftWindowsServer:WindowsServer:2022-datacenter-azure-edition:latest"
+foreach ($vm in @(@("dc1", $core, "Standard_B2s", "10.55.1.4"), @("mem1", $desk, "Standard_B2ms", ""), @("core1", $core, "Standard_B2s", ""))) {
+  $ipArgs = if ($vm[3]) { @("--private-ip-address", $vm[3]) } else { @() }
+  az vm create -g $rg -n $vm[0] --image $vm[1] --size $vm[2] --vnet-name lab-vnet --subnet lab @ipArgs `
+    --public-ip-sku Standard --nsg '""' --admin-username $adminUser --admin-password $pw --tags $tags --only-show-errors
+  az vm auto-shutdown -g $rg -n $vm[0] --time 0300   # 03:00 UTC = evening in Canada
+}
+```
+
+Promote the domain controller, point the VNet at it, and join the members:
+
+```powershell
+az vm run-command invoke -g $rg -n dc1 --command-id RunPowerShellScript --scripts `
+  "Install-WindowsFeature AD-Domain-Services -IncludeManagementTools; Install-ADDSForest -DomainName lab.dsync.test -SafeModeAdministratorPassword (ConvertTo-SecureString '$pw' -AsPlainText -Force) -Force -NoRebootOnCompletion; Restart-Computer -Force"
+az network vnet update -g $rg -n lab-vnet --dns-servers 10.55.1.4
+foreach ($m in "mem1", "core1") {
+  az vm restart -g $rg -n $m
+  az vm run-command invoke -g $rg -n $m --command-id RunPowerShellScript --scripts `
+    "`$c = New-Object PSCredential('LAB\$adminUser', (ConvertTo-SecureString '$pw' -AsPlainText -Force)); Add-Computer -DomainName lab.dsync.test -Credential `$c -Restart -Force"
+}
+```
+
+Accounts, the gMSA and the stored-password service account (on `dc1`), then install the gMSA on each member:
+
+```powershell
+az vm run-command invoke -g $rg -n dc1 --command-id RunPowerShellScript --scripts @"
+Add-KdsRootKey -EffectiveTime ((Get-Date).AddHours(-10))
+New-ADGroup -Name DSyncHosts -GroupScope Global
+Add-ADGroupMember DSyncHosts -Members 'mem1$','core1$'
+New-ADServiceAccount -Name svc_dsync -DNSHostName svc_dsync.lab.dsync.test -PrincipalsAllowedToRetrieveManagedPassword DSyncHosts
+New-ADUser -Name svc_dsyncpw -AccountPassword (ConvertTo-SecureString '$pw' -AsPlainText -Force) -Enabled `$true -PasswordNeverExpires `$true
+New-ADUser -Name lab_user -AccountPassword (ConvertTo-SecureString '$pw' -AsPlainText -Force) -Enabled `$true
+"@
+foreach ($m in "mem1", "core1") {
+  az vm restart -g $rg -n $m   # picks up the DSyncHosts membership
+  az vm run-command invoke -g $rg -n $m --command-id RunPowerShellScript --scripts `
+    "Install-WindowsFeature RSAT-AD-PowerShell; Install-ADServiceAccount svc_dsync; Test-ADServiceAccount svc_dsync"
+}
+```
+
+The 'Log on as a batch job' right is granted per test, not up front: T5 runs once WITHOUT it (the DSYNC-33 schedule
+check must report it) and once with it (`ntrights`-equivalent through `secedit` in the matrix script).
+
+## Get the MSI onto the members
+
+The MSI is the 1-day artifact `DistrictSync-windows-msi-rehearsal` of a `release.yml` dispatch (plan 0055 B1). GitHub
+answers an artifact download with a short-lived signed URL; fetch it on the operator's machine and hand it straight to
+the VM:
+
+```powershell
+$run = "<rehearsal run id>"
+$id = gh api "repos/myblueprint-spaces/DistrictSync/actions/runs/$run/artifacts" --jq '.artifacts[] | select(.name=="DistrictSync-windows-msi-rehearsal") | .id'
+$url = (gh api -i "repos/myblueprint-spaces/DistrictSync/actions/artifacts/$id/zip" | Select-String '^Location: (.*)$').Matches[0].Groups[1].Value.Trim()
+foreach ($m in "mem1", "core1") {
+  az vm run-command invoke -g $rg -n $m --command-id RunPowerShellScript --scripts `
+    "New-Item -ItemType Directory -Force C:\lab | Out-Null; Invoke-WebRequest '$url' -OutFile C:\lab\msi.zip; Expand-Archive C:\lab\msi.zip C:\lab -Force; Get-ChildItem C:\lab"
+}
+```
+
+The URL expires within minutes and grants nothing else; it is never written to a file or a ticket.
+
+## Run the matrix
+
+Each row of plan 0055's test matrix that is marked **L** is run here and its result (pass, fail, or the measured
+behaviour) recorded on the slice's ticket and, for L1's own questions, appended to plan 0055 under "L1 findings".
+Commands run through `az vm run-command invoke`; a row that needs the window runs on `mem1` over Bastion or RDP.
+Every run sets `DISTRICTSYNC_DATA_DIR` only where the row says so (most rows exercise the real machine profile, which is
+the point of the lab).
+
+## Stop, start, delete
+
+```powershell
+az vm deallocate -g dsync-installer-lab --ids $(az vm list -g dsync-installer-lab --query "[].id" -o tsv)   # idle: disks and IPs only
+az vm start -g dsync-installer-lab --ids $(az vm list -g dsync-installer-lab --query "[].id" -o tsv)
+az group delete -n dsync-installer-lab --yes --no-wait   # when the matrix is recorded: removes everything
+```
+
+Deleting the resource group is the last step of L1 and of R1's matrix run; the ticket records the date it was deleted.
