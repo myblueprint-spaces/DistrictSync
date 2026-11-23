@@ -18,6 +18,7 @@ from src.utils.build_flavor import is_installed_build
 _STANDING: dict[str, str] = {
     "not_installed": "This copy was not installed with the DistrictSync installer, so it does not update itself.",
     "machine_scope": "This computer shares one DistrictSync profile, so this copy does not update itself.",
+    "machine_wide": "This copy is installed for the whole computer; it does not update itself yet.",
     "data_dir_override": "Updates are off while a test profile is in use.",
     "off_in_settings": "Updates are switched off on this computer.",
     "off_switch": "Updates are switched off on this computer.",

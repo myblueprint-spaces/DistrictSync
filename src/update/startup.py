@@ -36,6 +36,8 @@ from src.utils.build_flavor import is_installed_build
 
 _HOOK_MODULE = "myb_desktop_updater.velopack_installer"  # a variable, not a literal: see the module docstring
 _UPDATE_EXE = "Update.exe"
+#: Velopack starts the app with ``--veloapp-install`` / ``-updated`` / ``-obsolete`` / ``-uninstall``.
+VELOPACK_HOOK_PREFIX = "--veloapp-"
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +65,15 @@ def run_velopack_startup() -> bool:
         return False
     if install_root() is None:
         return False
+    # Plan 0055 M1 (spike S0b #3): on a MACHINE-wide install an unelevated App().run() prints "Failed to open directory
+    # for writing ... Access is denied" to the console on every start, which every service-account nightly and IT command
+    # line would show. With apply-at-start off it does nothing an ordinary start needs, so it runs there for Velopack's
+    # own hook arguments only.
+    from src.utils.install_kind import InstallKind, install_kind  # lazy: install_kind imports this module
+
+    # The hook test comes FIRST: a hook never reads the install's DACL (which would import src.utils.paths).
+    if not is_velopack_hook(sys.argv[1:]) and install_kind() is InstallKind.MACHINE:
+        return False
     try:
         hook = importlib.import_module(_HOOK_MODULE).run_startup_hook
     except ImportError:
@@ -73,3 +84,26 @@ def run_velopack_startup() -> bool:
         return False
     hook()
     return True
+
+
+def is_velopack_hook(args: list[str]) -> bool:
+    """Whether this invocation is one of Velopack's own hooks (install, update, obsolete, uninstall)."""
+    return any(arg.startswith(VELOPACK_HOOK_PREFIX) for arg in args)
+
+
+def run_velopack_hook() -> int:
+    """Plan 0055 M1: the module-top dispatch for a Velopack hook, BEFORE the start guard, the profile or any log.
+
+    Windows Installer runs the hooks from the MSI, and a Group Policy or Intune install runs them as SYSTEM: anything that
+    resolves a profile here would create one under ``systemprofile``. So the hook does exactly one thing, Velopack's
+    ``App().run()`` (which handles the hook and exits the process), and touches nothing of DistrictSync's own: no profile,
+    no settings, no secret, no task, no registry. It runs for EVERY install kind (the per-user ``Setup.exe`` runs hooks too),
+    so a hook no longer passes through the start guard; a hook that raises returns 1 here instead of the guard's handling,
+    so the installer is never left waiting on an error dialog. Returns 0 if nothing handled it: a portable build given a hook
+    argument exits 0 quietly (it used to be an argparse usage error, exit 2).
+    """
+    try:
+        run_velopack_startup()
+    except Exception:  # noqa: BLE001 - an installer hook must end, never hang on an error dialog
+        return 1
+    return 0

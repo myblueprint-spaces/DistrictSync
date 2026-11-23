@@ -25,7 +25,9 @@ before the exit code is chosen. A hand-run CLI, a district's own cron, `--dry-ru
 ## When it must not run (zero connections)
 
 First applicable guard wins, in this order, and nothing is opened: `portable`, `not_installed` (no `Update.exe` beside
-`current\`), `machine_scope`, `data_dir_override` (`DISTRICTSYNC_DATA_DIR` is a test or support profile),
+`current\`), `machine_wide` (plan 0055 M1: the machine-wide MSI install, `src/utils/install_kind.py`; only the SYSTEM
+updater may check and apply there, because a non-SYSTEM apply prompts for UAC and drops `Update.exe` into the user's
+profile, spike S0b #4; the same reason skips health and the per-user start guard), `machine_scope`, `data_dir_override` (`DISTRICTSYNC_DATA_DIR` is a test or support profile),
 `off_in_settings` (`AppConfig.update_enabled`), `not_configured` (no feed host or key), `package_missing`, `off_switch`
 (`DISTRICTSYNC_UPDATES=off` or the marker file in the state folder; the package owns both), `unknown_version`
 (a `dev` stamp), `recent`.

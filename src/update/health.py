@@ -25,6 +25,7 @@ from src.update.package import HEALTH_FILE, load_updater
 from src.update.startup import install_root
 from src.utils import paths
 from src.utils.build_flavor import is_e2e_build, is_installed_build
+from src.utils.install_kind import InstallKind, install_kind
 from src.utils.version import app_version
 
 logger = logging.getLogger(__name__)
@@ -36,6 +37,8 @@ def health_skip_reason() -> str | None:
         return "portable"
     if install_root() is None:
         return "not_installed"
+    if install_kind() is InstallKind.MACHINE:
+        return "machine_wide"  # plan 0055: health on a machine-wide install is the SYSTEM updater's (U3)
     if _in_machine_scope():
         return "machine_scope"
     if paths.data_dir_override_active() and not is_e2e_build():

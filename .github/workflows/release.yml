@@ -588,6 +588,19 @@ jobs:
           }
           if ($bad.Count -gt 0) { Write-Error "not validly signed and timestamped: $($bad -join ', ')"; exit 1 }
 
+      # Plan 0055 M1: the app's own reader must call the real MSI install machine-wide (marker + owner + DACL), the
+      # proof the unit tests' DACL shapes cannot give.
+      - name: The installed copy reports itself machine-wide
+        shell: pwsh
+        run: |
+          $env:DISTRICTSYNC_DATA_DIR = Join-Path $env:RUNNER_TEMP "dsync-msi-diagnose-profile"
+          New-Item -ItemType Directory -Force $env:DISTRICTSYNC_DATA_DIR | Out-Null
+          $p = Start-Process -FilePath "$env:INSTALL_ROOT\current\DistrictSync.exe" -ArgumentList "--diagnose" -Wait -PassThru -NoNewWindow `
+            -RedirectStandardOutput "$env:RUNNER_TEMP\diagnose.txt"
+          $line = Select-String -Path "$env:RUNNER_TEMP\diagnose.txt" -Pattern "install kind:" | Select-Object -First 1
+          Write-Output "diagnose exit $($p.ExitCode); $($line.Line.Trim())"
+          if ($null -eq $line -or $line.Line -notmatch "install kind:\s+machine\s*$") { Write-Error "the installed copy does not report install kind: machine"; exit 1 }
+
       - name: CLI smokes on the machine-wide copy
         shell: bash
         env:

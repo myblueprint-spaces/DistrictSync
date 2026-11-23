@@ -315,7 +315,14 @@ def runs_from_user_writable_install(exe: str) -> bool:
     Any unelevated process of that user can replace the files there, so a task that runs such an exe with HIGHEST privileges
     would hand that process the administrator token at the next run: a UAC bypass (DSYNC-66). Such a task is registered Limited.
     """
-    return install_root(exe) is not None
+    root = install_root(exe)
+    if root is None:
+        return False
+    # Plan 0055 M1: a machine-wide MSI install has the same layout, but only administrators can change it, so a
+    # Highest task running it gives no unelevated process anything. Decided by the ACL, never the path.
+    from src.utils.install_kind import is_machine_wide_root
+
+    return not is_machine_wide_root(root)
 
 
 def _profiles_directory() -> Path | None:
