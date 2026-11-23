@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -201,8 +202,11 @@ class TestTheVelopackStartupOnAMachineWideInstall:
     @pytest.fixture
     def hook_calls(self, installed, tmp_path, monkeypatch):
         calls: list[str] = []
-        fake = type("M", (), {"run_startup_hook": staticmethod(lambda: calls.append("hook"))})
-        monkeypatch.setattr(startup.importlib, "import_module", lambda _name: fake)
+        # A fake hook module planted where the real import finds it; never a patch of importlib itself (that would
+        # answer every later import, `sys` included).
+        fake = types.ModuleType(startup._HOOK_MODULE)
+        fake.run_startup_hook = lambda: calls.append("hook")  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, startup._HOOK_MODULE, fake)
         monkeypatch.setattr("sys.executable", str(_msi_layout(tmp_path)))
         return calls
 
