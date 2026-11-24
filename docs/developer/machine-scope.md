@@ -50,6 +50,22 @@ Developer reference for where DistrictSync keeps its profile — the per-user ap
 
 **THE NAMED HOLE (narrowed by DSYNC-33):** `prune_principal` had a handler and an implementation but no producer in `src/`. Since DSYNC-33 Setup's Remove produces it for a recorded MANAGED_SERVICE_ACCOUNT principal on a machine-scoped install (`provision_session.request_removal_with_revoke` — one prompt; the child deletes, confirms MISSING, then prunes). The unconfirmed-delete case is decided: the child prunes NOTHING (`ProvisionStep.DELETE`) and the parent resolves the removal by its own read-back; a refusal before the delete falls back to the plain remove. A retired PASSWORD principal is still removed with `{"op": "delete"}` and keeps its aces (open backlog item). The flow and its guarantees: [scheduler.md](scheduler.md#the-schedule-check-proving-the-nightly-can-start-dsync-33).
 
+## Machine setup without a nightly (plan 0055 M2a, DSYNC-95)
+
+`DistrictSync.exe --machine-setup [--updates off|notify|on]` provisions the shared profile with NO nightly task, for the
+machine-wide MSI (Velopack's MSI cannot ask questions, so setup happens after the install). It is the `provision` op with
+a blank principal (the setup administrator is the only one granted anything; a nightly for another account grants that
+account when it is scheduled) and a register step that does nothing: `provisioning.build_machine_setup_payload` (refuses
+under `DISTRICTSYNC_DATA_DIR`, and an unknown mode, before any prompt) → the elevated child's `_do_machine_setup`
+(validates before `apply_machine_setup`, so a bad request never switches the computer) → `apply_provision(...,
+update_mode=)`. The update mode (`src/update/policy.py`; default `notify`, owner decision O1) is written as `UpdateMode`
+(REG_SZ) by `_commit_machine_switch` in the same commit, BEFORE `MachineScope`; the schedule-time provision passes `None`
+and leaves it. Re-running it, as the administrator who set the computer up, is the resume path, which is how the mode is changed later (any other account is refused earlier, at the profile pin). A re-run exits 0 only when the elevated child reports it completed: on a computer already set up the switch is on either way, so a declined prompt exits 1 and claims no mode. The
+parent runs unelevated, as the window does: `provision_session.request_machine_setup` (shares `_elevate_and_read` with
+`request_provision`) and then `complete_handover` on EVERY outcome, whose own switch read decides the exit code (0 only
+when this session now uses the shared profile). A per-user installed copy is refused before any prompt. Reading the mode,
+and the Group Policy key that overrides it, is U1; the first-run window step is M2b (DSYNC-106).
+
 ## `--diagnose` — the support report (plan 0049 D7)
 
 `python -m src.main --diagnose` prints the read-only support report (plan 0049 D7) — recognised in the **argv pre-check beside `--elevated-apply`**, because `_cli` pins the data dir and RETURNS a machine-scope refusal before argparse exists; it keeps ONLY the console attach from the preamble, guards every profile-resolving line on its own, and always exits 0. It carries no passwords but is **not PII-free** (Windows accounts, folders, the SFTP username) and its header says so.

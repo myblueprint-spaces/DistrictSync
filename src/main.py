@@ -60,6 +60,7 @@ from src.etl.pipeline import (
 )
 from src.etl.sync_window import in_sync_window, next_resume_date
 from src.sftp.uploader import SFTPUploader
+from src.update import policy
 from src.utils.logger import get_logger
 from src.utils.paths import MachineScopeRefused, handshake_dir, migrate_legacy_data_dir, pin_data_dir
 from src.utils.validators import validate_sftp_host, validate_sis_type
@@ -343,6 +344,118 @@ def _sftp_test(args: argparse.Namespace) -> int:
     ok, msg = uploader.test_connection()
     print(msg)
     return 0 if ok else 1
+
+
+#: Plan 0055 M2: what ``--machine-setup`` prints for each bounded outcome. Plain words for a district IT person; no
+#: account, no path from this computer except the shared folder's fixed location.
+MACHINE_SETUP_DONE = "This computer now keeps one shared DistrictSync profile in C:\\ProgramData\\DistrictSync."
+MACHINE_SETUP_COPY: dict[str, str] = {
+    "declined": "The Windows permission prompt was declined, so nothing was changed.",
+    "launch_failed": "Windows did not show the permission prompt, so nothing was changed.",
+    "unconfirmed": "The elevated step did not report back in time; see the line below for what is now true.",
+    "different_account": (
+        "The permission prompt was answered by a different administrator, so nothing was changed. "
+        "Run this as the administrator who will look after DistrictSync."
+    ),
+    "unavailable": "The machine setup could not be started on this computer (see the log), so nothing was changed.",
+    "failed": "The machine setup failed (see the log).",
+}
+
+
+#: What a committed but unusable shared folder means (the child committed against a folder the app refuses).
+MACHINE_SETUP_REFUSED_FOLDER = (
+    "The shared profile is switched on, but DistrictSync cannot use the folder C:\\ProgramData\\DistrictSync "
+    "(reason: {reason}). Run DistrictSync.exe --diagnose and send the report to your support contact."
+)
+#: Outcomes in which the elevated step never ran, so nothing was changed.
+_MACHINE_SETUP_NOT_RUN = frozenset({"declined", "launch_failed", "different_account", "unavailable"})
+#: Flags that belong to a conversion or to SFTP setup; none of them may ride along with --machine-setup.
+_NOT_WITH_MACHINE_SETUP = frozenset(
+    {
+        "--sis",
+        "--input",
+        "--output",
+        "--dry-run",
+        "--diff",
+        "--quality",
+        "--sftp",
+        "--source",
+        "--sftp-host",
+        "--sftp-port",
+        "--sftp-user",
+        "--sftp-remote",
+        "--sftp-password-stdin",
+    }
+)
+
+
+def _is_windows() -> bool:
+    """A seam: the platform check without patching the global ``sys.platform`` the preamble also reads."""
+    return sys.platform == "win32"
+
+
+def _machine_setup(args: argparse.Namespace) -> int:
+    """``--machine-setup [--updates off|notify|on]`` (plan 0055 M2). Exit 0 only when the shared profile is in use.
+
+    Unelevated, like the window: the elevated half is the existing provisioning child behind ONE UAC prompt, and the
+    parent half (``complete_handover``: re-pin, fence, ``MOVED.txt``) runs here exactly as it does after a Schedule
+    press. No nightly is registered; schedule it afterwards. A per-user installed copy is refused: a shared profile is
+    for accounts that cannot read one person's profile, and that copy lives in one.
+    """
+    if not _is_windows():
+        print("Error: --machine-setup is for Windows.")
+        return 1
+    from src.scheduler import provision_session
+    from src.scheduler.task_com import runs_from_per_user_install
+
+    if runs_from_per_user_install(sys.executable):
+        print(
+            "Error: this copy is installed for one Windows account only, so it cannot be set up for the whole "
+            "computer. Install the machine-wide DistrictSync, then run --machine-setup from it."
+        )
+        return 1
+    mode = args.updates or policy.DEFAULT_UPDATE_MODE
+    before = provision_session.switch_state()  # True, False, or None when it cannot be read
+    cfg = AppConfig.load()
+    attempt = provision_session.request_machine_setup(
+        update_mode=mode,
+        sftp=bool(cfg.sftp_enabled),
+        sftp_host=cfg.sftp_host or "",
+        sftp_username=cfg.sftp_username or "",
+    )
+    outcome = attempt.outcome.value
+    if outcome == "refused":
+        step = attempt.step.value if attempt.step is not None else "unknown"
+        code = f", Windows permissions code {attempt.icacls_exit}" if attempt.icacls_exit is not None else ""
+        print(f"The machine setup stopped at step '{step}'{code}; see the log. Nothing after that step was changed.")
+    elif outcome != "provisioned":
+        print(MACHINE_SETUP_COPY.get(outcome, MACHINE_SETUP_COPY["failed"]))
+    handover = provision_session.complete_handover(persist=lambda: None, reenter=lambda: None)
+    if handover.refused is not None:
+        print(MACHINE_SETUP_REFUSED_FOLDER.format(reason=handover.refused.value))
+        return 1
+    if not handover.handed_over:
+        print("This computer still keeps DistrictSync settings per Windows account.")
+        return 1
+    # The switch is on. Whether THIS run did anything is the child's answer, never the switch's: on a computer that was
+    # already set up (a re-run to change the update mode) a declined prompt still leaves the switch on.
+    if outcome == "provisioned":
+        print(MACHINE_SETUP_DONE)
+        print(f"Automatic updates: {mode}.")
+        return 0
+    if outcome == "unconfirmed" and before is False:
+        # The switch was provably off before and is on now, and the mode is written before the switch.
+        print(MACHINE_SETUP_DONE)
+        print(f"Automatic updates: {mode}.")
+        return 0
+    if outcome in _MACHINE_SETUP_NOT_RUN:
+        print("This computer already keeps one shared DistrictSync profile; the update setting was not changed.")
+    else:
+        print(
+            "This computer keeps one shared DistrictSync profile, but this run may not have finished; "
+            "run DistrictSync.exe --diagnose to see the update setting."
+        )
+    return 1
 
 
 def _sftp_show(args: argparse.Namespace) -> int:
@@ -641,14 +754,34 @@ def _cli(argv: list[str] | None) -> int:
     sftp_group.add_argument("--sftp-user", help="SFTP username (headless --sftp-configure)")
     sftp_group.add_argument("--sftp-remote", help="Remote upload path (headless --sftp-configure)")
     sftp_group.add_argument("--sftp-password-stdin", action="store_true", help="Read the SFTP password from stdin")
+    machine_group = parser.add_argument_group("Machine setup (Windows, machine-wide install)")
+    machine_group.add_argument(
+        "--machine-setup",
+        action="store_true",
+        help="Set this computer up for one shared DistrictSync profile (one permission prompt)",
+    )
+    machine_group.add_argument(
+        "--updates",
+        choices=list(policy.UPDATE_MODES),
+        default=None,
+        help=f"With --machine-setup: off, notify or on (default: {policy.DEFAULT_UPDATE_MODE})",
+    )
 
     args = parser.parse_args(args_list)
 
     # Route to SFTP subcommands (mutually exclusive with the ETL pipeline)
     sftp_actions = [args.sftp_configure, args.sftp_test, args.sftp_show]
-    if sum(sftp_actions) > 1:
-        print("Error: choose only one of --sftp-configure, --sftp-test, --sftp-show.")
+    if sum(sftp_actions) + int(args.machine_setup) > 1:
+        print("Error: choose only one of --sftp-configure, --sftp-test, --sftp-show, --machine-setup.")
         return 2
+    if args.updates is not None and not args.machine_setup:
+        print("Error: --updates is used with --machine-setup.")
+        return 2
+    if args.machine_setup:
+        if any(arg.split("=", 1)[0] in _NOT_WITH_MACHINE_SETUP for arg in args_list):
+            print("Error: --machine-setup sets the computer up only; run a conversion or SFTP setup separately.")
+            return 2
+        return _machine_setup(args)
     if args.sftp_configure:
         return _sftp_configure(args)
     if args.sftp_test:

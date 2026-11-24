@@ -1034,7 +1034,8 @@ def _child_run(tmp_path: Path, payload: dict, *, check: ScheduleCheck | None = N
     res = tmp_path / "dsync_elev_x.res"
     order: list[str] = []
 
-    def _provision(_payload, *, register):
+    def _provision(_payload, *, register, update_mode):
+        assert update_mode is None  # plan 0055 M2a: the schedule-time provision leaves the update mode alone
         order.append("provision")
         if provision_exc is not None:
             raise provision_exc
