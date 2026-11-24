@@ -50,6 +50,23 @@ SpacesEDU host; (2) a local HTTPS server for a test update feed when U1/U2 are b
 (3) running the Linux test suite exactly as CI does.
 
 **Order.** Workgroup Desktop VM first (most rows, no domain), then the Server Core VM, then the domain pair for T4/T5.
+
+**Hypervisor: VMware Workstation Pro (owner decision 2026-11-23, "okay vmware").** Everything after the manual installs is
+`scripts/lab/local_lab.ps1` (its sizes and safety properties are pinned by `tests/test_lab_script.py`):
+
+```powershell
+.\scripts\lab\local_lab.ps1 -Action create -IsoPath C:\Lab\iso\<evaluation ISO>.iso   # all three VMs, unattended, snapshot "clean"
+.\scripts\lab\local_lab.ps1 -Action copy-in -Vm lab-desktop -HostPath .\msi-n.msi -GuestPath C:\lab\msi-n.msi
+.\scripts\lab\local_lab.ps1 -Action run -Vm lab-desktop -Command "msiexec /i C:\lab\msi-n.msi /qn /l*v C:\lab\install.log"
+.\scripts\lab\local_lab.ps1 -Action revert -Vm lab-desktop -Snapshot clean               # between rows
+.\scripts\lab\local_lab.ps1 -Action domain                                                # DC + members + gMSA, snapshot "domain"
+.\scripts\lab\local_lab.ps1 -Action destroy                                               # when the matrix is recorded
+```
+
+Each VM is installed from the evaluation ISO with an answer file the script writes to a small second ISO (Windows' own
+IMAPI2; no download), installs VMware Tools at first logon, and is then driven only through VMware Tools
+(`vmrun runProgramInGuest` and file copies): no network share, remote session or open port. The lab administrator
+password is generated once into `C:\Labms\lab-secret.txt` with an owner-only ACL and never printed.
 Each VM: install from the ISO, take a clean snapshot, copy the MSI in (shared folder or a mounted ISO), run the row,
 record the result on its ticket, revert to the snapshot.
 
