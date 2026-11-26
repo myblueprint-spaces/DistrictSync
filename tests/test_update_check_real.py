@@ -116,6 +116,10 @@ def setup(monkeypatch, tmp_path):
     monkeypatch.setattr(check.paths, "is_machine_scope", lambda: False)
     monkeypatch.setattr(check.paths, "data_dir_override_active", lambda: False)
     monkeypatch.setattr(check, "app_version", lambda: "3.30.0")
+    # Plan 0055 U1a: no registry values; each run says which mode it is in (default "on", the full check this file is about).
+    from src.update import policy
+
+    monkeypatch.setattr(policy, "_read_hklm_string", lambda key_path, name: None)
     started: list[_Feed] = []
 
     def serve(manifest_for_host, files=None):
@@ -127,7 +131,17 @@ def setup(monkeypatch, tmp_path):
         started.append(feed)
         return feed
 
-    def run(feed_host: str, *, target_host: str | None = None, allow_http: bool = True, budget: float = 30.0):
+    def run(
+        feed_host: str,
+        *,
+        target_host: str | None = None,
+        allow_http: bool = True,
+        budget: float = 30.0,
+        mode: str = "on",
+    ):
+        from src.update import policy
+
+        monkeypatch.setattr(policy, "DEFAULT_UPDATE_MODE", mode)
         target = FeedTarget(
             host=target_host or feed_host,
             trusted_keys={"k1": mdu.p256.public_key(PRIVATE) if hasattr(mdu, "p256") else _public()},
@@ -281,3 +295,47 @@ class TestNoConnectionWhenAGuardApplies:
 def test_a_package_built_wheel_is_in_use():
     """The module under test is the real package, not a stand-in left in ``sys.modules`` by another test."""
     assert Path(mdu.__file__).name == "__init__.py" and hasattr(mdu, "check_for_update")
+
+
+class TestNotifyAgainstALoopbackFeed:
+    """Plan 0055 U1a: notify (the default) against the REAL package: the manifest only, the same verification."""
+
+    def test_a_newer_release_is_reported_and_only_the_manifest_is_fetched(self, setup):
+        feed = setup.serve(lambda host: _manifest(host))
+        outcome, connections = setup.run(feed.host, mode="notify")
+        assert outcome == check.CheckOutcome("available", "newer_available", "3.31.0")
+        assert feed.hits == ["/manifest.json"]  # no package download
+        assert not (setup.state / check.STAGING_FOLDER).exists()
+        assert _destinations(connections) == {("127.0.0.1", feed.port)}
+
+    def test_a_tampered_signature_is_refused(self, setup):
+        def tampered(host: str) -> bytes:
+            envelope = json.loads(_manifest(host))
+            envelope["signature"] = envelope["signature"][:-4] + "AAAA"
+            return json.dumps(envelope).encode()
+
+        feed = setup.serve(tampered)
+        outcome, _ = setup.run(feed.host, mode="notify")
+        assert outcome.status == "refused" and outcome.reason == "bad_signature"
+
+    def test_a_slow_feed_is_cut_off_by_the_budget(self, setup):
+        feed = setup.serve(lambda host: _manifest(host))
+        feed.delay = 5.0
+        started = time.monotonic()
+        outcome, _ = setup.run(feed.host, budget=1.0, mode="notify")
+        assert outcome == check.CheckOutcome("refused", "timed_out")
+        assert time.monotonic() - started < 4.5
+
+    def test_nothing_newer_is_up_to_date(self, setup):
+        feed = setup.serve(lambda host: _manifest(host, version="3.29.0"))
+        outcome, _ = setup.run(feed.host, mode="notify")
+        assert outcome == check.CheckOutcome("none", "up_to_date")
+
+    def test_a_stale_sequence_is_refused_as_a_replay(self, setup):
+        from src.update.package import HEALTH_FILE
+
+        setup.state.mkdir(parents=True, exist_ok=True)
+        mdu.HealthStore(setup.state / HEALTH_FILE).record_sequence(5)  # a newer manifest was seen before
+        feed = setup.serve(lambda host: _manifest(host))  # sequence 1
+        outcome, _ = setup.run(feed.host, mode="notify")
+        assert outcome == check.CheckOutcome("refused", "replay")

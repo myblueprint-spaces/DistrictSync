@@ -14,8 +14,9 @@
   </categories>
   <policies>
     <policy name="UpdateMode" class="Machine" displayName="$(string.UpdateMode)" explainText="$(string.UpdateMode_Help)"
-            presentation="$(presentation.UpdateMode)" key="Software\Policies\myBlueprint\DistrictSync">
+            presentation="$(presentation.UpdateMode)" key="Software\Policies\myBlueprint\DistrictSync" valueName="UpdateMode">
       <parentCategory ref="DistrictSync" />
+      <disabledValue><string>off</string></disabledValue>
       <supportedOn ref="windows:SUPPORTED_Windows_10_0" />
       <elements>
         <enum id="UpdateModeValue" valueName="UpdateMode" required="true">

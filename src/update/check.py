@@ -285,7 +285,10 @@ def _notify_only(
         )
         if isinstance(manifest, module.ManifestRefused):
             return CheckOutcome(REFUSED, str(manifest.reason))
-        offered = module.list_feed(manifest, app_version(), health.bad_versions(), target.channel)
+        # The same filter the package's full check applies: a release with no files is never offered.
+        offered = [
+            r for r in module.list_feed(manifest, app_version(), health.bad_versions(), target.channel) if r.files
+        ]
     except module.UpdateRefused as refusal:
         return CheckOutcome(REFUSED, str(refusal.reason))
     except Exception as exc:  # noqa: BLE001 - a check must never change the caller's result

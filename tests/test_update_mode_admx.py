@@ -36,3 +36,11 @@ def test_the_adml_carries_every_string_the_admx_names_and_defaults_to_notify():
         assert name in ids, name
     (dropdown,) = adml.findall(".//p:dropdownList", _NS)
     assert policy.UPDATE_MODES[int(dropdown.get("defaultItem"))] == policy.DEFAULT_UPDATE_MODE
+
+
+def test_disabled_in_group_policy_means_off():
+    """Without a disabledValue, Disabled deletes the value and reads as Not configured (notify): it must mean off."""
+    tree = ET.parse(_ROOT / "DistrictSync.admx")
+    (rule,) = tree.getroot().findall(".//p:policy", _NS)
+    assert rule.get("valueName") == policy.POLICY_VALUE_NAME
+    assert rule.find("p:disabledValue/p:string", _NS).text == policy.OFF

@@ -64,15 +64,27 @@ class TestThePrecedence:
         _registry(monkeypatch, {POLICY: OSError("access denied"), MACHINE: "on"})
         assert policy.effective_update_mode(setting_enabled=True) == policy.EffectiveMode("off", "policy")
 
-    def test_the_app_never_writes_the_policy_key(self):
-        """Only Group Policy or an administrator writes it; provisioning (the only registry writer) never names it."""
+    @staticmethod
+    def _policy_writers(root) -> list[str]:
+        """Every file under ``root`` that names the policy key, other than the one module allowed to (the reader)."""
+        hits = []
+        for source in root.rglob("*.py"):
+            if source.name == "policy.py" and source.parent.name == "update":
+                continue
+            text = source.read_text(encoding="utf8").replace("\\\\", "\\")
+            if "Policies\\myBlueprint" in text or "POLICY_KEY_PATH" in text:
+                hits.append(source.name)
+        return hits
+
+    def test_the_app_never_names_the_policy_key_outside_its_reader(self):
+        """Only Group Policy or an administrator writes it: nothing in src/ but the reader may even name it."""
         from pathlib import Path
 
-        root = Path(__file__).resolve().parent.parent / "src"
-        for source in root.rglob("*.py"):
-            text = source.read_text(encoding="utf8")
-            if "POLICY_KEY_PATH" in text and "SetValueEx" in text:
-                raise AssertionError(f"{source} writes the policy key")
+        assert self._policy_writers(Path(__file__).resolve().parent.parent / "src") == []
+
+    def test_positive_twin_the_scan_finds_a_planted_writer(self, tmp_path):
+        (tmp_path / "rogue.py").write_text('KEY = r"SOFTWARE\\Policies\\myBlueprint\\DistrictSync"\n', encoding="utf8")
+        assert self._policy_writers(tmp_path) == ["rogue.py"]
 
 
 @dataclass
@@ -96,6 +108,7 @@ class _FakeModule:
 
     def __init__(self, offered: tuple[str, ...] = (), refuse: str | None = None) -> None:
         self.offered, self.refuse = offered, refuse
+        self.empty: tuple = ()  # releases listed with no files
         self.calls: list[str] = []
 
     def open_manifest(self, raw, keys, now, installed, host, last_sequence, identity):
@@ -104,7 +117,7 @@ class _FakeModule:
 
     def list_feed(self, manifest, installed, bad, channel):
         self.calls.append("list_feed")
-        return tuple(SimpleNamespace(version=v) for v in self.offered)
+        return tuple(SimpleNamespace(version=v, files=("pkg",)) for v in self.offered) + self.empty
 
     def check_for_update(self, *args, **kwargs):
         self.calls.append("check_for_update")  # the DOWNLOAD path: notify must never reach it
@@ -181,8 +194,19 @@ class TestTheStatusLine:
             "last_check_summary",
             lambda state_dir=None: {"status": "available", "version": "3.32.0", "at": "2026-11-24T03:00:00+00:00"},
         )
+        monkeypatch.setattr(status, "app_version", lambda: "3.30.0")
         line = status.update_status_line(tmp_path)
         assert line is not None and line.startswith("Version 3.32.0 is available")
+
+    def test_after_an_upgrade_the_stale_record_is_not_announced(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(status, "is_installed_build", lambda: True)
+        monkeypatch.setattr(status, "skip_reason", lambda **kw: None)
+        monkeypatch.setattr(
+            status, "last_check_summary", lambda state_dir=None: {"status": "available", "version": "3.32.0"}
+        )
+        monkeypatch.setattr(status, "app_version", lambda: "3.32.0")
+        line = status.update_status_line(tmp_path)
+        assert line is not None and "is available" not in line
 
     def test_off_by_policy_has_its_own_sentence(self):
         assert "policy" in status._STANDING["off_by_policy"]
@@ -210,3 +234,30 @@ class TestTheWholeCheckFollowsTheMode:
         fake = FakeUpdater()
         _run(eligible, fake)
         assert len(fake.checks) == 1
+
+
+class TestNotifyOffersOnlyWhatOnWouldInstall:
+    def test_a_release_with_no_files_is_not_announced(self, monkeypatch):
+        monkeypatch.setattr(check, "app_version", lambda: "3.30.0")
+        module = _FakeModule(offered=())
+        module.empty = (SimpleNamespace(version="3.40.0", files=()),)
+        fetcher = _Fetcher()
+        health = SimpleNamespace(last_sequence=lambda: 0, bad_versions=lambda: ())
+        outcome = check._notify_only(module, fetcher, _TARGET, object(), health, datetime.now(UTC), 60.0)
+        assert outcome == check.CheckOutcome("none", "up_to_date")
+
+
+class TestTheDiagnoseLine:
+    def test_it_names_the_mode_its_source_and_why_no_check_runs(self, monkeypatch):
+        from src.utils import diagnostics
+
+        _registry(monkeypatch, {MACHINE: "on"})
+        monkeypatch.setattr(check, "skip_reason", lambda **kw: "machine_wide")
+        assert diagnostics._update_mode() == "on (machine); no update check runs here (machine_wide)"
+
+    def test_positive_twin_no_suffix_when_a_check_runs(self, monkeypatch):
+        from src.utils import diagnostics
+
+        _registry(monkeypatch, {})
+        monkeypatch.setattr(check, "skip_reason", lambda **kw: None)
+        assert diagnostics._update_mode() == "notify (default)"

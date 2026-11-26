@@ -85,7 +85,16 @@ def _update_mode() -> str:
     from src.update import policy
 
     effective = policy.effective_update_mode(setting_enabled=AppConfig.load().update_enabled)
-    return f"{effective.mode} ({effective.source})"
+    line = f"{effective.mode} ({effective.source})"
+    try:
+        from src.update.check import skip_reason
+
+        reason = skip_reason(ignore_interval=True)
+    except Exception:  # noqa: BLE001 - a report line must never stop the report
+        reason = None
+    if reason and reason not in ("off_by_policy", "off_in_settings"):
+        line += f"; no update check runs here ({reason})"
+    return line
 
 
 def _guarded(label: str, resolve: Callable[[], object]) -> str:

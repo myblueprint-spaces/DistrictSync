@@ -7,15 +7,19 @@
     <stringTable>
       <string id="DistrictSync">DistrictSync</string>
       <string id="UpdateMode">Automatic updates</string>
-      <string id="UpdateMode_Help">Sets how DistrictSync handles new versions on this computer. This setting wins over the setting chosen in DistrictSync, and DistrictSync cannot change it.
+      <string id="UpdateMode_Help">Sets how DistrictSync handles new versions on this computer. This setting wins over the setting chosen in DistrictSync, and DistrictSync never writes it. A local off switch on the computer can only make it stricter, never looser.
 
-Off: DistrictSync makes no update connection at all.
+Enabled, Off: DistrictSync makes no update connection at all.
 
-Notify: DistrictSync checks the signed list of versions and says when a newer one is available. It downloads and installs nothing. This is what DistrictSync does when this policy is not configured.
+Enabled, Notify: DistrictSync checks the signed list of versions and says when a newer one is available. It downloads and installs nothing.
 
-On: DistrictSync installs new signed versions automatically, never while a conversion is running.
+Enabled, On: DistrictSync installs new signed versions automatically, never while a conversion is running.
 
-If this policy is not configured, DistrictSync uses the setting chosen during its machine setup, or Notify.</string>
+Disabled: the same as Off.
+
+Not configured: DistrictSync uses the setting chosen in its machine setup; on a copy installed for one user, its own setting; otherwise Notify.
+
+Notify and On take effect once this version of DistrictSync performs update checks on this kind of installation; Off always applies.</string>
       <string id="UpdateMode_Off">Off: no update connection</string>
       <string id="UpdateMode_Notify">Notify: say when a newer version exists (default)</string>
       <string id="UpdateMode_On">On: install signed updates automatically</string>

@@ -12,6 +12,7 @@ from typing import Any
 
 from src.update.check import last_check_summary, skip_reason
 from src.utils.build_flavor import is_installed_build
+from src.utils.version import app_version
 
 # Skip reasons that describe a standing condition worth telling the admin about. The others (``recent``,
 # ``unknown_version``) are transient and fall through to the last recorded check.
@@ -31,6 +32,19 @@ _LAST: dict[tuple[str, str], str] = {
     ("none", "up_to_date"): "You have the latest version.",
     ("staged", "staged"): "A newer version has been downloaded and will be used after it is installed.",
 }
+
+
+def _version_key(text: str) -> tuple[int, ...] | None:
+    try:
+        return tuple(int(part) for part in text.split("+")[0].split("-")[0].split("."))
+    except ValueError:
+        return None
+
+
+def _newer(candidate: str, running: str) -> bool:
+    """Whether ``candidate`` is a newer release than ``running``; ``False`` when either cannot be read."""
+    a, b = _version_key(candidate), _version_key(running)
+    return a is not None and b is not None and a > b
 
 
 def _when(iso: Any) -> str:
@@ -53,8 +67,11 @@ def update_status_line(state_dir: Path | None = None) -> str | None:
     day = _when(last.get("at"))
     suffix = f" Last checked {day}." if day else ""
     if last.get("status") == "available" and last.get("version"):
-        # Notify mode (plan 0055 U1): a newer signed version exists and nothing was downloaded.
-        return f"Version {last.get('version')} is available; this copy does not update itself." + suffix
+        # Notify mode (plan 0055 U1): a newer signed version exists and nothing was downloaded. Said only while it is still
+        # newer than this copy: after an upgrade the record is stale until the next check.
+        if _newer(str(last.get("version")), app_version()):
+            return f"Version {last.get('version')} is available; this copy does not update itself." + suffix
+        return "Updates: not checked since this version was installed."
     known = _LAST.get((str(last.get("status")), str(last.get("reason"))))
     if known:
         return known + suffix
