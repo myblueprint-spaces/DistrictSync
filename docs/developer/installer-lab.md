@@ -19,10 +19,11 @@ VirtualBox or VMware installed.
 
 **What to install (the owner, once):**
 
-1. **VMware Workstation Pro 17** (free for personal and commercial use; download from Broadcom with a free account), OR
-   **VirtualBox 7.1**. Both run beside the Windows hypervisor through the Windows Hypervisor Platform; VMware is the
-   faster of the two in that mode. Turn on the optional feature *Windows Hypervisor Platform* (Settings > System >
-   Optional features > More Windows features), then restart.
+1. **VMware Workstation Pro 26H1** (the owner chose VMware on 2026-11-23). Broadcom's current release; per its 26H1
+   release notes it is free for commercial use and needs NO licence key, so leave the installer's key field blank. It is
+   downloaded from the Broadcom support portal after signing in, which the owner does himself. It runs beside the
+   Windows hypervisor (WSL2, Docker) through the Windows Hypervisor Platform: turn on the optional feature *Windows
+   Hypervisor Platform* (Settings > System > Optional features > More Windows features), then restart.
 2. **Windows Server 2022 evaluation ISO** (free, 180 days, Microsoft Evaluation Center; about 5 GB). One ISO gives both
    Server Core and Desktop Experience.
 3. Nothing else: the MSI comes from the B1 rehearsal artifact, and the repo's fixtures are the data.
