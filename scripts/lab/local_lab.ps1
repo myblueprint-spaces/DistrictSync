@@ -92,22 +92,24 @@ function Test-LabHost {
         Say 'MISSING VMware Workstation Pro (no vmrun.exe in the registered or default folder)'
         $missing += 'VMware Workstation Pro'
     }
+    # The Windows hypervisor runs under WSL2, Docker, Memory Integrity and Hyper-V alike (Windows 11 Home has no Hyper-V
+    # feature but can still run it); whenever it runs, VMware needs Windows Hypervisor Platform.
     $whp = Get-CimInstance Win32_OptionalFeature -Filter "Name='HypervisorPlatform'" -ErrorAction SilentlyContinue
-    $hyperv = Get-CimInstance Win32_OptionalFeature -Filter "Name='Microsoft-Hyper-V'" -ErrorAction SilentlyContinue
+    $hypervisorRunning = [bool](Get-CimInstance Win32_ComputerSystem).HypervisorPresent
     if ($whp -and $whp.InstallState -eq 1) {
         Say 'ok      Windows Hypervisor Platform is on'
-    } elseif ($hyperv -and $hyperv.InstallState -eq 1) {
-        Say 'MISSING Windows Hypervisor Platform is off while Hyper-V is on: VMware needs it (turn it on, restart)'
+    } elseif ($hypervisorRunning) {
+        Say 'MISSING Windows Hypervisor Platform is off while the Windows hypervisor runs: VMware needs it (turn it on, restart)'
         $missing += 'Windows Hypervisor Platform'
     } else {
-        Say 'ok      Hyper-V is off; VMware runs on its own hypervisor (Windows Hypervisor Platform not needed)'
+        Say 'ok      the Windows hypervisor is not running; VMware uses its own (Windows Hypervisor Platform not needed)'
     }
     $iso = $IsoPath
     if (-not $iso) {
         $found = @(Get-ChildItem 'C:\Lab\iso\*.iso' -ErrorAction SilentlyContinue)
         if ($found.Count -gt 0) { $iso = $found[0].FullName }
     }
-    if ($iso -and (Test-Path $iso)) {
+    if ($iso -and (Test-Path -PathType Leaf $iso)) {
         Say "ok      evaluation ISO $iso ($([math]::Round((Get-Item $iso).Length / 1GB, 1)) GB)"
     } else {
         Say 'MISSING the Windows Server 2022 evaluation ISO (none at -IsoPath or in C:\Lab\iso\)'
@@ -131,13 +133,20 @@ function Test-LabHost {
     else { Say "not ready; still missing: $($missing -join ', ')" }
 }
 
-function Get-LabSecret {
+function Initialize-LabDir {
+    # The WHOLE lab folder is owner-only before anything is written in it: the secret, and the answer ISOs that carry
+    # the same password, inherit it. Checked, because a failed icacls does not throw.
     New-Item -ItemType Directory -Force $LabDir | Out-Null
+    icacls $LabDir /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "${env:USERDOMAIN}\${env:USERNAME}:(OI)(CI)F" | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "could not make $LabDir owner-only (icacls exit $LASTEXITCODE); nothing was written" }
+}
+
+function Get-LabSecret {
+    Initialize-LabDir
     $file = Join-Path $LabDir 'lab-secret.txt'
     if (-not (Test-Path $file)) {
         $pw = (-join ((48..57) + (65..90) + (97..122) | Get-Random -Count 20 | ForEach-Object { [char]$_ })) + '!a1'
         Set-Content -NoNewline -Path $file -Value $pw
-        icacls $file /inheritance:r /grant:r "${env:USERDOMAIN}\${env:USERNAME}:F" | Out-Null   # owner-only
     }
     return (Get-Content -Raw $file)
 }
@@ -151,18 +160,30 @@ function Invoke-Vmrun([string[]]$arguments) {
     return $out
 }
 
-function Invoke-Guest([string]$name, [string]$script, [int]$timeoutSeconds = 1800) {
-    # Runs PowerShell in the guest as the lab administrator through VMware Tools; output comes back via a temp file.
+function Invoke-Guest([string]$name, [string]$script, [string]$expect = '') {
+    # Runs PowerShell in the guest as the lab administrator through VMware Tools (no signed-in session needed); output
+    # comes back via a temp file. With -expect, the output must contain that marker or the step throws: guest PowerShell
+    # exits 0 even when a command in it failed. Guest scripts never contain the password: they read it from
+    # $GuestSecret (Send-GuestSecret), so an error that quotes the failing line cannot print it.
     $pw = Get-LabSecret
     $vmx = Get-Vmx $name
     $remoteOut = 'C:\Windows\Temp\lab-out.txt'
     $wrapped = "& { $script } *> $remoteOut"
     $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($wrapped))
-    Invoke-Vmrun @('-gu', 'Administrator', '-gp', $pw, 'runProgramInGuest', $vmx, '-interactive', 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe', "-NoProfile -EncodedCommand $encoded") | Out-Null
+    Invoke-Vmrun @('-gu', 'Administrator', '-gp', $pw, 'runProgramInGuest', $vmx, 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe', "-NoProfile -EncodedCommand $encoded") | Out-Null
     $local = Join-Path $env:TEMP "lab-out-$name.txt"
     Invoke-Vmrun @('-gu', 'Administrator', '-gp', $pw, 'CopyFileFromGuestToHost', $vmx, $remoteOut, $local) | Out-Null
-    return (Get-Content -Raw $local)
+    $out = Get-Content -Raw $local
+    Remove-Item -Force $local
+    if ($expect -and ($out -notmatch [regex]::Escape($expect))) { throw "$name : the guest step did not finish ('$expect' missing)" }
+    return $out
 }
+
+$GuestSecret = 'C:\Windows\Temp\lab-secret.txt'
+function Send-GuestSecret([string]$name) {
+    Invoke-Vmrun @('-gu', 'Administrator', '-gp', (Get-LabSecret), 'CopyFileFromHostToGuest', (Get-Vmx $name), (Join-Path $LabDir 'lab-secret.txt'), $GuestSecret) | Out-Null
+}
+function Remove-GuestSecret([string]$name) { Invoke-Guest $name "Remove-Item -Force '$GuestSecret'; 'gone'" 'gone' | Out-Null }
 
 function Wait-Tools([string]$name, [int]$minutes = 60) {
     $deadline = (Get-Date).AddMinutes($minutes)
@@ -302,36 +323,42 @@ tools.syncTime = "TRUE"
 }
 
 function Initialize-LabDomain {
-    $pw = Get-LabSecret
+    $read = "`$pw = ConvertTo-SecureString (Get-Content -Raw '$GuestSecret') -AsPlainText -Force"
+    foreach ($vm in 'lab-dc', 'lab-desktop', 'lab-core') { Send-GuestSecret $vm }
     Say 'promote lab-dc'
-    Invoke-Guest 'lab-dc' "Install-WindowsFeature AD-Domain-Services | Out-Null; Install-ADDSForest -DomainName $Domain -DomainNetbiosName $Netbios -SafeModeAdministratorPassword (ConvertTo-SecureString '$pw' -AsPlainText -Force) -Force -NoRebootOnCompletion | Out-Null; 'ok'" | Out-Null
+    Invoke-Guest 'lab-dc' "$read; Install-WindowsFeature AD-Domain-Services | Out-Null; Install-ADDSForest -DomainName $Domain -DomainNetbiosName $Netbios -SafeModeAdministratorPassword `$pw -Force -NoRebootOnCompletion -ErrorAction Stop | Out-Null; 'promoted'" 'promoted' | Out-Null
     Invoke-Vmrun @('reset', (Get-Vmx 'lab-dc'), 'soft') | Out-Null
     Wait-Tools 'lab-dc'
     $dcIp = (Invoke-Vmrun @('getGuestIPAddress', (Get-Vmx 'lab-dc'), '-wait')).Trim()
-    Say "lab-dc is $dcIp; pin it and point the members at it"
-    Invoke-Guest 'lab-dc' "`$i = Get-NetIPConfiguration | Where-Object IPv4DefaultGateway | Select-Object -First 1; New-NetIPAddress -InterfaceIndex `$i.InterfaceIndex -IPAddress $dcIp -PrefixLength 24 -DefaultGateway `$i.IPv4DefaultGateway.NextHop -ErrorAction SilentlyContinue | Out-Null; Set-DnsClientServerAddress -InterfaceIndex `$i.InterfaceIndex -ServerAddresses 127.0.0.1; 'ok'" | Out-Null
+    Say "lab-dc is $dcIp; make it static and point the members at it"
+    Invoke-Guest 'lab-dc' "`$i = Get-NetIPConfiguration | Where-Object IPv4DefaultGateway | Select-Object -First 1; `$a = `$i.IPv4Address | Select-Object -First 1; `$gw = `$i.IPv4DefaultGateway.NextHop; Set-NetIPInterface -InterfaceIndex `$i.InterfaceIndex -Dhcp Disabled; Remove-NetIPAddress -InterfaceIndex `$i.InterfaceIndex -AddressFamily IPv4 -Confirm:`$false -ErrorAction SilentlyContinue; Remove-NetRoute -InterfaceIndex `$i.InterfaceIndex -DestinationPrefix 0.0.0.0/0 -Confirm:`$false -ErrorAction SilentlyContinue; New-NetIPAddress -InterfaceIndex `$i.InterfaceIndex -IPAddress $dcIp -PrefixLength `$a.PrefixLength -DefaultGateway `$gw -ErrorAction Stop | Out-Null; Set-DnsClientServerAddress -InterfaceIndex `$i.InterfaceIndex -ServerAddresses 127.0.0.1; 'static'" 'static' | Out-Null
     foreach ($member in 'lab-desktop', 'lab-core') {
         Say "join $member"
-        Invoke-Guest $member "`$i = Get-NetIPConfiguration | Where-Object IPv4DefaultGateway | Select-Object -First 1; Set-DnsClientServerAddress -InterfaceIndex `$i.InterfaceIndex -ServerAddresses $dcIp; `$c = New-Object PSCredential('$Netbios\Administrator', (ConvertTo-SecureString '$pw' -AsPlainText -Force)); Add-Computer -DomainName $Domain -Credential `$c -Force; 'joined'" | Out-Null
+        Invoke-Guest $member "$read; `$i = Get-NetIPConfiguration | Where-Object IPv4DefaultGateway | Select-Object -First 1; Set-DnsClientServerAddress -InterfaceIndex `$i.InterfaceIndex -ServerAddresses $dcIp; `$c = New-Object PSCredential('$Netbios\Administrator', `$pw); Add-Computer -DomainName $Domain -Credential `$c -Force -ErrorAction Stop; 'joined'" 'joined' | Out-Null
         Invoke-Vmrun @('reset', (Get-Vmx $member), 'soft') | Out-Null
         Wait-Tools $member
     }
     Say 'gMSA and the stored-password service account'
     Invoke-Guest 'lab-dc' @"
+$read
+`$ErrorActionPreference = 'Stop'
 Add-KdsRootKey -EffectiveTime ((Get-Date).AddHours(-10)) | Out-Null
 New-ADGroup -Name DSyncHosts -GroupScope Global
 Add-ADGroupMember DSyncHosts -Members 'lab-desktop`$','lab-core`$'
 New-ADServiceAccount -Name svc_dsync -DNSHostName svc_dsync.$Domain -PrincipalsAllowedToRetrieveManagedPassword DSyncHosts
-New-ADUser -Name svc_dsyncpw -AccountPassword (ConvertTo-SecureString '$pw' -AsPlainText -Force) -Enabled `$true -PasswordNeverExpires `$true
-New-ADUser -Name lab_user -AccountPassword (ConvertTo-SecureString '$pw' -AsPlainText -Force) -Enabled `$true
+New-ADUser -Name svc_dsyncpw -AccountPassword `$pw -Enabled `$true -PasswordNeverExpires `$true
+New-ADUser -Name lab_user -AccountPassword `$pw -Enabled `$true
 'accounts done'
-"@ | Out-Null
+"@ 'accounts done' | Out-Null
     foreach ($member in 'lab-desktop', 'lab-core') {
         Invoke-Vmrun @('reset', (Get-Vmx $member), 'soft') | Out-Null   # picks up DSyncHosts
         Wait-Tools $member
-        Say "$member : $(Invoke-Guest $member 'Install-WindowsFeature RSAT-AD-PowerShell | Out-Null; Install-ADServiceAccount svc_dsync; Test-ADServiceAccount svc_dsync')"
-        Invoke-Vmrun @('snapshot', (Get-Vmx $member), 'domain') | Out-Null
+        Invoke-Guest $member "Install-WindowsFeature RSAT-AD-PowerShell | Out-Null; Install-ADServiceAccount svc_dsync -ErrorAction Stop; if (Test-ADServiceAccount svc_dsync) { 'gmsa ok' }" 'gmsa ok' | Out-Null
+        Say "$member : gMSA svc_dsync installed and tested"
     }
+    foreach ($vm in 'lab-dc', 'lab-desktop', 'lab-core') { Remove-GuestSecret $vm }
+    foreach ($member in 'lab-desktop', 'lab-core') { Invoke-Vmrun @('snapshot', (Get-Vmx $member), 'domain') | Out-Null }
+    Say "domain ready; snapshot 'domain' taken on the members"
 }
 
 $targets = if ($Vm) { @($Vm) } else { @($Vms.Keys) }

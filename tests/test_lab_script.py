@@ -33,7 +33,7 @@ def test_the_local_lab_snapshots_clean_and_domain_states_and_can_destroy_itself(
 
 def test_the_local_lab_check_is_read_only_and_names_what_is_missing():
     """-Action check detects VMware (registry InstallPath, then the default folders) and reports, changing nothing."""
-    body = LOCAL[LOCAL.index("function Test-LabHost") : LOCAL.index("function Get-LabSecret")]
+    body = LOCAL[LOCAL.index("function Test-LabHost") : LOCAL.index("function Initialize-LabDir")]
     assert "InstallPath" in LOCAL and "VersionInfo.ProductVersion" in body
     for needed in ("vmrun.exe", "vmware-vdiskmanager.exe", "windows.iso", "HypervisorPlatform", "evaluation ISO"):
         assert needed in body, needed
@@ -57,3 +57,28 @@ def test_there_is_no_azure_lab_script():
     assert [p.name for p in scripts] == ["local_lab.ps1"]  # positive twin: the scan sees the lab folder
     for script in scripts:
         assert "az vm create" not in script.read_text(encoding="utf8")
+
+
+def test_the_lab_folder_is_owner_only_and_a_failed_icacls_stops_the_script():
+    """The secret and the answer ISOs (which carry the same password) live in one owner-only folder. A failed icacls does
+    not throw in PowerShell, so the exit code is checked; an earlier version wrote files NAMED after the password."""
+    body = LOCAL[LOCAL.index("function Initialize-LabDir") : LOCAL.index("function Get-LabSecret")]
+    assert "/inheritance:r /grant:r" in body and ':(OI)(CI)F"' in body
+    assert "if ($LASTEXITCODE -ne 0) { throw" in body
+    assert LOCAL.index("Initialize-LabDir\n") < LOCAL.index("Set-Content -NoNewline -Path $file")
+
+
+def test_guest_commands_need_no_signed_in_session_and_never_carry_the_password():
+    assert "'-interactive'" not in LOCAL  # no session exists after a reboot
+    domain = LOCAL[LOCAL.index("function Initialize-LabDomain") : LOCAL.index("$targets = ")]
+    assert "'$pw'" not in domain and "Get-LabSecret" not in domain  # the guest reads it from $GuestSecret
+    assert "Remove-GuestSecret" in domain
+    # every guest step names the marker that proves it finished
+    for marker in ("'promoted'", "'static'", "'joined'", "'accounts done'", "'gmsa ok'"):
+        assert domain.count(marker) >= 2, marker  # produced by the guest and expected by the host
+
+
+def test_the_hypervisor_check_does_not_depend_on_the_hyper_v_feature():
+    body = LOCAL[LOCAL.index("function Test-LabHost") : LOCAL.index("function Initialize-LabDir")]
+    assert "HypervisorPresent" in body and "Microsoft-Hyper-V" not in body
+    assert "Test-Path -PathType Leaf $iso" in body

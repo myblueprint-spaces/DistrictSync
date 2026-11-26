@@ -39,8 +39,8 @@ prints both.
 |---|---|---|
 | The PC as it is | T21 (signatures), T22 (SmartScreen on a fresh download) | Read-only checks. Every other row changes machine state (Program Files, ProgramData, HKLM, Task Scheduler) on the owner's daily machine, so it runs in a VM even where the PC could. |
 | One workgroup VM (Server 2022 Desktop, no domain) | T1, T2, T3 (local password service account), T7/T7b/T7c for local accounts, T8 (from a per-user v3.30 install), T9, T10-T12 (SYSTEM updater, once U2/U3 exist; a loopback feed), T15 (policy key set with `gpedit`/registry), T17, T18, T20, T23, T24, T25, T26 | Needs admin, Program Files, Task Scheduler and second local accounts, but no directory. A snapshot before each row makes them repeatable. |
-| Plus a Server Core VM (workgroup) | T6 (console and WinRM from the Desktop VM; SSH optional) | Headless install, machine setup and scheduling. |
-| A local domain (DC VM + member VM) | T4 (domain password account), T5 (gMSA + the DSYNC-33 schedule check), T7 for a gMSA principal | gMSA needs Active Directory with a KDS root key: a DC VM (Server Core, 2 GB) and a member VM joined to it, on a host-only network. |
+| Plus a Server Core VM (workgroup) | T6 (headless: every command through VMware Tools, `-Action run`) | Headless install, machine setup and scheduling. |
+| A local domain (DC VM + member VM) | T4 (domain password account), T5 (gMSA + the DSYNC-33 schedule check), T7 for a gMSA principal | gMSA needs Active Directory with a KDS root key: a DC VM (Server Core, 2 GB) and a member VM joined to it, on the VMware NAT network (the DC gets a static address). |
 | Not locally | T19's Intune half (needs a tenant); Group Policy software install can be done on the local domain | **Not proven before release:** no tenant and no Azure spend. Intune is documented from Microsoft's MSI guidance and confirmed by the first district that uses it. |
 
 **Docker: a poor fit for the installer, and Windows 11 Home cannot run Windows containers at all.** Docker Desktop on this
@@ -70,5 +70,5 @@ Each VM is installed from the evaluation ISO with an answer file the script writ
 IMAPI2; no download), installs VMware Tools at first logon, and is then driven only through VMware Tools
 (`vmrun runProgramInGuest` and file copies): no network share, remote session or open port. The lab administrator
 password is generated once into `C:\Lab\vms\lab-secret.txt` with an owner-only ACL and never printed.
-Each VM: install from the ISO, take a clean snapshot, copy the MSI in (shared folder or a mounted ISO), run the row,
+Each VM: install from the ISO, take a clean snapshot, copy the MSI in (`-Action copy-in`), run the row,
 record the result on its ticket, revert to the snapshot.
