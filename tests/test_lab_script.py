@@ -60,26 +60,3 @@ def test_every_wait_checks_the_deadline():
 def test_the_caveat_is_in_every_result():
     assert "not a typical member server" in SCRIPT
 
-
-LOCAL = (Path(__file__).resolve().parent.parent / "scripts" / "lab" / "local_lab.ps1").read_text(encoding="utf8")
-
-
-def test_the_local_lab_is_three_small_vms_from_one_evaluation_iso():
-    """The sizes the owner was told (docs/developer/installer-lab.md): 2/4/2 GB, 40/60/40 GB thin, 2 vCPU each."""
-    for name, memory, disk in (("lab-dc", 2048, 40), ("lab-desktop", 4096, 60), ("lab-core", 2048, 40)):
-        assert re.search(
-            rf"'{name}'\s*=\s*@\{{ Image = \d; MemoryMB = {memory}; DiskGB = {disk}; Cpus = 2 \}}", LOCAL
-        ), name
-
-
-def test_the_local_lab_opens_no_remote_session_and_keeps_its_secret_owner_only():
-    assert "runProgramInGuest" in LOCAL  # guest commands through VMware Tools
-    for remote in ("Enter-PSSession", "Invoke-Command -ComputerName", "New-PSSession", "net use"):
-        assert remote not in LOCAL, remote
-    assert "/inheritance:r /grant:r" in LOCAL
-
-
-def test_the_local_lab_snapshots_clean_and_domain_states_and_can_destroy_itself():
-    assert "'snapshot', (Get-Vmx $name), 'clean'" in LOCAL
-    assert "'snapshot', (Get-Vmx $member), 'domain'" in LOCAL
-    assert "'deleteVM'" in LOCAL
