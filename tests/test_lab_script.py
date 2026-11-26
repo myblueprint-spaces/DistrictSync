@@ -65,11 +65,13 @@ LOCAL = (Path(__file__).resolve().parent.parent / "scripts" / "lab" / "local_lab
 
 
 def test_the_local_lab_is_three_small_vms_from_one_evaluation_iso():
-    """The sizes the owner was told (docs/developer/installer-lab.md): 2/4/2 GB, 40/60/40 GB thin, 2 vCPU each."""
-    for name, memory, disk in (("lab-dc", 2048, 40), ("lab-desktop", 4096, 60), ("lab-core", 2048, 40)):
+    """The sizes the owner was told (docs/developer/installer-lab.md): 2/4/2 GB, 32 GB thin each (the Server 2022
+    minimum, owner 2026-11-26: keep the disks small), 2 vCPU each."""
+    for name, memory in (("lab-dc", 2048), ("lab-desktop", 4096), ("lab-core", 2048)):
         assert re.search(
-            rf"'{name}'\s*=\s*@\{{ Image = \d; MemoryMB = {memory}; DiskGB = {disk}; Cpus = 2 \}}", LOCAL
+            rf"'{name}'\s*=\s*@\{{ Image = \d; MemoryMB = {memory}; DiskGB = 32; Cpus = 2; UsedGB = \d+ \}}", LOCAL
         ), name
+    assert "expected real use" in LOCAL  # the check never reads as "the disks get filled"
 
 
 def test_the_local_lab_opens_no_remote_session_and_keeps_its_secret_owner_only():

@@ -30,7 +30,9 @@ VirtualBox or VMware installed.
 
 **Capacity.** RAM is the limit: a Server Core VM needs 2 GB, a Desktop Experience VM 4 GB. A domain pair (DC 2 GB + member
 4 GB) fits while other heavy apps are closed; a third VM (Server Core member) runs only with the Desktop member stopped.
-Disk: about 15 GB per Core VM and 25 GB for Desktop, so about 55 GB for all three plus the ISO, or less with linked clones.
+Disk: each VM has a 32 GB thin disk (the Server 2022 minimum; owner 2026-11-26), so the three can never pass 96 GB together.
+Expected real use is about 12 GB per Core VM and 22 GB for Desktop, about 46 GB for all three plus the ISO; `-Action check`
+prints both.
 
 **Where each matrix row runs** (plan 0055 test matrix):
 

@@ -5,9 +5,9 @@
 .DESCRIPTION
   Three throwaway Windows Server 2022 evaluation VMs, built unattended from the one evaluation ISO:
 
-    lab-dc       Server Core, 2 vCPU, 2 GB, 40 GB thin   domain controller (gMSA and domain-account rows only)
-    lab-desktop  Desktop Experience, 2 vCPU, 4 GB, 60 GB   most matrix rows: workgroup first, domain member later
-    lab-core     Server Core, 2 vCPU, 2 GB, 40 GB thin     headless and Server Core rows
+    lab-dc       Server Core, 2 vCPU, 2 GB, 32 GB thin   domain controller (gMSA and domain-account rows only)
+    lab-desktop  Desktop Experience, 2 vCPU, 4 GB, 32 GB thin most matrix rows: workgroup first, domain member later
+    lab-core     Server Core, 2 vCPU, 2 GB, 32 GB thin     headless and Server Core rows
 
   What the owner does by hand (docs/developer/installer-lab.md): install VMware Workstation Pro, turn on Windows
   Hypervisor Platform, download the Server 2022 evaluation ISO. Everything else is this script:
@@ -44,9 +44,11 @@ Set-StrictMode -Version Latest
 
 # -------------------------------------------------------------------------- the lab (pinned by tests/test_lab_script.py)
 $Vms = [ordered]@{
-    'lab-dc'      = @{ Image = 1; MemoryMB = 2048; DiskGB = 40; Cpus = 2 }   # index 1: Standard, Server Core
-    'lab-desktop' = @{ Image = 2; MemoryMB = 4096; DiskGB = 60; Cpus = 2 }   # index 2: Standard, Desktop Experience
-    'lab-core'    = @{ Image = 1; MemoryMB = 2048; DiskGB = 40; Cpus = 2 }
+    # DiskGB: 32 is the Windows Server 2022 minimum (owner 2026-11-26: keep the disks small). The disk is thin: it is a
+    # ceiling, not a reservation. UsedGB is the expected real use after install, Tools and a snapshot or two.
+    'lab-dc'      = @{ Image = 1; MemoryMB = 2048; DiskGB = 32; Cpus = 2; UsedGB = 12 }   # index 1: Standard, Server Core
+    'lab-desktop' = @{ Image = 2; MemoryMB = 4096; DiskGB = 32; Cpus = 2; UsedGB = 22 }   # index 2: Standard, Desktop Experience
+    'lab-core'    = @{ Image = 1; MemoryMB = 2048; DiskGB = 32; Cpus = 2; UsedGB = 12 }
 }
 $Domain = 'lab.dsync.test'
 $Netbios = 'LAB'
@@ -118,8 +120,11 @@ function Test-LabHost {
     $root = [IO.Path]::GetPathRoot($LabDir)
     $freeGb = [math]::Round((Get-PSDrive -Name $root.Substring(0, 1)).Free / 1GB)
     $needDisk = (($Vms.Values | ForEach-Object { $_.DiskGB }) | Measure-Object -Sum).Sum
-    if ($freeGb -ge $needDisk) { Say "ok      $freeGb GB free on $root (thin disks can grow to $needDisk GB)" }
-    else { Say "WARN    $freeGb GB free on $root; thin disks can grow to $needDisk GB" }
+    $expectDisk = (($Vms.Values | ForEach-Object { $_.UsedGB }) | Measure-Object -Sum).Sum
+    $usage = "expected real use about $expectDisk GB; the thin disks can never pass $needDisk GB together"
+    if ($freeGb -ge $needDisk) { Say "ok      $freeGb GB free on $root ($usage)" }
+    elseif ($freeGb -ge $expectDisk) { Say "ok      $freeGb GB free on $root ($usage; enough for the expected use)" }
+    else { Say "WARN    $freeGb GB free on $root, less than the expected use ($usage)" }
     # Say writes to the output stream, so the verdict goes in a script variable, not a return value.
     $script:CheckExitCode = if ($missing.Count -eq 0) { 0 } else { 1 }
     if ($missing.Count -eq 0) { Say 'ready: .\local_lab.ps1 -Action create -IsoPath <the ISO above>' }
