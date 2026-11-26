@@ -11,7 +11,7 @@ Owner, 2026-11-26 (relayed by the orchestrator session): "we'll make districtsyn
 
 **Decided.**
 - Every plan 0055 slice is coded to full parity with the one-file exe (the plan's parity checklist) before any lab run.
-- Testing is CI rehearsals plus ONE throwaway Azure Spot VM (CAD 1-5, deleted by its own script) for the domain and Server Core rows. The local VMware lab is dropped.
+- Testing is CI rehearsals plus the LOCAL VMware lab (Workstation Pro 26H1). The owner first chose one throwaway Azure VM, then reversed the same day: "i got into broadcom i can download so that we cna do the local testing without spending money". The one-instance Azure script (CAD 1-5, deleted by its own script) stays only as a fallback for anything the local lab cannot do.
 - New partners get `DistrictSync.msi` only. Existing partners are not contacted and move, with an optional `--migrate`, only if something comes up.
 - The release after the first MSI release stops building and publishing the one-file Windows exe and the per-user `Setup.exe`; there is no migration ledger.
 - The repository goes private, with downloads from the partner site.

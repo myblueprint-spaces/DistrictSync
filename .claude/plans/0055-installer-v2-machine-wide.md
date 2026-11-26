@@ -329,7 +329,7 @@ and existing partners we dont need to disturb but if anything comes up we can te
 | # | Decision | Replaces |
 |---|---|---|
 | R3-1 | **Code first.** Every slice is built to full parity with the one-file exe (the checklist below) before any lab run. Order: U1, N1, M3, then the rest. | the L1-first order |
-| R3-2 | **Testing is CI rehearsals plus ONE throwaway Azure VM** (`scripts/lab/azure_domain_check.ps1`: CAD 1-5, auto-delete, after the coding is complete) for the gMSA, domain-account and Server Core rows. The local VMware lab is dropped (no Broadcom sign-up path). | O4's local-first lab |
+| R3-2 | **Testing is CI rehearsals plus the LOCAL VMware lab** (`scripts/lab/local_lab.ps1`, VMware Workstation Pro 26H1), after the coding is complete. Reversed the same day: first "the azure cheap throaway one time test", then "i got into broadcom i can download so that we cna do the local testing without spending money". The one-instance Azure script stays only as a fallback for anything the local lab cannot do. | O4's lab location (the local lab, restored) |
 | R3-3 | **New partners get the installer only. Existing partners are not disturbed:** they stay on the one-file exe and move only "if anything comes up", told to get the new installer. Migration (D1) is therefore optional and must be safe to run at any time, never pushed. | G4's "keep until every district is confirmed migrated" ledger |
 | R3-4 | **The repository goes private and downloads come from the partner site** (`integration.crm.myblueprint.org`), which the owner reports is already done. | plan 0054's GitHub-Release download links |
 
