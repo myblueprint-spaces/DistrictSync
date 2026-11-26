@@ -12,6 +12,7 @@
   What the owner does by hand (docs/developer/installer-lab.md): install VMware Workstation Pro, turn on Windows
   Hypervisor Platform, download the Server 2022 evaluation ISO. Everything else is this script:
 
+    .\local_lab.ps1 -Action check [-IsoPath C:\Lab\iso\<eval>.iso]                # read-only: what is ready, what is missing
     .\local_lab.ps1 -Action create   -IsoPath C:\Lab\iso\<eval>.iso [-Vm lab-desktop]   # build (unattended) and snapshot "clean"
     .\local_lab.ps1 -Action start|stop -Vm lab-desktop
     .\local_lab.ps1 -Action snapshot|revert -Vm lab-desktop -Snapshot clean
@@ -27,7 +28,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('create', 'start', 'stop', 'snapshot', 'revert', 'run', 'copy-in', 'domain', 'destroy', 'status')]
+    [ValidateSet('check', 'create', 'start', 'stop', 'snapshot', 'revert', 'run', 'copy-in', 'domain', 'destroy', 'status')]
     [string]$Action,
     [string]$IsoPath,
     [ValidateSet('lab-dc', 'lab-desktop', 'lab-core')][string]$Vm,
@@ -54,11 +55,75 @@ $GuestOs = 'windows2019srvnext-64'   # VMware's guest id for Server 2022
 
 function Say($m) { Write-Output "[$((Get-Date).ToString('HH:mm:ss'))] $m" }
 
-function Get-VMwareDir {
-    foreach ($dir in "${env:ProgramFiles(x86)}\VMware\VMware Workstation", "$env:ProgramFiles\VMware\VMware Workstation") {
-        if (Test-Path (Join-Path $dir 'vmrun.exe')) { return $dir }
+function Find-VMwareDir {
+    # The installer records its folder in the registry; the two default folders are the fallback. $null when not found.
+    $candidates = @()
+    foreach ($key in 'HKLM:\SOFTWARE\WOW6432Node\VMware, Inc.\VMware Workstation', 'HKLM:\SOFTWARE\VMware, Inc.\VMware Workstation') {
+        $props = Get-ItemProperty -Path $key -ErrorAction SilentlyContinue   # StrictMode: never dot into a missing key
+        if ($props -and $props.PSObject.Properties['InstallPath']) { $candidates += $props.InstallPath }
     }
-    throw 'VMware Workstation Pro is not installed (vmrun.exe not found). See docs/developer/installer-lab.md.'
+    $candidates += "${env:ProgramFiles(x86)}\VMware\VMware Workstation", "$env:ProgramFiles\VMware\VMware Workstation"
+    foreach ($dir in $candidates) {
+        if ($dir -and (Test-Path (Join-Path $dir 'vmrun.exe'))) { return $dir.TrimEnd('\') }
+    }
+    return $null
+}
+
+function Get-VMwareDir {
+    $dir = Find-VMwareDir
+    if (-not $dir) { throw 'VMware Workstation Pro is not installed (vmrun.exe not found). Run -Action check; see docs/developer/installer-lab.md.' }
+    return $dir
+}
+
+function Test-LabHost {
+    # Read-only: says what is ready and what is still missing. Changes nothing. Exit code 0 = ready to create, 1 = not yet.
+    $missing = @()
+    $dir = Find-VMwareDir
+    if ($dir) {
+        $exe = Join-Path $dir 'vmware.exe'
+        $version = if (Test-Path $exe) { (Get-Item $exe).VersionInfo.ProductVersion } else { 'unknown' }
+        Say "ok      VMware Workstation $version at $dir"
+        foreach ($tool in 'vmrun.exe', 'vmware-vdiskmanager.exe', 'windows.iso') {
+            if (Test-Path (Join-Path $dir $tool)) { Say "ok      $tool" } else { Say "MISSING $tool in $dir"; $missing += $tool }
+        }
+    } else {
+        Say 'MISSING VMware Workstation Pro (no vmrun.exe in the registered or default folder)'
+        $missing += 'VMware Workstation Pro'
+    }
+    $whp = Get-CimInstance Win32_OptionalFeature -Filter "Name='HypervisorPlatform'" -ErrorAction SilentlyContinue
+    $hyperv = Get-CimInstance Win32_OptionalFeature -Filter "Name='Microsoft-Hyper-V'" -ErrorAction SilentlyContinue
+    if ($whp -and $whp.InstallState -eq 1) {
+        Say 'ok      Windows Hypervisor Platform is on'
+    } elseif ($hyperv -and $hyperv.InstallState -eq 1) {
+        Say 'MISSING Windows Hypervisor Platform is off while Hyper-V is on: VMware needs it (turn it on, restart)'
+        $missing += 'Windows Hypervisor Platform'
+    } else {
+        Say 'ok      Hyper-V is off; VMware runs on its own hypervisor (Windows Hypervisor Platform not needed)'
+    }
+    $iso = $IsoPath
+    if (-not $iso) {
+        $found = @(Get-ChildItem 'C:\Lab\iso\*.iso' -ErrorAction SilentlyContinue)
+        if ($found.Count -gt 0) { $iso = $found[0].FullName }
+    }
+    if ($iso -and (Test-Path $iso)) {
+        Say "ok      evaluation ISO $iso ($([math]::Round((Get-Item $iso).Length / 1GB, 1)) GB)"
+    } else {
+        Say 'MISSING the Windows Server 2022 evaluation ISO (none at -IsoPath or in C:\Lab\iso\)'
+        $missing += 'evaluation ISO'
+    }
+    $ramGb = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB)
+    $needRam = [math]::Ceiling((($Vms.Values | ForEach-Object { $_.MemoryMB }) | Measure-Object -Sum).Sum / 1024) + 4
+    if ($ramGb -ge $needRam) { Say "ok      $ramGb GB memory (all three VMs at once need about $needRam GB)" }
+    else { Say "WARN    $ramGb GB memory: run the VMs one or two at a time (all three need about $needRam GB)" }
+    $root = [IO.Path]::GetPathRoot($LabDir)
+    $freeGb = [math]::Round((Get-PSDrive -Name $root.Substring(0, 1)).Free / 1GB)
+    $needDisk = (($Vms.Values | ForEach-Object { $_.DiskGB }) | Measure-Object -Sum).Sum
+    if ($freeGb -ge $needDisk) { Say "ok      $freeGb GB free on $root (thin disks can grow to $needDisk GB)" }
+    else { Say "WARN    $freeGb GB free on $root; thin disks can grow to $needDisk GB" }
+    # Say writes to the output stream, so the verdict goes in a script variable, not a return value.
+    $script:CheckExitCode = if ($missing.Count -eq 0) { 0 } else { 1 }
+    if ($missing.Count -eq 0) { Say 'ready: .\local_lab.ps1 -Action create -IsoPath <the ISO above>' }
+    else { Say "not ready; still missing: $($missing -join ', ')" }
 }
 
 function Get-LabSecret {
@@ -266,6 +331,7 @@ New-ADUser -Name lab_user -AccountPassword (ConvertTo-SecureString '$pw' -AsPlai
 
 $targets = if ($Vm) { @($Vm) } else { @($Vms.Keys) }
 switch ($Action) {
+    'check' { Test-LabHost; exit $script:CheckExitCode }
     'create' { foreach ($t in $targets) { New-LabVm $t } }
     'start' { foreach ($t in $targets) { Invoke-Vmrun @('start', (Get-Vmx $t), 'nogui') | Out-Null; Say "$t started" } }
     'stop' { foreach ($t in $targets) { Invoke-Vmrun @('stop', (Get-Vmx $t), 'soft') | Out-Null; Say "$t stopped" } }

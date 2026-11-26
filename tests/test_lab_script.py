@@ -83,3 +83,22 @@ def test_the_local_lab_snapshots_clean_and_domain_states_and_can_destroy_itself(
     assert "'snapshot', (Get-Vmx $name), 'clean'" in LOCAL
     assert "'snapshot', (Get-Vmx $member), 'domain'" in LOCAL
     assert "'deleteVM'" in LOCAL
+
+
+def test_the_local_lab_check_is_read_only_and_names_what_is_missing():
+    """-Action check detects VMware (registry InstallPath, then the default folders) and reports, changing nothing."""
+    body = LOCAL[LOCAL.index("function Test-LabHost") : LOCAL.index("function Get-LabSecret")]
+    assert "InstallPath" in LOCAL and "VersionInfo.ProductVersion" in body
+    for needed in ("vmrun.exe", "vmware-vdiskmanager.exe", "windows.iso", "HypervisorPlatform", "evaluation ISO"):
+        assert needed in body, needed
+    for writer in (
+        "Set-",
+        "New-Item",
+        "Remove-",
+        "Invoke-Vmrun",
+        "Enable-WindowsOptionalFeature",
+        "icacls",
+        "Get-LabSecret",
+    ):
+        assert writer not in body, writer
+    assert "'check' { Test-LabHost; exit $script:CheckExitCode }" in LOCAL

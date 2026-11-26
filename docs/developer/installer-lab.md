@@ -56,6 +56,7 @@ SpacesEDU host; (2) a local HTTPS server for a test update feed when U1/U2 are b
 `scripts/lab/local_lab.ps1` (its sizes and safety properties are pinned by `tests/test_lab_script.py`):
 
 ```powershell
+.scriptslablocal_lab.ps1 -Action check                                                 # read-only: VMware, Hypervisor Platform, ISO, memory, disk; exit 1 = not ready
 .\scripts\lab\local_lab.ps1 -Action create -IsoPath C:\Lab\iso\<evaluation ISO>.iso   # all three VMs, unattended, snapshot "clean"
 .\scripts\lab\local_lab.ps1 -Action copy-in -Vm lab-desktop -HostPath .\msi-n.msi -GuestPath C:\lab\msi-n.msi
 .\scripts\lab\local_lab.ps1 -Action run -Vm lab-desktop -Command "msiexec /i C:\lab\msi-n.msi /qn /l*v C:\lab\install.log"
