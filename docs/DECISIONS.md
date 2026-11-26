@@ -3,6 +3,21 @@
 **Convention (adopted 2026-09-23):** every new entry carries a line `Supersedes: <date — title of the replaced entry>` (or `Supersedes: nothing`) directly under its heading, so a replaced decision is found by search rather than by reading prose.
 
 
+## 2026-11-26 - Plan 0055 round 3: code to full parity first; new partners get the installer only, existing partners are not disturbed; the one-file exe is decommissioned; one throwaway Azure VM
+
+Supersedes: 2026-11-23 - Plan 0055, point 6 (keep the one-file exe until every district is confirmed migrated) and point 7 (local VMs first).
+
+Owner, 2026-11-26 (relayed by the orchestrator session): "we'll make districtsync repo private and serve the download links via integration.crm.myblueprint.org that is already done ... okay we can use the azure cheap throaway one time test lets do the coding first and complete adding all features and functionality and improvements and gap fill from the onefile exe to the installer so that we can decom the onefile as it is malware-y and going forward new partners can use the installer and existing partners we dont need to disturb but if anything comes up we can tell them to get the new installer."
+
+**Decided.**
+- Every plan 0055 slice is coded to full parity with the one-file exe (the plan's parity checklist) before any lab run.
+- Testing is CI rehearsals plus ONE throwaway Azure Spot VM (CAD 1-5, deleted by its own script) for the domain and Server Core rows. The local VMware lab is dropped.
+- New partners get `DistrictSync.msi` only. Existing partners are not contacted and move, with an optional `--migrate`, only if something comes up.
+- The release after the first MSI release stops building and publishing the one-file Windows exe and the per-user `Setup.exe`; there is no migration ledger.
+- The repository goes private, with downloads from the partner site.
+
+**Risks recorded in plan 0055 (R19, R20), not acted on here.** A private repo may lose the required-reviewer gate on releases and costs Actions minutes; the site must serve every asset (including the MSI and the macOS CLI) before the repo flips, in the order the plan lists.
+
 ## 2026-11-23 - Plan 0055: installer v2 is one machine-wide MSI that replaces the one-file exe; updates default to "notify", a SYSTEM task applies them, district IT can enforce "off"
 
 Supersedes: 2026-11-17 - DSYNC-16, in part: the per-user Velopack install stops being the installer shape (Velopack, the pack id `myBlueprint.DistrictSync`, the signed manifest and the shared updater package all stay). Plan 0054's non-goal "updating machine-scope installs" and its R1 exclusion are replaced by plan 0055.
