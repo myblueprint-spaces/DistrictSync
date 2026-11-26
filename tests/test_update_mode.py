@@ -29,6 +29,7 @@ def _registry(monkeypatch, values: dict[tuple[str, str], object]):
 
 
 POLICY = (policy.POLICY_KEY_PATH, policy.POLICY_VALUE_NAME)
+STATE = (policy.POLICY_KEY_PATH, policy.POLICY_STATE_VALUE_NAME)
 MACHINE = (MACHINE_SCOPE_KEY_PATH, policy.MACHINE_SETTING_VALUE_NAME)
 
 
@@ -59,6 +60,22 @@ class TestThePrecedence:
         assert policy.effective_update_mode(setting_enabled=True) == policy.EffectiveMode("off", "policy")
         _registry(monkeypatch, {MACHINE: bad})
         assert policy.effective_update_mode(setting_enabled=True) == policy.EffectiveMode("off", "machine")
+
+    def test_the_policy_set_to_disabled_is_off_even_with_no_mode_value(self, monkeypatch):
+        """Group Policy deletes UpdateMode on Disabled; the state value alone must turn updates off."""
+        _registry(monkeypatch, {STATE: "disabled", MACHINE: "on"})
+        assert policy.effective_update_mode(setting_enabled=True) == policy.EffectiveMode("off", "policy")
+        _registry(monkeypatch, {STATE: "disabled", POLICY: "on"})
+        assert policy.effective_update_mode(setting_enabled=True).mode == "off"
+
+    def test_positive_twin_the_policy_enabled_uses_its_mode(self, monkeypatch):
+        _registry(monkeypatch, {STATE: "enabled", POLICY: "on"})
+        assert policy.effective_update_mode(setting_enabled=True) == policy.EffectiveMode("on", "policy")
+
+    @pytest.mark.parametrize("bad", ["", "yes", OSError("access denied")])
+    def test_an_unreadable_or_malformed_policy_state_is_off(self, monkeypatch, bad):
+        _registry(monkeypatch, {STATE: bad, POLICY: "on", MACHINE: "on"})
+        assert policy.effective_update_mode(setting_enabled=True) == policy.EffectiveMode("off", "policy")
 
     def test_an_unreadable_policy_is_off(self, monkeypatch):
         _registry(monkeypatch, {POLICY: OSError("access denied"), MACHINE: "on"})

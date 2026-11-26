@@ -40,7 +40,9 @@ There is no environment variable, setting or option that points the release buil
 `src/update/policy.py:effective_update_mode()` is the ONE reader. Modes: `off` (no update connection at all), `notify`
 (the default, owner decision O1: the signed manifest only), `on` (the full check: download, stage, hand off). Sources,
 first match wins: the Group Policy value `UpdateMode` under `HKLM\SOFTWARE\Policies\myBlueprint\DistrictSync` (the app
-never writes it; templates in `deploy/group-policy/`, pinned by `tests/test_update_mode_admx.py`), then the machine
+never writes it; templates in `deploy/group-policy/`, pinned by `tests/test_update_mode_admx.py`; the policy set to
+Disabled writes `UpdatePolicyState` = `disabled` beside it, which is `off`, because Group Policy deletes `UpdateMode` on
+Disabled), then the machine
 setting `UpdateMode` under `HKLM\SOFTWARE\DistrictSync` (written only by `--machine-setup`, plan 0055 M2a), then
 `AppConfig.update_enabled` off (a per-user copy), then `notify`. An unreadable or malformed value is `off`, logged,
 never `on`. `off` is a guard (`off_by_policy` / `off_in_settings`), so nothing is opened. `notify` takes

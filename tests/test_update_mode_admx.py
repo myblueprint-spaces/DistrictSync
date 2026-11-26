@@ -38,17 +38,18 @@ def test_the_adml_carries_every_string_the_admx_names_and_defaults_to_notify():
     assert policy.UPDATE_MODES[int(dropdown.get("defaultItem"))] == policy.DEFAULT_UPDATE_MODE
 
 
-def test_disabled_in_group_policy_means_off():
-    """Without it, Disabled deletes the value and reads as Not configured (notify). It writes the string "off" to the
-    enum's own value through a disabledList; a policy-level valueName would also write a REG_DWORD there."""
+def test_disabled_in_group_policy_writes_its_own_state_value():
+    """Disabled must mean off. Group Policy deletes the enum's value (UpdateMode) on Disabled, so the Disabled marker is
+    the policy's OWN value, a different name: nothing else writes it, and the reader takes "disabled" as off."""
     tree = ET.parse(_ROOT / "DistrictSync.admx")
     (rule,) = tree.getroot().findall(".//p:policy", _NS)
-    assert rule.get("valueName") is None  # no second writer of the enum's value
-    assert rule.find("p:disabledValue", _NS) is None
-    (item,) = rule.findall("p:disabledList/p:item", _NS)
-    assert item.get("key").casefold() == policy.POLICY_KEY_PATH.casefold()
-    assert item.get("valueName") == policy.POLICY_VALUE_NAME
-    assert item.find("p:value/p:string", _NS).text == policy.OFF
+    assert rule.get("valueName") == policy.POLICY_STATE_VALUE_NAME
+    assert policy.POLICY_STATE_VALUE_NAME != policy.POLICY_VALUE_NAME
+    assert rule.find("p:disabledValue/p:string", _NS).text == policy.POLICY_STATE_DISABLED
+    assert rule.find("p:enabledValue/p:string", _NS).text == policy.POLICY_STATE_ENABLED
+    assert rule.find("p:disabledList", _NS) is None  # no second writer of the enum's value
+    (enum,) = rule.findall("p:elements/p:enum", _NS)
+    assert enum.get("valueName") == policy.POLICY_VALUE_NAME
 
 
 def test_the_policy_children_follow_the_admx_schema_order():
