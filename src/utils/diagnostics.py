@@ -79,6 +79,15 @@ def _row(label: str, value: object) -> str:
     return f"  {stem}{' ' * max(_LABEL_WIDTH - len(stem), 1)}{value}"
 
 
+def _update_mode() -> str:
+    """The update mode in force and its source (plan 0055 U1): ``notify (default)``, ``off (policy)``, ..."""
+    from src.config.app_config import AppConfig
+    from src.update import policy
+
+    effective = policy.effective_update_mode(setting_enabled=AppConfig.load().update_enabled)
+    return f"{effective.mode} ({effective.source})"
+
+
 def _guarded(label: str, resolve: Callable[[], object]) -> str:
     """One aligned row whose value is resolved behind its OWN guard.
 
@@ -327,6 +336,7 @@ def diagnose_lines() -> list[str]:
         _row("packaged exe", _yes_no(getattr(sys, "frozen", False))),
         _guarded("build flavour", build_flavor),
         _guarded("install kind", lambda: str(install_kind())),
+        _guarded("update mode", _update_mode),
         "",
         *_profile_lines(),
         "",

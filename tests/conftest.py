@@ -812,4 +812,10 @@ def eligible(monkeypatch, tmp_path):
     monkeypatch.setattr(check.paths, "data_dir_override_active", lambda: False)
     monkeypatch.setattr(check, "app_version", lambda: "3.30.0")
     monkeypatch.setattr(health, "app_version", lambda: "3.30.0")
+    # Plan 0055 U1: no registry values, and the default pinned to "on" so these tests keep exercising the full
+    # download-stage-apply check they were written for. Notify (the real default) and off: tests/test_update_mode.py.
+    from src.update import policy
+
+    monkeypatch.setattr(policy, "_read_hklm_string", lambda key_path, name: None)
+    monkeypatch.setattr(policy, "DEFAULT_UPDATE_MODE", policy.ON)
     return SimpleNamespace(state=tmp_path / "state", config=AppConfig())

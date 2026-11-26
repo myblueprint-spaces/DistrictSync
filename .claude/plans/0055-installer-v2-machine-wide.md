@@ -269,7 +269,8 @@ The one-file exe keeps shipping. From the first MSI release it shows one Home ba
 - [ ] **M2a. Machine setup engine and `--machine-setup` (DSYNC-95).** The `provision` op with a blank principal and no task, the update mode written in the same HKLM commit before the switch (`src/update/policy.py` holds the vocabulary), the elevated child validating before any change, the parent running `complete_handover` on every outcome. *Tests:* `tests/test_machine_setup.py`.
 - [ ] **M2b. First-run machine setup in the window; MACHINE refuses a per-user profile (DSYNC-106).** UI slice (design skill). Hardening a custom install root and dropping `ProvisionedBy` move to N1/M2b as noted there.
 - [ ] **M3. Headless schedule commands.** `--schedule-register` / `--schedule-remove` over the existing scheduler functions, password routes as `--sftp-configure`. *Tests:* the password never in argv/env/log (existing invariant tests extended); same gates as Setup (G0 included).
-- [ ] **U1. Update mode and policy.** `effective_update_mode`, policy + machine keys, `notify`, Settings toggle (disabled under policy), Help/Home/`--diagnose` lines, ADMX/ADML. *Tests:* source precedence table; malformed → off; zero connections in `off` (audit-hook test) with an eligible twin.
+- [ ] **U1a. Update mode reader, notify, policy key (DSYNC-97).** `policy.effective_update_mode()` (Group Policy key > machine setting > per-user switch > `notify`; unreadable or malformed is `off`), `off` as a guard, `notify` manifest-only through the package's public `open_manifest`/`list_feed` (no package change), ADMX/ADML templates pinned to the constants, Help and `--diagnose` lines. On MACHINE the check stays skipped until U2 (the nightly writes `notify` into `runs\`, SYSTEM does `on`). *Tests:* `tests/test_update_mode.py`, `tests/test_update_mode_admx.py`.
+- [ ] **U1b. Settings control and Home line (DSYNC-107).** UI slice.
 - [ ] **U2. The SYSTEM updater.** `--update-service`, task register/remove from the provisioning op, refusals, admin-only staging, Authenticode check, `updater.log`. *Tests:* refusal table; staging path ACL assertion; no non-SYSTEM caller can reach Velopack apply on `MACHINE` (pinned); e2e on the e2e flavour run as SYSTEM in the lab.
 - [ ] **U3. Machine-wide health and rollback** (shared package first, ticket in `myb-desktop-shared`; then DistrictSync wiring). *Tests:* T12 in the lab; the start guard's state not writable by the principal.
 - [ ] **N1. No names in logs.** Section 4. *Tests:* every listed site pinned; a log-line scan over a scheduled run's output finds no account.
@@ -293,7 +294,8 @@ The one-file exe keeps shipping. From the first MSI release it shows one Home ba
 | M2a | DSYNC-95 | Task | Machine setup at first run and `--machine-setup` (ProgramData profile, update mode) |
 | M2b | DSYNC-106 | Task | First-run machine setup in the window; a machine-wide install refuses a per-user profile |
 | M3 | DSYNC-96 | Task | Headless `--schedule-register` / `--schedule-remove` over the existing scheduler |
-| U1 | DSYNC-97 | Task | Update mode off/notify/on with an HKLM Group Policy override and ADMX templates |
+| U1a | DSYNC-97 | Task | Update mode reader, notify (manifest only), Group Policy key and ADMX templates |
+| U1b | DSYNC-107 | Task | Update mode in Settings (disabled under Group Policy) and the "you are behind" line on Home |
 | U2 | DSYNC-98 | Task | SYSTEM "DistrictSync Updater" task applies signed updates on machine-wide installs |
 | U3 | DSYNC-99 | Task | Start-guard health and rollback for machine-wide installs (shared package + wiring) |
 | N1 | DSYNC-100 | Task | No account names in logs, log file names or run records |

@@ -21,6 +21,7 @@ _STANDING: dict[str, str] = {
     "machine_wide": "This copy is installed for the whole computer; it does not update itself yet.",
     "data_dir_override": "Updates are off while a test profile is in use.",
     "off_in_settings": "Updates are switched off on this computer.",
+    "off_by_policy": "Updates are switched off by your organisation's policy.",
     "off_switch": "Updates are switched off on this computer.",
     "package_missing": "Updates are unavailable in this copy.",
     "not_configured": "Updates are not available yet.",
@@ -51,6 +52,9 @@ def update_status_line(state_dir: Path | None = None) -> str | None:
         return "Updates: not checked yet."
     day = _when(last.get("at"))
     suffix = f" Last checked {day}." if day else ""
+    if last.get("status") == "available" and last.get("version"):
+        # Notify mode (plan 0055 U1): a newer signed version exists and nothing was downloaded.
+        return f"Version {last.get('version')} is available; this copy does not update itself." + suffix
     known = _LAST.get((str(last.get("status")), str(last.get("reason"))))
     if known:
         return known + suffix
