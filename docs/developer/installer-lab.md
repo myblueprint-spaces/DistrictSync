@@ -69,6 +69,6 @@ SpacesEDU host; (2) a local HTTPS server for a test update feed when U1/U2 are b
 Each VM is installed from the evaluation ISO with an answer file the script writes to a small second ISO (Windows' own
 IMAPI2; no download), installs VMware Tools at first logon, and is then driven only through VMware Tools
 (`vmrun runProgramInGuest` and file copies): no network share, remote session or open port. The lab administrator
-password is generated once into `C:\Labms\lab-secret.txt` with an owner-only ACL and never printed.
+password is generated once into `C:\Lab\vms\lab-secret.txt` with an owner-only ACL and never printed.
 Each VM: install from the ISO, take a clean snapshot, copy the MSI in (shared folder or a mounted ISO), run the row,
 record the result on its ticket, revert to the snapshot.
