@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Plan 0055 U1 (DSYNC-97): DistrictSync's update policy for Group Policy. Copy this file to
+     C:\Windows\PolicyDefinitions (or the domain's Central Store) and en-US\DistrictSync.adml beside it.
+     The key, value and the three values are pinned to src/update/policy.py by tests/test_update_mode_admx.py. -->
+<policyDefinitions xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   revision="1.0" schemaVersion="1.0" xmlns="http://schemas.microsoft.com/GroupPolicy/2006/07/PolicyDefinitions">
+  <policyNamespaces>
+    <target prefix="districtsync" namespace="myBlueprint.Policies.DistrictSync" />
+    <using prefix="windows" namespace="Microsoft.Policies.Windows" />
+  </policyNamespaces>
+  <resources minRequiredRevision="1.0" />
+  <categories>
+    <category name="DistrictSync" displayName="$(string.DistrictSync)" />
+  </categories>
+  <policies>
+    <policy name="UpdateMode" class="Machine" displayName="$(string.UpdateMode)" explainText="$(string.UpdateMode_Help)"
+            presentation="$(presentation.UpdateMode)" key="Software\Policies\myBlueprint\DistrictSync"
+            valueName="UpdatePolicyState">
+      <!-- The policy's own state goes to its OWN value: Disabled also deletes the enum's value (UpdateMode), so a
+           Disabled marker written there could be erased in the same apply. "disabled" here means off. -->
+      <parentCategory ref="DistrictSync" />
+      <supportedOn ref="windows:SUPPORTED_Windows_10_0" />
+      <enabledValue><string>enabled</string></enabledValue>
+      <disabledValue><string>disabled</string></disabledValue>
+      <elements>
+        <enum id="UpdateModeValue" valueName="UpdateMode" required="true">
+          <item displayName="$(string.UpdateMode_Off)"><value><string>off</string></value></item>
+          <item displayName="$(string.UpdateMode_Notify)"><value><string>notify</string></value></item>
+          <item displayName="$(string.UpdateMode_On)"><value><string>on</string></value></item>
+        </enum>
+      </elements>
+    </policy>
+  </policies>
+</policyDefinitions>

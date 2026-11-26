@@ -35,6 +35,24 @@ profile, spike S0b #4; the same reason skips health and the per-user start guard
 There is no environment variable, setting or option that points the release build at another host or key. A test hands
 `run_update_check` its own `FeedTarget`; production call sites never do.
 
+## The update mode (plan 0055 U1a, DSYNC-97)
+
+`src/update/policy.py:effective_update_mode()` is the ONE reader. Modes: `off` (no update connection at all), `notify`
+(the default, owner decision O1: the signed manifest only), `on` (the full check: download, stage, hand off). Sources,
+first match wins: the Group Policy value `UpdateMode` under `HKLM\SOFTWARE\Policies\myBlueprint\DistrictSync` (the app
+never writes it; templates in `deploy/group-policy/`, pinned by `tests/test_update_mode_admx.py`; the policy set to
+Disabled writes `UpdatePolicyState` = `disabled` beside it, which is `off`, because Group Policy deletes `UpdateMode` on
+Disabled), then the machine
+setting `UpdateMode` under `HKLM\SOFTWARE\DistrictSync` (written only by `--machine-setup`, plan 0055 M2a), then
+`AppConfig.update_enabled` off (a per-user copy), then `notify`. An unreadable or malformed value is `off`, logged,
+never `on`. `off` is a guard (`off_by_policy` / `off_in_settings`), so nothing is opened. `notify` takes
+`check._notify_only`: the manifest is fetched and verified through the package's public `open_manifest` and
+`list_feed` (signature, app, expiry, replay, host lock), the newest offered version is recorded as status `available`,
+and nothing is downloaded or staged; Help says "Version X is available; this copy does not update itself." and
+`--diagnose` prints `update mode: <mode> (<source>)`. On a machine-wide install the check is still skipped
+(`machine_wide`): `notify` there is written by the nightly into `runs\` and `on` is the SYSTEM updater, both slice U2.
+The Settings control and Home's line are U1b.
+
 ## It cannot change a run
 
 A check stages at most. Every failure, refusal and slowness is a returned `CheckOutcome` (`status`, `reason` code,

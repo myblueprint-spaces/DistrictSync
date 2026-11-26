@@ -269,7 +269,8 @@ The one-file exe keeps shipping. From the first MSI release it shows one Home ba
 - [ ] **M2a. Machine setup engine and `--machine-setup` (DSYNC-95).** The `provision` op with a blank principal and no task, the update mode written in the same HKLM commit before the switch (`src/update/policy.py` holds the vocabulary), the elevated child validating before any change, the parent running `complete_handover` on every outcome. *Tests:* `tests/test_machine_setup.py`.
 - [ ] **M2b. First-run machine setup in the window; MACHINE refuses a per-user profile (DSYNC-106).** UI slice (design skill). Hardening a custom install root and dropping `ProvisionedBy` move to N1/M2b as noted there.
 - [ ] **M3. Headless schedule commands.** `--schedule-register` / `--schedule-remove` over the existing scheduler functions, password routes as `--sftp-configure`. *Tests:* the password never in argv/env/log (existing invariant tests extended); same gates as Setup (G0 included).
-- [ ] **U1. Update mode and policy.** `effective_update_mode`, policy + machine keys, `notify`, Settings toggle (disabled under policy), Help/Home/`--diagnose` lines, ADMX/ADML. *Tests:* source precedence table; malformed → off; zero connections in `off` (audit-hook test) with an eligible twin.
+- [ ] **U1a. Update mode reader, notify, policy key (DSYNC-97).** `policy.effective_update_mode()` (Group Policy key > machine setting > per-user switch > `notify`; unreadable or malformed is `off`), `off` as a guard, `notify` manifest-only through the package's public `open_manifest`/`list_feed` (no package change), ADMX/ADML templates pinned to the constants, Help and `--diagnose` lines. On MACHINE the check stays skipped until U2 (the nightly writes `notify` into `runs\`, SYSTEM does `on`). *Tests:* `tests/test_update_mode.py`, `tests/test_update_mode_admx.py`.
+- [ ] **U1b. Settings control and Home line (DSYNC-107).** UI slice.
 - [ ] **U2. The SYSTEM updater.** `--update-service`, task register/remove from the provisioning op, refusals, admin-only staging, Authenticode check, `updater.log`. *Tests:* refusal table; staging path ACL assertion; no non-SYSTEM caller can reach Velopack apply on `MACHINE` (pinned); e2e on the e2e flavour run as SYSTEM in the lab.
 - [ ] **U3. Machine-wide health and rollback** (shared package first, ticket in `myb-desktop-shared`; then DistrictSync wiring). *Tests:* T12 in the lab; the start guard's state not writable by the principal.
 - [ ] **N1. No names in logs.** Section 4. *Tests:* every listed site pinned; a log-line scan over a scheduled run's output finds no account.
@@ -277,7 +278,7 @@ The one-file exe keeps shipping. From the first MSI release it shows one Home ba
 - [ ] **D2. Install logging and `--diagnose` Installation block** (section 7). *Tests:* doc-parity registrations for quoted strings.
 - [ ] **R1. First MSI release.** Attach `DistrictSync.msi` to the release with its checksum line; partner docs (`it-deployment.md`, installation, headless, gMSA, troubleshooting, SD74 runbook); QA checklist rows; the full matrix run in the lab and recorded on the release ticket. The one-file exe and per-user Setup still ship.
 - [ ] **R2. Retire the per-user `Setup.exe` from releases**, the release after R1. Per-user copies keep working and get D1's band.
-- [ ] **R3. Retire the one-file exe** (G4), when the owner confirms the migration ledger is complete.
+- [ ] **R3. Stop building and publishing the one-file Windows exe**, the release after R1 (round 3, R3-3: existing partners are not disturbed; no migration ledger).
 
 **Order.** G0 now (independent). L1 and B1 next (evidence before code). Then M1 → M2 → M3, U1 → U2 → U3, N1 and D2 in parallel with them, D1 after M2/M3, R1 after the matrix passes, R2, R3. Automatic updates (`on` doing anything) additionally wait on plan 0054 S6b/S8; every other slice does not.
 
@@ -293,7 +294,8 @@ The one-file exe keeps shipping. From the first MSI release it shows one Home ba
 | M2a | DSYNC-95 | Task | Machine setup at first run and `--machine-setup` (ProgramData profile, update mode) |
 | M2b | DSYNC-106 | Task | First-run machine setup in the window; a machine-wide install refuses a per-user profile |
 | M3 | DSYNC-96 | Task | Headless `--schedule-register` / `--schedule-remove` over the existing scheduler |
-| U1 | DSYNC-97 | Task | Update mode off/notify/on with an HKLM Group Policy override and ADMX templates |
+| U1a | DSYNC-97 | Task | Update mode reader, notify (manifest only), Group Policy key and ADMX templates |
+| U1b | DSYNC-107 | Task | Update mode in Settings (disabled under Group Policy) and the "you are behind" line on Home |
 | U2 | DSYNC-98 | Task | SYSTEM "DistrictSync Updater" task applies signed updates on machine-wide installs |
 | U3 | DSYNC-99 | Task | Start-guard health and rollback for machine-wide installs (shared package + wiring) |
 | N1 | DSYNC-100 | Task | No account names in logs, log file names or run records |
@@ -315,6 +317,62 @@ The one-file exe keeps shipping. From the first MSI release it shows one Home ba
 | O6 | A release that cannot start at all is fixed by installing the previous MSI; no separate updater copy. |
 
 ---
+
+## Owner decisions, round 3 (2026-11-26, relayed by the orchestrator session)
+
+The owner's words: "we'll make districtsync repo private and serve the download links via integration.crm.myblueprint.org
+that is already done. i dont see signup option in broadcom. okay we can use the azure cheap throaway one time test lets do
+the coding first and complete adding all features and functionality and improvements and gap fill from the onefile exe to
+the installer so that we can decom the onefile as it is malware-y and going forward new partners can use the installer
+and existing partners we dont need to disturb but if anything comes up we can tell them to get the new installer."
+
+| # | Decision | Replaces |
+|---|---|---|
+| R3-1 | **Code first.** Every slice is built to full parity with the one-file exe (the checklist below) before any lab run. Order: U1, N1, M3, then the rest. | the L1-first order |
+| R3-2 | **Testing is CI rehearsals plus the LOCAL VMware lab** (`scripts/lab/local_lab.ps1`, VMware Workstation Pro 26H1), after the coding is complete. Reversed the same day: first "the azure cheap throaway one time test", then "i got into broadcom i can download so that we cna do the local testing without spending money". The one-instance Azure script stays only as a fallback for anything the local lab cannot do. | O4's lab location (the local lab, restored) |
+| R3-3 | **New partners get the installer only. Existing partners are not disturbed:** they stay on the one-file exe and move only "if anything comes up", told to get the new installer. Migration (D1) is therefore optional and must be safe to run at any time, never pushed. | G4's "keep until every district is confirmed migrated" ledger |
+| R3-4 | **The repository goes private and downloads come from the partner site** (`integration.crm.myblueprint.org`), which the owner reports is already done. | plan 0054's GitHub-Release download links |
+
+### Parity checklist: every one-file capability and its installer equivalent
+
+| One-file capability | Installer (machine-wide MSI) equivalent | Proven by |
+|---|---|---|
+| Conversion CLI (`--sis --input --output --dry-run --diff --quality --sftp --source`), exit codes 0/1/2/3 | Same program at `C:\Program Files\myBlueprint.DistrictSync\current\DistrictSync.exe` | B1 rehearsal CLI phases on the MSI install (green, runs 45238795761, 45283617420) |
+| The window (Home, Convert, Run History, Setup, Mapping, Help) | Same program; Flet client bundled in the install (no `~/.flet` drop) | B1 rehearsal GUI smoke on the MSI install |
+| `--version`, `--diagnose` | Same, plus `install kind` (M1) and `update mode` (U1a) lines; D2 adds the Installation block | B1 rehearsal (`install kind: machine`); `tests/test_install_kind.py`, `tests/test_update_mode.py` |
+| SFTP credential set-up (`--sftp-configure` interactive and headless, `--sftp-test`, `--sftp-show`) | Same; on a machine-wide install the secret lives in the machine store (plan 0049) | existing tests; Azure VM row T4 |
+| Schedule from Setup: signed-in account, stored-password service account, gMSA + the DSYNC-33 schedule check | Same code; the program sits in Program Files, which every account can read (the per-user install could not: G0) | existing tests; Azure VM rows T4, T5 |
+| Headless schedule set-up (one-file: raw `schtasks` from the docs) | **Gap fill:** `--schedule-register` / `--schedule-remove` (M3) | M3 tests; Azure VM row T6 |
+| Machine scope provisioning (one-file: at the first foreign-principal Schedule press) | Same, plus `--machine-setup` (M2a, merged) and the first-run window step (M2b) | `tests/test_machine_setup.py`; Azure VM row T6 |
+| Per-operation elevation (`--elevated-apply`), never running elevated | Same; the elevated child is the Program Files exe | existing tests; Azure VM rows |
+| Server Core / headless servers | `msiexec /qn` + `--machine-setup` + `--schedule-register` + `--sftp-configure`, no window needed | Azure VM row T6 (Server Core) |
+| Scheduled task path (one-file: wherever the exe was saved, often Downloads) | **Improvement:** the stable `current\DistrictSync.exe`, unchanged by upgrades | B1 rehearsal upgrade step |
+| Updates (one-file: none, manual re-download) | **Improvement:** off / notify (default) / on, Group Policy enforceable (U1a), SYSTEM updater (U2) | `tests/test_update_mode.py`; U2/U3 tests; CI rehearsal |
+| Uninstall (one-file: delete the file) | MSI uninstall from Apps & features or `msiexec /x`, keeping profile, secret and nightly | B1 rehearsal (stand-in profile and task kept) |
+| Signing (one-file: the exe) | **Improvement:** the MSI and every installed executable signed and timestamped | B1 rehearsal signature steps |
+| Antivirus-shaped behaviour (one-file: `%TEMP%` self-extraction, `~/.flet` client drop) | **Improvement:** none (one-folder install, bundled client) | plan 0054 S1; B1 rehearsal |
+| No account names in logs (owner, 2026-11-23) | **Gap fill:** N1 | N1 tests |
+| Moving an existing partner (only if something comes up) | **Gap fill:** optional `--migrate` (D1) carrying settings, history, secret and nightly | D1 tests; Azure VM row T7 |
+| Seasonal sync window, wake-to-run, self-service mappings, run history | Same code, same profile | existing tests |
+| macOS and Linux builds | Unchanged; out of scope | n/a |
+
+### Rollout and the end of new one-file downloads
+
+1. **R1 (first MSI release):** the partner site lists `DistrictSync.msi` as THE Windows download; the one-file exe is
+   no longer offered to new partners. New-partner docs (installation, headless, gMSA, IT deployment) describe the MSI only.
+2. **Existing partners are not contacted.** Their one-file exe and nightly keep working. Support's answer to "something
+   came up" is "install the new DistrictSync.msi", with optional `--migrate` (D1) to carry the nightly across.
+3. **R3 (the release after R1) stops building and publishing the one-file Windows exe** (decommissioned as
+   "malware-y": its `%TEMP%` self-extraction is the antivirus shape plan 0041 named). The last one-file build stays
+   available to support on request, not on the site. The migration ledger is dropped (R3-3).
+4. **R2 (same release as R3):** the per-user `DistrictSync-Setup.exe` stops too; per-user copies keep working.
+
+### Risks raised by round 3 (recorded, not acted on)
+
+| # | Risk | What it needs |
+|---|---|---|
+| R19 | **A private repository changes CI.** Actions minutes are charged (Windows bills 2x, macOS 10x; DSYNC-56 already trimmed PR CI to Linux), and RosterGate found (HTTP 422) that environment protection rules (required reviewers on `release` and `publish-feed`) may not be available for a private repo on our plan. Then the owner-approval click that gates every signed release (R13) silently disappears. | A stand-in release gate before the first private release, as RosterGate did: the release and rehearsal workflows refuse unless the actor is a repository admin (checked through the API, not a name list), the `v*` tag ruleset stays (confirm it is available on the plan), and a typed confirmation input (the version) on manual runs. Re-measure monthly minutes after the flip. |
+| R20 | **Downloads through the site must exist before the repository flips.** GitHub Release assets become private with the repo. The site's DistrictSync allowlist was found to lack `DistrictSync-Setup.exe` and the macOS CLI binary, and it will need the MSI's name. | In order: (1) fix the MSI's published name (`DistrictSync.msi`); (2) add it, `DistrictSync-Setup.exe` and the macOS CLI to the site allowlist; (3) the release workflow uploads every asset to the container the site serves (plan 0054 "Feed host and downloads" point 2; needs the Blob Data Contributor grant); (4) verify every asset of the latest release downloads from the site, by hash, against `SHA256SUMS.txt`; (5) move partner links and docs to the site; (6) only then make the repository private; (7) the R19 release gate is in place before the next release. |
 
 ## Review
 

@@ -44,7 +44,7 @@ from types import ModuleType
 from typing import Any, Final
 
 from src.config.app_config import AppConfig
-from src.update import apply
+from src.update import apply, policy
 from src.update.feed import FeedTarget, production_target
 from src.update.package import HEALTH_FILE, UPDATER_STATE_FOLDER, app_identity, load_updater
 from src.update.startup import install_root
@@ -66,6 +66,8 @@ REQUEST_TIMEOUT_SECONDS: Final = 15.0
 MIN_INTERVAL: Final = timedelta(hours=6)
 
 LAST_CHECK_FILE: Final = "last-check.json"
+#: The manifest size cap if the package does not export its own (it caps at 1 MB too).
+_MANIFEST_MAX_BYTES: Final = 1024 * 1024
 STAGING_FOLDER: Final = "staging"
 
 # Outcome statuses.
@@ -73,13 +75,14 @@ SKIPPED: Final = "skipped"
 NONE_NEWER: Final = "none"
 STAGED: Final = "staged"
 HANDED_OFF: Final = "handed_off"  # given to the installer; applied after this process exits
+AVAILABLE: Final = "available"  # notify mode (plan 0055 U1): a newer signed version exists; nothing was downloaded
 REFUSED: Final = "refused"
 ERROR: Final = "error"
 
 
 @dataclass(frozen=True)
 class CheckOutcome:
-    status: str  # skipped | none | staged | handed_off | refused | error
+    status: str  # skipped | none | available | staged | handed_off | refused | error
     reason: str  # a short code, never free text, never an address or a path
     version: str | None = None
 
@@ -94,6 +97,11 @@ def _in_machine_scope() -> bool:
         return paths.is_machine_scope()
     except paths.MachineScopeRefused:
         return True  # a refused shared profile is still "not the per-user profile": never check from it
+
+
+def _effective_mode(config: AppConfig | None) -> policy.EffectiveMode:
+    """The update mode in force (plan 0055 U1): Group Policy, then the machine setting, then the per-user switch."""
+    return policy.effective_update_mode(setting_enabled=(AppConfig.load() if config is None else config).update_enabled)
 
 
 def _read_last(state_dir: Path) -> dict[str, Any]:
@@ -138,8 +146,9 @@ def skip_reason(
         return "machine_scope"
     if paths.data_dir_override_active() and not is_e2e_build():
         return "data_dir_override"
-    if not (AppConfig.load() if config is None else config).update_enabled:
-        return "off_in_settings"
+    effective = _effective_mode(config)
+    if effective.mode == policy.OFF:
+        return "off_by_policy" if effective.source == policy.SOURCE_POLICY else "off_in_settings"
     if (production_target() if target is None else target) is None:
         return "not_configured"
     try:
@@ -215,6 +224,11 @@ def _run(
     )
     when = datetime.now(UTC) if now is None else now
 
+    if _effective_mode(config).mode == policy.NOTIFY:
+        outcome = _notify_only(module, fetcher, resolved_target, identity, health, when, budget)
+        _write_last(directory, outcome, trigger, when)
+        return outcome
+
     try:
         # The package bounds the WHOLE check (manifest and download together, enforced as bytes arrive) and reports a
         # cut-off as the refusal ``timed_out``; it does not re-download a package already staged and matching.
@@ -244,6 +258,45 @@ def _run(
             outcome = _hand_off(module, result, trigger, config, directory, identity, health, when, installer, running)
     _write_last(directory, outcome, trigger, when)
     return outcome
+
+
+def _notify_only(
+    module: ModuleType,
+    fetcher: Any,
+    target: FeedTarget,
+    identity: Any,
+    health: Any,
+    when: datetime,
+    budget: float,
+) -> CheckOutcome:
+    """``notify`` (plan 0055 U1, the default): fetch and verify the signed manifest ONLY; download and stage nothing.
+
+    The same verification the full check does (signature, app, expiry, replay, host lock) through the package's public
+    ``open_manifest`` and ``list_feed``; the newest version offered is recorded so Help and ``--diagnose`` can say how far
+    behind this copy is. Never raises.
+    """
+    import time
+
+    try:
+        fetcher.deadline = time.monotonic() + budget
+        raw = fetcher.fetch(target.manifest_path, getattr(module, "MANIFEST_MAX_BYTES", _MANIFEST_MAX_BYTES))
+        manifest = module.open_manifest(
+            raw, target.trusted_keys, when, app_version(), target.host, health.last_sequence(), identity
+        )
+        if isinstance(manifest, module.ManifestRefused):
+            return CheckOutcome(REFUSED, str(manifest.reason))
+        # The same filter the package's full check applies: a release with no files is never offered.
+        offered = [
+            r for r in module.list_feed(manifest, app_version(), health.bad_versions(), target.channel) if r.files
+        ]
+    except module.UpdateRefused as refusal:
+        return CheckOutcome(REFUSED, str(refusal.reason))
+    except Exception as exc:  # noqa: BLE001 - a check must never change the caller's result
+        logger.warning("update check (notify) raised %s; nothing was changed", type(exc).__name__)
+        return CheckOutcome(ERROR, "raised")
+    if not offered:
+        return CheckOutcome(NONE_NEWER, "up_to_date")
+    return CheckOutcome(AVAILABLE, "newer_available", str(offered[0].version))
 
 
 def _hand_off(
