@@ -39,8 +39,30 @@ def test_the_adml_carries_every_string_the_admx_names_and_defaults_to_notify():
 
 
 def test_disabled_in_group_policy_means_off():
-    """Without a disabledValue, Disabled deletes the value and reads as Not configured (notify): it must mean off."""
+    """Without it, Disabled deletes the value and reads as Not configured (notify). It writes the string "off" to the
+    enum's own value through a disabledList; a policy-level valueName would also write a REG_DWORD there."""
     tree = ET.parse(_ROOT / "DistrictSync.admx")
     (rule,) = tree.getroot().findall(".//p:policy", _NS)
-    assert rule.get("valueName") == policy.POLICY_VALUE_NAME
-    assert rule.find("p:disabledValue/p:string", _NS).text == policy.OFF
+    assert rule.get("valueName") is None  # no second writer of the enum's value
+    assert rule.find("p:disabledValue", _NS) is None
+    (item,) = rule.findall("p:disabledList/p:item", _NS)
+    assert item.get("key").casefold() == policy.POLICY_KEY_PATH.casefold()
+    assert item.get("valueName") == policy.POLICY_VALUE_NAME
+    assert item.find("p:value/p:string", _NS).text == policy.OFF
+
+
+def test_the_policy_children_follow_the_admx_schema_order():
+    """The ADMX schema is a sequence; a loader can reject an out-of-order file, and ET.parse would not notice."""
+    order = [
+        "parentCategory",
+        "supportedOn",
+        "enabledValue",
+        "disabledValue",
+        "enabledList",
+        "disabledList",
+        "elements",
+    ]
+    tree = ET.parse(_ROOT / "DistrictSync.admx")
+    (rule,) = tree.getroot().findall(".//p:policy", _NS)
+    seen = [child.tag.split("}")[1] for child in rule]
+    assert seen == sorted(seen, key=order.index)

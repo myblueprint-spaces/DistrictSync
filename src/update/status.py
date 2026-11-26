@@ -34,17 +34,24 @@ _LAST: dict[tuple[str, str], str] = {
 }
 
 
-def _version_key(text: str) -> tuple[int, ...] | None:
-    try:
-        return tuple(int(part) for part in text.split("+")[0].split("-")[0].split("."))
-    except ValueError:
+def _version_key(text: str) -> tuple[int, int, int] | None:
+    """``major.minor.patch`` as numbers, padded to three; a prerelease or build suffix is ignored. ``None`` if unreadable."""
+    import re
+
+    match = re.match(r"^\s*(\d+)(?:\.(\d+))?(?:\.(\d+))?", text)
+    if match is None:
         return None
+    major, minor, patch = (int(part) if part else 0 for part in match.groups())
+    return (major, minor, patch)
 
 
 def _newer(candidate: str, running: str) -> bool:
-    """Whether ``candidate`` is a newer release than ``running``; ``False`` when either cannot be read."""
+    """Whether ``candidate`` is newer than ``running``. An unreadable running version (a ``dev`` build) cannot be compared,
+    so the line is shown; an unreadable candidate never is."""
     a, b = _version_key(candidate), _version_key(running)
-    return a is not None and b is not None and a > b
+    if a is None:
+        return False
+    return b is None or a > b
 
 
 def _when(iso: Any) -> str:

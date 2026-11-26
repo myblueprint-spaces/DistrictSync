@@ -14,10 +14,14 @@
   </categories>
   <policies>
     <policy name="UpdateMode" class="Machine" displayName="$(string.UpdateMode)" explainText="$(string.UpdateMode_Help)"
-            presentation="$(presentation.UpdateMode)" key="Software\Policies\myBlueprint\DistrictSync" valueName="UpdateMode">
+            presentation="$(presentation.UpdateMode)" key="Software\Policies\myBlueprint\DistrictSync">
       <parentCategory ref="DistrictSync" />
-      <disabledValue><string>off</string></disabledValue>
       <supportedOn ref="windows:SUPPORTED_Windows_10_0" />
+      <!-- Disabled writes "off" to the same value the enum writes when Enabled (no policy-level valueName, which would
+           also write a REG_DWORD to it). Schema order: parentCategory, supportedOn, ..., disabledList, elements. -->
+      <disabledList>
+        <item key="Software\Policies\myBlueprint\DistrictSync" valueName="UpdateMode"><value><string>off</string></value></item>
+      </disabledList>
       <elements>
         <enum id="UpdateModeValue" valueName="UpdateMode" required="true">
           <item displayName="$(string.UpdateMode_Off)"><value><string>off</string></value></item>

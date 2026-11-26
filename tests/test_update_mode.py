@@ -261,3 +261,27 @@ class TestTheDiagnoseLine:
         _registry(monkeypatch, {})
         monkeypatch.setattr(check, "skip_reason", lambda **kw: None)
         assert diagnostics._update_mode() == "notify (default)"
+
+
+class TestTheVersionCompare:
+    @pytest.mark.parametrize(
+        ("candidate", "running", "newer"),
+        [
+            ("3.32.0", "3.31.9", True),
+            ("3.32", "3.32.0", False),  # padded: equal, not newer
+            ("3.32.0", "3.32", False),
+            ("3.32.0", "3.32.0-rc1", False),  # the suffix is ignored: same release
+            ("3.32.1", "3.32.0rc1", True),
+            ("3.32.0", "dev", True),  # an unreadable running version cannot be compared: say it
+            ("garbage", "3.30.0", False),  # an unreadable candidate is never announced
+        ],
+    )
+    def test_it(self, candidate, running, newer):
+        assert status._newer(candidate, running) is newer
+
+    def test_an_off_line_carries_no_second_reason(self, monkeypatch):
+        from src.utils import diagnostics
+
+        _registry(monkeypatch, {POLICY: "off"})
+        monkeypatch.setattr(check, "skip_reason", lambda **kw: "machine_wide")
+        assert diagnostics._update_mode() == "off (policy)"

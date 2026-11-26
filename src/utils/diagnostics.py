@@ -92,7 +92,7 @@ def _update_mode() -> str:
         reason = skip_reason(ignore_interval=True)
     except Exception:  # noqa: BLE001 - a report line must never stop the report
         reason = None
-    if reason and reason not in ("off_by_policy", "off_in_settings"):
+    if reason and effective.mode != policy.OFF:  # an "off" line needs no second reason
         line += f"; no update check runs here ({reason})"
     return line
 
