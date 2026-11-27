@@ -21,7 +21,7 @@
     .\local_lab.ps1 -Action domain                                                 # promote lab-dc, join the members, gMSA
     .\local_lab.ps1 -Action destroy [-Vm lab-core]                                 # delete the VM(s) and their files
 
-  Guest commands go through VMware Tools (vmrun runProgramInGuest), installed by the answer file at first logon, so no
+  Guest commands go through VMware Tools (vmrun runProgramInGuest), installed by the answer file's specialize pass, so no
   network share or remote session is opened. Synthetic data only. The lab administrator password is generated once,
   kept in <LabDir>\lab-secret.txt (owner-only ACL), and never printed; the lab is throwaway.
 #>
@@ -188,7 +188,9 @@ function Remove-GuestSecret([string]$name) { Invoke-Guest $name "Remove-Item -Fo
 function Wait-Tools([string]$name, [int]$minutes = 60) {
     $deadline = (Get-Date).AddMinutes($minutes)
     while ((Get-Date) -lt $deadline) {
-        try { if ((Invoke-Vmrun @('checkToolsState', (Get-Vmx $name))) -match 'running') { return } } catch { }
+        # A real guest operation, not checkToolsState: Workstation 26 with Tools 13 keeps reporting 'installed'
+        # while guest operations already work.
+        try { Invoke-Vmrun @('-gu', 'Administrator', '-gp', (Get-LabSecret), 'listProcessesInGuest', (Get-Vmx $name)) | Out-Null; return } catch { }
         Start-Sleep -Seconds 20
     }
     throw "$name did not finish installing within $minutes minutes"
@@ -219,17 +221,19 @@ function New-AnswerIso([string]$name, [int]$imageIndex, [string]$pw, [string]$is
     <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
       <ComputerName>$name</ComputerName><TimeZone>Pacific Standard Time</TimeZone>
     </component>
+    <!-- VMware Tools installs here, as SYSTEM: oobeSystem FirstLogonCommands never run on Server Core (no Explorer).
+         Newer Tools ISOs ship setup.exe; older ones setup64.exe. -->
+    <component name="Microsoft-Windows-Deployment" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <RunSynchronous><RunSynchronousCommand wcm:action="add"><Order>1</Order>
+        <Path>powershell -NoProfile -Command "`$d = (Get-Volume | Where-Object FileSystemLabel -eq 'VMware Tools').DriveLetter; foreach (`$f in 'setup64.exe','setup.exe') { `$s = `$d + ':\' + `$f; if (`$d -and (Test-Path `$s)) { Start-Process `$s -ArgumentList '/s /v\`"/qn REBOOT=R\`"' -Wait; break } }"</Path>
+        <Description>VMware Tools</Description></RunSynchronousCommand></RunSynchronous>
+    </component>
   </settings>
   <settings pass="oobeSystem">
     <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
       <UserAccounts><AdministratorPassword><Value>$pw</Value><PlainText>true</PlainText></AdministratorPassword></UserAccounts>
       <AutoLogon><Enabled>true</Enabled><Username>Administrator</Username><Password><Value>$pw</Value><PlainText>true</PlainText></Password><LogonCount>1</LogonCount></AutoLogon>
       <OOBE><HideEULAPage>true</HideEULAPage><SkipMachineOOBE>true</SkipMachineOOBE><ProtectYourPC>3</ProtectYourPC></OOBE>
-      <FirstLogonCommands>
-        <SynchronousCommand wcm:action="add"><Order>1</Order>
-          <CommandLine>powershell -NoProfile -Command "foreach (`$d in 'D','E','F','G') { `$s = `$d + ':\setup64.exe'; if (Test-Path `$s) { Start-Process `$s -ArgumentList '/s /v\`"/qn REBOOT=R\`"' -Wait } }"</CommandLine>
-          <Description>VMware Tools</Description></SynchronousCommand>
-      </FirstLogonCommands>
     </component>
   </settings>
 </unattend>
@@ -294,6 +298,19 @@ guestOS = "$GuestOs"
 firmware = "bios"
 memsize = "$($spec.MemoryMB)"
 numvcpus = "$($spec.Cpus)"
+pciBridge0.present = "TRUE"
+pciBridge4.present = "TRUE"
+pciBridge4.virtualDev = "pcieRootPort"
+pciBridge4.functions = "8"
+pciBridge5.present = "TRUE"
+pciBridge5.virtualDev = "pcieRootPort"
+pciBridge5.functions = "8"
+pciBridge6.present = "TRUE"
+pciBridge6.virtualDev = "pcieRootPort"
+pciBridge6.functions = "8"
+pciBridge7.present = "TRUE"
+pciBridge7.virtualDev = "pcieRootPort"
+pciBridge7.functions = "8"
 scsi0.present = "TRUE"
 scsi0.virtualDev = "lsisas1068"
 scsi0:0.present = "TRUE"
