@@ -2155,8 +2155,105 @@ def _mount_settings(  # pragma: no cover - Flet view glue
     # changeable and clearable. Landing an ask without a way to change or remove the answer
     # would be a half-done feature, which is why this section ships in the same slice.
     controls += [_build_identity_section(page, cfg), folders_card, schedule_card, sftp_card]
+    # Plan 0055 U1b: how new versions are handled, last (it is about the program, not this district's sync).
+    updates_card = _build_updates_section(page, cfg)
+    if updates_card is not None:
+        controls.append(updates_card)
     root.controls = controls
     page.update()
+
+
+# --------------------------------------------------------------------------- #
+# New versions — the update mode as a setting (plan 0055 U1b).                 #
+# --------------------------------------------------------------------------- #
+UPDATES_SAVED_NOTE = "Saved."
+UPDATES_WAITING_LINE = "Changing the setting. Answer the Windows permission prompt if it appears."
+
+
+def _build_updates_section(page: ft.Page, cfg: AppConfig) -> ft.Control | None:  # pragma: no cover - Flet view glue
+    """How DistrictSync handles new versions. ``None`` (no section) on a build without the updater.
+
+    The decision is the pure ``update.setting.update_setting_view``: locked under Group Policy; on a machine-wide install
+    the change runs the machine setup ladder behind one UAC prompt (HKLM is written only by the elevated op); a copy
+    installed for one account saves ``AppConfig.update_enabled``. No filled primary: the scroll's primaries are elsewhere.
+    """
+    from src.update import policy
+    from src.update import setting as update_setting
+    from src.utils.build_flavor import is_installed_build
+    from src.utils.install_kind import install_kind
+
+    try:
+        view = update_setting.update_setting_view(
+            installed=is_installed_build(),
+            kind=install_kind(),
+            effective=policy.effective_update_mode(setting_enabled=cfg.update_enabled),
+            shared_profile=paths.is_machine_scope(),
+        )
+    except Exception:  # noqa: BLE001 - an advisory section never takes Settings down
+        return None
+    if not view.shown:
+        return None
+    chosen = {"mode": view.mode}
+    note = ft.Text(view.note, size=tokens.type_caption, color=tokens.color_muted)
+    result = ft.Text("", size=tokens.type_body, weight=ft.FontWeight.W_600, color=tokens.color_status_healthy)
+    body = ft.Column(spacing=tokens.space_md)
+
+    def _choose(mode: str) -> None:
+        chosen["mode"] = mode
+        if view.machine_wide:
+            apply_button.disabled = mode == current["mode"]  # Apply only a real change
+            page.update()
+            return  # applied with the button (one UAC prompt), never on a click
+        try:
+            cfg.update_enabled = update_setting.user_setting_for(mode)
+            cfg.save()
+            result.value, result.color = UPDATES_SAVED_NOTE, tokens.color_status_healthy
+        except Exception:  # noqa: BLE001 - say it, never crash the section
+            result.value, result.color = IDENTITY_REFUSED_NOTE, tokens.color_status_failed
+        page.update()
+
+    async def _apply(_e: ft.ControlEvent | None = None) -> None:
+        import asyncio
+
+        from src.scheduler.provision_session import request_update_mode
+
+        controls_before = list(body.controls)
+        body.controls = [components.inflight_row(UPDATES_WAITING_LINE)]
+        page.update()
+        try:
+            # ONLY the mode: no profile copy, no delivery password, no handover (U1b review F2).
+            attempt = await asyncio.to_thread(request_update_mode, chosen["mode"])
+            ok, text = update_setting.apply_message(attempt.outcome.value)
+        except Exception as exc:  # noqa: BLE001 - a dead button is not an option
+            ok, text = False, f"The setting could not be changed ({type(exc).__name__})."
+        if ok:
+            group.value = current["mode"] = chosen["mode"]
+        else:
+            group.value = chosen["mode"] = current["mode"]  # the page shows the mode actually in force
+        apply_button.disabled = True
+        body.controls = controls_before
+        result.value = text
+        result.color = tokens.color_status_healthy if ok else tokens.color_status_failed
+        page.update()
+
+    current = {"mode": view.mode}
+    choices = [(mode, update_setting.MODE_LABELS[mode]) for mode in view.choices]
+    group = components.choice_group(choices, value=view.mode, on_choose=_choose, disabled=view.locked)
+    apply_button = components.secondary_button(update_setting.APPLY_LABEL, _apply)
+    apply_button.disabled = True  # until the choice differs from the mode in force
+    body.controls = [group, note]
+    if view.machine_wide and not view.locked:
+        body.controls.append(apply_button)
+    body.controls.append(result)
+    return components.card(
+        ft.Column(
+            spacing=tokens.space_md,
+            controls=[
+                ft.Text(update_setting.SECTION_TITLE, size=tokens.type_section, weight=ft.FontWeight.W_700),
+                body,
+            ],
+        )
+    )
 
 
 # --------------------------------------------------------------------------- #

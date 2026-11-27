@@ -53,6 +53,10 @@ and nothing is downloaded or staged; Help says "Version X is available; this cop
 (`machine_wide`): `notify` there is written by the nightly into `runs\` and `on` is the SYSTEM updater, both slice U2.
 The Settings control and Home's line are U1b.
 
+## The update mode in Settings and on Home (plan 0055 U1b, DSYNC-107)
+
+`src/update/setting.py:update_setting_view` decides the Settings section (`screens/setup._build_updates_section`), pure over the effective mode and the install kind: nothing on a build without the updater; LOCKED (every choice disabled, no Apply) when Group Policy decides; off/notify/on on a machine-wide install, applied by an outlined **Apply** (enabled only when the choice differs from the mode in force) through the elevated `set_update_mode` op (`provision_session.request_update_mode` → `provisioning.apply_update_mode`, which writes ONLY `UpdateMode` beside a switch that is already on: no profile copy, no delivery password, no handover; an administrator running DistrictSync, others get `setting.APPLY_COPY`), never on a click; notify/off on a copy installed for one account, saved at once as `AppConfig.update_enabled` (`on` is not offered there, O1), and LOCKED (`SHARED_NOTE`) whenever the machine setting decides or the session uses the shared profile. Home's line is suppressed whenever updates are off or do not run here (the same standing reasons Help states). `MODE_LABELS` is the ONE wording of each mode (the first-run window uses it too). Home adds one quiet, last caption when the notify check recorded a newer signed version (`status.newer_version_available` + `setting.home_line`). Pinned by `tests/test_update_setting.py`.
+
 ## It cannot change a run
 
 A check stages at most. Every failure, refusal and slowness is a returned `CheckOutcome` (`status`, `reason` code,

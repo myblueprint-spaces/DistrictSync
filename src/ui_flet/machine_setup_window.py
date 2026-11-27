@@ -23,6 +23,7 @@ import flet as ft
 from src.scheduler.machine_setup import NOT_HANDED_OVER, WINDOW_NOT_SET_UP, MachineSetupResult
 from src.ui_flet import components, tokens
 from src.update import policy
+from src.update.setting import MODE_LABELS
 
 WINDOW_TITLE = "Set up DistrictSync on this computer"
 HEADLINE = "One step before DistrictSync can run"
@@ -33,11 +34,7 @@ DETAIL = (
 )
 ADMIN_NOTE = "Windows asks an administrator to allow this once."
 UPDATES_LABEL = "New versions of DistrictSync"
-UPDATE_CHOICES: list[tuple[str, str]] = [
-    (policy.NOTIFY, "Tell me when a newer version is available (recommended)"),
-    (policy.ON, "Install new signed versions automatically"),
-    (policy.OFF, "Never check for new versions"),
-]
+UPDATE_CHOICES: list[tuple[str, str]] = [(mode, MODE_LABELS[mode]) for mode in (policy.NOTIFY, policy.ON, policy.OFF)]
 UPDATES_NOTE = "Your IT team can also set this with Group Policy, which wins over this choice."
 PRIMARY_LABEL = "Set up this computer"
 RETRY_LABEL = "Try again"

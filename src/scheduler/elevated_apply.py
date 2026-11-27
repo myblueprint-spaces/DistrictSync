@@ -170,6 +170,8 @@ def _apply(req_path: Path, res_path: Path) -> int:
             check = _schedule_check(payload)
         elif op == "machine_setup":
             _do_machine_setup(payload)
+        elif op == "set_update_mode":
+            _do_set_update_mode(payload)
         elif op == "grant_current_user":
             _do_grant_current_user(payload)
         elif op == "prune_principal":
@@ -365,6 +367,15 @@ def _do_machine_setup(payload: dict[str, object]) -> None:
     if str(payload["user"]).strip():
         raise ValueError("machine setup grants no other account")
     provisioning.apply_machine_setup(payload)
+
+
+def _do_set_update_mode(payload: dict[str, object]) -> None:
+    """Change ONLY the machine update mode (plan 0055 U1b); nothing else is touched."""
+    from src.scheduler import provisioning
+
+    if set(payload) != {"op", "update_mode"}:
+        raise ValueError("unexpected fields")
+    provisioning.apply_update_mode(payload)
 
 
 def _do_grant_current_user(payload: dict[str, object]) -> None:
