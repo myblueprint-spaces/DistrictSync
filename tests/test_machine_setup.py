@@ -67,6 +67,8 @@ class TestTheChildHalf:
             calls.append({"payload": payload, "update_mode": update_mode})
 
         monkeypatch.setattr(provisioning, "apply_provision", fake_apply)
+        # Plan 0055 U2a: mode "on" also makes the SYSTEM updater's folder; its own tests are in test_update_service.py.
+        monkeypatch.setattr(provisioning, "ensure_updater_dir", lambda: None)
         return calls
 
     def _payload(self, **over: object) -> dict[str, object]:

@@ -71,12 +71,15 @@ def _owner_sid(path: Path) -> str:
     return paths._read_dir_security(path)[0]
 
 
-def writable_by_non_admin(path: Path, *, mask_of_concern: int = WRITE_CLASS_MASK) -> bool:
+def writable_by_non_admin(
+    path: Path, *, mask_of_concern: int = WRITE_CLASS_MASK, count_inherit_only: bool = False
+) -> bool:
     """Whether anyone outside :data:`TRUSTED_WRITERS` can change ``path``: its OWNER, or an ALLOW ace with a right of concern.
 
     * The owner can always rewrite the DACL (an implicit WRITE_DAC), so an untrusted owner is writing, whatever the DACL says
       (a user who created the folder before an administrator installed into it).
-    * INHERIT_ONLY aces are ignored: they apply to children created later (``CREATOR OWNER`` on Program Files).
+    * INHERIT_ONLY aces are ignored: they apply to children created later (``CREATOR OWNER`` on Program Files), unless
+      ``count_inherit_only`` (a folder whose LATER files must be admin-only too, such as the SYSTEM updater's state).
     * A DENY ace never makes a folder writable.
     * Any other ace type (object, callback, conditional) is doubt, and doubt is writing: this reader cannot evaluate it.
     Raises ``OSError`` when the owner or the DACL cannot be read.
@@ -84,7 +87,7 @@ def writable_by_non_admin(path: Path, *, mask_of_concern: int = WRITE_CLASS_MASK
     if _owner_sid(path) not in TRUSTED_WRITERS:
         return True
     for ace_type, flags, mask, sid in _dacl_entries(path):
-        if flags & _INHERIT_ONLY_ACE or ace_type == _ACCESS_DENIED_ACE_TYPE:
+        if (flags & _INHERIT_ONLY_ACE and not count_inherit_only) or ace_type == _ACCESS_DENIED_ACE_TYPE:
             continue
         if ace_type != _ACCESS_ALLOWED_ACE_TYPE:
             return True

@@ -227,6 +227,7 @@ class TestTheModeOnlyOp:
 
         written = []
         monkeypatch.setattr(provisioning, "_write_update_mode", written.append)
+        monkeypatch.setattr(provisioning, "ensure_updater_dir", lambda: None)  # never the real %ProgramData%
         monkeypatch.setattr(paths, "machine_switch_on", lambda: False)
         with pytest.raises(ValueError):
             provisioning.apply_update_mode({"op": "set_update_mode", "update_mode": "on"})

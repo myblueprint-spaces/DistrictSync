@@ -87,8 +87,22 @@ class CheckOutcome:
     version: str | None = None
 
 
-def updater_state_dir() -> Path:
-    """Where the update state lives: inside the profile, so ``DISTRICTSYNC_DATA_DIR`` and uninstall behave."""
+def _machine_wide() -> bool:
+    try:
+        return install_kind() is InstallKind.MACHINE
+    except Exception:  # noqa: BLE001 - doubt is "not machine-wide": the per-user guards still apply
+        return False
+
+
+def updater_state_dir(*, machine: bool | None = None) -> Path:
+    """Where the update state lives: inside the profile, so ``DISTRICTSYNC_DATA_DIR`` and uninstall behave.
+
+    On a machine-wide install, ``runs\\updater`` (plan 0055 U2a): the nightly's notice lives in the one folder its
+    account may write. It is display only: the SYSTEM updater never reads it. ``machine`` is the caller's ONE decision
+    of the install kind (``None``: decide here).
+    """
+    if _machine_wide() if machine is None else machine:
+        return paths.user_data_dir() / paths.MACHINE_RUNS_SUBDIR / UPDATER_STATE_FOLDER
     return paths.user_data_dir() / UPDATER_STATE_FOLDER
 
 
@@ -99,8 +113,11 @@ def _in_machine_scope() -> bool:
         return True  # a refused shared profile is still "not the per-user profile": never check from it
 
 
-def _effective_mode(config: AppConfig | None) -> policy.EffectiveMode:
+def _effective_mode(config: AppConfig | None, *, machine: bool | None = None) -> policy.EffectiveMode:
     """The update mode in force (plan 0055 U1): Group Policy, then the machine setting, then the per-user switch."""
+    if _machine_wide() if machine is None else machine:
+        # HKLM only on a machine-wide install: the shared config.json is not the machine's update setting.
+        return policy.effective_update_mode(setting_enabled=True)
     return policy.effective_update_mode(setting_enabled=(AppConfig.load() if config is None else config).update_enabled)
 
 
@@ -132,21 +149,29 @@ def skip_reason(
     state_dir: Path | None = None,
     now: datetime | None = None,
     ignore_interval: bool = False,
+    trigger: str | None = None,
+    machine: bool | None = None,
 ) -> str | None:
-    """The first reason a check must not happen, or ``None`` when it may. Opens no connection."""
+    """The first reason a check must not happen, or ``None`` when it may. Opens no connection.
+
+    ``trigger`` matters on a machine-wide install only: the app's own nightly (``after_run``) may run the NOTIFY check
+    there (plan 0055 U2a); nothing else may, and nothing there ever downloads or installs (that is the SYSTEM updater).
+    """
     if not is_installed_build():
         return "portable"
     if install_root() is None:
         return "not_installed"
-    if install_kind() is InstallKind.MACHINE:
+    if machine is None:
+        machine = install_kind() is InstallKind.MACHINE
+    if machine and trigger != TRIGGER_AFTER_RUN:
         # Plan 0055 M1 (spike S0b #4): a non-SYSTEM process that asks Velopack to apply on a machine-wide install gets a
-        # UAC prompt and drops Update.exe into the user's profile. Only the SYSTEM updater (U2) may check and apply there.
+        # UAC prompt and drops Update.exe into the user's profile. Only the nightly's notify check runs here (U2a).
         return "machine_wide"
-    if _in_machine_scope():
+    if not machine and _in_machine_scope():
         return "machine_scope"
     if paths.data_dir_override_active() and not is_e2e_build():
         return "data_dir_override"
-    effective = _effective_mode(config)
+    effective = _effective_mode(config, machine=machine)
     if effective.mode == policy.OFF:
         return "off_by_policy" if effective.source == policy.SOURCE_POLICY else "off_in_settings"
     if (production_target() if target is None else target) is None:
@@ -157,7 +182,7 @@ def skip_reason(
         return "package_missing"
     if module is None:
         return "portable"
-    directory = updater_state_dir() if state_dir is None else state_dir
+    directory = updater_state_dir(machine=machine) if state_dir is None else state_dir
     if not module.updates_enabled(app_identity(module), directory):
         return "off_switch"
     if module.parse_version(app_version()) is None:
@@ -207,13 +232,25 @@ def _run(
     running: Callable[[], int | None] | None,
 ) -> CheckOutcome:
     resolved_target = production_target() if target is None else target
-    reason = skip_reason(config=config, target=resolved_target, updater=updater, state_dir=state_dir, now=now)
+    # The install kind is decided ONCE here and used for every decision below (U2a review A1): a second read that
+    # disagreed (an ACL read failing while Velopack swaps ``current``) must never open the full check on a machine-wide
+    # install.
+    machine = _machine_wide()
+    reason = skip_reason(
+        config=config,
+        target=resolved_target,
+        updater=updater,
+        state_dir=state_dir,
+        now=now,
+        trigger=trigger,
+        machine=machine,
+    )
     if reason is not None or resolved_target is None:
         return CheckOutcome(SKIPPED, reason or "not_configured")
     module = load_updater() if updater is None else updater
     if module is None:  # unreachable: skip_reason returned None, so the installed build has its package
         return CheckOutcome(SKIPPED, "portable")
-    directory = updater_state_dir() if state_dir is None else state_dir
+    directory = updater_state_dir(machine=machine) if state_dir is None else state_dir
     directory.mkdir(parents=True, exist_ok=True)
     identity = app_identity(module)
     health = module.HealthStore(directory / HEALTH_FILE)
@@ -224,11 +261,15 @@ def _run(
     )
     when = datetime.now(UTC) if now is None else now
 
-    if _effective_mode(config).mode == policy.NOTIFY:
+    if machine or _effective_mode(config, machine=machine).mode == policy.NOTIFY:
+        # A machine-wide install's nightly only ever NOTIFIES, whatever the mode: installing is the SYSTEM updater's.
         outcome = _notify_only(module, fetcher, resolved_target, identity, health, when, budget)
         _write_last(directory, outcome, trigger, when)
         return outcome
 
+    if _machine_wide():
+        # Belt and braces: the full check (download, stage, hand off) never runs where a second read says machine-wide.
+        return CheckOutcome(SKIPPED, "machine_wide")
     try:
         # The package bounds the WHOLE check (manifest and download together, enforced as bytes arrive) and reports a
         # cut-off as the refusal ``timed_out``; it does not re-download a package already staged and matching.

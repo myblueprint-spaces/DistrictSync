@@ -38,6 +38,13 @@ if __name__ == "__main__":
     if is_velopack_hook(sys.argv[1:]):
         sys.exit(run_velopack_hook())
 
+if __name__ == "__main__" and sys.argv[1:2] == ["--update-service"]:
+    # Plan 0055 U2: the SYSTEM updater. Before the start guard and every heavy import; it pins no profile and reads only
+    # admin-writable inputs (src/update/service.py).
+    from src.update.service import run_update_service
+
+    sys.exit(run_update_service())
+
 if __name__ == "__main__":
     from src.update.entry import run_entry
 

@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from src.update.check import last_check_summary, skip_reason
+from src.update.check import TRIGGER_AFTER_RUN, last_check_summary, skip_reason
 from src.utils.build_flavor import is_installed_build
 from src.utils.version import app_version
 
@@ -69,13 +69,15 @@ def newer_version_available(state_dir: Path | None = None) -> str | None:
     try:
         if not is_installed_build():
             return None
-        if skip_reason(state_dir=state_dir, ignore_interval=True) in _STANDING:
+        if skip_reason(state_dir=state_dir, ignore_interval=True, trigger=TRIGGER_AFTER_RUN) in _STANDING:
             return None  # updates are off or do not run here: Help says so, Home stays quiet
         last = last_check_summary(state_dir)
         if not last or last.get("status") != "available" or not last.get("version"):
             return None
-        version = str(last.get("version"))
-        return version if _newer(version, app_version()) else None
+        key = _version_key(str(last.get("version")))
+        if key is None or not _newer(str(last.get("version")), app_version()):
+            return None
+        return "{}.{}.{}".format(*key)  # a parsed version, never the notice file's own text (the nightly can write it)
     except Exception:  # noqa: BLE001 - advisory copy on Home
         return None
 
@@ -84,7 +86,7 @@ def update_status_line(state_dir: Path | None = None) -> str | None:
     """What Help should say about updates, or ``None`` to say nothing (portable build)."""
     if not is_installed_build():
         return None
-    reason = skip_reason(state_dir=state_dir, ignore_interval=True)
+    reason = skip_reason(state_dir=state_dir, ignore_interval=True, trigger=TRIGGER_AFTER_RUN)
     if reason in _STANDING:
         return _STANDING[reason]
     last = last_check_summary(state_dir)
@@ -95,8 +97,9 @@ def update_status_line(state_dir: Path | None = None) -> str | None:
     if last.get("status") == "available" and last.get("version"):
         # Notify mode (plan 0055 U1): a newer signed version exists and nothing was downloaded. Said only while it is still
         # newer than this copy: after an upgrade the record is stale until the next check.
-        if _newer(str(last.get("version")), app_version()):
-            return f"Version {last.get('version')} is available; this copy does not update itself." + suffix
+        key = _version_key(str(last.get("version")))
+        if key is not None and _newer(str(last.get("version")), app_version()):
+            return f"Version {key[0]}.{key[1]}.{key[2]} is available; this copy does not update itself." + suffix
         return "Updates: not checked since this version was installed."
     known = _LAST.get((str(last.get("status")), str(last.get("reason"))))
     if known:
