@@ -5,8 +5,10 @@ gets the account's credential from your directory, so nothing is stored on this 
 is no password for anybody to type, keep or rotate.
 
 **Installed with `DistrictSync.msi`?** Then the computer was already set up for the shared folder when DistrictSync was
-first opened (see the [IT deployment guide](it-deployment.md)), and scheduling as a gMSA moves nothing: it only gives
-the account access. The rest of this page applies as written. A copy installed with `DistrictSync-Setup.exe` (for one
+first opened (see the [IT deployment guide](it-deployment.md)): your settings are already in the shared folder, so
+scheduling as a gMSA mainly gives that account access to it. If the administrator who schedules it still has
+DistrictSync settings of their own on this computer, anything the shared folder lacks is copied in and their own copy
+is set aside, as described below. The rest of this page applies as written. A copy installed with `DistrictSync-Setup.exe` (for one
 Windows account) cannot be scheduled as a gMSA at all.
 
 **Read "What DistrictSync will do" before you start.** Scheduling the nightly sync as any account

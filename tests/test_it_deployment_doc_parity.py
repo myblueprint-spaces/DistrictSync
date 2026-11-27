@@ -60,6 +60,12 @@ def test_every_flag_the_guide_shows_is_one_the_app_accepts():
     assert main_mod.TASK_PASSWORD_ENV_VAR in GUIDE.read_text(encoding="utf-8")
 
 
-def test_the_guide_never_promises_automatic_installing_yet():
-    """U2's apply is blocked on the update feed: the guide must say On behaves like Notify for now."""
-    assert "until then **On** behaves like **Notify**" in _text()
+def test_the_guide_states_what_is_not_live_yet():
+    """The installer is not attached to a release yet, the update service is not live and U2's apply is not built: the
+    guide says each, and never describes automatic installing in the present tense."""
+    text = _text()
+    assert "for the release that first ships it" in text
+    assert "update checks are not live yet" in text
+    assert "until then **On** behaves like **Notify**" in text
+    assert "As designed, before installing anything DistrictSync will check" in text
+    assert "new signed versions are installed automatically" not in text
