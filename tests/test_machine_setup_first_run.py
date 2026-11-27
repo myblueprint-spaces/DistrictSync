@@ -128,6 +128,16 @@ def _button(control, label):  # noqa: ANN001, ANN202
     raise AssertionError(label)
 
 
+def _click(control, label) -> None:  # noqa: ANN001
+    """Run a button's handler to completion (the window's attempt is async: setup runs off the event loop)."""
+    import asyncio
+    import inspect
+
+    result = _button(control, label).on_click(None)
+    if inspect.iscoroutine(result):
+        asyncio.run(result)
+
+
 def _body(results):  # noqa: ANN001, ANN202
     calls: list[str] = []
     queue = list(results)
@@ -158,17 +168,17 @@ class TestTheWindow:
         event = MagicMock()
         event.control.value = policy.ON
         group.on_change(event)
-        _button(body, win.PRIMARY_LABEL).on_click(None)
+        _click(body, win.PRIMARY_LABEL)
         assert calls == [f"request:{policy.ON}", "reexec"]
 
     def test_a_failure_is_an_error_card_with_a_retry_and_no_log_folder_button(self):
         body, calls = _body([DECLINED, DONE])
-        _button(body, win.PRIMARY_LABEL).on_click(None)
+        _click(body, win.PRIMARY_LABEL)
         assert calls == [f"request:{policy.NOTIFY}"]
         text = _text(body)
         assert win.FAILED_HEADLINE in text and machine_setup.MACHINE_SETUP_COPY["declined"] in text
         assert "log folder" not in text.lower()
-        _button(body, win.RETRY_LABEL).on_click(None)
+        _click(body, win.RETRY_LABEL)
         assert calls[-1] == "reexec"
 
     def test_a_raising_request_is_never_a_dead_button(self):
@@ -176,7 +186,7 @@ class TestTheWindow:
             raise RuntimeError("boom")
 
         body = win.build_machine_setup_body(MagicMock(), request=request, reexec=lambda: None)
-        _button(body, win.PRIMARY_LABEL).on_click(None)
+        _click(body, win.PRIMARY_LABEL)
         assert win.FAILED_HEADLINE in _text(body)
 
     def test_the_request_and_reexec_seams_are_required(self):
@@ -188,20 +198,24 @@ class TestTheWindow:
         )
 
 
-class TestTheLauncher:
-    def test_the_window_is_shown_before_the_migration_and_the_pin(self):
-        source = (ROOT / "src" / "ui_flet" / "launcher.py").read_text(encoding="utf-8")
-        body = source[source.index("def main(") :]
-        assert (
-            body.index("needs_machine_setup()") < body.index("migrate_legacy_data_dir()") < body.index("pin_data_dir()")
-        )
+def _call_lines(path: Path, function: str) -> dict[str, int]:
+    """The first line each named function is CALLED on inside ``function`` (calls, not text: a comment cannot pass)."""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    (fn,) = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == function]
+    lines: dict[str, int] = {}
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Call):
+            name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+            if name and (name not in lines or node.lineno < lines[name]):
+                lines[name] = node.lineno
+    return lines
 
-    def test_the_cli_gate_comes_before_the_migration_and_the_pin(self):
-        source = (ROOT / "src" / "main.py").read_text(encoding="utf-8")
-        body = source[source.index("def _cli(") :]
-        assert (
-            body.index("needs_machine_setup()") < body.index("migrate_legacy_data_dir()") < body.index("pin_data_dir()")
-        )
+
+class TestTheGateComesFirst:
+    @pytest.mark.parametrize(("path", "function"), [("src/ui_flet/launcher.py", "main"), ("src/main.py", "_cli")])
+    def test_before_the_migration_the_pin_and_the_log_sink(self, path, function):
+        lines = _call_lines(ROOT / path, function)
+        assert lines["needs_machine_setup"] < lines["migrate_legacy_data_dir"] < lines["pin_data_dir"]
 
 
 class TestOneLadder:
@@ -224,3 +238,47 @@ class TestOneLadder:
     def test_no_settings_yet_is_no_delivery(self, monkeypatch, tmp_path):
         monkeypatch.setattr(paths, "per_user_data_dir", lambda: tmp_path)
         assert machine_setup.delivery_seed() == (False, "", "")
+
+
+class TestTheWindowsOwnWords:
+    def test_a_not_handed_over_result_never_claims_per_account_settings(self):
+        result = machine_setup.MachineSetupResult(
+            1, (machine_setup.MACHINE_SETUP_COPY["declined"], machine_setup.NOT_HANDED_OVER), False
+        )
+        body, _ = _body([result])
+        _click(body, win.PRIMARY_LABEL)
+        text = _text(body)
+        assert machine_setup.NOT_HANDED_OVER not in text and machine_setup.WINDOW_NOT_SET_UP in text
+
+    def test_a_waiting_line_replaces_the_button_while_setup_runs(self):
+        seen = {}
+
+        def request(mode):  # noqa: ANN001, ANN202
+            seen["text"] = _text(body)
+            return DONE
+
+        body = win.build_machine_setup_body(MagicMock(), request=request, reexec=lambda: None)
+        _click(body, win.PRIMARY_LABEL)
+        assert win.WAITING_LINE in seen["text"] and win.PRIMARY_LABEL not in seen["text"]
+
+
+class TestDiagnoseBeforeSetup:
+    def test_it_says_setup_is_needed_and_resolves_no_profile(self, machine_not_set_up, monkeypatch):
+        import io
+
+        from src.utils import diagnostics
+
+        monkeypatch.setattr(paths, "user_data_dir", lambda: pytest.fail("pinned a per-user profile"))
+        out = io.StringIO()
+        assert diagnostics.run_diagnose(out) == 0
+        report = out.getvalue()
+        assert "machine setup needed:" in report and "--machine-setup" in report
+
+    def test_positive_twin_a_set_up_computer_reports_its_profile(self, monkeypatch):
+        import io
+
+        from src.utils import diagnostics
+
+        out = io.StringIO()
+        diagnostics.run_diagnose(out)
+        assert "data dir:" in out.getvalue()

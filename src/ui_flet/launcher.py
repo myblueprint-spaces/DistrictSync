@@ -195,7 +195,7 @@ def _write_traceback(exc: BaseException) -> None:
         pass
 
 
-def _show_error_dialog(message: str) -> None:  # pragma: no cover - view glue
+def _show_error_dialog(message: str, *, log_folder: bool = True) -> None:  # pragma: no cover - view glue
     """Show a minimal plain-language error window, falling back to tkinter/stderr.
 
     Tried in order so the no-console exe always surfaces *something*: a minimal
@@ -243,7 +243,7 @@ def _show_error_dialog(message: str) -> None:  # pragma: no cover - view glue
                                 spacing=12,
                                 controls=[
                                     ft.FilledButton("Close", on_click=_close),
-                                    ft.TextButton("Open log folder", on_click=_open_logs),
+                                    *([ft.TextButton("Open log folder", on_click=_open_logs)] if log_folder else []),
                                 ],
                             ),
                         ],
@@ -301,7 +301,7 @@ def main() -> None:  # pragma: no cover - view glue (ft.run + dialog)
 
             if show_machine_setup_window():
                 return
-            _show_error_dialog(MACHINE_SETUP_WINDOW_FALLBACK)
+            _show_error_dialog(MACHINE_SETUP_WINDOW_FALLBACK, log_folder=False)  # that button would create a profile
             return
         migrate_legacy_data_dir()
         # Resolve the data directory ONCE, before the sink opens inside it (plan 0049 D0)

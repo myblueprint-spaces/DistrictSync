@@ -11,7 +11,7 @@ Supersedes: nothing
 
 **Why.** A machine-wide install exists so that other accounts (a stored-password service account, a gMSA) can run the nightly; settings kept in one administrator's profile are exactly what those accounts cannot read, and a per-user profile created first would later have to be migrated. An unreadable switch is not treated as "not set up": the existing machine-scope refusal already reports it, and this gate claims only what it can prove. `DISTRICTSYNC_DATA_DIR` stays exempt (test and support profiles).
 
-**Consequences.** The first launch after the MSI needs an administrator once. A headless server runs `DistrictSync.exe --machine-setup --updates notify` first; a conversion or schedule command before that exits 1 with that instruction.
+**Consequences.** The first launch after the MSI needs an administrator once. A headless server runs `DistrictSync.exe --machine-setup --updates notify` first; a conversion or schedule command before that exits 1 with that instruction. The one per-user folder still written before setup is the declared exception, `handshake_dir()`: the UAC handshake files, `MOVED.txt`, the window's own log, and the log of a `--machine-setup` run from the command line. `--diagnose` reports "machine setup needed" and skips its profile sections instead of creating that profile.
 
 ## 2026-11-26 - Plan 0055 round 3: code to full parity first; new partners get the installer only, existing partners are not disturbed; the one-file exe is decommissioned; one throwaway Azure VM
 

@@ -12,7 +12,6 @@ profile, the window shows only the setup step and the command line refuses every
 
 from __future__ import annotations
 
-import json
 import logging
 import sys
 from dataclasses import dataclass
@@ -43,8 +42,15 @@ MACHINE_SETUP_REFUSED_FOLDER = (
 #: Outcomes in which the elevated step never ran, so nothing was changed.
 MACHINE_SETUP_NOT_RUN = frozenset({"declined", "launch_failed", "different_account", "unavailable"})
 PER_USER_COPY_REFUSED = (
-    "This copy is installed for one Windows account only, so it cannot be set up for the whole computer. Install the "
-    "machine-wide DistrictSync, then run its machine setup."
+    "Error: this copy is installed for one Windows account only, so it cannot be set up for the whole computer. "
+    "Install the machine-wide DistrictSync, then run --machine-setup from it."
+)
+#: The command line's "nothing switched" tail. The window shows :data:`WINDOW_NOT_SET_UP` instead: on a machine-wide
+#: install per-account settings are refused, so this sentence would describe a state the window cannot use.
+NOT_HANDED_OVER = "This computer still keeps DistrictSync settings per Windows account."
+WINDOW_NOT_SET_UP = (
+    "DistrictSync is not set up on this computer yet. Try again, or an administrator can run "
+    "DistrictSync.exe --machine-setup --updates notify from a command prompt."
 )
 #: The command line on a machine-wide install that has not been set up (M2b).
 NOT_SET_UP_CLI = (
@@ -83,16 +89,21 @@ def needs_machine_setup() -> bool:
 
 
 def delivery_seed() -> tuple[bool, str, str]:
-    """``(sftp, host, username)`` from the PER-USER settings, read without pinning a profile (the setup seeds them)."""
+    """``(sftp, host, username)`` from the PER-USER settings, read without pinning a profile (the setup seeds them).
+
+    Parsed by AppConfig's OWN reader (``_config_from_bytes``: a wrong-typed value makes the document unreadable), never a
+    second parser; no settings, or unreadable ones, seed no delivery.
+    """
     try:
+        from src.config.app_config import CONFIG_FILENAME, _config_from_bytes
         from src.utils import paths
 
-        raw = json.loads((paths.per_user_data_dir() / "config.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        cfg = _config_from_bytes((paths.per_user_data_dir() / CONFIG_FILENAME).read_bytes())
+    except OSError:
         return (False, "", "")
-    if not isinstance(raw, dict):
+    if cfg is None:
         return (False, "", "")
-    return (bool(raw.get("sftp_enabled")), str(raw.get("sftp_host") or ""), str(raw.get("sftp_username") or ""))
+    return (bool(cfg.sftp_enabled), cfg.sftp_host or "", cfg.sftp_username or "")
 
 
 def run(update_mode: str) -> MachineSetupResult:
@@ -128,9 +139,7 @@ def run(update_mode: str) -> MachineSetupResult:
             1, (*lines, MACHINE_SETUP_REFUSED_FOLDER.format(reason=handover.refused.value)), False
         )
     if not handover.handed_over:
-        return MachineSetupResult(
-            1, (*lines, "This computer still keeps DistrictSync settings per Windows account."), False
-        )
+        return MachineSetupResult(1, (*lines, NOT_HANDED_OVER), False)
     # The switch is on. Whether THIS run did anything is the child's answer, never the switch's: on a computer that was
     # already set up (a re-run to change the update mode) a declined prompt still leaves the switch on.
     if outcome == "provisioned" or (outcome == "unconfirmed" and before is False):
