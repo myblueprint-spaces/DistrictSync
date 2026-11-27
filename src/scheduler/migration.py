@@ -184,5 +184,5 @@ def _other_copy_kind(program: str | None) -> str:
         if program and runs_from_per_user_install(program.strip('"')):
             return OTHER_COPY_PER_USER
     except Exception:  # noqa: BLE001 - a report line, never a stop
-        pass
+        return OTHER_COPY_ELSEWHERE
     return OTHER_COPY_ELSEWHERE
