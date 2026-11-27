@@ -34,7 +34,7 @@ Two code facts found while planning make machine-wide unsafe today, so they are 
 | G2 | Who applies an update to a machine-wide install | **One SYSTEM scheduled task, "DistrictSync Updater"**, present only while updates are on. Signed manifest + Authenticode, never during a run, right after the nightly. |
 | G3 | Install shape | **Machine-wide only.** Admin installs once to Program Files; the profile is `C:\ProgramData\DistrictSync`. Per-user v3.30.x installs are migrated. |
 | G4 | One-file end of life | **Keep publishing it until every known district is confirmed migrated**, then drop it. |
-| G5 | Where gMSA / Server Core / service-account proofs run | **Azure test VMs** (domain controller, member server, Server Core) in `customer-experience-ca`, throwaway. |
+| G5 | Where gMSA / Server Core / service-account proofs run | **Superseded 2026-11-26:** the LOCAL VMware lab (`scripts/lab/local_lab.ps1`: DC, Desktop member, Server Core member). No Azure (owner: "im not authorised for azure spend"). |
 
 Earlier decisions still apply: pack id `myBlueprint.DistrictSync`; feed on `integration.crm.myblueprint.org`; ES256 manifest in Key Vault; the shared `myb_desktop_updater` package; Velopack 1.2.161 (DECISIONS 2026-11-17).
 
@@ -56,7 +56,7 @@ What was run: a small one-folder PyInstaller app (the `velopack` 1.2.161 Python 
 
 **Verdict.** Velopack can do it: install machine-wide with its MSI and apply updates from a SYSTEM task. No alternative installer technology is needed. The two things it does wrong for us (the console line, and a non-admin apply that prompts) are avoided by our code, not by Velopack (slices M1, U2).
 
-**Not proven yet (slice L1, on the Azure lab):** a gMSA and a local service account running the real build from Program Files; Server Core; the Flet window from Program Files; a SYSTEM apply while the nightly is running; the MSI signed through `vpk --azureTrustedSignFile`; Group Policy / Intune deployment; re-pointing a password-principal task without its password; whether Velopack's process check sees processes in other sessions.
+**Not proven yet (slice L1, on the local VMware lab):** a gMSA and a local service account running the real build from Program Files; Server Core; the Flet window from Program Files; a SYSTEM apply while the nightly is running; the MSI signed through `vpk --azureTrustedSignFile`; Group Policy / Intune deployment; re-pointing a password-principal task without its password; whether Velopack's process check sees processes in other sessions.
 
 ## Goals / Non-goals
 
@@ -191,7 +191,7 @@ Scripted districts get the same steps as documented commands: `msiexec /i Distri
 
 The one-file exe keeps shipping. From the first MSI release it shows one Home band and one `--diagnose` line: "A machine-wide installer is available; this download will be retired." The migration ledger (district codes only, no names: setup kind and the date `--diagnose` confirmed migration) lives on the R3 Jira ticket, not in the repo (review: a tracking list, not a doc). Retirement is slice R3: when the owner confirms the ledger is complete, the release stops attaching the asset, and the partner docs' `releases/latest/download/DistrictSync-windows.exe` links have already moved.
 
-## Test matrix (every row on a real machine; L = Azure lab, P = owner's PC, R = GitHub Windows runner)
+## Test matrix (every row on a real machine; L = the local VMware lab, P = owner's PC, R = GitHub Windows runner; no Azure)
 
 | # | Scenario | Where | Pass means |
 |---|---|---|---|
@@ -256,14 +256,14 @@ The one-file exe keeps shipping. From the first MSI release it shows one Home ba
 | R6 | Machine-wide changes the meaning of `runs_from_user_writable_install` and the start guard, which many tests pin per-user (`tests/test_scheduler_runas.py:1568-1612`, `conftest.py:795-830`, `test_installed_flavour.py`). | The install-kind slice updates those pins deliberately, each with a `MACHINE` twin. |
 | R7 | Two Windows installers (per-user Setup and MSI) on releases for a while. | The per-user Setup is retired from releases in R2, the release after the MSI's first; per-user copies keep working and are migrated. |
 | R8 | The shared package may not support an admin-only state folder or cross-session process detection. | Slice U3 is a change in `myb-desktop-shared` first; DistrictSync does not fork the logic. |
-| R9 | Azure lab cost and drift. | Scripted create/destroy; deleted after each matrix run; nothing district-shaped (no real data) on it; synthetic fixtures only. |
+| R9 | Azure cost (the owner is not authorised for Azure spend). | **No Azure at all** (owner, 2026-11-26): every row runs on the local VMware lab, the owner's PC or a GitHub runner; the Azure script was removed and a test pins that `scripts/lab` holds no Azure script. Rows that cannot run locally are listed as not proven (T19's Intune half). |
 | R10 | Group Policy / Intune behaviour differs from a manual `msiexec`. | T19 in the lab before the IT guide claims it. |
 | R11 | Districts on the one-file exe never migrate. | G4 keeps it published; the band and the ledger make the gap visible; nothing breaks. |
 
 ## Decomposition (each slice: one Jira ticket, one branch, one PR; Jira drafts below)
 
 - [ ] **G0. Guard: no foreign principal on a per-user installed copy** (section 6). Small, on today's code, ships before v2. *Tests:* gate units + positive twins; the produced-vs-classified copy sweep stays green.
-- [ ] **L1. Azure lab and real-build spike (evidence only).** The runbook (`docs/developer/installer-lab.md`) creates a domain controller, a Server 2022 member with Desktop Experience and a Server Core member, with a gMSA and a local service account; the real DistrictSync MSI is built unsigned from a dispatch run; every [N] in this plan is answered (S0b's "not proven" list, remote-session elevation, password-task re-point, Velopack staging under SYSTEM, extra folder at the install root surviving apply, cross-session process detection, self-repair, uninstall hook rights); the lab is deleted. *Output:* findings appended here. Needs O4.
+- [ ] **L1. Lab and real-build spike (evidence only).** The local VMware lab on the owner's PC (`scripts/lab/local_lab.ps1`, `docs/developer/installer-lab.md`): a domain controller, a Desktop Experience member and a Server Core member, 32 GB thin disks, built unattended from the Server 2022 evaluation ISO; `-Action check` says what is missing. Docker only for an SFTP target and a test feed: it cannot run MSIs, Task Scheduler or a gMSA, and Windows 11 Home has no Windows containers. **No Azure** (owner, 2026-11-26). Every [N] in this plan answered and appended here. Runs after the coding (R3-1). Not coverable locally: T19's Intune half (no tenant), recorded as not proven.
 - **U3 gating rule (not a slice):** the `on` mode does nothing on a machine-wide install until U3 has landed and T12/T12b pass, even after the feed exists.
 - [ ] **B1. MSI in the release rehearsal.** `vpk pack --msi --instLocation PerMachine`, sign, verify (MSI + installed exes), install on the runner machine-wide, CLI + window smokes on the Program Files copy, MSI N→N+1 upgrade, uninstall asserting T17. Dispatch only, nothing published. *Tests:* workflow-shape tests; a rehearsal run quoted.
 - [ ] **M1. Install kind and safe hooks (DSYNC-94).** `install_kind()` (`src/utils/install_kind.py`: MSI marker + DACL, trusted writers SYSTEM/Administrators/TrustedInstaller, inherit-only aces ignored, any doubt PER_USER), hook-first dispatch above the start guard in `main.py`, `App().run()` only for hooks on MACHINE, `runs_from_user_writable_install`, the update check (`machine_wide`), health and the per-user start guard read the kind; `--diagnose` prints it. *Tests:* `tests/test_install_kind.py` (real Program Files and data-drive DACL shapes, a subprocess tripwire that a hook imports no profile, ETL or keyring, positive twins). **Moved to M2:** "machine-wide refuses a per-user profile" (refusing before machine setup exists would leave a fresh MSI install unusable). **Kept as is:** G0 keys on a root inside a profile folder (`runs_from_per_user_install`), not on PER_USER: an unhardened `D:\` install is readable by a service account, so it must not be refused.
@@ -289,7 +289,7 @@ The one-file exe keeps shipping. From the first MSI release it shows one Home ba
 |---|---|---|---|
 | plan | DSYNC-90 | Task | Plan 0055: installer v2, machine-wide MSI replacing the one-file exe (S0b spike evidence) |
 | G0 | DSYNC-91 | Bug | Setup refuses a service-account/gMSA schedule on a per-user installed copy |
-| L1 | DSYNC-92 | Task | Azure test lab (DC, member, Server Core) and real-build machine-wide spike |
+| L1 | DSYNC-92 | Task | Local VMware lab (DC, Desktop member, Server Core) and real-build machine-wide spike |
 | B1 | DSYNC-93 | Task | Release rehearsal builds, signs and smoke-tests a per-machine MSI |
 | M1 | DSYNC-94 | Task | One install-kind reader; Velopack hooks run before anything touches a profile |
 | M2a | DSYNC-95 | Task | Machine setup at first run and `--machine-setup` (ProgramData profile, update mode) |
@@ -313,7 +313,7 @@ The one-file exe keeps shipping. From the first MSI release it shows one Home ba
 | O1 | **Default mode `notify`**: the signed manifest only, "you are behind" shown, nothing downloaded. **Strict `off`** (no connection at all) exists in Settings and in the HKLM policy key, which the app cannot override. The owner named outbound update traffic from internal servers as the security concern. |
 | O2 | The update question is asked at first-run Setup and by `--machine-setup --updates`, not by the MSI. |
 | O3 | Install folder: Velopack's default, `C:\Program Files\myBlueprint.DistrictSync\`. |
-| O4 | Azure test VMs run from the runbook's `az` commands under the owner's login, in `customer-experience-ca` or a dedicated lab resource group: small sizes, tagged, shut down when idle, deleted when the matrix is done; the monthly cost is named to the owner before anything costly is created. |
+| O4 | **Revised 2026-11-23 (owner):** local VMs first ("i prefer to do the test locally using local vm and docker first"). Azure is ONE throwaway Spot VM, run only before a real release for the domain rows local VMs cannot cover, CAD 5 per run at most, a 180-minute time box, deleted in a `finally` ("just 1 instance quickly test the requirement and end ... im not authorised to cause azure costs so keep it minial for the required test and do only when necessary before a real release"). The three-VM Azure lab built that morning was deleted the same day. Runbook `docs/developer/installer-lab.md`; script `scripts/lab/azure_domain_check.ps1`. **Superseded 2026-11-26 (owner): "im not authorised for azure spend": no Azure at all; the script was removed.** |
 | O5 | Run History tells accounts apart with the per-install keyed tag, not a SID. |
 | O6 | A release that cannot start at all is fixed by installing the previous MSI; no separate updater copy. |
 
@@ -330,7 +330,7 @@ and existing partners we dont need to disturb but if anything comes up we can te
 | # | Decision | Replaces |
 |---|---|---|
 | R3-1 | **Code first.** Every slice is built to full parity with the one-file exe (the checklist below) before any lab run. Order: U1, N1, M3, then the rest. | the L1-first order |
-| R3-2 | **Testing is CI rehearsals plus the LOCAL VMware lab** (`scripts/lab/local_lab.ps1`, VMware Workstation Pro 26H1), after the coding is complete. Reversed the same day: first "the azure cheap throaway one time test", then "i got into broadcom i can download so that we cna do the local testing without spending money". The one-instance Azure script stays only as a fallback for anything the local lab cannot do. | O4's lab location (the local lab, restored) |
+| R3-2 | **Testing is CI rehearsals plus the LOCAL VMware lab** (`scripts/lab/local_lab.ps1`, VMware Workstation Pro 26H1), after the coding is complete. Reversed the same day: first "the azure cheap throaway one time test", then "i got into broadcom i can download so that we cna do the local testing without spending money". Later that day: "im not authorised for azure spend": no Azure fallback either; the script was removed. | O4's lab location (the local lab, restored) |
 | R3-3 | **New partners get the installer only. Existing partners are not disturbed:** they stay on the one-file exe and move only "if anything comes up", told to get the new installer. Migration (D1) is therefore optional and must be safe to run at any time, never pushed. | G4's "keep until every district is confirmed migrated" ledger |
 | R3-4 | **The repository goes private and downloads come from the partner site** (`integration.crm.myblueprint.org`), which the owner reports is already done. | plan 0054's GitHub-Release download links |
 
@@ -341,19 +341,19 @@ and existing partners we dont need to disturb but if anything comes up we can te
 | Conversion CLI (`--sis --input --output --dry-run --diff --quality --sftp --source`), exit codes 0/1/2/3 | Same program at `C:\Program Files\myBlueprint.DistrictSync\current\DistrictSync.exe` | B1 rehearsal CLI phases on the MSI install (green, runs 45238795761, 45283617420) |
 | The window (Home, Convert, Run History, Setup, Mapping, Help) | Same program; Flet client bundled in the install (no `~/.flet` drop) | B1 rehearsal GUI smoke on the MSI install |
 | `--version`, `--diagnose` | Same, plus `install kind` (M1) and `update mode` (U1a) lines; D2 adds the Installation block | B1 rehearsal (`install kind: machine`); `tests/test_install_kind.py`, `tests/test_update_mode.py` |
-| SFTP credential set-up (`--sftp-configure` interactive and headless, `--sftp-test`, `--sftp-show`) | Same; on a machine-wide install the secret lives in the machine store (plan 0049) | existing tests; Azure VM row T4 |
-| Schedule from Setup: signed-in account, stored-password service account, gMSA + the DSYNC-33 schedule check | Same code; the program sits in Program Files, which every account can read (the per-user install could not: G0) | existing tests; Azure VM rows T4, T5 |
-| Headless schedule set-up (one-file: raw `schtasks` from the docs) | **Gap fill:** `--schedule-register` / `--schedule-remove` (M3) | M3 tests; Azure VM row T6 |
-| Machine scope provisioning (one-file: at the first foreign-principal Schedule press) | Same, plus `--machine-setup` (M2a, merged) and the first-run window step (M2b) | `tests/test_machine_setup.py`; Azure VM row T6 |
-| Per-operation elevation (`--elevated-apply`), never running elevated | Same; the elevated child is the Program Files exe | existing tests; Azure VM rows |
-| Server Core / headless servers | `msiexec /qn` + `--machine-setup` + `--schedule-register` + `--sftp-configure`, no window needed | Azure VM row T6 (Server Core) |
+| SFTP credential set-up (`--sftp-configure` interactive and headless, `--sftp-test`, `--sftp-show`) | Same; on a machine-wide install the secret lives in the machine store (plan 0049) | existing tests; lab row T4 (local domain) |
+| Schedule from Setup: signed-in account, stored-password service account, gMSA + the DSYNC-33 schedule check | Same code; the program sits in Program Files, which every account can read (the per-user install could not: G0) | existing tests; lab rows T4, T5 (local domain) |
+| Headless schedule set-up (one-file: raw `schtasks` from the docs) | **Gap fill:** `--schedule-register` / `--schedule-remove` (M3) | M3 tests; lab row T6 (lab-core) |
+| Machine scope provisioning (one-file: at the first foreign-principal Schedule press) | Same, plus `--machine-setup` (M2a, merged) and the first-run window step (M2b) | `tests/test_machine_setup.py`; lab row T6 (lab-core) |
+| Per-operation elevation (`--elevated-apply`), never running elevated | Same; the elevated child is the Program Files exe | existing tests; lab rows |
+| Server Core / headless servers | `msiexec /qn` + `--machine-setup` + `--schedule-register` + `--sftp-configure`, no window needed | lab row T6 (lab-core, Server Core) |
 | Scheduled task path (one-file: wherever the exe was saved, often Downloads) | **Improvement:** the stable `current\DistrictSync.exe`, unchanged by upgrades | B1 rehearsal upgrade step |
 | Updates (one-file: none, manual re-download) | **Improvement:** off / notify (default) / on, Group Policy enforceable (U1a), SYSTEM updater (U2) | `tests/test_update_mode.py`; U2/U3 tests; CI rehearsal |
 | Uninstall (one-file: delete the file) | MSI uninstall from Apps & features or `msiexec /x`, keeping profile, secret and nightly | B1 rehearsal (stand-in profile and task kept) |
 | Signing (one-file: the exe) | **Improvement:** the MSI and every installed executable signed and timestamped | B1 rehearsal signature steps |
 | Antivirus-shaped behaviour (one-file: `%TEMP%` self-extraction, `~/.flet` client drop) | **Improvement:** none (one-folder install, bundled client) | plan 0054 S1; B1 rehearsal |
 | No account names in logs (owner, 2026-11-23) | **Gap fill:** N1 | N1 tests |
-| Moving an existing partner (only if something comes up) | **Gap fill:** optional `--migrate` (D1) carrying settings, history, secret and nightly | D1 tests; Azure VM row T7 |
+| Moving an existing partner (only if something comes up) | **Gap fill:** optional `--migrate` (D1) carrying settings, history, secret and nightly | D1 tests; lab row T7 |
 | Seasonal sync window, wake-to-run, self-service mappings, run history | Same code, same profile | existing tests |
 | macOS and Linux builds | Unchanged; out of scope | n/a |
 
