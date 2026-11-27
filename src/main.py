@@ -432,6 +432,16 @@ def _schedule_register(args: argparse.Namespace) -> int:
     return code
 
 
+def _migrate() -> int:
+    """``--migrate`` (plan 0055 D1a): what moving to the machine-wide install involves. Read-only: nothing is changed."""
+    from src.scheduler import migration
+
+    findings = migration.discover()
+    for line in migration.report_lines(findings):
+        print(line)
+    return 1 if migration.needs_action(findings) else 0
+
+
 def _schedule_remove() -> int:
     """``--schedule-remove`` (plan 0055 M3): the Remove button, headless."""
     from src.scheduler import headless
@@ -645,6 +655,13 @@ def _cli(argv: list[str] | None) -> int:
 
         return run_diagnose()
 
+    # Plan 0055 D1a: ``--migrate`` (alone) is a read-only report, so it is dispatched here, beside --diagnose: before the
+    # legacy migration, the pin, the log sink and the handshake sweep (each of which can write), and before the M2b
+    # gate (the report is what a partner who just installed the machine-wide copy needs).
+    if args_list == ["--migrate"]:
+        _attach_parent_console()
+        return _migrate()
+
     # Velopack start-up (plan 0054 S2): the installed build's runtime must see the process
     # before any other work, because Velopack's own hooks (--veloapp-install/-updated/
     # -obsolete) arrive as argv and expect it to handle them and exit. Placed AFTER the three
@@ -788,6 +805,11 @@ def _cli(argv: list[str] | None) -> int:
         "--schedule-register", action="store_true", help="Schedule the nightly conversion (like Setup's Schedule)"
     )
     schedule_group.add_argument("--schedule-remove", action="store_true", help="Remove the scheduled nightly")
+    schedule_group.add_argument(
+        "--migrate",
+        action="store_true",
+        help="Report what moving to the machine-wide DistrictSync involves (read-only)",
+    )
     schedule_group.add_argument("--time", help="With --schedule-register: the run time, HH:MM (24-hour)")
     schedule_group.add_argument(
         "--principal",
@@ -806,11 +828,17 @@ def _cli(argv: list[str] | None) -> int:
 
     # Route to SFTP subcommands (mutually exclusive with the ETL pipeline)
     sftp_actions = [args.sftp_configure, args.sftp_test, args.sftp_show]
-    commands = sum(sftp_actions) + int(args.machine_setup) + int(args.schedule_register) + int(args.schedule_remove)
+    commands = (
+        sum(sftp_actions)
+        + int(args.machine_setup)
+        + int(args.schedule_register)
+        + int(args.schedule_remove)
+        + int(args.migrate)
+    )
     if commands > 1:
         print(
             "Error: choose only one of --sftp-configure, --sftp-test, --sftp-show, --machine-setup, "
-            "--schedule-register, --schedule-remove."
+            "--schedule-register, --schedule-remove, --migrate."
         )
         return 2
     # Decided on PARSED values, never on spellings: argparse accepts abbreviations (--wak, --sftp-h).
@@ -830,6 +858,11 @@ def _cli(argv: list[str] | None) -> int:
             )
             return 2
         return _schedule_register(args) if args.schedule_register else _schedule_remove()
+    if args.migrate:
+        if conversion_or_sftp:
+            print("Error: --migrate only reports; run a conversion or SFTP setup separately.")
+            return 2
+        return _migrate()
     if args.machine_setup:
         if conversion_or_sftp:
             print("Error: --machine-setup sets the computer up only; run a conversion or SFTP setup separately.")
