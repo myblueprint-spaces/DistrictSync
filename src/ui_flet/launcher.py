@@ -181,7 +181,9 @@ def _write_traceback(exc: BaseException) -> None:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         with open(log_path, "a", encoding="utf-8") as fh:
             fh.write("\n=== DistrictSync Flet UI failed to launch ===\n")
-            fh.write("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
+            from src.utils.redact import redact  # noqa: PLC0415 - best-effort crash path
+
+            fh.write(redact("".join(traceback.format_exception(type(exc), exc, exc.__traceback__))))
     except Exception:  # nosec B110 — logging the failure must never mask the original failure
         pass
 

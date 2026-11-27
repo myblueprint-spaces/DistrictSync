@@ -4,6 +4,7 @@ import logging.handlers
 from pathlib import Path
 
 from src.utils.paths import bundle_config_dir, user_log_file
+from src.utils.redact import RedactingFormatter
 
 # Fallback rotation limits — keep in sync with config/logging.conf's
 # handler_fileHandler args (5 MB per file, 3 backups). The fallback must match
@@ -25,7 +26,8 @@ def _build_file_handler(path: Path) -> logging.handlers.RotatingFileHandler:
         encoding="utf-8",
     )
     handler.setLevel(logging.INFO)
-    handler.setFormatter(logging.Formatter(_LOG_FORMAT, datefmt=_LOG_DATEFMT))
+    # Plan 0055 N1: no account name or profile path reaches a log file, tracebacks included.
+    handler.setFormatter(RedactingFormatter(_LOG_FORMAT, datefmt=_LOG_DATEFMT))
     return handler
 
 

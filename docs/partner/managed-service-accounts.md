@@ -245,8 +245,9 @@ wevtutil set-log Microsoft-Windows-TaskScheduler/Operational /enabled:true
 The next run's **History** tab then shows each step Windows took and where it stopped.
 
 **5. Where the logs are.** On an install whose settings were moved to the shared folder, each account
-that runs DistrictSync writes its **own** log in `C:\ProgramData\DistrictSync\runs\`, named
-`etl_tool-<account>.log` — the account name in lower case, with `\` replaced by `_` and the trailing
-`$` dropped (for example `etl_tool-example_svc_districtsync.log`). The **Open log folder** button
+that runs DistrictSync writes its **own** log in `C:\ProgramData\DistrictSync\runs\`. The nightly's is
+`etl_tool-scheduled-<tag>.log` and a person's is `etl_tool-interactive-<tag>.log`, where `<tag>` is a short
+code that tells accounts apart without naming them: DistrictSync writes no account name into its logs, log
+file names or run history. `DistrictSync --diagnose`, run as an account, prints that account's tag. The **Open log folder** button
 opens that folder. **If there is no log for the service account at all, the nightly never got as
 far as starting DistrictSync** — the cause is one of the Windows-side checks above, not DistrictSync.

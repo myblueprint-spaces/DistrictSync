@@ -187,7 +187,7 @@ class TestPerLineGuards:
             {
                 "status": "failed",
                 "sis_type": "sd74myedbc",
-                "run_as": "CORP\\svc_districtsync",
+                "run_as_tag": "0123456789ab",
                 "error_category": "config",
                 "error": "the free-text detail that belongs in the log only",
             },
@@ -196,7 +196,7 @@ class TestPerLineGuards:
         report = _report()
 
         assert "sd74myedbc" in report
-        assert "CORP\\svc_districtsync" in report
+        assert "0123456789ab" in report  # the tag, never an account name (plan 0055 N1)
         assert "config" in report
         assert "free-text detail" not in report
 
@@ -279,12 +279,12 @@ class TestProvisionedMachine:
         assert "MachineScope:" in report
         assert "ProvisionedAt:" in report
         assert "2026-09-17T10:00:00-06:00" in report
-        assert "CORP\\admin" in report
+        assert "CORP\\admin" not in report  # plan 0055 N1: a leftover 0049 ProvisionedBy is never printed
 
     def test_a_value_the_provisioner_never_wrote_reads_as_not_set(self, monkeypatch):
         monkeypatch.setattr(diagnostics, "read_hklm_values", lambda: {"MachineScope": 1})
         report = _report()
-        assert "ProvisionedBy:" in report
+        assert "ProvisionedAt:" in report
         assert "not set" in report
 
     def test_an_unreadable_key_is_reported_not_silently_absent(self, monkeypatch):
@@ -332,12 +332,15 @@ class TestScheduleSection:
     def test_the_recorded_principal_is_labelled_as_recorded_never_as_read_back(self, monkeypatch):
         """``ScheduleReadback`` does not carry the task's own UserId yet (that is S-3)."""
         monkeypatch.setattr(
-            AppConfig, "load", classmethod(lambda cls: cls(schedule_run_as_user="CORP\\svc_districtsync"))
+            AppConfig,
+            "load",
+            classmethod(lambda cls: cls(schedule_run_as_user="CORP\\svc_districtsync", schedule_run_as_kind="gmsa")),
         )
         report = _report()
 
         assert "recorded run-as" in report
-        assert "CORP\\svc_districtsync" in report
+        assert "gmsa" in report  # the kind (plan 0055 N1); the account itself is in Task Scheduler
+        assert "svc_districtsync" not in report
 
     def test_a_tri_state_read_back_is_rendered_in_plain_language(self, monkeypatch):
         for found, expected in ((True, "live"), (False, "not scheduled"), (None, "could not be read")):

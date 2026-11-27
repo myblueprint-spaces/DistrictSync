@@ -40,6 +40,7 @@ from src.ui_flet.humanize import friendly_district_name
 from src.ui_flet.run_history import derive_history_banner, run_as_summary_line, to_run_rows
 from src.ui_flet.schedule_status import ScheduleStatus, diagnostic_details
 from src.utils import paths
+from src.utils.account_tag import current_tag
 from src.utils.accounts import process_account
 
 LIMIT = 50
@@ -148,7 +149,13 @@ def _surface(page: ft.Page, app_config: AppConfig, on_refresh: Callable[[], None
             # 0049 S-2a.5: the account now running is injected (the derivation is pure and never
             # reads the environment); the bounded per-row display and the table-wide "would this
             # column say anything?" rule live in run_history/components, not here.
-            rows = to_run_rows(records, active_sis=app_config.sis_type, current_account=process_account(), limit=LIMIT)
+            rows = to_run_rows(
+                records,
+                active_sis=app_config.sis_type,
+                current_account=process_account(),
+                current_tag=current_tag(),
+                limit=LIMIT,
+            )
             summary = run_as_summary_line(rows, machine_scope=paths.is_machine_scope())
             if summary:
                 controls.append(ft.Text(summary, size=tokens.type_caption, color=tokens.color_muted))

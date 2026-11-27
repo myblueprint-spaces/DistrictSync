@@ -1016,19 +1016,22 @@ class TestRunAsRidesTheRecord:
     crash between them re-ALTERs forever). See the plan's S-1a-ii.3.
     """
 
-    def test_a_pipeline_run_carries_the_process_account(self, gde_input: Path, gde_output: Path) -> None:
+    def test_a_pipeline_run_carries_the_account_tag_never_the_name(self, gde_input: Path, gde_output: Path) -> None:
+        from src.utils.account_tag import current_tag
         from src.utils.accounts import process_account
 
         run_pipeline("myedbc", str(gde_input), str(gde_output), source="scheduled")
 
         records = read_run_records()
         assert records is not None and records
-        assert records[0]["run_as"] == process_account()
-        assert records[0]["run_as"]  # total by contract — never blank
+        assert records[0]["run_as_tag"] == current_tag()
+        assert records[0]["run_as_tag"]  # the isolated profile has its own salt
+        assert "run_as" not in records[0]
+        assert process_account() not in json.dumps(records[0])  # plan 0055 N1
 
     def test_a_manual_run_carries_it_too(self, gde_input: Path, gde_output: Path) -> None:
         from src.ui_flet.screens.convert import convert_job
-        from src.utils.accounts import process_account
+        from src.utils.account_tag import current_tag
 
         AppConfig(input_dir=str(gde_input), output_dir=str(gde_output), sis_type="myedbc").save()
         convert_job("myedbc", str(gde_input))
@@ -1036,7 +1039,7 @@ class TestRunAsRidesTheRecord:
         records = read_run_records()
         assert records is not None and records
         assert records[0]["source"] == "manual"
-        assert records[0]["run_as"] == process_account()
+        assert records[0]["run_as_tag"] == current_tag()
 
     def test_the_log_line_and_the_store_row_carry_the_same_account(
         self, gde_input: Path, gde_output: Path, caplog: pytest.LogCaptureFixture
@@ -1049,7 +1052,7 @@ class TestRunAsRidesTheRecord:
         logged = json.loads(line.split(" ", 1)[1])
         records = read_run_records()
         assert records is not None
-        assert logged["run_as"] == records[0]["run_as"]
+        assert logged["run_as_tag"] == records[0]["run_as_tag"]
 
     def test_the_schema_version_is_untouched_on_a_fresh_db(self, gde_input: Path, gde_output: Path) -> None:
         """No ``user_version`` bump, with the positive twin that the value round-trips anyway."""
@@ -1073,7 +1076,7 @@ class TestRunAsRidesTheRecord:
             }
 
         records = read_run_records()
-        assert records is not None and records[0]["run_as"]
+        assert records is not None and records[0]["run_as_tag"]
 
     def test_an_older_record_without_the_key_still_reads(self) -> None:
         """A DB written by <= v3.21.0 has no ``run_as`` — the reader must not care.
@@ -1092,7 +1095,7 @@ class TestRunAsRidesTheRecord:
             error_category="none",
             entity_outcomes=None,
         )
-        legacy.pop("run_as")
+        legacy.pop("run_as_tag")
         legacy.pop("entity_outcomes")
         assert write_run_record(legacy, source="cli") is True
 

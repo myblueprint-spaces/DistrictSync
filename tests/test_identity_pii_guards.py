@@ -163,7 +163,7 @@ FROZEN_RUN_RECORD_KEYS = frozenset(
         # plan 0049 S-1a-ii.3 — the OS account the run executed as. An account NAME, the
         # same class of value the log line already carries; never a student identifier and
         # never an address (the two sweeps below still hold it to that).
-        "run_as",
+        "run_as_tag",
         "error_category",
         "duration_s",
         "sftp_attempted",

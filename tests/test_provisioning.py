@@ -115,10 +115,10 @@ def rig(monkeypatch, machine_root):
         if r.verify_raises is not None:
             raise r.verify_raises
 
-    def _commit(provisioned_by: str, *, update_mode: str | None) -> None:
+    def _commit(*, update_mode: str | None) -> None:
         if r.commit_raises is not None:
             raise r.commit_raises
-        r.committed.append(("MachineScope", provisioned_by))
+        r.committed.append(("MachineScope", "committed"))
         r.update_modes.append(update_mode)
 
     def _delete(task_name: str) -> bool:
@@ -546,9 +546,9 @@ class TestCommit:
         order: list[str] = []
         staged = provisioning._commit_machine_switch
 
-        def _spy(provisioned_by: str, *, update_mode: str | None) -> None:
+        def _spy(*, update_mode: str | None) -> None:
             order.append("commit")
-            staged(provisioned_by, update_mode=update_mode)
+            staged(update_mode=update_mode)
 
         monkeypatch.setattr(provisioning, "_commit_machine_switch", _spy)
         provisioning.apply_provision(
@@ -1102,7 +1102,7 @@ class TestMachineSetupThroughTheRealSequence:
     def test_the_mode_reaches_the_commit_and_nothing_is_registered_or_granted(self, rig, source_profile, machine_root):
         provisioning.apply_machine_setup(_machine_payload(source_profile, "on"))
         assert rig.update_modes == ["on"]
-        assert rig.committed == [("MachineScope", "CORP\\jane")]
+        assert rig.committed == [("MachineScope", "committed")]
         assert rig.registered == 0  # no nightly
         assert rig.icacls == []  # the setup admin is the only principal: nobody else is granted anything
 
@@ -1127,3 +1127,26 @@ class TestMachineSetupThroughTheRealSequence:
 
         source = inspect.getsource(provisioning._commit_machine_switch)
         assert source.index("MACHINE_SETTING_VALUE_NAME") < source.index("MACHINE_SCOPE_VALUE_NAME")
+
+
+class TestNoAccountNameInTheRegistry:
+    """Plan 0055 N1: the commit writes no account name and deletes a 0049 ProvisionedBy."""
+
+    @staticmethod
+    def _source() -> str:
+        import inspect
+
+        return inspect.getsource(provisioning._commit_machine_switch)
+
+    def test_the_commit_takes_no_account(self):
+        import inspect
+
+        assert list(inspect.signature(provisioning._commit_machine_switch).parameters) == ["update_mode"]
+
+    def test_provisioned_by_is_deleted_never_written(self):
+        source = self._source()
+        assert 'DeleteValue(key, "ProvisionedBy")' in source
+        assert 'SetValueEx(key, "ProvisionedBy"' not in source
+
+    def test_no_key_is_written_the_tag_uses_the_machine_guid(self):
+        assert "SALT" not in self._source() and "REG_BINARY" not in self._source()

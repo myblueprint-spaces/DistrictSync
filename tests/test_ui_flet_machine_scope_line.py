@@ -159,7 +159,7 @@ class TestMachineScopeProvenance:
             "read_hklm_values",
             lambda: {"MachineScope": 1, "ProvisionedAt": _WHEN, "ProvisionedBy": _WHO},
         )
-        assert diagnostics.machine_scope_provenance() == (_WHO, _WHEN)
+        assert diagnostics.machine_scope_provenance() == (diagnostics.PROVISIONED_BY_ROLE, _WHEN)  # never a name (N1)
 
     def test_a_non_windows_host_that_reaches_the_import_still_reduces_to_empty(
         self, monkeypatch: pytest.MonkeyPatch
@@ -225,12 +225,10 @@ class TestMachineScopeProvenance:
         [
             {"MachineScope": 1},
             {"ProvisionedBy": _WHO},
-            {"ProvisionedAt": _WHEN},
-            {"ProvisionedBy": 7, "ProvisionedAt": _WHEN},
             {"ProvisionedBy": _WHO, "ProvisionedAt": None},
             {"ProvisionedBy": "   ", "ProvisionedAt": "   "},
         ],
-        ids=["switch-only", "name-only", "date-only", "non-string-name", "non-string-date", "blank-both"],
+        ids=["switch-only", "name-only", "non-string-date", "blank-both"],
     )
     def test_a_partial_or_mistyped_key_degrades(
         self, monkeypatch: pytest.MonkeyPatch, values: dict[str, object]
@@ -261,7 +259,7 @@ class TestTheSeamAndTheLineComposeIntoTheRenderedSentence:
         )
         provisioned_by, provisioned_at = diagnostics.machine_scope_provenance()
         line = machine_scope_line(machine_scope=True, provisioned_by=provisioned_by, provisioned_at=provisioned_at)
-        assert line == MACHINE_SCOPE_LINE_WITH_PROVENANCE.format(who=_WHO, when="Sep 18, 2026")
+        assert line == MACHINE_SCOPE_LINE_WITH_PROVENANCE.format(who="an administrator", when="Sep 18, 2026")
 
     def test_an_absent_registry_key_produces_the_plain_form(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The degraded twin: a machine-scoped install whose key lost its display values still
