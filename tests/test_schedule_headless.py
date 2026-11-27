@@ -94,6 +94,13 @@ class TestRegisterTheSignedInAccount:
         assert cfg.schedule_run_as_kind == "interactive_token" and cfg.schedule_run_as_user == ""
         assert cfg.schedule_task_args["sis_type"] == "myedbc" and cfg.schedule_wake_to_run is True
 
+    def test_a_logged_on_only_task_is_said_never_silent(self, sched):
+        _, message = headless.register(run_time="02:30", spec=_spec("current"), password=None, wake_to_run=False)
+        assert headless.LOGGED_ON_ONLY_NOTE in message
+        sched.supports_unattended_password = False  # the cron adapter: no such distinction to state
+        _, message = headless.register(run_time="02:30", spec=_spec("current"), password=None, wake_to_run=False)
+        assert headless.LOGGED_ON_ONLY_NOTE not in message
+
     def test_a_failed_registration_writes_no_record(self, sched):
         sched.ok, sched.message = False, "Access is denied."
         code, message = headless.register(run_time="02:30", spec=_spec("current"), password=None, wake_to_run=False)
@@ -124,9 +131,21 @@ class TestRegisterAnotherAccount:
             )
 
         def complete_handover(*, persist, reenter):
+            if calls.get("refused") is not None:
+                return provision_session.HandoverOutcome(handed_over=False, refused=calls["refused"])
+            move = calls.get("move_profile_to")
+            if move is not None:  # what the real handover does: re-pin to the shared profile, settings moved along
+                import shutil
+
+                from src.utils import paths
+
+                move.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(paths.user_data_dir() / "config.json", move / "config.json")
+                monkeypatch.setattr("src.utils.paths._user_scope_data_dir", lambda *, create: move)
+                paths.reset_data_dir_pin()
             persist()
             calls["persisted"] += 1
-            return provision_session.HandoverOutcome(handed_over=True)
+            return provision_session.HandoverOutcome(handed_over=calls.get("handed_over", True))
 
         monkeypatch.setattr(provision_session, "request_provision", request_provision)
         monkeypatch.setattr(provision_session, "complete_handover", complete_handover)
@@ -193,6 +212,77 @@ class TestRegisterAnotherAccount:
         files = [p for p in paths.user_data_dir().rglob("*") if p.is_file()]
         assert files and SECRET not in "".join(p.read_text(encoding="utf-8", errors="replace") for p in files)
 
+    def test_an_unreadable_delivery_secret_is_refused_before_any_prompt(self, sched, provision, monkeypatch):
+        monkeypatch.setattr(provision_session, "delivery_secret_unreadable", lambda **kw: True)
+        code, message = headless.register(
+            run_time="03:00", spec=_spec("password:CORP\\svc"), password=SECRET, wake_to_run=False
+        )
+        assert (code, message) == (1, headless.GATE_COPY[RegisterBlock.DELIVERY_SECRET_UNREADABLE])
+        assert "principal" not in provision
+
+    def test_the_record_lands_in_the_shared_settings_after_the_handover(self, sched, provision, tmp_path):
+        from src.utils import paths
+
+        before = paths.user_data_dir()
+        provision["move_profile_to"] = tmp_path / "ProgramData" / "DistrictSync"
+        code, _ = headless.register(
+            run_time="03:00", spec=_spec("password:CORP\\svc"), password=SECRET, wake_to_run=False
+        )
+        assert code == 0
+        assert '"schedule_registered": true' in (provision["move_profile_to"] / "config.json").read_text(
+            encoding="utf-8"
+        )
+        assert '"schedule_registered": true' not in (before / "config.json").read_text(encoding="utf-8")
+
+    def test_an_unusable_shared_folder_records_nothing(self, sched, provision):
+        provision["refused"] = next(iter(__import__("src.utils.paths", fromlist=["x"]).MachineScopeRefusedReason))
+        code, message = headless.register(
+            run_time="03:00", spec=_spec("password:CORP\\svc"), password=SECRET, wake_to_run=False
+        )
+        assert code == 1 and "not usable" in message and not AppConfig.load().schedule_registered
+
+    def test_an_unconfirmed_switch_does_not_claim_the_shared_settings(self, sched, provision):
+        provision["handed_over"] = False
+        code, message = headless.register(
+            run_time="03:00", spec=_spec("password:CORP\\svc"), password=SECRET, wake_to_run=False
+        )
+        assert code == 1 and "could not be confirmed" in message and "using the shared settings" not in message
+
+    def test_a_failed_test_run_is_a_warning_the_nightly_is_still_scheduled(self, sched, provision, monkeypatch):
+        from src.scheduler import schedule_check
+
+        failed = schedule_check.ScheduleCheck(
+            verdict=next(v for v in schedule_check.CheckVerdict if v is not schedule_check.CheckVerdict.OK)
+        )
+
+        def request_provision(*args, **kwargs):
+            provision["principal"] = kwargs["principal"]
+            return provision_session.ProvisionAttempt(
+                outcome=provision_session.ProvisionOutcome.PROVISIONED, check=failed
+            )
+
+        monkeypatch.setattr(provision_session, "request_provision", request_provision)
+        code, message = headless.register(
+            run_time="03:00", spec=_spec("gmsa:CORP\\svc$"), password=None, wake_to_run=False
+        )
+        assert code == 0 and message.splitlines()[-1].startswith("Warning: the account's test run did not pass")
+        assert AppConfig.load().schedule_registered
+
+    def test_an_engine_error_is_a_fixed_line_never_the_account_or_a_traceback(
+        self, sched, provision, monkeypatch, caplog
+    ):
+        def boom(*args, **kwargs):
+            raise ValueError("bad principal CORP\\svc")
+
+        monkeypatch.setattr(provision_session, "request_provision", boom)
+        with caplog.at_level(logging.DEBUG):
+            code, message = headless.register(
+                run_time="03:00", spec=_spec("password:CORP\\svc"), password=SECRET, wake_to_run=False
+            )
+        assert code == 1 and "unexpected error" in message
+        assert "svc" not in message and "svc" not in caplog.text and SECRET not in caplog.text
+        assert "ValueError" in caplog.text
+
 
 class TestRemove:
     def test_it_removes_and_clears_the_record(self, sched):
@@ -248,6 +338,11 @@ class TestTheCommandLine:
             ["--time", "02:00"],
             ["--schedule-remove", "--principal", "current"],
             ["--schedule-register", "--time", "02:00", "--sis", "myedbc"],
+            # argparse accepts abbreviations: the check is on parsed values, never spellings
+            ["--sis", "myedbc", "--input", "x", "--wak"],
+            ["--schedule-register", "--time", "02:00", "--sftp-h", "x"],
+            ["--schedule-register", "--time", "02:00", "--dry"],
+            ["--schedule-remove", "--updates", "off"],
         ],
     )
     def test_misuse_is_exit_2(self, argv, sched):
@@ -286,3 +381,47 @@ def test_the_record_has_one_writer():
                 if any(isinstance(t, ast.Attribute) and t.attr == "schedule_run_as_kind" for t in targets):
                     writers.append(source.name)
     assert sorted(set(writers)) == ["schedule_record.py"]
+
+
+class TestThePasswordRoutes:
+    def _cli(self, argv):
+        from src.main import cli
+
+        return cli(argv)
+
+    ARGV = ["--schedule-register", "--time", "03:00", "--principal", "password:CORP\\svc"]
+
+    def test_the_environment_variable_is_removed_once_read(self, sched, monkeypatch):
+        import os
+
+        monkeypatch.setattr(headless, "register", lambda **kw: (0, "ok"))
+        monkeypatch.setenv("DISTRICTSYNC_TASK_PASSWORD", SECRET)
+        assert self._cli(self.ARGV) == 0
+        assert "DISTRICTSYNC_TASK_PASSWORD" not in os.environ  # no child this process starts inherits it
+
+    def test_no_console_is_exit_2_never_a_hang(self, sched, monkeypatch):
+        import src.main as main_mod
+
+        monkeypatch.delenv("DISTRICTSYNC_TASK_PASSWORD", raising=False)
+        monkeypatch.setattr(main_mod, "_has_console", lambda: False)
+        monkeypatch.setattr("getpass.getpass", lambda *a, **k: pytest.fail("prompted with no console"))
+        assert self._cli(self.ARGV) == 2
+
+    def test_positive_twin_a_console_is_prompted(self, sched, monkeypatch):
+        import src.main as main_mod
+
+        seen = {}
+        monkeypatch.delenv("DISTRICTSYNC_TASK_PASSWORD", raising=False)
+        monkeypatch.setattr(main_mod, "_has_console", lambda: True)
+        monkeypatch.setattr("getpass.getpass", lambda *a, **k: SECRET)
+        monkeypatch.setattr(headless, "register", lambda **kw: (seen.update(kw), (0, "ok"))[1])
+        assert self._cli(self.ARGV) == 0 and seen["password"] == SECRET
+
+    def test_an_incomplete_setup_never_asks_for_the_password(self, sched, monkeypatch):
+        import src.main as main_mod
+
+        AppConfig(input_dir="", output_dir="", sis_type="").save()
+        monkeypatch.delenv("DISTRICTSYNC_TASK_PASSWORD", raising=False)
+        monkeypatch.setattr(main_mod, "_has_console", lambda: True)
+        monkeypatch.setattr("getpass.getpass", lambda *a, **k: pytest.fail("asked before the settings were checked"))
+        assert self._cli(self.ARGV) == 1

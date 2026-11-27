@@ -259,6 +259,9 @@ def _read_sftp_password(args: argparse.Namespace) -> str:
             print("Error: --sftp-password-stdin was set but no password was received on stdin.")
             sys.exit(2)
         return pw
+    if not _has_console():
+        print(f"Error: no console to ask for the password; set {SFTP_PASSWORD_ENV_VAR} or use --sftp-password-stdin.")
+        sys.exit(2)
     import getpass
 
     return getpass.getpass("SFTP password: ")
@@ -369,31 +372,24 @@ MACHINE_SETUP_REFUSED_FOLDER = (
 )
 #: Outcomes in which the elevated step never ran, so nothing was changed.
 _MACHINE_SETUP_NOT_RUN = frozenset({"declined", "launch_failed", "different_account", "unavailable"})
-#: Flags that belong to a conversion or to SFTP setup; none of them may ride along with --machine-setup.
-_NOT_WITH_MACHINE_SETUP = frozenset(
-    {
-        "--sis",
-        "--input",
-        "--output",
-        "--dry-run",
-        "--diff",
-        "--quality",
-        "--sftp",
-        "--source",
-        "--sftp-host",
-        "--sftp-port",
-        "--sftp-user",
-        "--sftp-remote",
-        "--sftp-password-stdin",
-    }
+#: The argparse destinations of a conversion or of SFTP setup: none rides along with --machine-setup or a schedule command.
+_CONVERSION_AND_SFTP_DESTS = (
+    "sis",
+    "input",
+    "output",
+    "dry_run",
+    "diff",
+    "quality",
+    "sftp",
+    "source",
+    "sftp_host",
+    "sftp_port",
+    "sftp_user",
+    "sftp_remote",
+    "sftp_password_stdin",
 )
 
-
 TASK_PASSWORD_ENV_VAR = "DISTRICTSYNC_TASK_PASSWORD"  # nosec B105 - the NAME of the variable, not a secret
-
-#: Flags of a schedule command (plan 0055 M3). Used with --schedule-register only, except --principal/--time/--wake
-#: which are refused anywhere else too.
-_SCHEDULE_OPTIONS = frozenset({"--time", "--principal", "--wake", "--task-password-stdin"})
 
 
 def _read_task_password(args: argparse.Namespace, account: str) -> str:
@@ -401,18 +397,31 @@ def _read_task_password(args: argparse.Namespace, account: str) -> str:
 
     It goes only into the ``Principal`` handed to the scheduler: never argv, a child's environment, a log or AppConfig.
     """
-    env_pw = os.environ.get(TASK_PASSWORD_ENV_VAR)
+    # Popped, not read: a child this process starts (icacls, the elevation helpers) must not inherit it.
+    env_pw = os.environ.pop(TASK_PASSWORD_ENV_VAR, None)
     if env_pw:
         return env_pw
     if args.task_password_stdin:
-        pw = sys.stdin.read().rstrip("\n")
+        pw = sys.stdin.read().rstrip("\n") if sys.stdin is not None else ""
         if not pw:
             print("Error: --task-password-stdin was set but no password was received on stdin.")
             sys.exit(2)
         return pw
+    if not _has_console():
+        # getpass would spin forever with no console (a deployment tool, a service): refuse instead.
+        print(f"Error: no console to ask for the password; set {TASK_PASSWORD_ENV_VAR} or use --task-password-stdin.")
+        sys.exit(2)
     import getpass
 
     return getpass.getpass(f"Windows password for {account}: ")
+
+
+def _has_console() -> bool:
+    """Whether a password prompt can be answered (a seam for tests)."""
+    try:
+        return sys.stdin is not None and sys.stdin.isatty()
+    except (AttributeError, ValueError, OSError):
+        return False
 
 
 def _schedule_register(args: argparse.Namespace) -> int:
@@ -424,6 +433,10 @@ def _schedule_register(args: argparse.Namespace) -> int:
     except ValueError as exc:
         print(f"Error: {exc}")
         return 2
+    if not AppConfig.load().is_complete():
+        # Before any password prompt: the gate would refuse on this rung anyway.
+        print(headless.GATE_COPY[headless.RegisterBlock.INCOMPLETE])
+        return 1
     password = _read_task_password(args, spec.account) if spec.needs_password else None
     code, message = headless.register(run_time=args.time or "", spec=spec, password=password, wake_to_run=args.wake)
     print(message)
@@ -847,23 +860,25 @@ def _cli(argv: list[str] | None) -> int:
             "--schedule-register, --schedule-remove."
         )
         return 2
-    given = {arg.split("=", 1)[0] for arg in args_list}
-    if given & _SCHEDULE_OPTIONS and not args.schedule_register:
+    # Decided on PARSED values, never on spellings: argparse accepts abbreviations (--wak, --sftp-h).
+    schedule_options = args.time is not None or args.principal is not None or args.wake or args.task_password_stdin
+    if schedule_options and not args.schedule_register:
         print("Error: --time, --principal, --wake and --task-password-stdin are used with --schedule-register.")
         return 2
+    if args.updates is not None and not args.machine_setup:
+        print("Error: --updates is used with --machine-setup.")
+        return 2
+    conversion_or_sftp = any(getattr(args, dest) != parser.get_default(dest) for dest in _CONVERSION_AND_SFTP_DESTS)
     if args.schedule_register or args.schedule_remove:
-        if given & _NOT_WITH_MACHINE_SETUP:
+        if conversion_or_sftp:
             print(
                 "Error: a schedule uses the saved district, folders and delivery; set those in Setup, "
                 "then schedule without --sis/--input/--output/--sftp flags."
             )
             return 2
         return _schedule_register(args) if args.schedule_register else _schedule_remove()
-    if args.updates is not None and not args.machine_setup:
-        print("Error: --updates is used with --machine-setup.")
-        return 2
     if args.machine_setup:
-        if any(arg.split("=", 1)[0] in _NOT_WITH_MACHINE_SETUP for arg in args_list):
+        if conversion_or_sftp:
             print("Error: --machine-setup sets the computer up only; run a conversion or SFTP setup separately.")
             return 2
         return _machine_setup(args)

@@ -184,6 +184,23 @@ def register(*, run_time: str, spec: PrincipalSpec, password: str | None, wake_t
             wake_to_run=wake_to_run,
         )
 
+    try:
+        return _dispatch(cfg, scheduler, foreign, principal, run_time, wake_to_run, _persist)
+    except Exception as exc:  # noqa: BLE001 - the window's contract: a fixed line, the exception TYPE logged, no traceback
+        logger.error("Headless schedule failed: %s", type(exc).__name__)
+        return 1, "The nightly was not scheduled because of an unexpected error; see the log."
+
+
+#: The window's "Scheduled — logged-on only" fact, on the command line (an unattended task needs an account password).
+LOGGED_ON_ONLY_NOTE = (
+    "This nightly runs only while that Windows account is signed in. To run it when nobody is signed in, schedule it "
+    "with --principal password:DOMAIN\\user or gmsa:DOMAIN\\name$."
+)
+
+
+def _dispatch(cfg, scheduler, foreign, principal, run_time, wake_to_run, persist) -> tuple[int, str]:
+    from src.scheduler import provision_session
+
     if not foreign:
         ok, message = scheduler.register(
             task_name=cfg.schedule_task_name,
@@ -198,8 +215,11 @@ def register(*, run_time: str, spec: PrincipalSpec, password: str | None, wake_t
         )
         if not ok:
             return 1, f"The nightly was not scheduled: {message}"
-        _persist()
-        return 0, f"Scheduled: DistrictSync runs every day at {run_time}."
+        persist()
+        done = f"Scheduled: DistrictSync runs every day at {run_time}."
+        if scheduler.supports_unattended_password and principal.kind is PrincipalKind.INTERACTIVE_TOKEN:
+            done += "\n" + LOGGED_ON_ONLY_NOTE  # the window's downgrade warning: never a silent logged-on-only task
+        return 0, done
 
     attempt = provision_session.request_provision(
         cfg.schedule_task_name,
@@ -216,7 +236,7 @@ def register(*, run_time: str, spec: PrincipalSpec, password: str | None, wake_t
     )
     provisioned = attempt.outcome is provision_session.ProvisionOutcome.PROVISIONED
     handover = provision_session.complete_handover(
-        persist=_persist if provisioned else (lambda: None), reenter=lambda: None
+        persist=persist if provisioned else (lambda: None), reenter=lambda: None
     )
     if handover.refused is not None:
         return 1, f"The shared settings folder is not usable ({handover.refused.value}); see the log."
@@ -227,12 +247,22 @@ def register(*, run_time: str, spec: PrincipalSpec, password: str | None, wake_t
         if attempt.icacls_exit is not None:
             detail += f", Windows permissions code {attempt.icacls_exit}"
         return 1, f"The nightly was not scheduled ({detail}); see the log."
+    if not handover.handed_over:
+        # The window's SCOPE_SWITCH_UNCONFIRMED: the child said done, but this computer cannot be shown to use the shared
+        # settings, so the record stayed in this account's settings.
+        return 1, (
+            f"The nightly was scheduled for {run_time}, but this computer could not be confirmed to use the shared "
+            "settings. Run DistrictSync.exe --diagnose."
+        )
     lines = [f"Scheduled: DistrictSync runs every day at {run_time} as the account given, using the shared settings."]
     if attempt.check is not None:
-        verdict = "passed" if attempt.check.passed else f"did not pass ({attempt.check.verdict.value})"
-        lines.append(f"The account's test run {verdict}.")
-        if not attempt.check.passed:
-            return 1, "\n".join(lines)
+        # Advisory, as in the window: the nightly IS registered and recorded, so the exit code stays 0.
+        verdict = "passed" if attempt.check.passed else f"did not pass ({attempt.check.verdict.value}); see the log"
+        lines.append(
+            f"Warning: the account's test run {verdict}."
+            if not attempt.check.passed
+            else f"The account's test run {verdict}."
+        )
     return 0, "\n".join(lines)
 
 
