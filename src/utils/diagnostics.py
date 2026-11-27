@@ -354,6 +354,8 @@ def diagnose_lines() -> list[str]:
         _guarded("update mode", _update_mode),
         _guarded("machine setup needed", lambda: _yes_no(_setup_needed())),
         "",
+        *_installation_lines(),
+        "",
         *_after_setup(_profile_lines),
         "",
         *_hklm_lines(),
@@ -365,6 +367,96 @@ def diagnose_lines() -> list[str]:
         *_after_setup(_schedule_lines),
         "",
         *_after_setup(_last_run_lines),
+    ]
+
+
+#: Plan 0055 D2: the Installation block's fixed answers (no path from this computer but the install folder).
+NOT_INSTALLED = "not installed (a copy run from a folder)"
+NO_MSI = "no DistrictSync MSI on this computer"
+UPDATER_FOLDER_ABSENT = "not created (made by machine setup when updates are on)"
+UPDATER_FOLDER_TRUSTED = "present, only administrators can change it"
+UPDATER_FOLDER_UNTRUSTED = "present, but others can change it: the updater will not use it"
+
+
+def _installation_lines() -> list[str]:
+    """How DistrictSync is installed (plan 0055 D2). Read-only; every line guarded."""
+    from src.update.startup import install_root
+    from src.utils import installation
+
+    return [
+        "Installation:",
+        _guarded("install folder", lambda: install_root() or NOT_INSTALLED),
+        _guarded("running version", app_version),
+        _guarded("MSI product version", lambda: installation.msi_product_version() or NO_MSI),
+        _guarded("copy for one account too", lambda: _yes_no(installation.per_user_copy_present())),
+        _guarded("updater folder", _updater_folder),
+        _guarded("updater last run", _updater_last_run),
+        *_after_setup(_notice_lines),
+    ]
+
+
+def _code(value: object) -> str:
+    """A short code (``[a-z0-9_]``, at most 40 characters), or ``?``: nothing else from a principal-writable file."""
+    import re
+
+    text = str(value or "")
+    return text if re.fullmatch(r"[a-z0-9_]{1,40}", text) else "?"
+
+
+def _clean(line: str | None) -> str | None:
+    """One printable line, at most 200 characters: a log line never adds rows to the report."""
+    if not line:
+        return None
+    return "".join(ch for ch in line if ch.isprintable())[:200] or None
+
+
+def _updater_folder() -> str:
+    from src.update import service
+
+    folder = service.state_dir()
+    if not folder.exists():
+        return UPDATER_FOLDER_ABSENT
+    return UPDATER_FOLDER_TRUSTED if service.state_dir_trusted(folder) else UPDATER_FOLDER_UNTRUSTED
+
+
+def _updater_last_run() -> str:
+    from src.update import service
+    from src.utils import installation
+
+    folder = service.state_dir()
+    if folder.exists() and not service.state_dir_trusted(folder):
+        return "not shown: others can change this folder"  # its text is not the updater's (review B1)
+    return _clean(installation.updater_last_line(folder / service.LOG_FILE)) or "none recorded"
+
+
+def _notice_lines() -> list[str]:
+    """The last update check (the nightly's notice on a machine-wide install) and how far behind this copy is."""
+    from src.update.check import last_check_summary
+    from src.update.status import newer_version_available
+
+    def _last() -> str:
+        # The notice is written by the nightly's account (review B1): only a parsed time, known codes and a parsed
+        # version reach the report, never the file's own text.
+        from datetime import datetime
+
+        from src.update.status import _version_key
+
+        last = last_check_summary()
+        if not last:
+            return "none recorded"
+        try:
+            at = datetime.fromisoformat(str(last.get("at"))).isoformat(timespec="seconds")
+        except (TypeError, ValueError):
+            at = "?"
+        status = _code(last.get("status"))
+        reason = _code(last.get("reason"))
+        key = _version_key(str(last.get("version") or ""))
+        version = ", version {}.{}.{}".format(*key) if key else ""
+        return f"{at} {status} ({reason}){version}"
+
+    return [
+        _guarded("last update check", _last),
+        _guarded("newer version available", lambda: newer_version_available() or "no"),
     ]
 
 
