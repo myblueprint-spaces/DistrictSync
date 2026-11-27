@@ -133,11 +133,13 @@ def run_update_service() -> int:
 PROBE_TIMEOUT_SECONDS: Final = 120.0
 HEALTH_FILE: Final = "health.json"
 PROBE_FLAG: Final = "--update-health-probe"
+#: ``supervised_check`` could not decide (a surprise inside it); nothing was recorded. Logged by U2's caller.
+HEALTH_ERROR: Final = "error"
 
 
 def supervised_check(version: str, previous: str, exe: Path, *, module: object | None = None) -> str:
     """Decide a newly applied version's health as SYSTEM (plan 0055 U3): probe ``exe --update-health-probe`` under
-    supervision; ``healthy`` / ``retry`` / ``recover`` / ``nothing`` (the package's ``SupervisedAction``). The state is
+    supervision; ``healthy`` / ``retry`` / ``recover`` / ``nothing`` (the package's ``SupervisedAction``), or ``state_untrusted`` / :data:`HEALTH_ERROR`. The state is
     ``health.json`` in the TRUSTED updater folder only; an untrusted folder answers ``state_untrusted`` and nothing is
     recorded. Called by U2's apply flow (blocked on the feed); the restore on ``recover`` is the package's
     ``recover_broken_start``. Never raises."""
@@ -157,4 +159,4 @@ def supervised_check(version: str, previous: str, exe: Path, *, module: object |
         )
         return str(action.value)
     except Exception:  # noqa: BLE001 - the SYSTEM task never crashes; doubt changes nothing
-        return "error"
+        return HEALTH_ERROR
