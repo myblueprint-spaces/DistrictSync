@@ -77,6 +77,12 @@ class TestTheAccountTag:
         (isolated_user_profile / account_tag.PROFILE_KEY_FILE).write_bytes(b"short")
         assert account_tag.tag_key() == b"short"  # an existing key is used, never silently replaced
 
+    def test_a_read_only_mode_never_creates_the_key(self, monkeypatch, isolated_user_profile):
+        monkeypatch.setattr(account_tag.sys, "platform", "linux")
+        assert account_tag.tag_key(create=False) is None
+        assert account_tag.log_name_tag(create=False) == account_tag.NO_KEY_FRAGMENT
+        assert not (isolated_user_profile / account_tag.PROFILE_KEY_FILE).exists()
+
 
 class TestTheRole:
     @pytest.mark.parametrize(

@@ -64,9 +64,17 @@ def _read_machine_guid() -> bytes | None:  # pragma: no cover - Windows-only reg
     return text.encode("utf-8") if text else None
 
 
-def _profile_key(profile: Path) -> bytes:
-    """The off-Windows key: created EXCLUSIVELY once, so two first runs cannot tag with two keys; never replaced."""
+def _profile_key(profile: Path, *, create: bool) -> bytes | None:
+    """The off-Windows key: created EXCLUSIVELY once, so two first runs cannot tag with two keys; never replaced.
+
+    ``create=False`` (a mode that may write nothing else, such as ``--schedule-check``) only reads it.
+    """
     path = profile / PROFILE_KEY_FILE
+    if not create:
+        try:
+            return path.read_bytes() or None
+        except FileNotFoundError:
+            return None
     profile.mkdir(parents=True, exist_ok=True)
     try:
         with open(path, "xb") as fh:
@@ -79,14 +87,14 @@ def _profile_key(profile: Path) -> bytes:
     return data
 
 
-def tag_key() -> bytes | None:
-    """The key, or ``None`` when it cannot be read. Never raises."""
+def tag_key(*, create: bool = True) -> bytes | None:
+    """The key, or ``None`` when it cannot be read. Never raises. ``create`` matters off Windows only."""
     try:
         if sys.platform == "win32":
             return _read_machine_guid()
         from src.utils import paths
 
-        return _profile_key(paths.user_data_dir())
+        return _profile_key(paths.user_data_dir(), create=create)
     except Exception:  # noqa: BLE001 - a tag must never take a log sink or a run record down
         logger.warning("The account tag key could not be read; this run is recorded without an account tag.")
         return None
@@ -108,9 +116,10 @@ def current_tag() -> str | None:
     return account_tag(process_account())
 
 
-def log_name_tag() -> str:
+def log_name_tag(*, create: bool = True) -> str:
     """A file-name-safe fragment for this process's log file: the tag, or :data:`NO_KEY_FRAGMENT`. Never a name."""
-    return current_tag() or NO_KEY_FRAGMENT
+    key = tag_key(create=create)
+    return (account_tag(process_account(), key=key) if key else None) or NO_KEY_FRAGMENT
 
 
 def process_role(argv: list[str] | None = None) -> str:

@@ -380,7 +380,7 @@ def _write_marker(path: Path, token: str) -> None:
 
     body = {
         "token": token,
-        "account": log_name_tag(),
+        "account": log_name_tag(create=False),  # this mode writes the marker and nothing else
         "at": datetime.now().isoformat(timespec="seconds"),
         "version": app_version(),
     }

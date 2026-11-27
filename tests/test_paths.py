@@ -1153,7 +1153,7 @@ class TestScopedFileNames:
         from src.utils import account_tag
 
         monkeypatch.setattr(account_tag, "process_account", lambda: "CORP\\svc$")
-        monkeypatch.setattr(account_tag, "tag_key", lambda: bytes(32))
+        monkeypatch.setattr(account_tag, "tag_key", lambda **kw: bytes(32))
         monkeypatch.setattr(account_tag, "process_role", lambda: "scheduled")
 
         log = paths_module.user_log_file()
@@ -1169,7 +1169,7 @@ class TestScopedFileNames:
         from src.utils import account_tag
 
         monkeypatch.setattr(account_tag, "process_account", lambda: "")
-        monkeypatch.setattr(account_tag, "tag_key", lambda: b"k")
+        monkeypatch.setattr(account_tag, "tag_key", lambda **kw: b"k")
         name = paths_module.user_log_file().name
         assert name == "etl_tool-interactive-nokey.log"
         assert all(c.isalnum() or c in "-_." for c in name)
