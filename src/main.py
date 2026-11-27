@@ -259,6 +259,9 @@ def _read_sftp_password(args: argparse.Namespace) -> str:
             print("Error: --sftp-password-stdin was set but no password was received on stdin.")
             sys.exit(2)
         return pw
+    if not _has_console():
+        print(f"Error: no console to ask for the password; set {SFTP_PASSWORD_ENV_VAR} or use --sftp-password-stdin.")
+        sys.exit(2)
     import getpass
 
     return getpass.getpass("SFTP password: ")
@@ -369,24 +372,84 @@ MACHINE_SETUP_REFUSED_FOLDER = (
 )
 #: Outcomes in which the elevated step never ran, so nothing was changed.
 _MACHINE_SETUP_NOT_RUN = frozenset({"declined", "launch_failed", "different_account", "unavailable"})
-#: Flags that belong to a conversion or to SFTP setup; none of them may ride along with --machine-setup.
-_NOT_WITH_MACHINE_SETUP = frozenset(
-    {
-        "--sis",
-        "--input",
-        "--output",
-        "--dry-run",
-        "--diff",
-        "--quality",
-        "--sftp",
-        "--source",
-        "--sftp-host",
-        "--sftp-port",
-        "--sftp-user",
-        "--sftp-remote",
-        "--sftp-password-stdin",
-    }
+#: The argparse destinations of a conversion or of SFTP setup: none rides along with --machine-setup or a schedule command.
+_CONVERSION_AND_SFTP_DESTS = (
+    "sis",
+    "input",
+    "output",
+    "dry_run",
+    "diff",
+    "quality",
+    "sftp",
+    "source",
+    "sftp_host",
+    "sftp_port",
+    "sftp_user",
+    "sftp_remote",
+    "sftp_password_stdin",
 )
+
+TASK_PASSWORD_ENV_VAR = "DISTRICTSYNC_TASK_PASSWORD"  # nosec B105 - the NAME of the variable, not a secret
+
+
+def _read_task_password(args: argparse.Namespace, account: str) -> str:
+    """The scheduled task's Windows password: env var, then stdin, then a prompt (the --sftp-configure routes).
+
+    It goes only into the ``Principal`` handed to the scheduler: never argv, a child's environment, a log or AppConfig.
+    """
+    # Popped, not read: a child this process starts (icacls, the elevation helpers) must not inherit it.
+    env_pw = os.environ.pop(TASK_PASSWORD_ENV_VAR, None)
+    if env_pw:
+        return env_pw
+    if args.task_password_stdin:
+        pw = sys.stdin.read().rstrip("\n") if sys.stdin is not None else ""
+        if not pw:
+            print("Error: --task-password-stdin was set but no password was received on stdin.")
+            sys.exit(2)
+        return pw
+    if not _has_console():
+        # getpass would spin forever with no console (a deployment tool, a service): refuse instead.
+        print(f"Error: no console to ask for the password; set {TASK_PASSWORD_ENV_VAR} or use --task-password-stdin.")
+        sys.exit(2)
+    import getpass
+
+    return getpass.getpass(f"Windows password for {account}: ")
+
+
+def _has_console() -> bool:
+    """Whether a password prompt can be answered (a seam for tests)."""
+    try:
+        return sys.stdin is not None and sys.stdin.isatty()
+    except (AttributeError, ValueError, OSError):
+        return False
+
+
+def _schedule_register(args: argparse.Namespace) -> int:
+    """``--schedule-register --time HH:MM [--principal ...] [--wake]`` (plan 0055 M3): the Schedule button, headless."""
+    from src.scheduler import headless
+
+    try:
+        spec = headless.parse_principal(args.principal or headless.PRINCIPAL_CURRENT)
+    except ValueError as exc:
+        print(f"Error: {exc}")
+        return 2
+    if not AppConfig.load().is_complete():
+        # Before any password prompt: the gate would refuse on this rung anyway.
+        print(headless.GATE_COPY[headless.RegisterBlock.INCOMPLETE])
+        return 1
+    password = _read_task_password(args, spec.account) if spec.needs_password else None
+    code, message = headless.register(run_time=args.time or "", spec=spec, password=password, wake_to_run=args.wake)
+    print(message)
+    return code
+
+
+def _schedule_remove() -> int:
+    """``--schedule-remove`` (plan 0055 M3): the Remove button, headless."""
+    from src.scheduler import headless
+
+    code, message = headless.remove()
+    print(message)
+    return code
 
 
 def _is_windows() -> bool:
@@ -767,18 +830,55 @@ def _cli(argv: list[str] | None) -> int:
         help=f"With --machine-setup: off, notify or on (default: {policy.DEFAULT_UPDATE_MODE})",
     )
 
+    schedule_group = parser.add_argument_group("Schedule (the nightly, from the saved settings)")
+    schedule_group.add_argument(
+        "--schedule-register", action="store_true", help="Schedule the nightly conversion (like Setup's Schedule)"
+    )
+    schedule_group.add_argument("--schedule-remove", action="store_true", help="Remove the scheduled nightly")
+    schedule_group.add_argument("--time", help="With --schedule-register: the run time, HH:MM (24-hour)")
+    schedule_group.add_argument(
+        "--principal",
+        help="With --schedule-register: current (default), gmsa:DOMAIN\\name$ or password:DOMAIN\\user",
+    )
+    schedule_group.add_argument(
+        "--wake", action="store_true", help="With --schedule-register: wake the computer to run the sync"
+    )
+    schedule_group.add_argument(
+        "--task-password-stdin",
+        action="store_true",
+        help=f"With --schedule-register: read the account's Windows password from stdin (or set {TASK_PASSWORD_ENV_VAR})",
+    )
+
     args = parser.parse_args(args_list)
 
     # Route to SFTP subcommands (mutually exclusive with the ETL pipeline)
     sftp_actions = [args.sftp_configure, args.sftp_test, args.sftp_show]
-    if sum(sftp_actions) + int(args.machine_setup) > 1:
-        print("Error: choose only one of --sftp-configure, --sftp-test, --sftp-show, --machine-setup.")
+    commands = sum(sftp_actions) + int(args.machine_setup) + int(args.schedule_register) + int(args.schedule_remove)
+    if commands > 1:
+        print(
+            "Error: choose only one of --sftp-configure, --sftp-test, --sftp-show, --machine-setup, "
+            "--schedule-register, --schedule-remove."
+        )
+        return 2
+    # Decided on PARSED values, never on spellings: argparse accepts abbreviations (--wak, --sftp-h).
+    schedule_options = args.time is not None or args.principal is not None or args.wake or args.task_password_stdin
+    if schedule_options and not args.schedule_register:
+        print("Error: --time, --principal, --wake and --task-password-stdin are used with --schedule-register.")
         return 2
     if args.updates is not None and not args.machine_setup:
         print("Error: --updates is used with --machine-setup.")
         return 2
+    conversion_or_sftp = any(getattr(args, dest) != parser.get_default(dest) for dest in _CONVERSION_AND_SFTP_DESTS)
+    if args.schedule_register or args.schedule_remove:
+        if conversion_or_sftp:
+            print(
+                "Error: a schedule uses the saved district, folders and delivery; set those in Setup, "
+                "then schedule without --sis/--input/--output/--sftp flags."
+            )
+            return 2
+        return _schedule_register(args) if args.schedule_register else _schedule_remove()
     if args.machine_setup:
-        if any(arg.split("=", 1)[0] in _NOT_WITH_MACHINE_SETUP for arg in args_list):
+        if conversion_or_sftp:
             print("Error: --machine-setup sets the computer up only; run a conversion or SFTP setup separately.")
             return 2
         return _machine_setup(args)
@@ -860,8 +960,8 @@ def _cli(argv: list[str] | None) -> int:
     #   0 — success (ETL complete; SFTP succeeded or not requested)
     #   1 — ETL / validation error (run did not complete)
     #   2 — argument misuse: an argparse usage error (missing/unknown flags),
-    #       more than one SFTP subcommand, or --sftp-password-stdin with an
-    #       empty stdin
+    #       more than one subcommand (SFTP, --machine-setup, --schedule-*), a schedule
+    #       option without --schedule-register, or a --*-password-stdin with an empty stdin
     #   3 — SFTP delivery failure (ETL succeeded; upload did not)
     if result.sftp_attempted and not result.sftp_ok:
         # _sftp_upload already logged at ERROR level with the host; re-emit

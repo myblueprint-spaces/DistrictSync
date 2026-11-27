@@ -70,7 +70,7 @@ from pathlib import Path
 
 import flet as ft
 
-from src.config.app_config import AppConfig, registration_stamp
+from src.config.app_config import AppConfig
 from src.config.authoring import current_digest
 from src.scheduler import get_scheduler, windows
 from src.scheduler.provision_session import (
@@ -84,6 +84,7 @@ from src.scheduler.provision_session import (
 )
 from src.scheduler.provisioning import ProvisionStep
 from src.scheduler.schedule_check import ScheduleCheck
+from src.scheduler.schedule_record import clear_registered_record, write_registered_record
 from src.scheduler.task_com import Principal, PrincipalKind, runs_from_per_user_install
 from src.sftp.uploader import LISTING_DENIED_NOTE, SFTPUploader
 from src.ui_flet import components, handover_result, tokens
@@ -191,7 +192,6 @@ from src.ui_flet.setup_flow import (
     step_number,
     task_args_changed,
     task_args_from_persisted,
-    task_args_to_persisted,
     total_steps,
     wake_to_run_initial,
 )
@@ -3221,42 +3221,20 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
         )
 
         def _persist_registered_record() -> None:
-            """The five-facet register record (DSYNC-37 added wake-to-run) — the ONE spelling, both dispatch paths.
+            """The five-facet register record — the ONE spelling, both dispatch paths.
 
-            Extracted at 0049 S-2b.3 because the provisioning path needs exactly this and
-            nothing else: ``complete_handover`` takes it as ``persist`` and runs it strictly
-            AFTER the re-pin, so the facets land in the SHARED ``config.json`` rather than in
-            the per-user one that is renamed seconds earlier. A second spelling of a
-            four-field atomic record is how one of them comes to be forgotten.
+            ``complete_handover`` takes it as ``persist`` and runs it strictly AFTER the re-pin, so the
+            facets land in the SHARED ``config.json`` rather than in the per-user one renamed seconds earlier.
             """
-            cfg.schedule_time = run_time
-            cfg.schedule_registered = True
-            # DSYNC-26: the missed-run clock for an install with no run store (fifth facet, SAME save).
-            cfg.schedule_registered_at = registration_stamp()
-            # 0034 S3-a/d: record what was ACTUALLY registered — the unattended fact (a boolean
-            # only; the password itself stays handler-local per I1/I3) + the task-baked args.
-            # Choosing the signed-in-only path re-registers with a blank password, so this line
-            # also honestly flips the persisted flag to False on that path.
-            #
-            # 0049 S-4 keys it on the KIND rather than on ``bool(password)``. Byte-identical for
-            # the two pre-S-4 kinds (a typed password IS what makes the kind PASSWORD), and it
-            # is the only spelling that stays TRUE for a managed service account: that task runs
-            # while nobody is signed in and carries no password, so ``bool(password)`` would
-            # record an unattended task as logged-on-only and the reconcile would stop guarding
-            # it against a silent downgrade.
-            cfg.schedule_unattended = declared_kind is not PrincipalKind.INTERACTIVE_TOKEN
-            cfg.schedule_task_args = task_args_to_persisted(registered_args)
-            # 0046 B: the third facet of the ATOMIC record — the principal that was actually
-            # registered. "" means the signed-in account. Written in the SAME save as the other
-            # two, so the record can never be half-evidenced.
-            cfg.schedule_run_as_user = sent_account or ""
-            # 0049 S-4: the FOURTH facet, in the same save for the same reason. It is the one
-            # fact nothing else can recover — the kind cannot be read back off the name without
-            # re-introducing the ``$`` inference S-3 deleted.
-            cfg.schedule_run_as_kind = declared_kind.value
-            # DSYNC-37: the FIFTH facet, same save — whether the registered task wakes the computer.
-            cfg.schedule_wake_to_run = wake_to_run
-            cfg.save()
+            # Plan 0055 M3: the ONE writer, shared with the headless --schedule-register.
+            write_registered_record(
+                cfg,
+                run_time=run_time,
+                args=registered_args,
+                account=sent_account or "",
+                kind=declared_kind,
+                wake_to_run=wake_to_run,
+            )
 
         def _on_register_success(headline: str, detail: str, *, verdict: Verdict = Verdict.HEALTHY) -> None:
             _persist_registered_record()
@@ -3650,21 +3628,10 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
             else:
                 outcome = interpret_unregister(ok, msg)
                 if outcome.success_shaped:
-                    cfg.schedule_registered = False
-                    cfg.schedule_registered_at = ""
-                    # 0034 S3 + 0046 B + 0049 S-4: no task exists any more — all FOUR "what was
-                    # registered" facts go together (an honest record; a later register rewrites
-                    # them). ``account_field.value`` and the gMSA tick box are deliberately NOT
-                    # touched, so Remove → Schedule works in one session without retyping the
-                    # account or re-reading the three prerequisites.
-                    cfg.schedule_unattended = False
-                    cfg.schedule_task_args = None
-                    cfg.schedule_run_as_user = ""
-                    cfg.schedule_run_as_kind = ""
-                    # DSYNC-37: the fifth facet goes with them. The tick box is left as it is,
-                    # like the account field, so Remove → Schedule keeps the admin's choice.
-                    cfg.schedule_wake_to_run = None
-                    cfg.save()
+                    # No task exists any more: every "what was registered" fact goes together (0034 S3, 0046 B,
+                    # 0049 S-4, DSYNC-37). The account field and the gMSA / wake tick boxes are deliberately NOT
+                    # touched, so Remove → Schedule works in one session. Plan 0055 M3: the ONE clearer.
+                    clear_registered_record(cfg)
                     if on_schedule_changed is not None:
                         # 0032 T1 #8: a confirmed removal invalidates the boot-time rail badge too.
                         with contextlib.suppress(Exception):

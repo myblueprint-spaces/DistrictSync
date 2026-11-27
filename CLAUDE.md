@@ -16,6 +16,7 @@ python -m src.main --sftp-configure    # interactive; headless: --sftp-host H --
 python -m src.main --sftp-test         # verify stored credentials
 python -m src.main --sftp-show         # print saved config (no password)
 python -m src.main --machine-setup [--updates off|notify|on]   # Windows: shared ProgramData profile, no task (plan 0055 M2)
+python -m src.main --schedule-register --time HH:MM [--principal current|gmsa:D\n$|password:D\u] [--wake]   # headless Schedule; --schedule-remove (M3)
 python -m pytest tests/ -v
 python -m pytest tests/ --cov=src --cov-report=term-missing --cov-fail-under=80
 python -m pytest tests/test_schema_drift_matrix.py -m drift_matrix   # deselected by default; CI's own drift-matrix job
