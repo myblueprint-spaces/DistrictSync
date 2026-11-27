@@ -192,10 +192,11 @@ def test_the_schedule_check_marker_carries_the_tag(tmp_path, monkeypatch):
     from src.scheduler import schedule_check
 
     monkeypatch.setattr(account_tag, "process_account", lambda: "CORP\\jane")
+    monkeypatch.setattr(account_tag, "tag_key", lambda *, create=True: KEY)  # the same key on every OS
     marker = tmp_path / "marker.json"
     schedule_check._write_marker(marker, "tok")
     body = json.loads(marker.read_text(encoding="utf-8"))
-    assert body["account"] == account_tag.log_name_tag()
+    assert body["account"] == account_tag.account_tag("CORP\\jane", key=KEY)
     assert "jane" not in marker.read_text(encoding="utf-8")
 
 
