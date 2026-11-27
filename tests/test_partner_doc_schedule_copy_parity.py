@@ -483,6 +483,9 @@ _DOC_QUOTES: dict[str, frozenset[str]] = {
         }
     ),
     "docs/partner/faq.md": frozenset(),
+    # Plan 0055 R1: the IT deployment guide quotes the machine-wide setup and update copy (its own parity test,
+    # tests/test_it_deployment_doc_parity.py), and none of the schedule-failure family.
+    "docs/partner/it-deployment.md": frozenset(),
     "docs/partner/help-centre-myedbc-districtsync-guide.md": frozenset(),
 }
 

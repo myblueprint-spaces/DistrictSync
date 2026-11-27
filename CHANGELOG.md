@@ -11,6 +11,19 @@ Per-release download links and auto-generated commit notes live on the
 
 ### Added
 
+- **A machine-wide installer for district servers** (attached to the release that first ships it).
+  `DistrictSync.msi` installs DistrictSync for every
+  account on the computer, in `C:\Program Files\myBlueprint.DistrictSync\`, so a service account or a managed
+  service account can run the nightly sync. The first time an administrator opens it, one step sets the computer up
+  (settings, run history and the delivery password move to one shared folder) and asks how new versions are handled:
+  tell me (the default), install automatically, or never check (update checks start when a later release switches
+  the update service on, and automatic installing on these installs comes after that). Group Policy can set this for the whole district,
+  and DistrictSync cannot override it. Server Core and scripted installs use `--machine-setup`, `--schedule-register`
+  and `--schedule-remove` instead of the window, and `--migrate` reports what moving an existing copy involves.
+  `--diagnose` gains an Installation block. DistrictSync is built not to write Windows account names into its logs,
+  log file names or run history: it tells accounts apart with a short code. Districts already using `DistrictSync-windows.exe` or `DistrictSync-Setup.exe` do not
+  need to change anything. See the IT deployment guide (plan 0055).
+
 - **A Windows installer.** Each release now also has `DistrictSync-Setup.exe`, signed by
   myBlueprint Corp. It installs DistrictSync for the signed-in Windows user without
   administrator rights, adds a Start menu entry, and can be removed from Windows Settings ›
