@@ -74,8 +74,10 @@ def newer_version_available(state_dir: Path | None = None) -> str | None:
         last = last_check_summary(state_dir)
         if not last or last.get("status") != "available" or not last.get("version"):
             return None
-        version = str(last.get("version"))
-        return version if _newer(version, app_version()) else None
+        key = _version_key(str(last.get("version")))
+        if key is None or not _newer(str(last.get("version")), app_version()):
+            return None
+        return "{}.{}.{}".format(*key)  # a parsed version, never the notice file's own text (the nightly can write it)
     except Exception:  # noqa: BLE001 - advisory copy on Home
         return None
 
@@ -95,8 +97,9 @@ def update_status_line(state_dir: Path | None = None) -> str | None:
     if last.get("status") == "available" and last.get("version"):
         # Notify mode (plan 0055 U1): a newer signed version exists and nothing was downloaded. Said only while it is still
         # newer than this copy: after an upgrade the record is stale until the next check.
-        if _newer(str(last.get("version")), app_version()):
-            return f"Version {last.get('version')} is available; this copy does not update itself." + suffix
+        key = _version_key(str(last.get("version")))
+        if key is not None and _newer(str(last.get("version")), app_version()):
+            return f"Version {key[0]}.{key[1]}.{key[2]} is available; this copy does not update itself." + suffix
         return "Updates: not checked since this version was installed."
     known = _LAST.get((str(last.get("status")), str(last.get("reason"))))
     if known:

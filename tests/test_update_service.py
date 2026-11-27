@@ -72,6 +72,15 @@ class TestTheRefusals:
         monkeypatch.setattr(paths, "pin_data_dir", lambda: pytest.fail("pinned a profile"))
         assert service.run_update_service() == 0
 
+    def test_it_always_exits_0_even_when_the_folder_cannot_be_resolved(self, eligible, monkeypatch):
+        """Review A2: ``machine_data_dir`` raises a RuntimeError (not an OSError) under a WIN_PD override."""
+
+        def refused():
+            raise RuntimeError("refused")
+
+        monkeypatch.setattr(service, "state_dir", refused)
+        assert service.run_update_service() == 0
+
     def test_a_surprise_installs_nothing(self, eligible, monkeypatch):
         def boom():
             raise RuntimeError("registry")
@@ -120,16 +129,30 @@ class TestTheStateFolder:
         monkeypatch.setattr(service, "state_dir_trusted", lambda path: True)
         provisioning.ensure_updater_dir()  # positive twin: an admin-made folder is accepted
 
-    def test_machine_setup_makes_it_only_when_the_mode_is_on(self, monkeypatch):
-        made, provisioned = [], []
-        monkeypatch.setattr(provisioning, "ensure_updater_dir", lambda: made.append(1))
-        monkeypatch.setattr(
-            provisioning, "apply_provision", lambda payload, **kw: provisioned.append(kw["update_mode"])
-        )
-        provisioning.apply_machine_setup({"user": "", "update_mode": "notify"})
-        assert made == [] and provisioned == ["notify"]
-        provisioning.apply_machine_setup({"user": "", "update_mode": "on"})
-        assert made == [1] and provisioned == ["notify", "on"]
+    @pytest.mark.parametrize("mode", ["off", "notify", "on"])
+    def test_machine_setup_makes_it_whatever_the_mode(self, monkeypatch, mode):
+        """Review A3: made by an administrator at setup, before anyone can plant it, and there when Group Policy later
+        turns updates on."""
+        order = []
+        monkeypatch.setattr(provisioning, "ensure_updater_dir", lambda: order.append("folder"))
+        monkeypatch.setattr(provisioning, "apply_provision", lambda payload, **kw: order.append("commit"))
+        provisioning.apply_machine_setup({"user": "", "update_mode": mode})
+        assert order == ["folder", "commit"]
+
+    def test_inherit_only_grants_make_the_folder_untrusted(self, tmp_path, monkeypatch):
+        """Review A4: an inherit-only Modify for Users would make every file the updater writes there theirs."""
+        from src.utils import install_kind
+
+        monkeypatch.setattr(install_kind, "_owner_sid", lambda path: "S-1-5-32-544")
+        monkeypatch.setattr(install_kind, "_dacl_entries", lambda path: ((0, 0x08 | 0x03, 0x1301BF, "S-1-5-32-545"),))
+        assert service.state_dir_trusted(tmp_path) is False
+        assert install_kind.writable_by_non_admin(tmp_path) is False  # the install-root rule is unchanged
+
+    def test_a_log_file_others_can_change_is_never_appended(self, eligible, monkeypatch):
+        (eligible / service.LOG_FILE).write_text("old\n", encoding="utf-8")
+        monkeypatch.setattr("src.utils.install_kind.writable_by_non_admin", lambda path, **kw: True)
+        service.run_update_service()
+        assert (eligible / service.LOG_FILE).read_text(encoding="utf-8") == "old\n"
 
 
 class TestTheEntry:
@@ -171,6 +194,67 @@ class TestTheMachineWideNightlyNotice:
         check._effective_mode(None)
         assert seen == {"setting_enabled": True}
 
-    def test_on_a_machine_wide_install_the_nightly_only_notifies_even_in_on(self):
-        source = (ROOT / "src" / "update" / "check.py").read_text(encoding="utf-8")
-        assert "if _effective_mode(config).mode == policy.NOTIFY or _machine_wide():" in source
+    def test_a_kind_that_flips_mid_check_never_reaches_the_full_check(self, machine, monkeypatch):
+        """Review A1: the first read says machine-wide, a later one does not (an ACL read failing while Velopack swaps
+        ``current``). The check is decided once, so it notifies at most and never downloads or hands off."""
+        reads = iter([InstallKind.MACHINE] + [InstallKind.PER_USER] * 20)
+        monkeypatch.setattr(check, "install_kind", lambda: next(reads))
+        calls = []
+
+        class Module:
+            class HealthStore:
+                def __init__(self, path):
+                    pass
+
+                def last_sequence(self):
+                    return 0
+
+                def bad_versions(self):
+                    return ()
+
+            class FeedFetcher:
+                def __init__(self, *a, **k):
+                    pass
+
+            UpdateRefused = type("UpdateRefused", (Exception,), {})
+
+            @staticmethod
+            def check_for_update(*a, **k):
+                calls.append("full check")
+
+            @staticmethod
+            def updates_enabled(*a):
+                return True
+
+            @staticmethod
+            def parse_version(v):
+                return (1,)
+
+        monkeypatch.setattr(
+            check, "_notify_only", lambda *a, **k: (calls.append("notify"), check.CheckOutcome("none", "up_to_date"))[1]
+        )
+        monkeypatch.setattr(check, "app_identity", lambda module: None)
+        monkeypatch.setattr(policy, "effective_update_mode", lambda **kw: policy.EffectiveMode(policy.ON, "machine"))
+        target = (
+            check.FeedTarget(host="h.example.invalid", trusted_keys=("k",))
+            if hasattr(check, "FeedTarget")
+            else object()
+        )
+        check.run_update_check(check.TRIGGER_AFTER_RUN, updater=Module, target=target, now=None)
+        assert "full check" not in calls
+
+
+class TestHomeShowsAParsedVersionOnly:
+    """Review A5: the nightly's account can write the notice; only a parsed version is ever shown."""
+
+    def test_trailing_text_never_reaches_the_screen(self, monkeypatch):
+        from src.update import status
+
+        monkeypatch.setattr(status, "is_installed_build", lambda: True)
+        monkeypatch.setattr(status, "app_version", lambda: "3.31.0")
+        monkeypatch.setattr(status, "skip_reason", lambda **kw: None)
+        monkeypatch.setattr(
+            status, "last_check_summary", lambda state_dir=None: {"status": "available", "version": "9.9.9\nPhish here"}
+        )
+        assert status.newer_version_available() == "9.9.9"
+        assert "Phish" not in (status.update_status_line() or "")

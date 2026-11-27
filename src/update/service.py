@@ -15,6 +15,7 @@ Exit code 0 always: a refusal is a normal night for this task, and Task Schedule
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sys
 from datetime import UTC, datetime
@@ -50,6 +51,21 @@ def state_dir_trusted(path: Path) -> bool:
 
     try:
         if not path.is_dir() or path.is_symlink() or _is_reparse_point(path):
+            return False
+        # Inherit-only aces count too: they decide who can change the files the updater creates here later.
+        return not writable_by_non_admin(path, count_inherit_only=True)
+    except OSError:
+        return False
+
+
+def _file_trusted(path: Path) -> bool:
+    """A file in the trusted folder may be appended to only if it is not a link and only admins can change it."""
+    from src.utils.install_kind import writable_by_non_admin
+
+    try:
+        if not path.exists():
+            return True  # created by this (SYSTEM) process, inheriting the folder's protected descriptor
+        if path.is_symlink() or _is_reparse_point(path) or not path.is_file():
             return False
         return not writable_by_non_admin(path)
     except OSError:
@@ -88,26 +104,26 @@ def refusal() -> str:
 
 def _log(code: str) -> None:
     """One plain line per run, only into a TRUSTED state folder: time, version, result code. No account, no path."""
-    folder = state_dir()
-    if not state_dir_trusted(folder):
-        return
     try:
+        folder = state_dir()
+        if not state_dir_trusted(folder):
+            return
         from src.utils.version import app_version
 
         line = (
             f"{datetime.now(UTC).isoformat(timespec='seconds')} version={app_version()} result=refused reason={code}\n"
         )
         target = folder / LOG_FILE
-        if target.exists() and (target.is_symlink() or _is_reparse_point(target)):
+        if not _file_trusted(target):
             return
         with open(target, "a", encoding="utf-8") as handle:
             handle.write(line)
-    except OSError:
+    except Exception:  # noqa: BLE001 - the SYSTEM task never crashes on its log
         return
 
 
 def run_update_service() -> int:
-    """The task's whole run today: decide the refusal, log it, exit 0."""
-    code = refusal()
-    _log(code)
+    """The task's whole run today: decide the refusal, log it, exit 0 (always: a refusal is a normal night)."""
+    with contextlib.suppress(Exception):  # Task Scheduler must never see this task fail
+        _log(refusal())
     return 0

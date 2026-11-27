@@ -739,8 +739,9 @@ def apply_machine_setup(payload: Mapping[str, object]) -> None:
     if str(payload.get("user", "")).strip():
         raise ValueError("machine setup grants no other account")
     mode = policy.parse_update_mode(payload.get("update_mode"))
-    if mode == policy.ON:
-        ensure_updater_dir()  # BEFORE the commit: a planted folder refuses the whole setup
+    # At EVERY machine setup, whatever the mode (U2a review A3): made by an administrator before anyone can plant it,
+    # and there when Group Policy later turns updates on. BEFORE the commit: a planted folder refuses the whole setup.
+    ensure_updater_dir()
     apply_provision(payload, register=lambda: None, update_mode=mode)
 
 
@@ -768,8 +769,7 @@ def apply_update_mode(payload: Mapping[str, object]) -> None:
     mode = policy.parse_update_mode(payload.get("update_mode"))
     if paths.machine_switch_on() is not True:
         raise ValueError("this computer is not set up for the shared profile")
-    if mode == policy.ON:
-        ensure_updater_dir()
+    ensure_updater_dir()
     try:
         _write_update_mode(mode)
     except OSError as exc:

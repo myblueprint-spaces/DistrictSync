@@ -129,6 +129,7 @@ def rig(monkeypatch, machine_root):
     monkeypatch.setattr(provisioning, "_run_icacls", _icacls)
     monkeypatch.setattr(provisioning, "_account_sid", _sid)
     monkeypatch.setattr(provisioning, "_commit_machine_switch", _commit)
+    monkeypatch.setattr(provisioning, "ensure_updater_dir", lambda: None)  # its own tests: test_update_service.py
     monkeypatch.setattr(provisioning, "_delete_task_confirmed_missing", _delete)
     monkeypatch.setattr(provisioning, "current_run_as_user", lambda: "CORP\\jane")
     monkeypatch.setattr(paths_module, "assert_machine_dir_trusted", _verify)
