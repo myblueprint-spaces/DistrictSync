@@ -389,6 +389,56 @@ _NOT_WITH_MACHINE_SETUP = frozenset(
 )
 
 
+TASK_PASSWORD_ENV_VAR = "DISTRICTSYNC_TASK_PASSWORD"  # nosec B105 - the NAME of the variable, not a secret
+
+#: Flags of a schedule command (plan 0055 M3). Used with --schedule-register only, except --principal/--time/--wake
+#: which are refused anywhere else too.
+_SCHEDULE_OPTIONS = frozenset({"--time", "--principal", "--wake", "--task-password-stdin"})
+
+
+def _read_task_password(args: argparse.Namespace, account: str) -> str:
+    """The scheduled task's Windows password: env var, then stdin, then a prompt (the --sftp-configure routes).
+
+    It goes only into the ``Principal`` handed to the scheduler: never argv, a child's environment, a log or AppConfig.
+    """
+    env_pw = os.environ.get(TASK_PASSWORD_ENV_VAR)
+    if env_pw:
+        return env_pw
+    if args.task_password_stdin:
+        pw = sys.stdin.read().rstrip("\n")
+        if not pw:
+            print("Error: --task-password-stdin was set but no password was received on stdin.")
+            sys.exit(2)
+        return pw
+    import getpass
+
+    return getpass.getpass(f"Windows password for {account}: ")
+
+
+def _schedule_register(args: argparse.Namespace) -> int:
+    """``--schedule-register --time HH:MM [--principal ...] [--wake]`` (plan 0055 M3): the Schedule button, headless."""
+    from src.scheduler import headless
+
+    try:
+        spec = headless.parse_principal(args.principal or headless.PRINCIPAL_CURRENT)
+    except ValueError as exc:
+        print(f"Error: {exc}")
+        return 2
+    password = _read_task_password(args, spec.account) if spec.needs_password else None
+    code, message = headless.register(run_time=args.time or "", spec=spec, password=password, wake_to_run=args.wake)
+    print(message)
+    return code
+
+
+def _schedule_remove() -> int:
+    """``--schedule-remove`` (plan 0055 M3): the Remove button, headless."""
+    from src.scheduler import headless
+
+    code, message = headless.remove()
+    print(message)
+    return code
+
+
 def _is_windows() -> bool:
     """A seam: the platform check without patching the global ``sys.platform`` the preamble also reads."""
     return sys.platform == "win32"
@@ -767,13 +817,48 @@ def _cli(argv: list[str] | None) -> int:
         help=f"With --machine-setup: off, notify or on (default: {policy.DEFAULT_UPDATE_MODE})",
     )
 
+    schedule_group = parser.add_argument_group("Schedule (the nightly, from the saved settings)")
+    schedule_group.add_argument(
+        "--schedule-register", action="store_true", help="Schedule the nightly conversion (like Setup's Schedule)"
+    )
+    schedule_group.add_argument("--schedule-remove", action="store_true", help="Remove the scheduled nightly")
+    schedule_group.add_argument("--time", help="With --schedule-register: the run time, HH:MM (24-hour)")
+    schedule_group.add_argument(
+        "--principal",
+        help="With --schedule-register: current (default), gmsa:DOMAIN\\name$ or password:DOMAIN\\user",
+    )
+    schedule_group.add_argument(
+        "--wake", action="store_true", help="With --schedule-register: wake the computer to run the sync"
+    )
+    schedule_group.add_argument(
+        "--task-password-stdin",
+        action="store_true",
+        help=f"With --schedule-register: read the account's Windows password from stdin (or set {TASK_PASSWORD_ENV_VAR})",
+    )
+
     args = parser.parse_args(args_list)
 
     # Route to SFTP subcommands (mutually exclusive with the ETL pipeline)
     sftp_actions = [args.sftp_configure, args.sftp_test, args.sftp_show]
-    if sum(sftp_actions) + int(args.machine_setup) > 1:
-        print("Error: choose only one of --sftp-configure, --sftp-test, --sftp-show, --machine-setup.")
+    commands = sum(sftp_actions) + int(args.machine_setup) + int(args.schedule_register) + int(args.schedule_remove)
+    if commands > 1:
+        print(
+            "Error: choose only one of --sftp-configure, --sftp-test, --sftp-show, --machine-setup, "
+            "--schedule-register, --schedule-remove."
+        )
         return 2
+    given = {arg.split("=", 1)[0] for arg in args_list}
+    if given & _SCHEDULE_OPTIONS and not args.schedule_register:
+        print("Error: --time, --principal, --wake and --task-password-stdin are used with --schedule-register.")
+        return 2
+    if args.schedule_register or args.schedule_remove:
+        if given & _NOT_WITH_MACHINE_SETUP:
+            print(
+                "Error: a schedule uses the saved district, folders and delivery; set those in Setup, "
+                "then schedule without --sis/--input/--output/--sftp flags."
+            )
+            return 2
+        return _schedule_register(args) if args.schedule_register else _schedule_remove()
     if args.updates is not None and not args.machine_setup:
         print("Error: --updates is used with --machine-setup.")
         return 2
@@ -860,8 +945,8 @@ def _cli(argv: list[str] | None) -> int:
     #   0 — success (ETL complete; SFTP succeeded or not requested)
     #   1 — ETL / validation error (run did not complete)
     #   2 — argument misuse: an argparse usage error (missing/unknown flags),
-    #       more than one SFTP subcommand, or --sftp-password-stdin with an
-    #       empty stdin
+    #       more than one subcommand (SFTP, --machine-setup, --schedule-*), a schedule
+    #       option without --schedule-register, or a --*-password-stdin with an empty stdin
     #   3 — SFTP delivery failure (ETL succeeded; upload did not)
     if result.sftp_attempted and not result.sftp_ok:
         # _sftp_upload already logged at ERROR level with the host; re-emit

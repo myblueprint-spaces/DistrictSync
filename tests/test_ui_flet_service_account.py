@@ -1371,7 +1371,9 @@ class TestTheRegistrationStampIsWrittenAndCleared:
 
     def test_a_confirmed_register_stamps_it_in_the_same_save(self, tmp_path, stub_page, monkeypatch):
         cfg = _settings(tmp_path, monkeypatch)
-        monkeypatch.setattr(setup_mod, "registration_stamp", lambda: self._STAMP)
+        monkeypatch.setattr(
+            "src.config.app_config.registration_stamp", lambda: self._STAMP
+        )  # the ONE writer reads it (M3)
         saves = {"n": 0}
         monkeypatch.setattr(AppConfig, "save", lambda self: saves.__setitem__("n", saves["n"] + 1))
         _capture_register(monkeypatch)
