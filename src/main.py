@@ -38,6 +38,12 @@ if __name__ == "__main__":
     if is_velopack_hook(sys.argv[1:]):
         sys.exit(run_velopack_hook())
 
+if __name__ == "__main__" and sys.argv[1:2] == ["--update-health-probe"]:
+    # Plan 0055 U3: the SYSTEM updater's supervised health probe. Before the start guard; touches no profile.
+    from src.update.probe import run_probe
+
+    sys.exit(run_probe())
+
 if __name__ == "__main__" and sys.argv[1:2] == ["--update-service"]:
     # Plan 0055 U2: the SYSTEM updater. Before the start guard and every heavy import; it pins no profile and reads only
     # admin-writable inputs (src/update/service.py).

@@ -20,7 +20,7 @@ import os
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Final
+from typing import Any, Final
 
 #: The folder name under ``%ProgramData%``: outside the install root (an MSI upgrade or uninstall deletes that) and
 #: outside ``C:\\ProgramData\\DistrictSync`` (writable by non-admins).
@@ -127,3 +127,36 @@ def run_update_service() -> int:
     with contextlib.suppress(Exception):  # Task Scheduler must never see this task fail
         _log(refusal())
     return 0
+
+
+#: How long the SYSTEM updater waits for a new version's probe (plan 0055 U3).
+PROBE_TIMEOUT_SECONDS: Final = 120.0
+HEALTH_FILE: Final = "health.json"
+PROBE_FLAG: Final = "--update-health-probe"
+#: ``supervised_check`` could not decide (a surprise inside it); nothing was recorded. Logged by U2's caller.
+HEALTH_ERROR: Final = "error"
+
+
+def supervised_check(version: str, previous: str, exe: Path, *, module: object | None = None) -> str:
+    """Decide a newly applied version's health as SYSTEM (plan 0055 U3): probe ``exe --update-health-probe`` under
+    supervision; ``healthy`` / ``retry`` / ``recover`` / ``nothing`` (the package's ``SupervisedAction``), or ``state_untrusted`` / :data:`HEALTH_ERROR`. The state is
+    ``health.json`` in the TRUSTED updater folder only; an untrusted folder answers ``state_untrusted`` and nothing is
+    recorded. Called by U2's apply flow (blocked on the feed); the restore on ``recover`` is the package's
+    ``recover_broken_start``. Never raises."""
+    try:
+        folder = state_dir()
+        if not state_dir_trusted(folder):
+            return STATE_UNTRUSTED
+        package: Any = module
+        if package is None:
+            import myb_desktop_updater as package
+        store = package.HealthStore(folder / HEALTH_FILE)
+        action = package.supervised_health(
+            store,
+            version,
+            previous,
+            lambda: package.run_health_probe([str(exe), PROBE_FLAG], timeout_seconds=PROBE_TIMEOUT_SECONDS),
+        )
+        return str(action.value)
+    except Exception:  # noqa: BLE001 - the SYSTEM task never crashes; doubt changes nothing
+        return HEALTH_ERROR

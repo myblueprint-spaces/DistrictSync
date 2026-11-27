@@ -37,14 +37,14 @@ import sys
 import tempfile
 from pathlib import Path
 
-#: The commit of ``myblueprint-spaces/myb-desktop-shared`` the package is built from (tag ``myb_desktop_updater-v0.4.1``:
-#: 0.4.0's start guard ``myb_start_guard``, crash exit without a dialog, the kill-on-close child job and
-#: ``HealthStore.record_bad``, on top of 0.3.1's G-097 fix, overall check deadline and no repeat download; 0.4.1 changes no
-#: package source, only the version string and the shared repository's version-bump check).
-PINNED_COMMIT = "05ce456ff8af45424436742acab615ed48c81355"
+#: The commit of ``myblueprint-spaces/myb-desktop-shared`` the package is built from (tag ``myb_desktop_updater-v0.5.0``,
+#: DSYNC-108: the supervised start-up health for a machine-wide install, ``run_health_probe`` / ``supervised_health`` /
+#: ``HealthStore.record_failed_probe``, additive over 0.4.1: the start guard, crash exit, kill-on-close child job and
+#: ``HealthStore.record_bad``).
+PINNED_COMMIT = "32725226927e985255b08a4aa8ae5f1d21435341"
 #: The tree hash of ``packages/myb_desktop_updater`` at that commit, as the shared repo's own CI prints it.
-PINNED_TREE_SHA256 = "207d3a0cd61ebcc1c6c87d954a6e12679ef433780fe8ba4255043817c882a937"
-PINNED_VERSION = "0.4.1"
+PINNED_TREE_SHA256 = "823dd15b3be2ea50b8ddf6fc8bb94ed00ada240c11e8868d5a40ef3c1b50a8d1"
+PINNED_VERSION = "0.5.0"
 
 #: Build settings (same as the shared repository's own CI).
 SOURCE_DATE_EPOCH = "1763337600"
