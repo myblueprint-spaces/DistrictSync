@@ -3,6 +3,16 @@
 **Convention (adopted 2026-09-23):** every new entry carries a line `Supersedes: <date — title of the replaced entry>` (or `Supersedes: nothing`) directly under its heading, so a replaced decision is found by search rather than by reading prose.
 
 
+## 2026-11-27 - Plan 0055 M2b: a machine-wide install refuses a per-user profile until machine setup has run
+
+Supersedes: nothing
+
+**Decided.** On the MSI install (`install_kind() is MACHINE`) with the shared-profile switch provably off, the window shows only a first-run "Set up DistrictSync on this computer" step and the command line refuses everything except `--machine-setup`, `--version` and `--help`, before any per-user profile, log or setting is written. The step asks how new versions are handled (default `notify`, owner decision O1/O2) and runs the same ladder as `--machine-setup` behind one UAC prompt, then re-launches on the shared profile.
+
+**Why.** A machine-wide install exists so that other accounts (a stored-password service account, a gMSA) can run the nightly; settings kept in one administrator's profile are exactly what those accounts cannot read, and a per-user profile created first would later have to be migrated. An unreadable switch is not treated as "not set up": the existing machine-scope refusal already reports it, and this gate claims only what it can prove. `DISTRICTSYNC_DATA_DIR` stays exempt (test and support profiles).
+
+**Consequences.** The first launch after the MSI needs an administrator once. A headless server runs `DistrictSync.exe --machine-setup --updates notify` first; a conversion or schedule command before that exits 1 with that instruction.
+
 ## 2026-11-26 - Plan 0055 round 3: code to full parity first; new partners get the installer only, existing partners are not disturbed; the one-file exe is decommissioned; one throwaway Azure VM
 
 Supersedes: 2026-11-23 - Plan 0055, point 6 (keep the one-file exe until every district is confirmed migrated) and point 7 (local VMs first).

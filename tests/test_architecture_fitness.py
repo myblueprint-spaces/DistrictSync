@@ -106,6 +106,7 @@ FLET_BOUND: tuple[str, ...] = (
     "src/ui_flet/grant_window.py",
     "src/ui_flet/job_runner.py",
     "src/ui_flet/launcher.py",
+    "src/ui_flet/machine_setup_window.py",
     "src/ui_flet/nav_rail.py",
     "src/ui_flet/picker_field.py",
     "src/ui_flet/shell.py",

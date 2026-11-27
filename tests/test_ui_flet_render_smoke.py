@@ -3514,3 +3514,15 @@ def test_copy_text_button_renders_and_its_handler_confirms():
     assert button.content == "Copy details"
     asyncio.run(button.on_click(None))
     page.show_dialog.assert_called_once()
+
+
+def test_machine_setup_window_renders(stub_page: MagicMock, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Plan 0055 M2b: the pre-shell first-run window constructs on 0.85.3 without falling to its ErrorCard floor."""
+    from src.ui_flet.machine_setup_window import build_machine_setup_body
+
+    _assert_renders(
+        lambda: build_machine_setup_body(
+            stub_page, request=lambda mode: pytest.fail("no request"), reexec=lambda: None
+        ),
+        monkeypatch,
+    )
