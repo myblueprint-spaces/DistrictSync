@@ -63,6 +63,8 @@ The Settings control and Home's line are U1b.
 
 **`--update-service`** (`src/update/service.py`) is dispatched in `main`'s module-top block before the start guard and the heavy imports; it reads only admin-writable inputs (HKLM mode, install kind, the feed constants, the state folder's own security), never `AppConfig`, a profile or the keyring. Refusal codes in order: `not_windows`, `not_machine_wide`, `mode_not_on`, `not_configured`, `state_untrusted`, and today always `apply_not_built`: one line per run to `%ProgramData%\DistrictSync-Updater\updater.log`, written only into a TRUSTED folder (admin-owned, no write ace for anyone else, not a reparse point); exit 0. The folder is made by the elevated provisioning op when the mode is `on` (`provisioning.ensure_updater_dir`: protected SDDL, SYSTEM/Administrators full, Users read; a pre-existing untrusted folder refuses the op, never adopted). `tests/conftest.py`'s `_no_real_updater_folder` keeps every test away from the real folder.
 
+**Health on a machine-wide install (plan 0055 U3, DSYNC-99):** decided by SYSTEM, never reported by the app. `--update-health-probe` (`src/update/probe.py`, dispatched in the module-top block before the start guard) imports what the nightly and the window need (`PROBE_MODULES`) and prints `ok`; it touches no profile (a subprocess test with every profile variable re-pointed finds no file written). `service.supervised_check(version, previous, exe)` runs it through the shared package's `supervised_health` / `run_health_probe` (0.5.0) with its state in the trusted updater folder only; `recover` means the package's `recover_broken_start`. Its caller is U2's apply flow. Pinned by `tests/test_machine_health.py`.
+
 **Blocked, recorded:** the download, the Authenticode check, the hand-off to Velopack, the SYSTEM task's registration and the supervised health probe (U2 steps 3-6) wait on the feed (plan 0054 S6b/S8) and on U3 (a change in `myb-desktop-shared` that needs the owner's go-ahead). Pinned by `tests/test_update_service.py`.
 
 ## It cannot change a run
@@ -118,7 +120,7 @@ per-user profile, no `DISTRICTSYNC_DATA_DIR` (except the e2e build); everywhere 
   `<profile>/updater/startup-crash.log` and exits 1 at once: no blocking error box.
 - **Recovery:** after more than two unconfirmed starts of the same build, before the app is imported again, the package's
   `recover_broken_start` restores the kept copy (applied after exit) and records the build bad (`HealthStore.record_bad`, shared
-  since 0.4.0, now pinned at 0.4.1 / commit `05ce456`), so the feed never offers it again. DistrictSync only calls it.
+  since 0.4.0, pinned at 0.5.0 / commit `3272522` since plan 0055 U3), so the feed never offers it again. DistrictSync only calls it.
 - **The child job:** for the window only, a kill-on-close job object holds the Flet window process (adopted when the client is up and at the
   first screen), never the app and never the installer's apply helper, so a forced end leaves no window behind and a later update can apply.
 
