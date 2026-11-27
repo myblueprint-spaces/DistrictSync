@@ -739,6 +739,8 @@ def apply_machine_setup(payload: Mapping[str, object]) -> None:
     if str(payload.get("user", "")).strip():
         raise ValueError("machine setup grants no other account")
     mode = policy.parse_update_mode(payload.get("update_mode"))
+    if mode == policy.ON:
+        ensure_updater_dir()  # BEFORE the commit: a planted folder refuses the whole setup
     apply_provision(payload, register=lambda: None, update_mode=mode)
 
 
@@ -766,10 +768,40 @@ def apply_update_mode(payload: Mapping[str, object]) -> None:
     mode = policy.parse_update_mode(payload.get("update_mode"))
     if paths.machine_switch_on() is not True:
         raise ValueError("this computer is not set up for the shared profile")
+    if mode == policy.ON:
+        ensure_updater_dir()
     try:
         _write_update_mode(mode)
     except OSError as exc:
         raise ProvisionRefused(ProvisionStep.COMMIT) from exc
+
+
+def updater_dir_sddl() -> str:
+    """The SYSTEM updater's state folder (plan 0055 U2): SYSTEM and Administrators full, Users read, PROTECTED."""
+    return _descriptor(
+        owner_sid=OWNER_ADMINISTRATORS,
+        aces=[_ace(FULL_CONTROL, SID_SYSTEM), _ace(FULL_CONTROL, SID_ADMINISTRATORS), _ace(READ_EXECUTE, "BU")],
+    )
+
+
+def ensure_updater_dir() -> None:
+    """Create ``%ProgramData%\\DistrictSync-Updater`` with its protected descriptor, or accept it only if it is ALREADY
+    trusted (admin-owned, no write ace for anyone else). Never adopts a folder someone else made.
+
+    Raises:
+        ProvisionRefused: :attr:`ProvisionStep.PRE_EXISTING` for a folder that is there and untrusted;
+            :attr:`ProvisionStep.CREATE` when it cannot be made.
+    """
+    from src.update.service import state_dir, state_dir_trusted
+
+    folder = state_dir()
+    try:
+        _create_directory_with_sddl(folder, updater_dir_sddl())
+    except FileExistsError:
+        if not state_dir_trusted(folder):
+            raise ProvisionRefused(ProvisionStep.PRE_EXISTING) from None
+    except OSError as exc:
+        raise ProvisionRefused(ProvisionStep.CREATE) from exc
 
 
 def _write_update_mode(mode: str) -> None:  # pragma: no cover - Windows-only registry write

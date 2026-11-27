@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from src.update.check import last_check_summary, skip_reason
+from src.update.check import TRIGGER_AFTER_RUN, last_check_summary, skip_reason
 from src.utils.build_flavor import is_installed_build
 from src.utils.version import app_version
 
@@ -69,7 +69,7 @@ def newer_version_available(state_dir: Path | None = None) -> str | None:
     try:
         if not is_installed_build():
             return None
-        if skip_reason(state_dir=state_dir, ignore_interval=True) in _STANDING:
+        if skip_reason(state_dir=state_dir, ignore_interval=True, trigger=TRIGGER_AFTER_RUN) in _STANDING:
             return None  # updates are off or do not run here: Help says so, Home stays quiet
         last = last_check_summary(state_dir)
         if not last or last.get("status") != "available" or not last.get("version"):
@@ -84,7 +84,7 @@ def update_status_line(state_dir: Path | None = None) -> str | None:
     """What Help should say about updates, or ``None`` to say nothing (portable build)."""
     if not is_installed_build():
         return None
-    reason = skip_reason(state_dir=state_dir, ignore_interval=True)
+    reason = skip_reason(state_dir=state_dir, ignore_interval=True, trigger=TRIGGER_AFTER_RUN)
     if reason in _STANDING:
         return _STANDING[reason]
     last = last_check_summary(state_dir)

@@ -292,6 +292,17 @@ def _no_real_uac(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(elevation, "_shell_execute_runas", lambda file, params: (0, 1223))
 
 
+@pytest.fixture(autouse=True)
+def _no_real_updater_folder(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """HARD test-safety guard (plan 0055 U2a): no test resolves the real ``%ProgramData%\\DistrictSync-Updater``.
+
+    The SYSTEM updater's state folder is created by the elevated provisioning op; a test that reaches
+    ``ensure_updater_dir`` or the service's log would otherwise touch the real machine folder. Tests that drive the
+    folder decision re-point this seam themselves.
+    """
+    monkeypatch.setattr("src.update.service.state_dir", lambda: tmp_path / "ProgramData" / "DistrictSync-Updater")
+
+
 @pytest.fixture
 def transformer():
     """Fresh DataTransformer with school year pre-set."""
