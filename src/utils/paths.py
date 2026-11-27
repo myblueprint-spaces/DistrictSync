@@ -35,8 +35,6 @@ from pathlib import Path
 
 import platformdirs
 
-from src.utils.accounts import process_account, sanitise_account_for_filename
-
 logger = logging.getLogger(__name__)
 
 # The industry-standard per-OS user-data directory is keyed off this app name on
@@ -1041,14 +1039,18 @@ def user_log_file() -> Path:
 
     Per-user (every install in the field): ``<profile>/etl_tool.log`` — unchanged.
 
-    Machine-scoped: ``<profile>/runs/etl_tool-<sanitised account>.log``. The name is
+    Machine-scoped: ``<profile>/runs/etl_tool-<role>-<tag>.log`` (plan 0055 N1: no account name). The name is
     per-WRITER because a shared profile has two of them — the admin's session and the
     nightly's service principal — and two processes on one ``RotatingFileHandler`` tear
     each other's rotations apart. ``runs/`` is the only subtree the principal may write.
+    The role (``scheduled`` / ``interactive``) comes from an argv pre-scan; the tag is the
+    keyed account tag (``account_tag.log_name_tag``).
     """
     base = user_data_dir()
     if is_machine_scope():
-        return base / MACHINE_RUNS_SUBDIR / f"etl_tool-{sanitise_account_for_filename(process_account())}.log"
+        from src.utils.account_tag import log_name_tag, process_role  # noqa: PLC0415 - avoids an import cycle
+
+        return base / MACHINE_RUNS_SUBDIR / f"etl_tool-{process_role()}-{log_name_tag()}.log"
     return base / "etl_tool.log"
 
 

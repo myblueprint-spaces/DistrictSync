@@ -178,14 +178,22 @@ RUN_AS_ALL_THIS_ACCOUNT_NOTE = "Every run below ran as the Windows account you'r
 RUN_AS_ALL_ANOTHER_ACCOUNT_NOTE = "Every run below ran as another Windows account on this computer."
 
 
-def run_as_display(value: object, *, current_account: str) -> str:
+def run_as_display(value: object, *, current_account: str, tag: object = None, current_tag: str | None = None) -> str:
     """Reduce a record's ``run_as`` to the bounded display vocabulary (pure, TOTAL).
+
+    Plan 0055 N1: a record written from then on carries ``run_as_tag`` (a keyed tag) instead of the name, compared with
+    this account's tag. ``value`` (the legacy ``run_as``) is read only for records written before that.
+
 
     ``""`` means NOT ESTABLISHED — an absent/blank value (a record written before the key
     existed), a non-string, or an unresolvable current account. Never a guess and never the raw
     name: "not established" and "another account" are different facts, and collapsing them would
     print a foreign-account claim over a record that carries no account at all.
     """
+    if isinstance(tag, str) and tag.strip():
+        if not current_tag:
+            return ""
+        return RUN_AS_THIS_ACCOUNT if tag.strip() == current_tag else RUN_AS_ANOTHER_ACCOUNT
     recorded = value.strip() if isinstance(value, str) else ""
     current = (current_account or "").strip()
     if not recorded or not current:
@@ -614,6 +622,7 @@ def to_run_row(
     active_sis: str | None = None,
     district_displays: dict[str, str] | None = None,
     current_account: str = "",
+    current_tag: str | None = None,
 ) -> RunRow:
     """Map one run record → a total, PII-free ``RunRow`` (never raises).
 
@@ -650,7 +659,9 @@ def to_run_row(
         duration=_duration(record),
         source=_source_label(record),
         district_note=_district_note(record, active_sis, district_displays),
-        run_as=run_as_display(record.get("run_as"), current_account=current_account),
+        run_as=run_as_display(
+            record.get("run_as"), current_account=current_account, tag=record.get("run_as_tag"), current_tag=current_tag
+        ),
         notes=() if verdict is Verdict.FAILED else _detail_notes(record, prior_build=prior_build),
     )
 
@@ -674,6 +685,7 @@ def to_run_rows(
     now: datetime | None = None,
     active_sis: str | None = None,
     current_account: str = "",
+    current_tag: str | None = None,
     limit: int | None = None,
 ) -> list[RunRow]:
     """Map a newest-first list of run records → ``RunRow``s (one per record, never raises).
@@ -704,6 +716,7 @@ def to_run_rows(
             active_sis=active_sis,
             district_displays=displays,
             current_account=current_account,
+            current_tag=current_tag,
         )
         for index, record in enumerate(shown)
     ]

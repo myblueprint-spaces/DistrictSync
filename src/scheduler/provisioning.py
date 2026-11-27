@@ -50,6 +50,7 @@ user-writable directories is an EoP surface, and diagnostics ride the result fil
 
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import json
 import os
@@ -67,7 +68,7 @@ from pathlib import Path
 from src.scheduler import task_com
 from src.scheduler.windows import current_run_as_user
 from src.update import policy
-from src.utils import paths
+from src.utils import account_tag, paths
 from src.utils.helpers import subprocess_no_window_flags, system_binary
 
 # --------------------------------------------------------------------------- #
@@ -325,9 +326,7 @@ def _run_icacls(args: list[str]) -> int:
     return completed.returncode
 
 
-def _commit_machine_switch(
-    provisioned_by: str, *, update_mode: str | None
-) -> None:  # pragma: no cover - registry write
+def _commit_machine_switch(*, update_mode: str | None) -> None:  # pragma: no cover - registry write
     """Write ``HKLM\\SOFTWARE\\DistrictSync`` — the COMMIT POINT of the whole sequence.
 
     The access mask is :data:`src.utils.paths.MACHINE_SCOPE_KEY_ACCESS` **imported, never
@@ -356,7 +355,16 @@ def _commit_machine_switch(
         winreg.SetValueEx(
             key, "ProvisionedAt", 0, winreg.REG_SZ, datetime.now().astimezone().isoformat(timespec="seconds")
         )
-        winreg.SetValueEx(key, "ProvisionedBy", 0, winreg.REG_SZ, provisioned_by)
+        # Plan 0055 N1: no account name in the registry. An existing ProvisionedBy (a 0049 install) is deleted.
+        with contextlib.suppress(FileNotFoundError):
+            winreg.DeleteValue(key, "ProvisionedBy")
+        # The account-tag salt: created once, never rotated (a new salt would make every earlier tag "another account").
+        try:
+            existing, _kind = winreg.QueryValueEx(key, account_tag.SALT_VALUE_NAME)
+        except FileNotFoundError:
+            existing = None
+        if not (isinstance(existing, bytes) and len(existing) == account_tag.SALT_BYTES):
+            winreg.SetValueEx(key, account_tag.SALT_VALUE_NAME, 0, winreg.REG_BINARY, account_tag.new_salt())
         if update_mode is not None:
             winreg.SetValueEx(
                 key, policy.MACHINE_SETTING_VALUE_NAME, 0, winreg.REG_SZ, policy.parse_update_mode(update_mode)
@@ -842,7 +850,7 @@ def apply_provision(payload: Mapping[str, object], *, register: Callable[[], Non
         _seed_secret(payload)  # 5
         _verify_provisioned(root, source)  # 6
         try:
-            _commit_machine_switch(setup_account, update_mode=update_mode)  # 7 — the commit point
+            _commit_machine_switch(update_mode=update_mode)  # 7 — the commit point
         except OSError as exc:
             raise ProvisionRefused(ProvisionStep.COMMIT) from exc
     except ProvisionRefused as exc:

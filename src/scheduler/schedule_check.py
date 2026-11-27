@@ -372,15 +372,15 @@ def run_check_mode(args: list[str]) -> int:
 def _write_marker(path: Path, token: str) -> None:
     """Write the marker atomically (temp + ``os.replace``), as BYTES — no newline translation.
 
-    Contents: the token, the process account (sanitised to a file-name fragment — the same
-    form the per-writer log name uses), a timestamp and the app version. No secret, no path.
+    Contents: the token, the account TAG (the same one the per-writer log name uses; plan 0055
+    N1: never the name), a timestamp and the app version. No secret, no path.
     """
-    from src.utils.accounts import process_account, sanitise_account_for_filename  # noqa: PLC0415
+    from src.utils.account_tag import log_name_tag  # noqa: PLC0415
     from src.utils.version import app_version  # noqa: PLC0415
 
     body = {
         "token": token,
-        "account": sanitise_account_for_filename(process_account()),
+        "account": log_name_tag(),
         "at": datetime.now().isoformat(timespec="seconds"),
         "version": app_version(),
     }

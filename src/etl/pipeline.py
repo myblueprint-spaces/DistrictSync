@@ -63,7 +63,7 @@ from src.etl.transformers.dates import SchoolYearDetermination
 from src.history.store import VALID_SOURCES, write_run_record
 from src.quality.report import DataQualityReport, declared_blank_fields
 from src.sftp.uploader import SFTPUploader, describe_sftp_error, retry_schedule_for_source
-from src.utils.accounts import process_account
+from src.utils.account_tag import current_tag
 
 logger = logging.getLogger(__name__)
 
@@ -1066,7 +1066,7 @@ def build_run_record(
         "status": status,
         "source": source,
         "sis_type": sis_type,
-        "run_as": process_account(),
+        "run_as_tag": current_tag(),  # plan 0055 N1: a keyed tag, never the account name
         "error_category": RunErrorCategory(error_category).value,
         "duration_s": round(elapsed, 1),
         "sftp_attempted": sftp_attempted,

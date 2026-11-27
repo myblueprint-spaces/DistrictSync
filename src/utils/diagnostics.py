@@ -31,8 +31,7 @@ import sys
 from collections.abc import Callable
 from typing import IO
 
-from src.utils import paths
-from src.utils.accounts import process_account
+from src.utils import account_tag, paths
 from src.utils.build_flavor import build_flavor
 from src.utils.install_kind import install_kind
 from src.utils.version import app_version
@@ -60,12 +59,13 @@ _LABEL_WIDTH = 22
 # a reader that invented different names would silently print "not set" forever, so the
 # parity is pinned by a test instead.
 _PROVISIONED_AT = "ProvisionedAt"
-_PROVISIONED_BY = "ProvisionedBy"
+#: Plan 0055 N1: no account name is written any more; the Home and Settings line says who set it up as a role.
+PROVISIONED_BY_ROLE = "an administrator"
 #: Report order, which is NOT the order :func:`machine_scope_provenance` returns them in. The
 #: two are spelled once, above, and every consumer picks BY NAME: reading this tuple
 #: positionally is what silently swapped the pair once already, and the swap was invisible
 #: because the degraded copy it produced is also the correct answer on every other install.
-_HKLM_DISPLAY_VALUES = (_PROVISIONED_AT, _PROVISIONED_BY)
+_HKLM_DISPLAY_VALUES = (_PROVISIONED_AT,)
 
 
 def _row(label: str, value: object) -> str:
@@ -151,7 +151,8 @@ def read_hklm_values() -> dict[str, object]:  # pragma: no cover - Windows-only 
 
 
 def machine_scope_provenance() -> tuple[str, str]:
-    """``(ProvisionedBy, ProvisionedAt)`` for display, ``("", "")`` when either is unavailable.
+    """``(who, ProvisionedAt)`` for display, ``("", "")`` when the date is unavailable. ``who`` is the ROLE
+    :data:`PROVISIONED_BY_ROLE`, never an account name (plan 0055 N1).
 
     The UI's seam onto the two display values, routed through :func:`read_hklm_values` rather
     than a second ``winreg`` call so the value NAMES are spelled exactly once in this process
@@ -179,7 +180,8 @@ def machine_scope_provenance() -> tuple[str, str]:
         value = values.get(name)
         return value.strip() if isinstance(value, str) else ""
 
-    return (_text(_PROVISIONED_BY), _text(_PROVISIONED_AT))
+    at = _text(_PROVISIONED_AT)
+    return (PROVISIONED_BY_ROLE, at) if at else ("", "")
 
 
 def _hklm_lines() -> list[str]:
@@ -192,7 +194,15 @@ def _hklm_lines() -> list[str]:
         return [*lines, _row("key", f"unreadable ({type(exc).__name__})")]
     for name in (paths.MACHINE_SCOPE_VALUE_NAME, *_HKLM_DISPLAY_VALUES):
         lines.append(_row(name, values.get(name, "not set")))
+    lines.append(_row(account_tag.SALT_VALUE_NAME, "set" if _salt_present() else "not set"))  # never the value
     return lines
+
+
+def _salt_present() -> bool:
+    try:
+        return account_tag._read_machine_salt() is not None
+    except OSError:
+        return False
 
 
 def _shared_folder_lines() -> list[str]:
@@ -235,7 +245,7 @@ def _profile_lines() -> list[str]:
         "Profile:",
         _guarded("data dir", paths.user_data_dir),
         _guarded("scope", lambda: SCOPE_SHARED if paths.is_machine_scope() else SCOPE_PER_USER),
-        _guarded("this account", process_account),
+        _guarded("this account (tag)", lambda: account_tag.current_tag() or "no tag yet (no account-tag key)"),
         _guarded("DISTRICTSYNC_DATA_DIR", lambda: paths._override_data_dir() or "not set"),
         _guarded("log file", paths.user_log_file),
         _guarded("run store", paths.user_history_db),
@@ -302,7 +312,8 @@ def _schedule_lines() -> list[str]:
     lines.append(_row("next run", readback.next_run or "-"))
     lines.append(_row("last run", readback.last_run or "-"))
     lines.append(_row("last result", "-" if readback.last_result is None else hex(readback.last_result)))
-    lines.append(_row("recorded run-as", cfg.schedule_run_as_user or "(the signed-in account)"))
+    # Plan 0055 N1: the kind, never the account; the account itself is in Task Scheduler.
+    lines.append(_row("recorded run-as", cfg.schedule_run_as_kind or "(the signed-in account)"))
     lines.append(_row("recorded", f"registered = {_yes_no(cfg.schedule_registered)}"))
     return lines
 
@@ -325,7 +336,7 @@ def _last_run_lines() -> list[str]:
         ("when", "created_at"),
         ("status", "status"),
         ("source", "source"),
-        ("ran as", "run_as"),
+        ("ran as (tag)", "run_as_tag"),
         ("district", "sis_type"),
         ("problem", "error_category"),
     ):

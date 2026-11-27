@@ -1150,18 +1150,29 @@ class TestScopedFileNames:
         machine_dir.mkdir(parents=True)
         switch(True)
         security(*_TRUSTED_SECURITY)
-        monkeypatch.setattr(paths_module, "process_account", lambda: "CORP\\svc$")
+        from src.utils import account_tag
+
+        monkeypatch.setattr(account_tag, "process_account", lambda: "CORP\\svc$")
+        monkeypatch.setattr(account_tag, "_read_machine_salt", lambda: bytes(32))
+        monkeypatch.setattr(account_tag, "process_role", lambda: "scheduled")
 
         log = paths_module.user_log_file()
-        assert log == machine_dir / "runs" / "etl_tool-corp_svc.log"
+        expected = account_tag.account_tag("CORP\\svc$", salt=bytes(32))
+        assert log == machine_dir / "runs" / f"etl_tool-scheduled-{expected}.log"
+        assert "svc" not in log.name and "corp" not in log.name  # plan 0055 N1: no account name
         assert paths_module.user_history_db() == machine_dir / "runs" / "history.db"
 
     def test_machine_scope_log_name_is_filename_safe(self, machine_dir, switch, security, monkeypatch):
         machine_dir.mkdir(parents=True)
         switch(True)
         security(*_TRUSTED_SECURITY)
-        monkeypatch.setattr(paths_module, "process_account", lambda: "")
-        assert paths_module.user_log_file() == machine_dir / "runs" / "etl_tool-unknown.log"
+        from src.utils import account_tag
+
+        monkeypatch.setattr(account_tag, "process_account", lambda: "")
+        monkeypatch.setattr(account_tag, "_read_machine_salt", lambda: None)  # a 0049 install: no salt yet
+        name = paths_module.user_log_file().name
+        assert name.startswith("etl_tool-interactive-u") and name.endswith(".log")
+        assert all(c.isalnum() or c in "-_." for c in name)
 
     def test_mappings_and_known_hosts_stay_at_the_root(self, machine_dir, switch, security):
         # A self-service district's overlay (plan 0044) must reach the nightly.
