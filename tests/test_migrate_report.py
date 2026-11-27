@@ -109,7 +109,21 @@ class TestDiscovery:
         }
         assert not called & banned, called & banned
         assert "read_task" in called  # positive twin: the scan sees the module's calls
-        findings = migration.discover()
+        from src.scheduler import task_com
+
+        def boom(name):
+            raise RuntimeError("no live query in a test")
+
+        import pytest as _pytest
+
+        mp = _pytest.MonkeyPatch()
+        mp.setattr(task_com, "read_task", boom)
+        mp.setattr(migration, "_settings", lambda: None)
+        try:
+            findings = migration.discover()
+        finally:
+            mp.undo()
+        assert findings.nightly_found is None  # an unread task is never "absent"
         assert isinstance(findings, migration.Findings)
 
 
@@ -137,3 +151,68 @@ class TestTheCommand:
         from src.main import cli
 
         assert cli(argv) == 2
+
+
+class TestReviewFixes:
+    def test_the_program_path_is_never_printed(self):
+        """Review G3: a per-user install's path names a person; the report says the KIND of copy."""
+        lines = migration.report_lines(_f(nightly_program="C:\\Users\\jdoe\\AppData\\Local\\x\\DistrictSync.exe"))
+        assert not any("jdoe" in line for line in lines)
+        assert any(migration.OTHER_COPY_ELSEWHERE in line or migration.OTHER_COPY_PER_USER in line for line in lines)
+
+    def test_an_unread_nightly_or_a_per_user_copy_is_never_done(self):
+        """Review G4."""
+        assert migration.needs_action(_f(nightly_found=None, nightly_program=None, nightly_uses_this_copy=None))
+        assert migration.needs_action(_f(nightly_uses_this_copy=True, per_user_copy=True))
+        assert not migration.needs_action(_f(nightly_uses_this_copy=True))  # positive twin
+
+    def test_the_task_name_comes_from_the_settings(self, monkeypatch):
+        """Review G5."""
+        seen = []
+
+        class Settings:
+            schedule_task_name = "DistrictSync_Custom"
+            sftp_enabled = False
+
+        monkeypatch.setattr(migration, "_settings", lambda: Settings())
+        monkeypatch.setattr(migration, "_read_nightly", lambda name: (seen.append(name), (False, None))[1])
+        migration.discover()
+        assert seen == ["DistrictSync_Custom"]
+
+    def test_a_read_error_is_not_a_missing_password(self, monkeypatch):
+        """Review G6."""
+        from src.sftp import secret_store
+
+        class Settings:
+            sftp_enabled = True
+            sftp_host = "h.example.invalid"
+            sftp_username = "u"
+
+        def boom(self, host, username):
+            raise OSError("DPAPI")
+
+        monkeypatch.setattr(secret_store.MachineSecretStore, "get_password", boom)
+        assert migration._delivery_in_machine_store(Settings()) is None
+        monkeypatch.setattr(secret_store.MachineSecretStore, "get_password", lambda self, h, u: None)
+        assert migration._delivery_in_machine_store(Settings()) is False  # positive twin: really absent
+
+    def test_the_move_advice_puts_settings_and_delivery_first_and_names_the_risk(self):
+        """Review G7."""
+        text = migration.MOVE_NOT_BUILT
+        assert text.index("--sftp-test") < text.index("--schedule-remove") < text.index("--schedule-register")
+        assert "--principal" in text and "there is no nightly" in text
+
+
+class TestItIsDispatchedFirst:
+    """Review G1/G2: ``--migrate`` runs before the preamble's writes and before the machine-setup gate."""
+
+    def test_no_preamble_and_no_gate(self, monkeypatch, capsys):
+        import src.main as main_mod
+        from src.scheduler import machine_setup
+
+        monkeypatch.setattr(main_mod, "migrate_legacy_data_dir", lambda: pytest.fail("legacy migration ran"))
+        monkeypatch.setattr(main_mod, "pin_data_dir", lambda: pytest.fail("pinned a profile"))
+        monkeypatch.setattr(machine_setup, "needs_machine_setup", lambda: True)
+        monkeypatch.setattr(migration, "discover", lambda task_name=None: _f(nightly_uses_this_copy=True))
+        assert main_mod.cli(["--migrate"]) == 0
+        assert "nothing was changed" in capsys.readouterr().out

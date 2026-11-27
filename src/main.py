@@ -655,6 +655,13 @@ def _cli(argv: list[str] | None) -> int:
 
         return run_diagnose()
 
+    # Plan 0055 D1a: ``--migrate`` (alone) is a read-only report, so it is dispatched here, beside --diagnose: before the
+    # legacy migration, the pin, the log sink and the handshake sweep (each of which can write), and before the M2b
+    # gate (the report is what a partner who just installed the machine-wide copy needs).
+    if args_list == ["--migrate"]:
+        _attach_parent_console()
+        return _migrate()
+
     # Velopack start-up (plan 0054 S2): the installed build's runtime must see the process
     # before any other work, because Velopack's own hooks (--veloapp-install/-updated/
     # -obsolete) arrive as argv and expect it to handle them and exit. Placed AFTER the three

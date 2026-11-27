@@ -17,19 +17,25 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-#: What the report says when the move itself is asked for (D1b is not built).
+#: What the report says when the move itself is asked for (D1b is not built). Settings and delivery first, the same run
+#: time and account, and the one risk said plainly (review G7).
 MOVE_NOT_BUILT = (
-    "Moving the nightly to this copy is not automatic yet. To move it now: Remove the schedule in DistrictSync's "
-    "Settings (or DistrictSync.exe --schedule-remove), then schedule it again from this copy "
-    "(DistrictSync.exe --schedule-register --time HH:MM ...)."
+    "Moving the nightly to this copy is not automatic yet. Before you move it, make sure this copy uses the shared "
+    "settings and that DistrictSync.exe --sftp-test passes from it. Then remove the old schedule "
+    "(DistrictSync.exe --schedule-remove) and schedule it again from this copy at the same time and for the same "
+    "account (DistrictSync.exe --schedule-register --time HH:MM --principal ... [--wake]). Until that register succeeds "
+    "there is no nightly, so do it well away from the run time."
 )
+#: The old program, by KIND: its path can name a person (review G3).
+OTHER_COPY_PER_USER = "a copy installed for one Windows account"
+OTHER_COPY_ELSEWHERE = "a copy in another folder (for example the one-file DistrictSync.exe)"
 
 
 @dataclass(frozen=True)
 class Findings:
     machine_wide: bool
     nightly_found: bool | None  # True / False (no task) / None (could not be read)
-    nightly_program: str | None
+    nightly_program: str | None  # compared, never printed: it can name a person
     nightly_uses_this_copy: bool | None
     per_user_copy: bool
     shared_profile: bool
@@ -49,8 +55,26 @@ def _same_program(path: str | None) -> bool | None:
         return None
 
 
-def discover(task_name: str = "DistrictSync_Daily") -> Findings:
-    """Read what is there. Never raises; never writes."""
+def _settings() -> object | None:
+    """The settings, read WITHOUT creating a profile: before machine setup the per-user ``config.json`` is parsed
+    directly (``AppConfig``'s own reader), otherwise ``AppConfig.load()``. ``None`` when unreadable."""
+    try:
+        from src.config.app_config import CONFIG_FILENAME, AppConfig, _config_from_bytes
+        from src.scheduler.machine_setup import needs_machine_setup
+        from src.utils import paths
+
+        if needs_machine_setup():
+            return _config_from_bytes((paths.per_user_data_dir() / CONFIG_FILENAME).read_bytes())
+        return AppConfig.load()
+    except Exception:  # noqa: BLE001 - a report line, never a stop
+        return None
+
+
+def discover(task_name: str | None = None) -> Findings:
+    """Read what is there. Never raises; never writes. The task name is the settings' own (review G5)."""
+    settings = _settings()
+    if task_name is None:
+        task_name = str(getattr(settings, "schedule_task_name", "") or "DistrictSync_Daily")
     from src.utils import installation
     from src.utils.install_kind import InstallKind, install_kind
 
@@ -66,7 +90,7 @@ def discover(task_name: str = "DistrictSync_Daily") -> Findings:
         nightly_uses_this_copy=_same_program(program) if found else None,
         per_user_copy=installation.per_user_copy_present(),
         shared_profile=_shared_profile(),
-        delivery_in_machine_store=_delivery_in_machine_store(),
+        delivery_in_machine_store=_delivery_in_machine_store(settings),
     )
 
 
@@ -93,17 +117,16 @@ def _shared_profile() -> bool:
         return False
 
 
-def _delivery_in_machine_store() -> bool | None:
-    """``None`` when delivery is not set up or this cannot be told; otherwise whether the shared store holds its password."""
+def _delivery_in_machine_store(settings: object | None) -> bool | None:
+    """``None`` when delivery is not set up or this CANNOT be told (review G6: a read error is not "missing"); otherwise
+    whether the shared store holds its password."""
+    if settings is None or not getattr(settings, "sftp_enabled", False) or not getattr(settings, "sftp_host", ""):
+        return None
     try:
-        from src.config.app_config import AppConfig
         from src.sftp.secret_store import MachineSecretStore
 
-        cfg = AppConfig.load()
-        if not cfg.sftp_enabled or not cfg.sftp_host:
-            return None
-        return MachineSecretStore().has_secret(cfg.sftp_host, cfg.sftp_username or "")
-    except Exception:  # noqa: BLE001 - a report line, never a stop
+        return MachineSecretStore().get_password(settings.sftp_host, settings.sftp_username or "") is not None  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001 - "could not tell" is not "missing"
         return None
 
 
@@ -125,13 +148,15 @@ def report_lines(f: Findings) -> list[str]:
     elif f.nightly_uses_this_copy:
         lines.append("The nightly already runs this copy.")
     else:
-        lines.append(f"The nightly still runs another copy: {f.nightly_program or 'unknown program'}")
+        lines.append(f"The nightly still runs another copy: {_other_copy_kind(f.nightly_program)}.")
         lines.append(MOVE_NOT_BUILT)
     if f.per_user_copy:
         lines.append(
             "A copy installed for this Windows account is also here. Once the nightly runs this copy, remove it from "
             "Windows Settings > Apps (it is not removed for you)."
         )
+    if f.delivery_in_machine_store is None and f.shared_profile:
+        lines.append("Whether delivery's password is in the shared settings could not be told; run --sftp-test.")
     if f.delivery_in_machine_store is False:
         lines.append(
             "Delivery is set up, but its password is not in the shared settings yet. Run DistrictSync.exe "
@@ -145,6 +170,19 @@ def needs_action(f: Findings) -> bool:
     return (
         not f.machine_wide
         or not f.shared_profile
+        or f.nightly_found is None  # could not be read: never "done" (review G4)
         or (f.nightly_found is True and not f.nightly_uses_this_copy)
+        or f.per_user_copy
         or f.delivery_in_machine_store is False
     )
+
+
+def _other_copy_kind(program: str | None) -> str:
+    try:
+        from src.scheduler.task_com import runs_from_per_user_install
+
+        if program and runs_from_per_user_install(program.strip('"')):
+            return OTHER_COPY_PER_USER
+    except Exception:  # noqa: BLE001 - a report line, never a stop
+        pass
+    return OTHER_COPY_ELSEWHERE
