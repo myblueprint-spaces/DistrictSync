@@ -1153,11 +1153,11 @@ class TestScopedFileNames:
         from src.utils import account_tag
 
         monkeypatch.setattr(account_tag, "process_account", lambda: "CORP\\svc$")
-        monkeypatch.setattr(account_tag, "_read_machine_salt", lambda: bytes(32))
+        monkeypatch.setattr(account_tag, "tag_key", lambda: bytes(32))
         monkeypatch.setattr(account_tag, "process_role", lambda: "scheduled")
 
         log = paths_module.user_log_file()
-        expected = account_tag.account_tag("CORP\\svc$", salt=bytes(32))
+        expected = account_tag.account_tag("CORP\\svc$", key=bytes(32))
         assert log == machine_dir / "runs" / f"etl_tool-scheduled-{expected}.log"
         assert "svc" not in log.name and "corp" not in log.name  # plan 0055 N1: no account name
         assert paths_module.user_history_db() == machine_dir / "runs" / "history.db"
@@ -1169,9 +1169,9 @@ class TestScopedFileNames:
         from src.utils import account_tag
 
         monkeypatch.setattr(account_tag, "process_account", lambda: "")
-        monkeypatch.setattr(account_tag, "_read_machine_salt", lambda: None)  # a 0049 install: no salt yet
+        monkeypatch.setattr(account_tag, "tag_key", lambda: b"k")
         name = paths_module.user_log_file().name
-        assert name.startswith("etl_tool-interactive-u") and name.endswith(".log")
+        assert name == "etl_tool-interactive-nokey.log"
         assert all(c.isalnum() or c in "-_." for c in name)
 
     def test_mappings_and_known_hosts_stay_at_the_root(self, machine_dir, switch, security):

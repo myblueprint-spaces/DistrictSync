@@ -1130,7 +1130,7 @@ class TestMachineSetupThroughTheRealSequence:
 
 
 class TestNoAccountNameInTheRegistry:
-    """Plan 0055 N1: the commit writes no account name, deletes a 0049 ProvisionedBy, and creates the tag salt once."""
+    """Plan 0055 N1: the commit writes no account name and deletes a 0049 ProvisionedBy."""
 
     @staticmethod
     def _source() -> str:
@@ -1148,8 +1148,5 @@ class TestNoAccountNameInTheRegistry:
         assert 'DeleteValue(key, "ProvisionedBy")' in source
         assert 'SetValueEx(key, "ProvisionedBy"' not in source
 
-    def test_the_salt_is_created_only_when_absent_and_before_the_switch(self):
-        source = self._source()
-        assert "QueryValueEx(key, account_tag.SALT_VALUE_NAME)" in source  # read first: never rotated
-        assert "REG_BINARY, account_tag.new_salt()" in source
-        assert source.index("account_tag.new_salt()") < source.index("MACHINE_SCOPE_VALUE_NAME, 0, winreg.REG_DWORD")
+    def test_no_key_is_written_the_tag_uses_the_machine_guid(self):
+        assert "SALT" not in self._source() and "REG_BINARY" not in self._source()

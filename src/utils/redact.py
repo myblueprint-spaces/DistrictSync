@@ -26,12 +26,19 @@ PLACEHOLDER_USER: Final = "<user>"
 PLACEHOLDER_ACCOUNT: Final = "<account>"
 
 # Folders under a profiles directory that are not a person.
-_NOT_A_PERSON = {"public", "default", "default user", "all users", "<user>"}
-_PROFILE_PATH = re.compile(
-    r"(?P<root>(?<![A-Za-z0-9])[A-Za-z]:[\\/]+Users[\\/]+|(?<![^\s'\"(=:])/(?:home|Users)/)"
-    r"(?P<name>[^\\/\r\n\"'<>|:*?]+)",
-    re.IGNORECASE,
+_NOT_A_PERSON = {"public", "default", "default user", "all users"}
+# A folder that holds one folder per person: on a drive (C:\Users, D:\Profiles), on a share (\\server\home,
+# \\server\users\...), or POSIX (/home, /Users).
+_HOME_DIRS = r"(?:Users|Profiles|home|homes|UserData|UserProfiles)"
+_ROOT = (
+    r"(?P<root>(?:(?<![A-Za-z0-9])[A-Za-z]:|(?<![^\s'\"(=:])[\\/]{2}[^\\/\s'\"<>|:*?]+)[\\/]+(?:[^\\/\s'\"<>|:*?]+[\\/]+)?"
+    + _HOME_DIRS
+    + r"[\\/]+|(?<![^\s'\"(=:])/(?:home|Users)/)"
 )
+_WORD = r"[^\\/\s\"'<>|:*?]+"
+# A name is one word, or several space-separated words when the path goes on after it (C:\Users\Jane Doe\x). It never
+# runs to the end of a line: "C:\Users\jane (PermissionError) retrying" keeps everything after the name.
+_PROFILE_PATH = re.compile(_ROOT + rf"(?P<name>{_WORD}(?: {_WORD})*(?=[\\/])|{_WORD})", re.IGNORECASE)
 
 
 def _replace_profile(match: re.Match[str]) -> str:
@@ -67,7 +74,7 @@ def redact(text: str, *, identity: tuple[str, str, str] | None = None) -> str:
     if domain_account:
         text = re.sub(re.escape(domain_account), PLACEHOLDER_ACCOUNT, text, flags=re.IGNORECASE)
     if len(bare) >= 3:
-        text = re.sub(rf"(?<![\w$.-]){re.escape(bare)}(?![\w$-])", PLACEHOLDER_ACCOUNT, text)
+        text = re.sub(rf"(?<![\w$.-]){re.escape(bare)}(?![\w$-])", PLACEHOLDER_ACCOUNT, text, flags=re.IGNORECASE)
     return text
 
 

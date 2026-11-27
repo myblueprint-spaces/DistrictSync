@@ -25,64 +25,57 @@ from src.ui_flet import run_history
 from src.utils import account_tag, redact
 from tests.test_pipeline_run_store import _write_myedbc_input
 
-SALT = bytes(range(32))
+KEY = b"5f1c-machine-guid"
 
 
 class TestTheAccountTag:
     def test_it_is_keyed_short_hex_and_never_the_name(self):
-        tag = account_tag.account_tag("CORP\\jane.doe", salt=SALT)
+        tag = account_tag.account_tag("CORP\\jane.doe", key=KEY)
         assert tag is not None and len(tag) == account_tag.TAG_LENGTH and int(tag, 16) >= 0
         assert "jane" not in tag
 
     def test_spelling_and_case_do_not_split_one_account(self):
-        assert account_tag.account_tag("CORP\\Jane", salt=SALT) == account_tag.account_tag(" corp\\jane ", salt=SALT)
+        assert account_tag.account_tag("CORP\\Jane", key=KEY) == account_tag.account_tag(" corp\\jane ", key=KEY)
 
-    def test_positive_twin_two_accounts_and_two_salts_differ(self):
-        assert account_tag.account_tag("CORP\\jane", salt=SALT) != account_tag.account_tag("CORP\\svc", salt=SALT)
-        assert account_tag.account_tag("CORP\\jane", salt=SALT) != account_tag.account_tag("CORP\\jane", salt=bytes(32))
+    def test_positive_twin_two_accounts_and_two_computers_differ(self):
+        assert account_tag.account_tag("CORP\\jane", key=KEY) != account_tag.account_tag("CORP\\svc", key=KEY)
+        assert account_tag.account_tag("CORP\\jane", key=KEY) != account_tag.account_tag("CORP\\jane", key=b"other")
 
     @pytest.mark.parametrize("account", ["", "   ", "unknown"])
     def test_no_usable_account_has_no_tag(self, account):
-        assert account_tag.account_tag(account, salt=SALT) is None
+        assert account_tag.account_tag(account, key=KEY) is None
 
-    def test_a_per_user_profile_creates_its_salt_once_and_reuses_it(self, isolated_user_profile):
-        first = account_tag.install_salt()
-        assert first is not None and len(first) == account_tag.SALT_BYTES
-        assert account_tag.install_salt() == first
-        assert (isolated_user_profile / account_tag.PROFILE_SALT_FILE).read_bytes() == first
-
-    def test_a_shared_profile_without_a_salt_has_no_tag_and_creates_nothing(self, monkeypatch, isolated_user_profile):
+    def test_on_windows_the_key_is_the_machine_guid_whatever_the_profile(self, monkeypatch):
+        """One key per computer: a per-user profile and the shared one tag an account identically, so machine setup
+        (which copies history.db into the shared profile) keeps "this account" on the earlier runs, and an install
+        provisioned before N1 has tags at once."""
         from src.utils import paths
 
-        monkeypatch.setattr(paths, "is_machine_scope", lambda: True)
-        monkeypatch.setattr(account_tag, "_read_machine_salt", lambda: None)
-        assert account_tag.install_salt() is None
-        assert account_tag.current_tag() is None
-        assert not (isolated_user_profile / account_tag.PROFILE_SALT_FILE).exists()
-        # the log name still separates writers, without the name
+        monkeypatch.setattr(account_tag.sys, "platform", "win32")
+        monkeypatch.setattr(account_tag, "_read_machine_guid", lambda: KEY)
         monkeypatch.setattr(account_tag, "process_account", lambda: "CORP\\jane")
-        name_tag = account_tag.log_name_tag()
-        assert name_tag.startswith("u") and "jane" not in name_tag
+        for shared in (False, True):
+            monkeypatch.setattr(paths, "is_machine_scope", lambda shared=shared: shared)
+            assert account_tag.current_tag() == account_tag.account_tag("CORP\\jane", key=KEY)
 
-    def test_a_shared_profile_uses_the_machine_salt(self, monkeypatch):
-        from src.utils import paths
-
-        monkeypatch.setattr(paths, "is_machine_scope", lambda: True)
-        monkeypatch.setattr(account_tag, "_read_machine_salt", lambda: SALT)
-        monkeypatch.setattr(account_tag, "process_account", lambda: "CORP\\jane")
-        assert account_tag.current_tag() == account_tag.account_tag("CORP\\jane", salt=SALT)
-        assert account_tag.log_name_tag() == account_tag.current_tag()
-
-    def test_a_failing_salt_read_degrades_to_no_tag(self, monkeypatch):
-        from src.utils import paths
-
-        monkeypatch.setattr(paths, "is_machine_scope", lambda: True)
+    def test_an_unreadable_key_has_no_tag_and_a_log_name_that_is_not_a_hash(self, monkeypatch):
+        monkeypatch.setattr(account_tag.sys, "platform", "win32")
 
         def boom():
             raise OSError("denied")
 
-        monkeypatch.setattr(account_tag, "_read_machine_salt", boom)
-        assert account_tag.install_salt() is None
+        monkeypatch.setattr(account_tag, "_read_machine_guid", boom)
+        monkeypatch.setattr(account_tag, "process_account", lambda: "CORP\\jane")
+        assert account_tag.tag_key() is None and account_tag.current_tag() is None
+        assert account_tag.log_name_tag() == account_tag.NO_KEY_FRAGMENT  # nothing a list of names could reverse
+
+    def test_off_windows_the_profile_key_is_created_once_and_never_replaced(self, monkeypatch, isolated_user_profile):
+        monkeypatch.setattr(account_tag.sys, "platform", "linux")
+        first = account_tag.tag_key()
+        assert first is not None and len(first) == account_tag.PROFILE_KEY_BYTES
+        assert account_tag.tag_key() == first
+        (isolated_user_profile / account_tag.PROFILE_KEY_FILE).write_bytes(b"short")
+        assert account_tag.tag_key() == b"short"  # an existing key is used, never silently replaced
 
 
 class TestTheRole:
@@ -121,6 +114,18 @@ class TestRedact:
             ("C:\\Users\\Public\\gde", "C:\\Users\\Public\\gde"),  # not a person
             ("Zq_Personal and xZq_Person stay", "Zq_Personal and xZq_Person stay"),  # whole words only
             ("C:\\ProgramData\\DistrictSync\\runs", "C:\\ProgramData\\DistrictSync\\runs"),
+            # review of DSYNC-100: the text after a name survives, and a second path is still redacted
+            (
+                "Could not read C:\\Users\\Jane (PermissionError) retrying in 5 s",
+                "Could not read C:\\Users\\<user> (PermissionError) retrying in 5 s",
+            ),
+            ("/Users/admin and C:\\Users\\Administrator\\x", "/Users/<user> and C:\\Users\\<user>\\x"),
+            ("C:\\Users\\Jane Doe\\gde", "C:\\Users\\<user>\\gde"),  # a name with a space, inside a path
+            # other people's home folders off C:\Users: a redirected share, a Profiles drive
+            ("\\\\fileserver\\home\\jdoe\\gde\\students.csv", "\\\\fileserver\\home\\<user>\\gde\\students.csv"),
+            ("\\\\fs01\\staff\\users\\jdoe\\gde", "\\\\fs01\\staff\\users\\<user>\\gde"),
+            ("D:\\Profiles\\jdoe\\gde", "D:\\Profiles\\<user>\\gde"),
+            ("ran as ZQ_PERSON ok", "ran as <account> ok"),  # account names are case-insensitive
         ],
     )
     def test_it(self, text, expected):

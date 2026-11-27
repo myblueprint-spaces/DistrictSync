@@ -194,15 +194,7 @@ def _hklm_lines() -> list[str]:
         return [*lines, _row("key", f"unreadable ({type(exc).__name__})")]
     for name in (paths.MACHINE_SCOPE_VALUE_NAME, *_HKLM_DISPLAY_VALUES):
         lines.append(_row(name, values.get(name, "not set")))
-    lines.append(_row(account_tag.SALT_VALUE_NAME, "set" if _salt_present() else "not set"))  # never the value
     return lines
-
-
-def _salt_present() -> bool:
-    try:
-        return account_tag._read_machine_salt() is not None
-    except OSError:
-        return False
 
 
 def _shared_folder_lines() -> list[str]:
@@ -245,7 +237,7 @@ def _profile_lines() -> list[str]:
         "Profile:",
         _guarded("data dir", paths.user_data_dir),
         _guarded("scope", lambda: SCOPE_SHARED if paths.is_machine_scope() else SCOPE_PER_USER),
-        _guarded("this account (tag)", lambda: account_tag.current_tag() or "no tag yet (no account-tag key)"),
+        _guarded("this account (tag)", lambda: account_tag.current_tag() or "no tag (the key could not be read)"),
         _guarded("DISTRICTSYNC_DATA_DIR", lambda: paths._override_data_dir() or "not set"),
         _guarded("log file", paths.user_log_file),
         _guarded("run store", paths.user_history_db),
