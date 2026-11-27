@@ -2,6 +2,11 @@
 
 This guide walks you through installing and configuring DistrictSync on your school district's server. The entire process takes approximately 15–20 minutes.
 
+> **New district on Windows?** Use the machine-wide installer, `DistrictSync.msi`, and follow the
+> [IT deployment guide](it-deployment.md) instead of Step 1 below. It installs DistrictSync for every account on the
+> server, so a service account or a managed service account can run the nightly sync. Districts already using
+> `DistrictSync-windows.exe` can keep using it and this guide.
+
 ---
 
 ## Prerequisites

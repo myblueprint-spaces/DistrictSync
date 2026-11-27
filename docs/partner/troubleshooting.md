@@ -156,6 +156,12 @@ On Linux and macOS output goes to the terminal as usual.
 
 ---
 
+## "DistrictSync is installed for the whole computer but has not been set up yet"
+
+The machine-wide install (`DistrictSync.msi`) needs one setup step by an administrator before anything else runs:
+open DistrictSync once as an administrator, or run `DistrictSync.exe --machine-setup --updates notify`. See the
+[IT deployment guide](it-deployment.md).
+
 ## Exit codes
 
 Every run ends with one of four codes. Task Scheduler shows it as **Last Run
