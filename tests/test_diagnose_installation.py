@@ -124,3 +124,48 @@ def test_the_module_writes_nothing():
     source = (Path(__file__).resolve().parent.parent / "src" / "utils" / "installation.py").read_text(encoding="utf-8")
     for writer in ('"w"', '"a"', '"wb"', ".mkdir(", ".write_", "SetValueEx", "CreateKey"):
         assert writer not in source, writer
+
+
+class TestUntrustedTextNeverReachesTheReport:
+    """Review B1: the nightly's notice and an untrusted updater folder are written by others."""
+
+    def test_the_notice_is_reduced_to_codes_and_a_parsed_version(self, monkeypatch):
+        from src.update import check
+
+        monkeypatch.setattr(
+            check,
+            "last_check_summary",
+            lambda state_dir=None: {
+                "at": "2026-11-27T02:00:00+00:00\nfake: row",
+                "status": "available\nfake: row",
+                "reason": "newer_available",
+                "version": "9.9.9\nfake: row",
+            },
+        )
+        line = diagnostics._notice_lines()[0]
+        assert "fake" not in line and "\n" not in line and "9.9.9" in line and "newer_available" in line
+
+    def test_an_untrusted_folder_s_log_is_not_shown(self, monkeypatch, tmp_path):
+        from src.update import service
+
+        folder = tmp_path / "DistrictSync-Updater"
+        folder.mkdir()
+        (folder / service.LOG_FILE).write_text("planted text\n", encoding="utf-8")
+        monkeypatch.setattr(service, "state_dir", lambda: folder)
+        monkeypatch.setattr(service, "state_dir_trusted", lambda path: False)
+        assert "planted" not in diagnostics._updater_last_run()
+        monkeypatch.setattr(service, "state_dir_trusted", lambda path: True)
+        assert diagnostics._updater_last_run() == "planted text"  # positive twin
+
+    def test_a_log_line_is_one_printable_line(self):
+        assert diagnostics._clean("a\x1b[31mb\tc") == "a[31mbc"
+
+
+def test_both_msi_entry_names_are_recognised(monkeypatch):
+    for name in installation.MSI_ENTRY_NAMES:
+        monkeypatch.setattr(
+            installation,
+            "_uninstall_entries",
+            lambda n=name: [{"DisplayName": n, "DisplayVersion": "3.4.0", "WindowsInstaller": 1}],
+        )
+        assert installation.msi_product_version() == "3.4.0"

@@ -395,6 +395,21 @@ def _installation_lines() -> list[str]:
     ]
 
 
+def _code(value: object) -> str:
+    """A short code (``[a-z0-9_]``, at most 40 characters), or ``?``: nothing else from a principal-writable file."""
+    import re
+
+    text = str(value or "")
+    return text if re.fullmatch(r"[a-z0-9_]{1,40}", text) else "?"
+
+
+def _clean(line: str | None) -> str | None:
+    """One printable line, at most 200 characters: a log line never adds rows to the report."""
+    if not line:
+        return None
+    return "".join(ch for ch in line if ch.isprintable())[:200] or None
+
+
 def _updater_folder() -> str:
     from src.update import service
 
@@ -408,7 +423,10 @@ def _updater_last_run() -> str:
     from src.update import service
     from src.utils import installation
 
-    return installation.updater_last_line(service.state_dir() / service.LOG_FILE) or "none recorded"
+    folder = service.state_dir()
+    if folder.exists() and not service.state_dir_trusted(folder):
+        return "not shown: others can change this folder"  # its text is not the updater's (review B1)
+    return _clean(installation.updater_last_line(folder / service.LOG_FILE)) or "none recorded"
 
 
 def _notice_lines() -> list[str]:
@@ -417,11 +435,24 @@ def _notice_lines() -> list[str]:
     from src.update.status import newer_version_available
 
     def _last() -> str:
+        # The notice is written by the nightly's account (review B1): only a parsed time, known codes and a parsed
+        # version reach the report, never the file's own text.
+        from datetime import datetime
+
+        from src.update.status import _version_key
+
         last = last_check_summary()
         if not last:
             return "none recorded"
-        version = f", version {last.get('version')}" if last.get("version") else ""
-        return f"{last.get('at', '?')} {last.get('status', '?')} ({last.get('reason', '?')}){version}"
+        try:
+            at = datetime.fromisoformat(str(last.get("at"))).isoformat(timespec="seconds")
+        except (TypeError, ValueError):
+            at = "?"
+        status = _code(last.get("status"))
+        reason = _code(last.get("reason"))
+        key = _version_key(str(last.get("version") or ""))
+        version = ", version {}.{}.{}".format(*key) if key else ""
+        return f"{at} {status} ({reason}){version}"
 
     return [
         _guarded("last update check", _last),

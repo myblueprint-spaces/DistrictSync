@@ -17,8 +17,10 @@ import sys
 from pathlib import Path
 from typing import Final
 
-#: The product name the Velopack MSI registers under ``Uninstall`` (``vpk pack --packTitle``).
+#: The names the Velopack MSI may register under ``Uninstall``: the ``--packTitle``, or ``MSI:<pack id>`` as the spike's
+#: entry read (S0b #2). Which one the release MSI uses is confirmed by the lab run (L1, review B2).
 PRODUCT_NAME: Final = "DistrictSync"
+MSI_ENTRY_NAMES: Final = (PRODUCT_NAME, "MSI:myBlueprint.DistrictSync")
 _UNINSTALL_KEY: Final = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"
 _MAX_LOG_TAIL_BYTES: Final = 4096
 
@@ -61,7 +63,7 @@ def msi_product_version() -> str | None:
     """The version of the installed DistrictSync MSI product, or ``None`` (no MSI, or unreadable)."""
     try:
         for entry in _uninstall_entries():
-            if entry.get("DisplayName") == PRODUCT_NAME and entry.get("WindowsInstaller") == 1:
+            if entry.get("DisplayName") in MSI_ENTRY_NAMES and entry.get("WindowsInstaller") == 1:
                 version = entry.get("DisplayVersion")
                 return str(version) if version else None
     except Exception:  # noqa: BLE001 - a report line, never a stop
