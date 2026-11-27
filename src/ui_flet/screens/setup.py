@@ -2167,7 +2167,6 @@ def _mount_settings(  # pragma: no cover - Flet view glue
 # New versions — the update mode as a setting (plan 0055 U1b).                 #
 # --------------------------------------------------------------------------- #
 UPDATES_SAVED_NOTE = "Saved."
-UPDATES_APPLIED_NOTE = "Changed for this computer."
 UPDATES_WAITING_LINE = "Changing the setting. Answer the Windows permission prompt if it appears."
 
 
@@ -2188,6 +2187,7 @@ def _build_updates_section(page: ft.Page, cfg: AppConfig) -> ft.Control | None: 
             installed=is_installed_build(),
             kind=install_kind(),
             effective=policy.effective_update_mode(setting_enabled=cfg.update_enabled),
+            shared_profile=paths.is_machine_scope(),
         )
     except Exception:  # noqa: BLE001 - an advisory section never takes Settings down
         return None
@@ -2201,6 +2201,8 @@ def _build_updates_section(page: ft.Page, cfg: AppConfig) -> ft.Control | None: 
     def _choose(mode: str) -> None:
         chosen["mode"] = mode
         if view.machine_wide:
+            apply_button.disabled = mode == current["mode"]  # Apply only a real change
+            page.update()
             return  # applied with the button (one UAC prompt), never on a click
         try:
             cfg.update_enabled = update_setting.user_setting_for(mode)
@@ -2213,28 +2215,35 @@ def _build_updates_section(page: ft.Page, cfg: AppConfig) -> ft.Control | None: 
     async def _apply(_e: ft.ControlEvent | None = None) -> None:
         import asyncio
 
-        from src.scheduler.machine_setup import run
+        from src.scheduler.provision_session import request_update_mode
 
         controls_before = list(body.controls)
         body.controls = [components.inflight_row(UPDATES_WAITING_LINE)]
         page.update()
         try:
-            outcome = await asyncio.to_thread(run, chosen["mode"])
-            ok, text = outcome.code == 0, (UPDATES_APPLIED_NOTE if outcome.code == 0 else " ".join(outcome.lines))
+            # ONLY the mode: no profile copy, no delivery password, no handover (U1b review F2).
+            attempt = await asyncio.to_thread(request_update_mode, chosen["mode"])
+            ok, text = update_setting.apply_message(attempt.outcome.value)
         except Exception as exc:  # noqa: BLE001 - a dead button is not an option
             ok, text = False, f"The setting could not be changed ({type(exc).__name__})."
+        if ok:
+            group.value = current["mode"] = chosen["mode"]
+        else:
+            group.value = chosen["mode"] = current["mode"]  # the page shows the mode actually in force
+        apply_button.disabled = True
         body.controls = controls_before
         result.value = text
         result.color = tokens.color_status_healthy if ok else tokens.color_status_failed
         page.update()
 
+    current = {"mode": view.mode}
     choices = [(mode, update_setting.MODE_LABELS[mode]) for mode in view.choices]
-    body.controls = [
-        components.choice_group(choices, value=view.mode, on_choose=_choose, disabled=view.locked),
-        note,
-    ]
+    group = components.choice_group(choices, value=view.mode, on_choose=_choose, disabled=view.locked)
+    apply_button = components.secondary_button(update_setting.APPLY_LABEL, _apply)
+    apply_button.disabled = True  # until the choice differs from the mode in force
+    body.controls = [group, note]
     if view.machine_wide and not view.locked:
-        body.controls.append(components.secondary_button(update_setting.APPLY_LABEL, _apply))
+        body.controls.append(apply_button)
     body.controls.append(result)
     return components.card(
         ft.Column(

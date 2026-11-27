@@ -576,6 +576,20 @@ def request_machine_setup(*, update_mode: str, sftp: bool, sftp_host: str, sftp_
     return _elevate_and_read(payload, wants_check=False)
 
 
+def request_update_mode(update_mode: str) -> ProvisionAttempt:
+    """Plan 0055 U1b: change ONLY the machine update mode behind one UAC prompt. Never raises; no handover needed."""
+    from src.scheduler.provisioning import build_update_mode_payload
+
+    try:
+        payload = build_update_mode_payload(update_mode)
+    except ProvisionRefused as exc:
+        return ProvisionAttempt(outcome=ProvisionOutcome.REFUSED, step=exc.step, icacls_exit=exc.icacls_exit)
+    except (OSError, RuntimeError, ValueError) as exc:
+        logger.error("Could not start the update setting change (%s).", type(exc).__name__)
+        return ProvisionAttempt(outcome=ProvisionOutcome.UNAVAILABLE)
+    return _elevate_and_read(payload, wants_check=False)
+
+
 def _elevate_and_read(payload: dict[str, object], *, wants_check: bool) -> ProvisionAttempt:
     """Run one provisioning request in the elevated child and read its bounded result. Never raises."""
     req_path: Path | None = None

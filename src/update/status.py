@@ -69,6 +69,8 @@ def newer_version_available(state_dir: Path | None = None) -> str | None:
     try:
         if not is_installed_build():
             return None
+        if skip_reason(state_dir=state_dir, ignore_interval=True) in _STANDING:
+            return None  # updates are off or do not run here: Help says so, Home stays quiet
         last = last_check_summary(state_dir)
         if not last or last.get("status") != "available" or not last.get("version"):
             return None

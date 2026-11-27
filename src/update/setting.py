@@ -27,7 +27,11 @@ MODE_LABELS: dict[str, str] = {
 }
 SECTION_TITLE = "New versions of DistrictSync"
 POLICY_NOTE = "Set by your organisation's Group Policy. Your IT team can change it there."
-MACHINE_NOTE = "This applies to everyone on this computer. Windows asks an administrator to allow the change."
+MACHINE_NOTE = (
+    "This applies to everyone on this computer. An administrator running DistrictSync can change it; your IT team can "
+    "also set it with Group Policy or DistrictSync.exe --machine-setup --updates."
+)
+SHARED_NOTE = "Set for everyone on this computer by its administrator."
 USER_NOTE = "This applies to this copy of DistrictSync."
 APPLY_LABEL = "Apply"
 
@@ -42,14 +46,23 @@ class UpdateSettingView:
     note: str
 
 
-def update_setting_view(*, installed: bool, kind: InstallKind, effective: policy.EffectiveMode) -> UpdateSettingView:
-    """What the Settings section shows. Pure and total."""
+def update_setting_view(
+    *, installed: bool, kind: InstallKind, effective: policy.EffectiveMode, shared_profile: bool
+) -> UpdateSettingView:
+    """What the Settings section shows. Pure and total.
+
+    A copy that is not the machine-wide install shows the mode LOCKED whenever the machine decides it (the HKLM setting
+    wins over ``update_enabled``) or the session uses the shared profile (its ``config.json`` is everyone's): a per-user
+    "Saved." there would change nothing, or change it for everyone.
+    """
     if not installed:
         return UpdateSettingView(False, effective.mode, (), True, False, "")
     machine = kind is InstallKind.MACHINE
     choices = (policy.NOTIFY, policy.ON, policy.OFF) if machine else (policy.NOTIFY, policy.OFF)
     if effective.source == policy.SOURCE_POLICY:
         return UpdateSettingView(True, effective.mode, (effective.mode,), True, machine, POLICY_NOTE)
+    if not machine and (effective.source == policy.SOURCE_MACHINE or shared_profile):
+        return UpdateSettingView(True, effective.mode, (effective.mode,), True, False, SHARED_NOTE)
     mode = effective.mode if effective.mode in choices else policy.NOTIFY
     return UpdateSettingView(True, mode, choices, False, machine, MACHINE_NOTE if machine else USER_NOTE)
 
@@ -59,6 +72,25 @@ def user_setting_for(mode: str) -> bool:
     if mode not in (policy.NOTIFY, policy.OFF):
         raise ValueError("a copy installed for one account offers notify or off")
     return mode != policy.OFF
+
+
+APPLIED_NOTE = "Changed for this computer."
+APPLY_COPY: dict[str, str] = {
+    "different_account": (
+        "Only an administrator running DistrictSync can change this, so nothing was changed. Your IT team can also set "
+        "it with Group Policy or DistrictSync.exe --machine-setup --updates."
+    ),
+    "declined": "The Windows permission prompt was declined, so nothing was changed.",
+    "launch_failed": "Windows did not show the permission prompt, so nothing was changed.",
+}
+APPLY_FAILED = "The setting was not changed. Details are in DistrictSync's log."
+
+
+def apply_message(outcome: str) -> tuple[bool, str]:
+    """``(changed, sentence)`` for a ``request_update_mode`` outcome value. Only ``provisioned`` is a change."""
+    if outcome == "provisioned":
+        return (True, APPLIED_NOTE)
+    return (False, APPLY_COPY.get(outcome, APPLY_FAILED))
 
 
 def home_line(available_version: str | None) -> str | None:

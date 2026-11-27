@@ -742,6 +742,46 @@ def apply_machine_setup(payload: Mapping[str, object]) -> None:
     apply_provision(payload, register=lambda: None, update_mode=mode)
 
 
+def build_update_mode_payload(update_mode: str) -> dict[str, object]:
+    """Build the ``set_update_mode`` request (plan 0055 U1b): change ONLY the machine update mode.
+
+    Settings' Apply on a machine-wide install. Unlike ``machine_setup`` it copies no profile, seals no delivery password
+    and hands nothing over: a second administrator changing the mode must never replace the shared delivery password
+    with their own old one. Refuses under ``DISTRICTSYNC_DATA_DIR``; an unknown mode is ``ValueError`` before Windows is
+    asked anything.
+    """
+    _refuse_under_override()
+    return {"op": "set_update_mode", "update_mode": policy.parse_update_mode(update_mode)}
+
+
+def apply_update_mode(payload: Mapping[str, object]) -> None:
+    """The child half of ``set_update_mode``: write ``UpdateMode`` beside a switch that is already ON.
+
+    Raises:
+        ProvisionRefused: :attr:`ProvisionStep.OVERRIDE` under ``DISTRICTSYNC_DATA_DIR``; :attr:`ProvisionStep.COMMIT`
+            when the value cannot be written.
+        ValueError: an unknown mode, or a computer that is not set up (machine setup writes the mode then).
+    """
+    _refuse_under_override()
+    mode = policy.parse_update_mode(payload.get("update_mode"))
+    if paths.machine_switch_on() is not True:
+        raise ValueError("this computer is not set up for the shared profile")
+    try:
+        _write_update_mode(mode)
+    except OSError as exc:
+        raise ProvisionRefused(ProvisionStep.COMMIT) from exc
+
+
+def _write_update_mode(mode: str) -> None:  # pragma: no cover - Windows-only registry write
+    if sys.platform != "win32":
+        raise OSError("The machine update mode is Windows-only.")
+    import winreg
+
+    access = paths.MACHINE_SCOPE_KEY_ACCESS | winreg.KEY_WRITE
+    with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, paths.MACHINE_SCOPE_KEY_PATH, 0, access) as key:
+        winreg.SetValueEx(key, policy.MACHINE_SETTING_VALUE_NAME, 0, winreg.REG_SZ, mode)
+
+
 # --------------------------------------------------------------------------- #
 # The child half — the three ops.                                             #
 # --------------------------------------------------------------------------- #
