@@ -1023,6 +1023,12 @@ def _dashboard(
         provisioned_at=provisioned_at,
     )
 
+    # Plan 0055 U1b: a newer signed version found by the notify check. Resolved once per mount; quiet and last.
+    from src.update.setting import home_line
+    from src.update.status import newer_version_available
+
+    update_line = home_line(newer_version_available())
+
     container = ft.Column(spacing=22)
 
     def _render(schedule_status: ScheduleStatus | None) -> None:
@@ -1106,6 +1112,8 @@ def _dashboard(
         # a provenance footnote is the quietest true thing on the page — it may not precede the
         # verdict, and it may not be wedged between a fault and its fix (the same argument the
         # identity cards' anchor comment makes).
+        if update_line is not None:
+            controls.append(ft.Text(update_line, size=tokens.type_caption, color=tokens.color_muted))
         if scope_line is not None:
             controls.append(ft.Text(scope_line, size=tokens.type_caption, color=tokens.color_muted))
         container.controls = controls

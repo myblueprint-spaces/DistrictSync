@@ -423,7 +423,9 @@ def check_row(label: str, *, value: bool, on_toggle: Callable[[bool], None]) -> 
     )
 
 
-def choice_group(options: list[tuple[str, str]], *, value: str, on_choose: Callable[[str], None]) -> ft.Control:
+def choice_group(
+    options: list[tuple[str, str]], *, value: str, on_choose: Callable[[str], None], disabled: bool = False
+) -> ft.Control:
     """One choice among a few, as radio buttons in the brand's action colour (plan 0055 M2b).
 
     The ONE radio factory. ``options`` is ``(value, label)`` pairs. ``on_choose`` takes the chosen VALUE, not the
@@ -439,7 +441,10 @@ def choice_group(options: list[tuple[str, str]], *, value: str, on_choose: Calla
         on_change=_adapt,
         content=ft.Column(
             spacing=tokens.space_xs,
-            controls=[ft.Radio(value=v, label=label, active_color=tokens.color_action_primary) for v, label in options],
+            controls=[
+                ft.Radio(value=v, label=label, active_color=tokens.color_action_primary, disabled=disabled)
+                for v, label in options
+            ],
         ),
     )
 

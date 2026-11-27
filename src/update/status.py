@@ -61,6 +61,23 @@ def _when(iso: Any) -> str:
         return ""
 
 
+def newer_version_available(state_dir: Path | None = None) -> str | None:
+    """The newer signed version the last notify check found, while it is still newer than this copy; else ``None``.
+
+    Home's line (plan 0055 U1b). Never raises: a quiet line may never take Home down.
+    """
+    try:
+        if not is_installed_build():
+            return None
+        last = last_check_summary(state_dir)
+        if not last or last.get("status") != "available" or not last.get("version"):
+            return None
+        version = str(last.get("version"))
+        return version if _newer(version, app_version()) else None
+    except Exception:  # noqa: BLE001 - advisory copy on Home
+        return None
+
+
 def update_status_line(state_dir: Path | None = None) -> str | None:
     """What Help should say about updates, or ``None`` to say nothing (portable build)."""
     if not is_installed_build():

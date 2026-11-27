@@ -2155,8 +2155,96 @@ def _mount_settings(  # pragma: no cover - Flet view glue
     # changeable and clearable. Landing an ask without a way to change or remove the answer
     # would be a half-done feature, which is why this section ships in the same slice.
     controls += [_build_identity_section(page, cfg), folders_card, schedule_card, sftp_card]
+    # Plan 0055 U1b: how new versions are handled, last (it is about the program, not this district's sync).
+    updates_card = _build_updates_section(page, cfg)
+    if updates_card is not None:
+        controls.append(updates_card)
     root.controls = controls
     page.update()
+
+
+# --------------------------------------------------------------------------- #
+# New versions — the update mode as a setting (plan 0055 U1b).                 #
+# --------------------------------------------------------------------------- #
+UPDATES_SAVED_NOTE = "Saved."
+UPDATES_APPLIED_NOTE = "Changed for this computer."
+UPDATES_WAITING_LINE = "Changing the setting. Answer the Windows permission prompt if it appears."
+
+
+def _build_updates_section(page: ft.Page, cfg: AppConfig) -> ft.Control | None:  # pragma: no cover - Flet view glue
+    """How DistrictSync handles new versions. ``None`` (no section) on a build without the updater.
+
+    The decision is the pure ``update.setting.update_setting_view``: locked under Group Policy; on a machine-wide install
+    the change runs the machine setup ladder behind one UAC prompt (HKLM is written only by the elevated op); a copy
+    installed for one account saves ``AppConfig.update_enabled``. No filled primary: the scroll's primaries are elsewhere.
+    """
+    from src.update import policy
+    from src.update import setting as update_setting
+    from src.utils.build_flavor import is_installed_build
+    from src.utils.install_kind import install_kind
+
+    try:
+        view = update_setting.update_setting_view(
+            installed=is_installed_build(),
+            kind=install_kind(),
+            effective=policy.effective_update_mode(setting_enabled=cfg.update_enabled),
+        )
+    except Exception:  # noqa: BLE001 - an advisory section never takes Settings down
+        return None
+    if not view.shown:
+        return None
+    chosen = {"mode": view.mode}
+    note = ft.Text(view.note, size=tokens.type_caption, color=tokens.color_muted)
+    result = ft.Text("", size=tokens.type_body, weight=ft.FontWeight.W_600, color=tokens.color_status_healthy)
+    body = ft.Column(spacing=tokens.space_md)
+
+    def _choose(mode: str) -> None:
+        chosen["mode"] = mode
+        if view.machine_wide:
+            return  # applied with the button (one UAC prompt), never on a click
+        try:
+            cfg.update_enabled = update_setting.user_setting_for(mode)
+            cfg.save()
+            result.value, result.color = UPDATES_SAVED_NOTE, tokens.color_status_healthy
+        except Exception:  # noqa: BLE001 - say it, never crash the section
+            result.value, result.color = IDENTITY_REFUSED_NOTE, tokens.color_status_failed
+        page.update()
+
+    async def _apply(_e: ft.ControlEvent | None = None) -> None:
+        import asyncio
+
+        from src.scheduler.machine_setup import run
+
+        controls_before = list(body.controls)
+        body.controls = [components.inflight_row(UPDATES_WAITING_LINE)]
+        page.update()
+        try:
+            outcome = await asyncio.to_thread(run, chosen["mode"])
+            ok, text = outcome.code == 0, (UPDATES_APPLIED_NOTE if outcome.code == 0 else " ".join(outcome.lines))
+        except Exception as exc:  # noqa: BLE001 - a dead button is not an option
+            ok, text = False, f"The setting could not be changed ({type(exc).__name__})."
+        body.controls = controls_before
+        result.value = text
+        result.color = tokens.color_status_healthy if ok else tokens.color_status_failed
+        page.update()
+
+    choices = [(mode, update_setting.MODE_LABELS[mode]) for mode in view.choices]
+    body.controls = [
+        components.choice_group(choices, value=view.mode, on_choose=_choose, disabled=view.locked),
+        note,
+    ]
+    if view.machine_wide and not view.locked:
+        body.controls.append(components.secondary_button(update_setting.APPLY_LABEL, _apply))
+    body.controls.append(result)
+    return components.card(
+        ft.Column(
+            spacing=tokens.space_md,
+            controls=[
+                ft.Text(update_setting.SECTION_TITLE, size=tokens.type_section, weight=ft.FontWeight.W_700),
+                body,
+            ],
+        )
+    )
 
 
 # --------------------------------------------------------------------------- #
