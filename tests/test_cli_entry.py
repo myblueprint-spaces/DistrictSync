@@ -627,7 +627,11 @@ class TestMachineScopeRefusalAtTheCliEntryPoint:
         assert log.exists(), "the refusal must be reported into a log file, not only to stderr"
         text = log.read_text(encoding="utf-8", errors="replace")
         assert "machine-scope refused: foreign_owner" in text
-        assert str(shared) in text
+        from src.utils.redact import redact
+
+        # Plan 0055 N1: the log file goes through the redacting formatter, so a path under a profile folder (pytest's
+        # tmp dir on Windows) is written with the person's name replaced.
+        assert redact(str(shared)) in text
 
     def test_an_unwritable_report_sink_still_returns_1_instead_of_crashing(self, monkeypatch, tmp_path):
         shared = tmp_path / "ProgramData" / "DistrictSync"
