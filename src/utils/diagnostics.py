@@ -84,7 +84,10 @@ def _update_mode() -> str:
     from src.config.app_config import AppConfig
     from src.update import policy
 
-    effective = policy.effective_update_mode(setting_enabled=AppConfig.load().update_enabled)
+    # Before machine setup no per-user setting may be read (that would create the refused profile); the per-user switch
+    # only matters to a per-user copy anyway (plan 0055 M2b).
+    enabled = True if _setup_needed() else AppConfig.load().update_enabled
+    effective = policy.effective_update_mode(setting_enabled=enabled)
     line = f"{effective.mode} ({effective.source})"
     try:
         from src.update.check import skip_reason
@@ -349,19 +352,34 @@ def diagnose_lines() -> list[str]:
         _guarded("build flavour", build_flavor),
         _guarded("install kind", lambda: str(install_kind())),
         _guarded("update mode", _update_mode),
+        _guarded("machine setup needed", lambda: _yes_no(_setup_needed())),
         "",
-        *_profile_lines(),
+        *_after_setup(_profile_lines),
         "",
         *_hklm_lines(),
         "",
         *_shared_folder_lines(),
         "",
-        *_delivery_lines(),
+        *_after_setup(_delivery_lines),
         "",
-        *_schedule_lines(),
+        *_after_setup(_schedule_lines),
         "",
-        *_last_run_lines(),
+        *_after_setup(_last_run_lines),
     ]
+
+
+def _setup_needed() -> bool:
+    from src.scheduler.machine_setup import needs_machine_setup
+
+    return needs_machine_setup()
+
+
+def _after_setup(section: Callable[[], list[str]]) -> list[str]:
+    """A section that resolves the profile. Before machine setup on a machine-wide install it is skipped: resolving it
+    would create a per-user profile, which that install refuses (plan 0055 M2b)."""
+    if _setup_needed():
+        return [_row("skipped", "machine setup has not run (DistrictSync.exe --machine-setup --updates notify)")]
+    return section()
 
 
 def run_diagnose(out: IO[str] | None = None) -> int:

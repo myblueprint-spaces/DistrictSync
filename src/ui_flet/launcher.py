@@ -155,6 +155,13 @@ def format_user_error(exc: BaseException) -> str:
     )
 
 
+#: Plan 0055 M2b: what the admin is told when the first-run window itself cannot open.
+MACHINE_SETUP_WINDOW_FALLBACK = (
+    "DistrictSync is installed for the whole computer but has not been set up yet, and its setup window could not "
+    "open. An administrator can run DistrictSync.exe --machine-setup --updates notify from a command prompt."
+)
+
+
 def offers_grant_window(exc: BaseException) -> bool:
     """Whether this boot failure is the one a ONE-TIME Windows grant can fix (0049 S-1b-ii.2).
 
@@ -188,7 +195,7 @@ def _write_traceback(exc: BaseException) -> None:
         pass
 
 
-def _show_error_dialog(message: str) -> None:  # pragma: no cover - view glue
+def _show_error_dialog(message: str, *, log_folder: bool = True) -> None:  # pragma: no cover - view glue
     """Show a minimal plain-language error window, falling back to tkinter/stderr.
 
     Tried in order so the no-console exe always surfaces *something*: a minimal
@@ -236,7 +243,7 @@ def _show_error_dialog(message: str) -> None:  # pragma: no cover - view glue
                                 spacing=12,
                                 controls=[
                                     ft.FilledButton("Close", on_click=_close),
-                                    ft.TextButton("Open log folder", on_click=_open_logs),
+                                    *([ft.TextButton("Open log folder", on_click=_open_logs)] if log_folder else []),
                                 ],
                             ),
                         ],
@@ -284,6 +291,18 @@ def main() -> None:  # pragma: no cover - view glue (ft.run + dialog)
         # independent: it re-resolves the log path itself (falling back to the legacy
         # dir), so it still records the traceback even if ``boot_logging`` was the
         # thing that failed.
+        # Plan 0055 M2b: a machine-wide install that has not been set up shows ONLY the first-run machine setup
+        # step, before the legacy migration, the pin and the log sink, so nothing is written into one person's
+        # profile. The step re-launches the app once the shared profile is in use.
+        from src.scheduler.machine_setup import needs_machine_setup
+
+        if needs_machine_setup():
+            from src.ui_flet.machine_setup_window import show_machine_setup_window
+
+            if show_machine_setup_window():
+                return
+            _show_error_dialog(MACHINE_SETUP_WINDOW_FALLBACK, log_folder=False)  # that button would create a profile
+            return
         migrate_legacy_data_dir()
         # Resolve the data directory ONCE, before the sink opens inside it (plan 0049 D0)
         # — so the banner reports the profile this session will actually use, and a

@@ -423,6 +423,27 @@ def check_row(label: str, *, value: bool, on_toggle: Callable[[bool], None]) -> 
     )
 
 
+def choice_group(options: list[tuple[str, str]], *, value: str, on_choose: Callable[[str], None]) -> ft.Control:
+    """One choice among a few, as radio buttons in the brand's action colour (plan 0055 M2b).
+
+    The ONE radio factory. ``options`` is ``(value, label)`` pairs. ``on_choose`` takes the chosen VALUE, not the
+    event: ``ft.RadioGroup`` reports a change via ``on_change`` on 0.85.3 with the value on ``event.control.value``,
+    and the factory adapts it once, as :func:`check_row` does for a tick box.
+    """
+
+    def _adapt(event: ft.ControlEvent) -> None:
+        on_choose(str(event.control.value))
+
+    return ft.RadioGroup(
+        value=value,
+        on_change=_adapt,
+        content=ft.Column(
+            spacing=tokens.space_xs,
+            controls=[ft.Radio(value=v, label=label, active_color=tokens.color_action_primary) for v, label in options],
+        ),
+    )
+
+
 # --------------------------------------------------------------------------- #
 # In-flight row — a spinner beside an honest waiting line                        #
 # --------------------------------------------------------------------------- #
