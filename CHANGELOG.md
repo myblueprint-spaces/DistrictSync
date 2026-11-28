@@ -69,6 +69,12 @@ Per-release download links and auto-generated commit notes live on the
   it normally, including during computer setup and `--migrate`. Files DistrictSync saves itself still have
   no byte-order mark (DSYNC-112).
 
+- **"Set up this computer" no longer stays on "Working…" after it succeeds.** On the machine-wide install
+  (`C:\Program Files\myBlueprint.DistrictSync\`), DistrictSync restarted itself with its folder name split at
+  the space, so the new copy stopped at once and the setup window never closed. It now closes the window and
+  starts DistrictSync correctly. The same fix applies to the window that gives a second administrator access to
+  the shared settings (DSYNC-114).
+
 ### Changed
 
 - **SD74: every teacher MyEd lists on a class is enrolled.** A class can have more than one

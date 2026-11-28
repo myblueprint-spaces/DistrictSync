@@ -32,7 +32,7 @@ Developer reference for where DistrictSync keeps its profile — the per-user ap
 
 **The `MOVED.txt` FENCE (amendment 2)** is what makes the rename mean anything: `AppConfig.save()` raises `SettingsOverwriteRefused` and `write_run_record` WARNs + returns `False` when `paths.profile_superseded()` sees the breadcrumb (checked at the profile ROOT — the store sits under `runs/` on machine scope), because `load()` maps `FileNotFoundError` to defaults with no log and both writers recreate silently.
 
-**The auto-grant window (amendment 3)** is PRE-SHELL (`ui_flet/grant_window.py` + the pure `grant_access.py`), rendered from `launcher.main`'s refusal path — the shell mount point does not exist at the moment of failure — branching on the TYPED reason (only `INACCESSIBLE` is grantable), re-execing on success, and saying UP FRONT that over-the-shoulder consent fails closed (the handshake is DPAPI CurrentUser → `DSYNC_DIFFERENT_ACCOUNT`).
+**The auto-grant window (amendment 3)** is PRE-SHELL (`ui_flet/grant_window.py` + the pure `grant_access.py`), rendered from `launcher.main`'s refusal path — the shell mount point does not exist at the moment of failure — branching on the TYPED reason (only `INACCESSIBLE` is grantable), re-launching on success through the shared `ui_flet/relaunch.py` (close the window, quoted list spawn, exit — DSYNC-114), and saying UP FRONT that over-the-shoulder consent fails closed (the handshake is DPAPI CurrentUser → `DSYNC_DIFFERENT_ACCOUNT`).
 
 ## Honest predicates (S-2a)
 
