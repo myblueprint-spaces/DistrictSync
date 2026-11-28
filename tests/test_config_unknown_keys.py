@@ -63,7 +63,7 @@ from src.etl.transformers.enrollments import EnrollmentTransformer
 from src.etl.transformers.registry import TRANSFORMER_REGISTRY, source_column_roles
 from src.etl.transformers.staff import StaffTransformer
 from src.etl.transformers.student_courses import StudentCoursesTransformer
-from src.utils.paths import bundle_mappings_dir, user_mappings_dir
+from src.utils.paths import bundle_mappings_dir, ensure_user_mappings_dir, user_mappings_dir
 from tests._pins import BUNDLED_CONFIG_COUNT
 
 LOADER_LOGGER = "src.config.loader"
@@ -353,7 +353,7 @@ class TestAuthoringRefuses:
         user dir with zero unknown-key warnings."""
         planted = yaml.safe_load(smoke._SD93_OVERLAY_YAML)
         validate_overlay(copy.deepcopy(planted), label=smoke._SD93_OVERLAY_SIS)
-        (user_mappings_dir() / f"{smoke._SD93_OVERLAY_SIS}_mapping.yaml").write_text(
+        (ensure_user_mappings_dir() / f"{smoke._SD93_OVERLAY_SIS}_mapping.yaml").write_text(
             smoke._SD93_OVERLAY_YAML, encoding="utf-8"
         )
         with caplog.at_level(logging.WARNING, logger=LOADER_LOGGER):

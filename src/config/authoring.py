@@ -44,7 +44,7 @@ import yaml
 
 from src.config.loader import load_config, resolve_config_path, validate_overlay
 from src.config.models import MappingConfig, is_valid_district_domain
-from src.utils.paths import user_mappings_dir
+from src.utils.paths import ensure_user_mappings_dir, user_mappings_dir
 from src.utils.validators import validate_sis_type
 from src.utils.version import app_version
 
@@ -878,6 +878,9 @@ def write_overlay(
         allow_unicode=True,
         default_flow_style=False,
     )
+    # The folder is created HERE, on the write path only, AFTER the load-back passed
+    # (DSYNC-110): readers never create it, and a refused spec leaves no folder behind.
+    ensure_user_mappings_dir()
     _atomic_write_text(target, text)
     logger.info(
         "Wrote self-service mapping overlay '%s' (base '%s'): %d global_config key(s), "
@@ -904,6 +907,10 @@ def delete_overlay(sis_id: str) -> bool:
     * a target that does not resolve INSIDE ``user_mappings_dir()``. Defence in depth:
       :func:`validate_sis_type` already excludes separators and dots, so this can only
       fire if that boundary ever loosens — which is exactly when a deletion must stop.
+
+    Never creates the folder (DSYNC-110): ``resolve()`` is non-strict, so a root that
+    does not exist yet still resolves to an absolute path and the containment check holds;
+    the target then does not exist and this returns ``False``.
 
     Does NOT invalidate the UI's memoised catalog
     (``src/ui_flet/mapping_catalog.reset_catalog_cache``) — the calling UI layer does,

@@ -2258,10 +2258,10 @@ class TestUnityPlainContactReport:
     ):
         """What the owner did by hand on 2026-09-23 (an overlay with Family removed from
         ``enabled_entities``) is exactly what the bulkhead now does automatically."""
-        from src.utils.paths import user_mappings_dir
+        from src.utils.paths import ensure_user_mappings_dir
 
         _code, _manifests, input_dir, out = plain
-        (user_mappings_dir() / f"{_UNITY_WITHOUT_FAMILY_SIS}_mapping.yaml").write_text(
+        (ensure_user_mappings_dir() / f"{_UNITY_WITHOUT_FAMILY_SIS}_mapping.yaml").write_text(
             _UNITY_WITHOUT_FAMILY_YAML, encoding="utf-8"
         )
         switched_off = tmp_path / "out_without_family"

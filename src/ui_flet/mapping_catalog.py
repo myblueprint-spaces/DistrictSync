@@ -153,8 +153,8 @@ def _origin_of(sis_type: str, config_dir: Path | None) -> ConfigOrigin:
       than inventing a second answer for the same seam. That is *why* origin tests have to
       go through the real user-then-bundled pair: a single-dir fixture is vacuous by
       construction;
-    * **it is TOTAL and SILENT.** Any raise (``user_mappings_dir()`` mkdir-ing on a
-      locked-down profile, an OS error mid-stat) → ``"bundled"``, with no log line: that
+    * **it is TOTAL and SILENT.** Any raise (an unreadable profile, an OS error
+      mid-stat) → ``"bundled"``, with no log line: that
       root cause already surfaces in ``summarize_config``'s load WARN, and one duplicate per
       catalog row would bury it. A config that is simply not found anywhere reads
       ``"bundled"`` for the same reason.
