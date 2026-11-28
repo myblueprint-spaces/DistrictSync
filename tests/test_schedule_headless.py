@@ -603,6 +603,65 @@ class TestRemove:
         code, _ = headless.remove()
         assert code == 0 and seen["user"] == "CORP\\svc$" and sched.deleted == []
 
+    # --- DSYNC-115: every account a registration granted access to is revoked on Remove ---------
+    def _recorded(self, user: str, kind: str) -> None:
+        headless.register(run_time="02:30", spec=_spec("current"), password=None, wake_to_run=False)  # a full record
+        cfg = AppConfig.load()
+        cfg.schedule_run_as_user, cfg.schedule_run_as_kind = user, kind
+        cfg.save()
+
+    def _revoke_spy(self, monkeypatch, revoke=provision_session.RevokeOutcome.REVOKED) -> list[tuple]:
+        from src.utils import paths
+
+        monkeypatch.setattr(paths, "is_machine_scope", lambda: True)
+        seen: list[tuple] = []
+
+        def _revoke(task_name, *, user, kind):
+            seen.append((task_name, user, kind))
+            return provision_session.RemovalAttempt(ok=True, message="", revoke=revoke)
+
+        monkeypatch.setattr(provision_session, "request_removal_with_revoke", _revoke)
+        return seen
+
+    @pytest.mark.parametrize("user", ["LAB\\svc_dsyncpw", "PC01\\svc_local"], ids=["domain", "local"])
+    def test_a_password_account_on_shared_settings_is_removed_with_its_access(self, sched, monkeypatch, caplog, user):
+        """Lab row T4: ``--principal password:LAB\\svc_dsyncpw`` then ``--schedule-remove`` left the account its ACEs."""
+        self._recorded(user, "password")
+        seen = self._revoke_spy(monkeypatch)
+        with caplog.at_level(logging.DEBUG):
+            code, message = headless.remove()
+        assert code == 0 and "Removed" in message
+        assert seen == [(AppConfig.load().schedule_task_name, user, PrincipalKind.PASSWORD)]
+        assert sched.deleted == [], "ONE elevated op - no second removal"
+        assert not AppConfig.load().schedule_registered
+        account = user.split("\\")[1]
+        assert account not in message and account not in caplog.text
+
+    def test_the_signed_in_account_is_removed_the_ordinary_way(self, sched, monkeypatch):
+        """It was granted nothing at registration, so there is nothing to revoke (and no prompt to show)."""
+        self._recorded("", "interactive_token")
+        seen = self._revoke_spy(monkeypatch)
+        code, _ = headless.remove()
+        assert code == 0 and seen == [] and sched.deleted
+
+    def test_an_access_that_was_left_in_place_is_said(self, sched, monkeypatch):
+        self._recorded("LAB\\svc_dsyncpw", "password")
+        self._revoke_spy(monkeypatch, revoke=provision_session.RevokeOutcome.NOT_REVOKED)
+        code, message = headless.remove()
+        assert code == 0 and "could not be removed" in message and "svc_dsyncpw" not in message
+
+    def test_a_switch_revokes_the_old_account_before_the_new_one_is_scheduled(self, sched, monkeypatch):
+        """The gate makes a switch Remove-then-Schedule; the Remove is what revokes A (B's grant comes with its
+        provision, which also retires any grant still recorded for A - pinned in tests/test_provisioning.py)."""
+        self._recorded("LAB\\svc_a", "password")
+        seen = self._revoke_spy(monkeypatch)
+        code, message = headless.register(
+            run_time="02:30", spec=_spec("password:LAB\\svc_b"), password=SECRET, wake_to_run=False
+        )
+        assert code == 1 and message == headless.GATE_COPY[RegisterBlock.ACCOUNT_SWITCH_NEEDS_REMOVE]
+        assert headless.remove()[0] == 0
+        assert [call[1] for call in seen] == ["LAB\\svc_a"]
+
 
 class TestTheCommandLine:
     def _main(self, argv):

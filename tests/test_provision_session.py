@@ -996,3 +996,53 @@ class TestStepMarkerParity:
         attempt = provision_session._classify_child_refusal("Windows rejected the user name or password.")
         assert attempt.outcome is provision_session.ProvisionOutcome.FAILED
         assert attempt.step is None
+
+
+# --------------------------------------------------------------------------- #
+# DSYNC-115 — which Remove revokes: every principal a registration granted      #
+# --------------------------------------------------------------------------- #
+class TestWhichRemoveRevokes:
+    """The ONE decision the window's Remove and ``--schedule-remove`` share.
+
+    A registration grants folder access to every account that is not the signed-in one (a password account, local or
+    domain, and a managed service account), so Remove asks the elevated child to revoke it for exactly those. Before
+    DSYNC-115 only a managed service account was asked for, and a password account kept RX on the shared folder and
+    Modify on ``runs`` after its nightly was gone (lab row T4).
+    """
+
+    CURRENT = "CORP\\admin"
+
+    def _decide(self, user, kind, *, shared=True):
+        return provision_session.revoke_request_for_removal(user, kind, current=self.CURRENT, shared_settings=shared)
+
+    @pytest.mark.parametrize(
+        ("user", "kind"),
+        [
+            pytest.param("LAB\\svc_dsyncpw", PrincipalKind.PASSWORD, id="password-domain"),
+            pytest.param("PC01\\svc_local", PrincipalKind.PASSWORD, id="password-local"),
+            pytest.param("LAB\\svc_dsync$", PrincipalKind.MANAGED_SERVICE_ACCOUNT, id="gmsa"),
+        ],
+    )
+    def test_every_granted_kind_is_revoked(self, user, kind):
+        assert self._decide(user, kind) == provision_session.RevokeRequest(user=user, kind=kind)
+
+    def test_a_record_from_before_the_kind_existed_is_a_password_account(self):
+        assert self._decide("LAB\\svc_dsyncpw", None) == provision_session.RevokeRequest(
+            user="LAB\\svc_dsyncpw", kind=PrincipalKind.PASSWORD
+        )
+
+    @pytest.mark.parametrize(
+        ("user", "kind"),
+        [
+            pytest.param("", PrincipalKind.INTERACTIVE_TOKEN, id="signed-in, blank"),
+            pytest.param("", None, id="signed-in, no kind recorded"),
+            pytest.param("corp\\ADMIN", PrincipalKind.PASSWORD, id="the signed-in account typed with a password"),
+            pytest.param(None, None, id="no usable record"),
+        ],
+    )
+    def test_the_signed_in_account_was_granted_nothing_so_nothing_is_revoked(self, user, kind):
+        assert self._decide(user, kind) is None
+
+    def test_a_per_user_install_has_no_shared_folder_to_revoke_on(self):
+        assert self._decide("LAB\\svc_dsyncpw", PrincipalKind.PASSWORD, shared=False) is None
+        assert self._decide("LAB\\svc_dsyncpw", PrincipalKind.PASSWORD, shared=True) is not None  # positive twin

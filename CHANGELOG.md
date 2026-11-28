@@ -46,6 +46,18 @@ Per-release download links and auto-generated commit notes live on the
   saves a custom mapping; reading the mappings never creates it. Nothing needs to change on the
   server (DSYNC-110).
 
+- **Removing the nightly sync now also removes the scheduled account's access to the shared
+  settings folder, whatever kind of account it was.** On a machine-wide install, a nightly sync
+  scheduled to run as a service account with a password (local or domain) kept read access to
+  `C:\ProgramData\DistrictSync` and write access to its `runs` folder after Remove nightly sync
+  or `--schedule-remove`; only a managed service account lost it. Both now remove that access in
+  the same permission prompt, and so does scheduling the nightly for a different account.
+  DistrictSync only ever removes the access it granted itself: permissions someone added by hand,
+  and those of Administrators, SYSTEM and the administrators who use DistrictSync, are left
+  alone. If it keeps access in place, Remove says so. On a computer scheduled before this
+  version, the account it scheduled is removed when its access is exactly what DistrictSync
+  gave it (DSYNC-115).
+
 - **The installed copy can no longer be scheduled to run as a service account or managed service
   account.** It is installed for one Windows account only, so another account cannot run it and
   such a nightly sync registered fine but never started. Setup now says so before any permission
