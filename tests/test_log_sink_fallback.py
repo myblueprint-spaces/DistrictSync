@@ -33,6 +33,8 @@ from src.utils import logger as logger_mod
 from src.utils import paths as paths_module
 
 _ACCOUNT = "CORP\\Zebediah"
+# Captured at import: several tests replace the stdlib class with a denying factory.
+_ROTATING = logging.handlers.RotatingFileHandler
 
 
 @pytest.fixture
@@ -58,8 +60,8 @@ def _flush_all() -> None:
 
 
 def _file_handlers() -> list[logging.handlers.RotatingFileHandler]:
-    found = [h for h in logging.getLogger().handlers if isinstance(h, logging.handlers.RotatingFileHandler)]
-    found += [h for h in logging.getLogger("etl").handlers if isinstance(h, logging.handlers.RotatingFileHandler)]
+    found = [h for h in logging.getLogger().handlers if isinstance(h, _ROTATING)]
+    found += [h for h in logging.getLogger("etl").handlers if isinstance(h, _ROTATING)]
     return found
 
 
@@ -68,6 +70,10 @@ def handshake(tmp_path, monkeypatch):
     """The per-user handshake folder — DISTINCT from the profile, so a fall-through is visible."""
     folder = tmp_path / "handshake"
     monkeypatch.setattr(paths_module, "handshake_dir", lambda: folder)
+    # The launcher binds the name at import; patch its copy too, or test order decides the answer.
+    from src.ui_flet import launcher
+
+    monkeypatch.setattr(launcher, "handshake_dir", lambda: folder)
     return folder
 
 
@@ -91,7 +97,7 @@ def machine(tmp_path, monkeypatch):
 
 def _deny(denied: Path):
     """A ``RotatingFileHandler`` that raises ``PermissionError`` for one folder, as Windows did."""
-    real = logging.handlers.RotatingFileHandler
+    real = _ROTATING
 
     def _handler(path, *args, **kwargs):  # noqa: ANN001, ANN202 - mirrors the stdlib signature
         if Path(path).parent == denied:

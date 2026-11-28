@@ -136,11 +136,11 @@ def _frame(body: ft.Control, on_close: Callable[[object | None], None]) -> ft.Co
     )
 
 
-def _reexec() -> None:  # pragma: no cover - replaces the process image
-    from src.ui_flet import grant_access
+def _reexec() -> None:  # pragma: no cover - ends the process
+    # DSYNC-117: the shared relaunch (an argv LIST; ``os.execv`` split a ``Program Files`` path).
+    from src.ui_flet.grant_window import relaunch
 
-    argv = grant_access.reexec_argv()
-    os.execv(argv[0], argv)  # nosec B606 - re-launching OUR OWN interpreter/exe, argv from sys, no shell
+    relaunch()
 
 
 def show_machine_setup_window() -> bool:  # pragma: no cover - ft.run glue

@@ -1,8 +1,10 @@
 import logging
 import logging.config
 import logging.handlers
+import sys
 from pathlib import Path
 
+from src.utils import paths
 from src.utils.paths import bundle_config_dir, user_log_file
 from src.utils.redact import RedactingFormatter
 
@@ -31,6 +33,54 @@ def _build_file_handler(path: Path) -> logging.handlers.RotatingFileHandler:
     return handler
 
 
+#: The one line a fallback writes into its own sink (DSYNC-117). It names the error TYPE and number
+#: only: ``str(exc)`` quotes the path, and a per-user path carries the account name.
+FALLBACK_NOTICE = (
+    "The log file could not be opened (%s, errno %s); this session is logging to %s instead. DistrictSync carries on."
+)
+_FALLBACK_HANDSHAKE = "the per-user DistrictSync folder"
+_FALLBACK_STDERR = "standard error"
+
+
+def _fallback_handler() -> tuple[logging.Handler, str]:
+    """The sink used when the real log file cannot be opened, and a bounded name for it.
+
+    The per-user :func:`~src.utils.paths.handshake_dir` is the ONE declared per-user location on a
+    machine-scoped install (it already holds the UAC handshake files and the refusal log), so it is
+    the only place a file is tried. It is resolved through ``paths`` at call time and never through
+    ``user_data_dir()``: a denied shared log must never fall through to the per-user PROFILE.
+    When even that cannot be opened the line goes to stderr; a windowed exe has no stderr, and then
+    nothing can carry it, which is said here rather than hidden.
+    """
+    try:
+        folder = paths.handshake_dir()
+        folder.mkdir(parents=True, exist_ok=True)
+        return _build_file_handler(folder / "etl_tool.log"), _FALLBACK_HANDSHAKE
+    except (OSError, RuntimeError, ValueError):
+        # RuntimeError/ValueError: the profile resolver's own refusals of a bad override value.
+        if sys.stderr is None:
+            return logging.NullHandler(), _FALLBACK_STDERR
+        stream = logging.StreamHandler(sys.stderr)
+        stream.setLevel(logging.INFO)
+        stream.setFormatter(RedactingFormatter(_LOG_FORMAT, datefmt=_LOG_DATEFMT))
+        return stream, _FALLBACK_STDERR
+
+
+def _open_file_sink(logfile: Path) -> tuple[logging.Handler, OSError | None, str]:
+    """The rotating file sink for ``logfile``, or the fallback when it cannot be opened (DSYNC-117).
+
+    Returns ``(handler, the open error or None, where the fallback writes)``. Never raises for an
+    ``OSError`` (``PermissionError`` included): a log that cannot be opened must not kill the app.
+    In the lab a second administrator whose grant missed ``runs/`` got PyInstaller's traceback
+    dialog from exactly this open.
+    """
+    try:
+        return _build_file_handler(logfile), None, ""
+    except OSError as exc:
+        handler, where = _fallback_handler()
+        return handler, exc, where
+
+
 def get_logger(name: str = __name__, *, log_file: Path | None = None) -> logging.Logger:
     """Configure and return a logger instance with standard formatting.
 
@@ -51,10 +101,11 @@ def get_logger(name: str = __name__, *, log_file: Path | None = None) -> logging
     # (DSYNC-10). The file handler is built in code from the Path object instead.
     logfile = log_file if log_file is not None else user_log_file()
 
+    file_handler, open_error, fallback_where = _open_file_sink(logfile)
+
     if config_path.exists():
         # logging.conf supplies levels, format and the console handler only.
         logging.config.fileConfig(config_path, disable_existing_loggers=False)
-        file_handler = _build_file_handler(logfile)
         # Same wiring the conf used to declare: root + the non-propagating "etl" logger.
         logging.getLogger().addHandler(file_handler)
         logging.getLogger("etl").addHandler(file_handler)
@@ -64,7 +115,10 @@ def get_logger(name: str = __name__, *, log_file: Path | None = None) -> logging
         logging.basicConfig(
             level=logging.INFO,
             format=_LOG_FORMAT,
-            handlers=[_build_file_handler(logfile), logging.StreamHandler()],
+            handlers=[file_handler, logging.StreamHandler()],
         )
 
-    return logging.getLogger(name)
+    logger = logging.getLogger(name)
+    if open_error is not None:
+        logger.warning(FALLBACK_NOTICE, type(open_error).__name__, open_error.errno, fallback_where)
+    return logger

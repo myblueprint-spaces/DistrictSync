@@ -148,6 +148,11 @@ class MachineScopeRefusedReason(StrEnum):
     # ``SHGetKnownFolderPath`` (``platformdirs/windows.py:356-361``), so an unprivileged
     # environment variable can redirect the machine root.
     REDIRECTED = "redirected"
+    # DSYNC-117: the shared profile is trusted and this session can open it, but it cannot create
+    # a file in ``runs/`` (its own log, the run store). ``runs/`` is PROTECTED, so a grant made by
+    # an earlier build reached the root only. Raised by :func:`assert_runs_writable` at the window's
+    # boot, never by the resolver: the nightly is not refused for it.
+    RUNS_UNWRITABLE = "runs_unwritable"
 
 
 class MachineScopeRefused(RuntimeError):
@@ -751,6 +756,40 @@ def pin_data_dir() -> Path:
     path, machine = _pinned()
     logger.info("DistrictSync data dir: %s (machine scope: %s)", path, "yes" if machine else "no")
     return path
+
+
+def _probe_write(folder: Path) -> None:
+    """Create and remove one file in ``folder``; raise ``OSError`` when Windows will not let us.
+
+    A real create, because ``os.access`` on Windows reads the read-only attribute and never the
+    DACL. The file is removed at once; a removal failure is ignored (the create already proved
+    what the probe asks, and the name is unmistakably ours).
+    """
+    handle, name = tempfile.mkstemp(prefix=".write-probe-", dir=folder)
+    os.close(handle)
+    try:
+        os.unlink(name)
+    except OSError:
+        logger.warning("A write probe could not be removed from the run folder; it is safe to delete.")
+
+
+def assert_runs_writable() -> None:
+    """Refuse a machine-scoped session that cannot create a file in ``runs/`` (DSYNC-117).
+
+    No-op unless :func:`is_machine_scope`. A missing ``runs/`` is ``MISSING`` (only provisioning
+    can re-create it with its descriptor); any other failure to create a file is
+    ``RUNS_UNWRITABLE``, which the window routes to the one-time grant. Called by the window's
+    boot only: the CLI and the nightly fall back to a per-user log instead (``logger.get_logger``).
+    """
+    if not is_machine_scope():
+        return
+    runs = user_data_dir() / MACHINE_RUNS_SUBDIR
+    if not runs.is_dir():
+        raise MachineScopeRefused(MachineScopeRefusedReason.MISSING, runs)
+    try:
+        _probe_write(runs)
+    except OSError as exc:
+        raise MachineScopeRefused(MachineScopeRefusedReason.RUNS_UNWRITABLE, runs) from exc
 
 
 def reset_data_dir_pin() -> None:

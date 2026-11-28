@@ -27,6 +27,7 @@ from src.utils.logger import get_logger
 from src.utils.paths import (
     MachineScopeRefused,
     MachineScopeRefusedReason,
+    assert_runs_writable,
     handshake_dir,
     migrate_legacy_data_dir,
     pin_data_dir,
@@ -50,6 +51,7 @@ _MACHINE_SCOPE_CAUSES = {
     MachineScopeRefusedReason.INACCESSIBLE: "Windows would not let DistrictSync check the shared folder's permissions.",
     MachineScopeRefusedReason.OPEN_ACE: "The shared folder is readable by everyone who uses this computer.",
     MachineScopeRefusedReason.REDIRECTED: "Something in this computer's environment is redirecting where shared settings are kept.",
+    MachineScopeRefusedReason.RUNS_UNWRITABLE: "Your account can open the shared folder but cannot save its run log there yet.",
 }
 
 
@@ -63,6 +65,23 @@ def boot_logging() -> None:
     Opens the session with the shared version + data-dir banner (Observability P0).
     """
     get_logger("src.ui_flet").info(startup_banner())
+
+
+def boot_profile() -> None:
+    """Prove this session can write its run folder, then open the log sink.
+
+    Called by ``main`` right after :func:`~src.utils.paths.pin_data_dir` (a refused shared
+    profile raises there), inside its safety net:
+
+    * :func:`~src.utils.paths.assert_runs_writable` (DSYNC-117) — a machine-scoped session that
+      cannot create a file in ``runs/`` raises a TYPED refusal, which ``main`` routes to the
+      one-time grant window. This is how an administrator granted by an earlier build (the root
+      only) is offered the grant again, and the repaired grant now covers ``runs/``;
+    * :func:`boot_logging` — never raises for a log it cannot open (``logger.get_logger`` falls
+      back), so the window never ends in a Python traceback over its own log file.
+    """
+    assert_runs_writable()
+    boot_logging()
 
 
 def resolve_frozen_cwd() -> Path | None:
@@ -182,17 +201,27 @@ def offers_grant_window(exc: BaseException) -> bool:
 
 
 def _write_traceback(exc: BaseException) -> None:
-    """Append the full traceback to the ETL log sink (best-effort, never raises)."""
-    try:
-        log_path = resolve_log_path()
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(log_path, "a", encoding="utf-8") as fh:
-            fh.write("\n=== DistrictSync Flet UI failed to launch ===\n")
-            from src.utils.redact import redact  # noqa: PLC0415 - best-effort crash path
+    """Append the full traceback to the ETL log sink (best-effort, never raises).
 
-            fh.write(redact("".join(traceback.format_exception(type(exc), exc, exc.__traceback__))))
-    except Exception:  # nosec B110 — logging the failure must never mask the original failure
-        pass
+    DSYNC-117: when that sink cannot be opened (a session that cannot write ``runs/``), the record
+    goes to the per-user handshake folder instead — the same declared exception the log sink falls
+    back to — rather than being lost.
+    """
+    from src.utils.redact import redact  # noqa: PLC0415 - best-effort crash path
+
+    text = redact("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
+    candidates = [resolve_log_path]
+    candidates.append(lambda: handshake_dir() / _LOG_NAME)
+    for candidate in candidates:
+        try:
+            log_path = candidate()
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(log_path, "a", encoding="utf-8") as fh:
+                fh.write("\n=== DistrictSync Flet UI failed to launch ===\n")
+                fh.write(text)
+            return
+        except Exception:  # nosec B112 — logging the failure must never mask the original failure
+            continue
 
 
 def _show_error_dialog(message: str, *, log_folder: bool = True) -> None:  # pragma: no cover - view glue
@@ -307,9 +336,10 @@ def main() -> None:  # pragma: no cover - view glue (ft.run + dialog)
         # Resolve the data directory ONCE, before the sink opens inside it (plan 0049 D0)
         # — so the banner reports the profile this session will actually use, and a
         # machine-scope refusal surfaces in the dialog below instead of deep inside the
-        # log setup. Inert with the switch off.
+        # log setup. Inert with the switch off. DSYNC-117: a session that cannot write
+        # ``runs/`` is refused here too, and offered the grant below.
         pin_data_dir()
-        boot_logging()
+        boot_profile()
 
         # Best-effort sweep of any orphaned elevation-handshake files (D5) — never fatal.
         from src.scheduler.elevation import sweep_orphans

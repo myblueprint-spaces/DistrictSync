@@ -22,6 +22,7 @@ cross-thread control updates to a boot path — the last place to add a class of
 from __future__ import annotations
 
 import os
+import subprocess  # nosec B404 - relaunching OUR OWN exe, argv list, no shell
 import sys
 from collections.abc import Callable
 
@@ -149,14 +150,23 @@ def _frame(body: ft.Control, on_close: Callable[[object | None], None]) -> ft.Co
     )
 
 
-def _reexec() -> None:  # pragma: no cover - replaces the process image
-    """Re-launch DistrictSync and replace this process. Never returns on success.
+def relaunch() -> None:
+    """Start a fresh DistrictSync and end this process. Never returns.
 
-    The argv is computed by the pure :func:`src.ui_flet.grant_access.reexec_argv`, which is
-    where the frozen-vs-source decision is tested; this is the one line that cannot be.
+    The argv is computed by the pure :func:`src.ui_flet.grant_access.reexec_argv`. It is
+    spawned as a LIST (``subprocess`` quotes each argument) rather than ``os.execv``: on Windows
+    ``os.execv`` joins its arguments unquoted, so an install under ``C:\\Program Files`` arrived
+    as two arguments and the relaunch ran the COMMAND LINE with a stray path instead of the
+    window (DSYNC-117 — the route the lab's traceback took). Shared with the machine setup
+    window, which relaunches the same way.
     """
     argv = grant_access.reexec_argv()
-    os.execv(argv[0], argv)  # nosec B606 - re-launching OUR OWN interpreter/exe, argv from sys, no shell
+    subprocess.Popen(argv)  # nosec B603 - re-launching OUR OWN interpreter/exe, argv from sys, no shell
+    os._exit(0)
+
+
+def _reexec() -> None:  # pragma: no cover - ends the process
+    relaunch()
 
 
 def show_grant_window() -> bool:  # pragma: no cover - ft.run glue

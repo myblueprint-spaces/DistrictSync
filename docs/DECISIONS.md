@@ -3,6 +3,16 @@
 **Convention (adopted 2026-09-23):** every new entry carries a line `Supersedes: <date — title of the replaced entry>` (or `Supersedes: nothing`) directly under its heading, so a replaced decision is found by search rather than by reading prose.
 
 
+## 2026-11-28 - DSYNC-117: a second administrator's grant covers every protected folder; a log that cannot be opened never kills the app
+
+Supersedes: nothing
+
+**Decided.** `provisioning.PROTECTED_SUBTREES` is the one table of folders created with a protected descriptor (root: setup M / principal RX; `runs\`: setup M / principal M). The descriptors, the creation step and `grant_current_user` read it; the grant gives the account the setup administrator's right on every row that exists, with `icacls /grant` (merging, so idempotent). An install granted by an earlier build (root only) is repaired by re-offering the grant: the window's boot probes `runs\` with a real file create (`paths.assert_runs_writable`) and a failure is a new, grantable `MachineScopeRefusedReason.RUNS_UNWRITABLE`. The probe is the window's only; the CLI and the nightly are never refused for it. `logger.get_logger` falls back to `<handshake_dir()>\etl_tool.log`, else stderr, on any `OSError` opening the file sink, and says so in one bounded line. The post-grant and post-setup relaunch spawns an argv list (`grant_window.relaunch`) instead of `os.execv`.
+
+**Why.** Lab repro (MSI 0.57.1, Server 2022): the grant added `(OI)(CI)M` on the root only; `runs\` is protected, so the filtered token could not create its log and PyInstaller showed a traceback. The relaunch reached the CLI at all because `os.execv` on Windows does not quote: `C:\Program Files\...` arrived as two arguments. A probe was chosen over a cheaper "is there an ace for me on runs" read because group membership, deny aces and the filtered token make an ace read a guess; a create is the fact. Refusing the nightly on the probe was rejected: its principal holds `M` on `runs\` by descriptor, and a refused nightly is worse than a fallback log.
+
+**Consequences.** A new protected folder is one table row. The one-file exe provisions the same way (Setup's Schedule press) and gets the same repair. Open for DSYNC-115: `_ensure_runs_and_principal`'s principal grant and `apply_prune_principal`'s loop still spell `(root, runs)` themselves and should iterate the table. A granted administrator's aces still only grow (existing backlog item).
+
 ## 2026-11-27 - DSYNC-110: the user mappings folder is created only on the write path; provisioning does not pre-create it
 
 Supersedes: nothing
