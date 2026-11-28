@@ -21,7 +21,7 @@
     .\local_lab.ps1 -Action domain                                                 # promote lab-dc, join the members, gMSA
     .\local_lab.ps1 -Action destroy [-Vm lab-core]                                 # delete the VM(s) and their files
 
-  Guest commands go through VMware Tools (vmrun runProgramInGuest), installed by the answer file's specialize pass, so no
+  Guest commands go through VMware Tools (vmrun runProgramInGuest), installed by SetupComplete.cmd (staged by the answer file's specialize pass), so no
   network share or remote session is opened. Synthetic data only. The lab administrator password is generated once,
   kept in <LabDir>\lab-secret.txt (owner-only ACL), and never printed; the lab is throwaway.
 #>
@@ -190,11 +190,19 @@ function Wait-Tools([string]$name, [int]$minutes = 60) {
     while ((Get-Date) -lt $deadline) {
         # checkToolsState alone is not enough: Workstation 26 with Tools 13 keeps reporting 'installed' while guest
         # operations already work. So probe with a real guest operation, but only once Tools are present at all:
-        # without them the probe hangs rather than failing.
+        # without them the probe hangs rather than failing. Each probe is bounded (a job killed after 60 s), so a hang
+        # anywhere still ends at the deadline.
         try {
             if ((Invoke-Vmrun @('checkToolsState', (Get-Vmx $name))) -match 'installed|running') {
-                Invoke-Vmrun @('-gu', 'Administrator', '-gp', (Get-LabSecret), 'listProcessesInGuest', (Get-Vmx $name)) | Out-Null
-                return
+                $probe = Start-Job -ScriptBlock {
+                    param($vmrun, $pw, $vmx)
+                    & $vmrun -T ws -gu Administrator -gp $pw listProcessesInGuest $vmx *> $null
+                    $LASTEXITCODE
+                } -ArgumentList (Join-Path (Get-VMwareDir) 'vmrun.exe'), (Get-LabSecret), (Get-Vmx $name)
+                $done = Wait-Job $probe -Timeout 60
+                $code = if ($done) { Receive-Job $probe } else { $null }
+                Remove-Job $probe -Force
+                if ($code -eq 0) { return }
             }
         } catch { }
         Start-Sleep -Seconds 20

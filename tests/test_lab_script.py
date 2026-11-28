@@ -78,6 +78,26 @@ def test_guest_commands_need_no_signed_in_session_and_never_carry_the_password()
         assert domain.count(marker) >= 2, marker  # produced by the guest and expected by the host
 
 
+def test_vms_get_pcie_ports_and_tools_install_from_setupcomplete():
+    """DSYNC-92 lab fixes, proven on Workstation 26: without root ports `vmrun start` cancels ("No PCIe slot available
+    for SCSI0"); FirstLogonCommands never run on Server Core and a specialize-pass install leaves no Tools service, so
+    the specialize step only stages SetupComplete.cmd, whose command setup rejects past 259 characters."""
+    assert 'pciBridge4.virtualDev = "pcieRootPort"' in LOCAL
+    assert "<FirstLogonCommands>" not in LOCAL
+    assert "'SetupComplete.cmd'" in LOCAL and "C:\\Windows\\Setup\\Scripts" in LOCAL
+    paths = re.findall(r"<Path>(.*?)</Path>", LOCAL)
+    assert len(paths) == 1  # positive twin: the scan sees the specialize command
+    assert len(paths[0].replace("&amp;", "&")) <= 259
+    assert "'setup64.exe', 'setup.exe'" in LOCAL  # newer Tools discs ship setup.exe
+
+
+def test_wait_tools_bounds_every_probe():
+    """A guest operation hangs without Tools; each probe runs in a job killed after 60 s, so the deadline holds."""
+    body = LOCAL[LOCAL.index("function Wait-Tools") : LOCAL.index("function New-AnswerIso")]
+    assert "listProcessesInGuest" in body and "Wait-Job $probe -Timeout 60" in body
+    assert "'installed|running'" in body
+
+
 def test_the_hypervisor_check_does_not_depend_on_the_hyper_v_feature():
     body = LOCAL[LOCAL.index("function Test-LabHost") : LOCAL.index("function Initialize-LabDir")]
     assert "HypervisorPresent" in body and "Microsoft-Hyper-V" not in body
