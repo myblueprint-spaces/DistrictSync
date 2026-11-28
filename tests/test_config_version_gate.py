@@ -27,7 +27,7 @@ from src.config.loader import (
     _parse_version,
     load_config,
 )
-from src.utils.paths import user_mappings_dir
+from src.utils.paths import ensure_user_mappings_dir
 from tests._pins import BUNDLED_CONFIG_COUNT
 
 #: The shipped configs, read straight off disk (not via ``bundle_mappings_dir()``,
@@ -67,7 +67,7 @@ def user_mappings(monkeypatch) -> Path:
     """
     monkeypatch.delattr(sys, "frozen", raising=False)
     monkeypatch.delattr(sys, "_MEIPASS", raising=False)
-    return user_mappings_dir()
+    return ensure_user_mappings_dir()
 
 
 def _write_user_config(user_dir: Path, sis_type: str, version: object) -> Path:

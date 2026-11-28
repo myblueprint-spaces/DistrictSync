@@ -185,10 +185,10 @@ def _write_family_only_config() -> str:
     every configured output may be left out, so the out-gate's ``no_output`` leg is reachable."""
     import yaml as _yaml
 
-    from src.utils.paths import user_mappings_dir
+    from src.utils.paths import ensure_user_mappings_dir
 
     sis = "familyonly"
-    (user_mappings_dir() / f"{sis}_mapping.yaml").write_text(
+    (ensure_user_mappings_dir() / f"{sis}_mapping.yaml").write_text(
         _yaml.safe_dump(
             {
                 "_base": "myedbc",
@@ -619,9 +619,11 @@ class TestStudentRosteringGradesMatchingNobodyFailsLoud:
         """
         import yaml as _yaml
 
-        from src.utils.paths import user_mappings_dir
+        from src.utils.paths import ensure_user_mappings_dir
 
-        (user_mappings_dir() / f"{TestStudentRosteringGradesMatchingNobodyFailsLoud.SIS}_mapping.yaml").write_text(
+        (
+            ensure_user_mappings_dir() / f"{TestStudentRosteringGradesMatchingNobodyFailsLoud.SIS}_mapping.yaml"
+        ).write_text(
             _yaml.safe_dump(
                 {
                     "_base": "myedbc",
@@ -707,9 +709,9 @@ class TestStudentRosteringGradesMatchingNobodyFailsLoud:
         a scope covering the export's grades ships, narrowed."""
         import yaml as _yaml
 
-        from src.utils.paths import user_mappings_dir
+        from src.utils.paths import ensure_user_mappings_dir
 
-        (user_mappings_dir() / "srg_matching_mapping.yaml").write_text(
+        (ensure_user_mappings_dir() / "srg_matching_mapping.yaml").write_text(
             _yaml.safe_dump(
                 {
                     "_base": "myedbc",

@@ -978,11 +978,11 @@ class TestMappingsSummaryCard:
 
         from src.ui_flet.mapping_catalog import CUSTOM_ORIGIN_LABEL
         from src.ui_flet.screens import mapping as mapping_screen
-        from src.utils.paths import user_mappings_dir
+        from src.utils.paths import ensure_user_mappings_dir
 
         monkeypatch.delattr(sys, "frozen", raising=False)
         monkeypatch.delattr(sys, "_MEIPASS", raising=False)
-        (user_mappings_dir() / "sd94custom_mapping.yaml").write_text(
+        (ensure_user_mappings_dir() / "sd94custom_mapping.yaml").write_text(
             "mappings: [not a valid mappings dict\n", encoding="utf-8"
         )
         cfg = _cfg(sis_type="sd94custom")

@@ -952,7 +952,7 @@ class TestDeclaredSessionComponents:
         schedule stood in) AND the ``term`` the schedule lacks — because detection cannot tell a
         column an export lost from one it never had: naming only either side points the admin at a
         file that did not change (DECISIONS 2026-09-30)."""
-        from src.utils.paths import user_mappings_dir
+        from src.utils.paths import ensure_user_mappings_dir
         from tests.test_contract import _create_sd40_inputs
 
         inp = tmp_path / "in"
@@ -961,7 +961,7 @@ class TestDeclaredSessionComponents:
         result = run_pipeline("sd40myedbc", str(inp), str(tmp_path / "out_declared"), dry_run=True)
         assert result.entity_counts["Classes"] > 0
 
-        (user_mappings_dir() / "sd40allfourmyedbc_mapping.yaml").write_text(
+        (ensure_user_mappings_dir() / "sd40allfourmyedbc_mapping.yaml").write_text(
             "_base: sd40myedbc\n"
             "mappings:\n"
             "  Classes:\n"
