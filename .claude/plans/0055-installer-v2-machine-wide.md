@@ -249,7 +249,7 @@ The one-file exe keeps shipping. From the first MSI release it shows one Home ba
 | T25 | PASS (repair half) | `msiexec /fa` exits 0 and the version is kept. The half after an updater apply is blocked on the feed. |
 | T20 | PASS | Standard user: the 0049 grant window says only an administrator can be granted, and the UAC prompt shows "Verified publisher: myBlueprint Corp.". When another admin's credentials are entered, the window honestly reports "A different administrator approved that prompt…" and grants nothing (ACL unchanged). The user's profile gets only the declared handshake folder: no Velopack files, and no account name in its log. |
 | T23 | **FAIL → DSYNC-117** | Second admin (filtered token): the consent prompt was approved and the grant added M on the profile root only. `runs\` has protected permissions and does not inherit it, so the relaunched app (filtered token) cannot create `runs\etl_tool-interactive-<tag>.log` and crashes with PyInstaller's raw "Unhandled exception in script" traceback ([Errno 13]). Rerun after DSYNC-117. |
-| T26 | To run | |
+| T26 | PASS on safety; the updater-apply half is blocked on the feed | Before any install, a standard user planted `C:\ProgramData\DistrictSync-Updater` as a junction to a folder they own, and created `C:\ProgramData\DistrictSync` (with `runs\` and a `config.json`). The MSI install left both alone. `--machine-setup` refused at step `pre_existing` (exit 1, "Nothing after that step was changed"; no HKLM switch). `--update-service` run as SYSTEM wrote nothing through the junction. The refusal message only says "see the log": it should name the folder and what the administrator does next (polish list). |
 
 **Other findings.**
 - A `config.json` saved with a UTF-8 BOM was treated as corrupt (**DSYNC-112**, fixed).
@@ -257,6 +257,7 @@ The one-file exe keeps shipping. From the first MSI release it shows one Home ba
   - At 1024×768 the window's right edge is clipped. On the Setup wizard, the top-right "Start over with a di…" link and the long explanatory lines are cut off.
   - The grant window offers a known non-administrator the filled "Ask Windows for permission" button, although it cannot succeed for them. It could say "ask an administrator" instead.
   - At the grant window's default size, the "Close DistrictSync" link after a refusal is clipped at the bottom.
+  - `--machine-setup` refusing at `pre_existing` says only "see the log". It should name the folder that already exists and was not made by DistrictSync, and say what the administrator does next: inspect it, then remove it.
 
 ## Affected files
 
