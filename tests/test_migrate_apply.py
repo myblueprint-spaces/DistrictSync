@@ -23,7 +23,16 @@ from pathlib import Path
 import pytest
 
 from src.config.app_config import AppConfig
-from src.scheduler import elevated_apply, elevation, migration, migration_apply, migration_move, task_com, windows
+from src.scheduler import (
+    elevated_apply,
+    elevation,
+    migration,
+    migration_apply,
+    migration_move,
+    provisioning,
+    task_com,
+    windows,
+)
 from src.scheduler.elevation import ElevationOutcome, ElevationResult
 from src.scheduler.schedule_check import CheckVerdict, ScheduleCheck
 from src.scheduler.task_com import PrincipalKind, TaskComError, TaskFacts
@@ -100,6 +109,8 @@ class FakeOps:
 
     def revoke(self, user: str, kind: PrincipalKind) -> None:
         self.sched.events.append(("revoke", ""))
+        if "revoke" in self.fail:
+            raise RuntimeError("icacls refused")
         self.sched.granted.discard(user)
 
     def probe(self, payload) -> ScheduleCheck:
@@ -359,6 +370,7 @@ class TestTheMove:
             + task_com.READ_TIMEOUT_S
             + 2 * task_com.REGISTER_TIMEOUT_S
             + 2 * task_com.READ_TIMEOUT_S
+            + 4 * provisioning.ICACLS_TIMEOUT_S  # grant x2 and take-back x2 (second review, LOW 3)
         )
         assert timeout_s == migration_move.CHILD_BUDGET_S
         assert steps < migration_move.CHILD_BUDGET_S

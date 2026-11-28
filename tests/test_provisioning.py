@@ -1772,3 +1772,53 @@ class TestMigrateGrantRecord:
         source = Path(provisioning.__file__).read_text(encoding="utf-8")
         assert "TODO(DSYNC-115" not in source
         assert "_record_grant(principal_sid)" in source  # positive twin: the scan reads the module
+
+
+class TestMigrateGrantHalfway:
+    """Second review, MEDIUM 1 and 2: a grant that fails halfway is taken back (through the record), and a take-back
+    that fails leaves the SID IN the record so the next Remove retries it."""
+
+    @pytest.fixture()
+    def root(self, rig, machine_root):
+        (machine_root / "runs").mkdir(parents=True)
+        return machine_root
+
+    def _fail_runs_grant(self, rig, monkeypatch):
+        real = provisioning._run_icacls
+
+        def flaky(args):
+            if args[1] == "/grant" and args[0].endswith("runs"):
+                rig.icacls.append(args)
+                return 5
+            return real(args)
+
+        monkeypatch.setattr(provisioning, "_run_icacls", flaky)
+
+    def test_a_half_grant_is_taken_back_and_dropped_from_the_record(self, rig, root, monkeypatch):
+        rig.ledger = []
+        self._fail_runs_grant(rig, monkeypatch)
+        with pytest.raises(provisioning.ProvisionRefused) as caught:
+            provisioning.grant_principal("CORP\\svc", PrincipalKind.PASSWORD)
+        assert caught.value.icacls_exit == 5  # the grant's own failure is what is reported
+        assert rig.aces(root, _PRINCIPAL_SID) == []  # the RX that did land is gone
+        assert rig.ledger == []
+
+    def test_a_half_grant_of_an_account_that_already_had_access_is_left_alone(self, rig, root, monkeypatch):
+        rig.ledger = [_PRINCIPAL_SID]
+        rig.seed_granted(root, _PRINCIPAL_SID)
+        self._fail_runs_grant(rig, monkeypatch)
+        with pytest.raises(provisioning.ProvisionRefused):
+            provisioning.grant_principal("CORP\\svc", PrincipalKind.PASSWORD)
+        assert rig.aces(root, _PRINCIPAL_SID) and rig.ledger == [_PRINCIPAL_SID]
+
+    def test_a_take_back_that_fails_leaves_the_sid_in_the_record(self, rig, root):
+        rig.ledger = []
+        provisioning.grant_principal("CORP\\svc", PrincipalKind.PASSWORD)
+        rig.icacls_exit = 5
+        with pytest.raises(provisioning.ProvisionRefused):
+            provisioning.revoke_principal("CORP\\svc", PrincipalKind.PASSWORD)
+        assert rig.ledger == [_PRINCIPAL_SID]
+
+    def test_the_icacls_bound_is_one_named_constant(self):
+        source = Path(provisioning.__file__).read_text(encoding="utf-8")
+        assert "timeout=ICACLS_TIMEOUT_S" in source and provisioning.ICACLS_TIMEOUT_S == 60

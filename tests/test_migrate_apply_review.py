@@ -583,3 +583,120 @@ def test_the_windows_path_helpers_are_pure():
     """``PureWindowsPath`` keeps these tests meaningful on the POSIX CI legs."""
     assert str(PureWindowsPath("D:\\")) == "D:\\"
     assert AppConfig  # imported for the fixtures' config writes
+
+
+class TestSecondReviewTakeBack:
+    """Second review, MEDIUM 2: a take-back that fails is carried back from the child and reported (no account name);
+    the SID stays in DistrictSync's record (tests/test_provisioning.py), so the next Remove retries it."""
+
+    def test_a_failed_take_back_is_reported(self, world):
+        _with_record()
+        world["state"]["ops"] = FakeOps(world["sched"], probe=BAD_CHECK, fail=frozenset({"revoke"}))
+        result = _run()
+        assert result.code == 1
+        text = _text(result)
+        assert migration_apply.ACCESS_KEPT in text
+        assert "zebradon" not in text.lower()
+
+    def test_positive_twin_a_take_back_that_worked_says_nothing(self, world):
+        _with_record()
+        world["state"]["ops"] = FakeOps(world["sched"], probe=BAD_CHECK)
+        assert migration_apply.ACCESS_KEPT not in _text(_run())
+
+    def test_the_flag_crosses_back_in_the_result(self, world, monkeypatch):
+        import json
+
+        from src.scheduler import elevated_apply
+
+        _with_record()
+        written: list[dict] = []
+        real = elevated_apply._write_result
+
+        def spy(res_path, ok, message="", **kw):
+            real(res_path, ok, message, **kw)
+            written.append(json.loads(Path(res_path).read_text(encoding="utf-8")))
+
+        monkeypatch.setattr(elevated_apply, "_write_result", spy)
+        world["state"]["ops"] = FakeOps(world["sched"], fail=frozenset({"register_new", "revoke"}))
+        _run()
+        assert written[0]["access_kept"] is True
+        assert written[0]["message"] == migration_move.MoveStage.ROLLED_BACK.value
+
+    def test_in_isolation_every_take_back_path_sets_the_flag(self, world):
+        sched = world["sched"]
+        out = migration_move.move_nightly(
+            NAME,
+            new=_params(world["new"]),
+            old=_params(world["old"]),
+            probe_payload={},
+            ops=FakeOps(sched, probe=BAD_CHECK, fail=frozenset({"revoke"})),
+            deadline=4e9,
+            clock=lambda: 1e9,
+        )
+        assert out.stage is migration_move.MoveStage.PROBE_FAILED and out.access_kept is True
+        ok = migration_move.move_nightly(
+            NAME,
+            new=_params(world["new"]),
+            old=_params(world["old"]),
+            probe_payload={},
+            ops=FakeOps(sched),
+            deadline=4e9,
+            clock=lambda: 1e9,
+        )
+        assert ok.stage is migration_move.MoveStage.MOVED and ok.access_kept is False
+
+
+class TestSecondReviewCommandLine:
+    """Second review, LOW 4 and 5: Windows' own rules, proved against the real API where it exists."""
+
+    def test_a_doubled_quote_inside_quotes_is_a_literal_quote_and_ends_the_quoted_run(self):
+        assert windows.split_command_line('"a""b c"') == ['a"b', "c"]
+        assert windows.split_command_line('"a"""b"') == ['a"b']
+        assert windows.split_command_line('""""') == ['"']
+        assert windows.split_command_line('a""b') == ["ab"]  # outside quotes: open then close
+
+    @pytest.mark.skipif(os.name != "nt", reason="CommandLineToArgvW is Windows-only")
+    def test_quote_and_split_agree_with_command_line_to_argv_w(self):
+        import ctypes
+        import random
+        from ctypes import wintypes
+
+        api = ctypes.windll.shell32.CommandLineToArgvW
+        api.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_int)]
+        api.restype = ctypes.POINTER(wintypes.LPWSTR)
+
+        def real(args: str) -> list[str]:
+            count = ctypes.c_int()
+            argv = api("prog.exe " + args, ctypes.byref(count))  # a dummy program name, as Windows passes one
+            try:
+                return [argv[i] for i in range(count.value)][1:]
+            finally:
+                ctypes.windll.kernel32.LocalFree(argv)
+
+        fixed = [
+            ["\\\\srv\\share\\in"],
+            ["C:\\My District Data\\in", "D:\\"],
+            ["C:\\in\\trailing\\"],
+            ['C:\\odd"name', 'a\\"b'],
+            ["", " ", "\t"],
+            ['""', '\\\\"', "x\\\\\\"],
+        ]
+        for values in fixed:
+            line = " ".join(windows.quote_arg(v) for v in values)
+            assert real(line) == values, line
+            assert windows.split_command_line(line) == values, line
+        for raw in ['"a""b c"', '"a"""b"', '""""', '"a""" b', 'a""b', '"ab""', '"a"" b"', '"""a"""', 'a"b"c', '\\\\"a']:
+            assert windows.split_command_line(raw) == real(raw), raw
+
+        rng = random.Random(116)
+        alphabet = 'ab\\" \té中:'
+        for _ in range(3000):
+            values = ["".join(rng.choice(alphabet) for _ in range(rng.randint(0, 7))) for _ in range(rng.randint(1, 3))]
+            line = " ".join(windows.quote_arg(v) for v in values)
+            assert real(line) == values, ascii(line)
+            raw = "".join(rng.choice(alphabet) for _ in range(rng.randint(0, 10)))
+            try:
+                mine = windows.split_command_line(raw)
+            except ValueError:
+                continue  # an unclosed quote: refused as not ours (Windows would read to the end)
+            assert mine == real(raw), ascii(raw)
