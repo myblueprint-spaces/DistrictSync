@@ -188,9 +188,15 @@ function Remove-GuestSecret([string]$name) { Invoke-Guest $name "Remove-Item -Fo
 function Wait-Tools([string]$name, [int]$minutes = 60) {
     $deadline = (Get-Date).AddMinutes($minutes)
     while ((Get-Date) -lt $deadline) {
-        # A real guest operation, not checkToolsState: Workstation 26 with Tools 13 keeps reporting 'installed'
-        # while guest operations already work.
-        try { Invoke-Vmrun @('-gu', 'Administrator', '-gp', (Get-LabSecret), 'listProcessesInGuest', (Get-Vmx $name)) | Out-Null; return } catch { }
+        # checkToolsState alone is not enough: Workstation 26 with Tools 13 keeps reporting 'installed' while guest
+        # operations already work. So probe with a real guest operation, but only once Tools are present at all:
+        # without them the probe hangs rather than failing.
+        try {
+            if ((Invoke-Vmrun @('checkToolsState', (Get-Vmx $name))) -match 'installed|running') {
+                Invoke-Vmrun @('-gu', 'Administrator', '-gp', (Get-LabSecret), 'listProcessesInGuest', (Get-Vmx $name)) | Out-Null
+                return
+            }
+        } catch { }
         Start-Sleep -Seconds 20
     }
     throw "$name did not finish installing within $minutes minutes"
@@ -221,12 +227,13 @@ function New-AnswerIso([string]$name, [int]$imageIndex, [string]$pw, [string]$is
     <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
       <ComputerName>$name</ComputerName><TimeZone>Pacific Standard Time</TimeZone>
     </component>
-    <!-- VMware Tools installs here, as SYSTEM: oobeSystem FirstLogonCommands never run on Server Core (no Explorer).
-         The logic lives in lab-tools.ps1 on the answer disc: setup rejects a Path over 259 characters. -->
+    <!-- VMware Tools is installed by SetupComplete.cmd (SYSTEM, after setup, before any logon). Not FirstLogonCommands:
+         they never run on Server Core (no Explorer). Not specialize itself: the MSI reports success there but no
+         service is left. This step only stages the two files (setup rejects a Path over 259 characters). -->
     <component name="Microsoft-Windows-Deployment" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
       <RunSynchronous><RunSynchronousCommand wcm:action="add"><Order>1</Order>
-        <Path>cmd /c for %d in (D E F G H) do if exist %d:\lab-tools.ps1 powershell -NoProfile -ExecutionPolicy Bypass -File %d:\lab-tools.ps1</Path>
-        <Description>VMware Tools</Description></RunSynchronousCommand></RunSynchronous>
+        <Path>cmd /c for %d in (D E F G H) do if exist %d:\lab-tools.ps1 (mkdir C:\Windows\Setup\Scripts &amp; copy /y %d:\lab-tools.ps1 C:\Windows\Setup\Scripts\ &amp; copy /y %d:\SetupComplete.cmd C:\Windows\Setup\Scripts\)</Path>
+        <Description>Stage the VMware Tools install</Description></RunSynchronousCommand></RunSynchronous>
     </component>
   </settings>
   <settings pass="oobeSystem">
@@ -243,13 +250,22 @@ function New-AnswerIso([string]$name, [int]$imageIndex, [string]$pw, [string]$is
     Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force $stage | Out-Null
     Set-Content -Encoding UTF8 (Join-Path $stage 'autounattend.xml') $xml
-    # Run by the specialize pass as SYSTEM. Newer Tools discs ship setup.exe, older ones setup64.exe.
+    # Run by SetupComplete.cmd as SYSTEM. Newer Tools discs ship setup.exe, older ones setup64.exe.
+    Set-Content -Encoding ASCII (Join-Path $stage 'SetupComplete.cmd') "powershell -NoProfile -ExecutionPolicy Bypass -File C:\Windows\Setup\Scripts\lab-tools.ps1 > C:\Windows\Temp\lab-tools.log 2>&1"
     Set-Content -Encoding UTF8 (Join-Path $stage 'lab-tools.ps1') @'
 $drive = (Get-Volume | Where-Object FileSystemLabel -eq 'VMware Tools').DriveLetter
+"tools disc: $drive"
 foreach ($file in 'setup64.exe', 'setup.exe') {
     $setup = "${drive}:\$file"
-    if ($drive -and (Test-Path $setup)) { Start-Process $setup -ArgumentList '/s /v"/qn REBOOT=R"' -Wait; break }
+    if ($drive -and (Test-Path $setup)) {
+        $p = Start-Process $setup -ArgumentList '/s /v"/qn REBOOT=R"' -Wait -PassThru
+        "$file exit $($p.ExitCode)"
+        break
+    }
 }
+$svc = Get-Service VMTools -ErrorAction SilentlyContinue
+if ($svc -and $svc.Status -ne 'Running') { Start-Service VMTools }
+"VMTools: $((Get-Service VMTools -ErrorAction SilentlyContinue).Status)"
 '@
     $image = New-Object -ComObject IMAPI2FS.MsftFileSystemImage
     $image.FileSystemsToCreate = 3   # ISO9660 + Joliet
