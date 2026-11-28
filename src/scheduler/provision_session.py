@@ -49,7 +49,7 @@ from src.scheduler.provisioning import (
     build_machine_setup_payload,
     build_provision_payload,
 )
-from src.scheduler.schedule_check import ScheduleCheck
+from src.scheduler.schedule_check import RightState, ScheduleCheck
 from src.scheduler.task_com import Principal, PrincipalKind, validate_principal_account
 from src.utils import paths
 from src.utils.logger import get_logger
@@ -444,6 +444,8 @@ class ProvisionAttempt:
         check: the schedule check's bounded result (DSYNC-33), on
             :attr:`ProvisionOutcome.PROVISIONED` only, and only when the check was asked for
             (a managed service account). ``None`` everywhere else - no check ran.
+        batch_right: a PASSWORD account's 'Log on as a batch job' state as the ELEVATED child read it (DSYNC-111),
+            re-validated to a ``RightState`` member; ``None`` when not read or not recognisable.
     """
 
     outcome: ProvisionOutcome
@@ -451,6 +453,18 @@ class ProvisionAttempt:
     icacls_exit: int | None = None
     message: str = ""
     check: ScheduleCheck | None = None
+    batch_right: RightState | None = None
+
+
+def _read_batch_right(result: dict[str, object]) -> RightState | None:
+    """The child's ``batch_right`` value, re-validated (the result file is plaintext). TOTAL."""
+    raw = result.get("batch_right")
+    if not isinstance(raw, str):
+        return None
+    try:
+        return RightState(raw)
+    except ValueError:
+        return None
 
 
 def request_provision(
@@ -615,7 +629,11 @@ def _elevate_and_read(payload: dict[str, object], *, wants_check: bool) -> Provi
         if result is None:
             return ProvisionAttempt(outcome=ProvisionOutcome.UNCONFIRMED)
         if result.get("ok"):
-            return ProvisionAttempt(outcome=ProvisionOutcome.PROVISIONED, check=_read_check(result, asked=wants_check))
+            return ProvisionAttempt(
+                outcome=ProvisionOutcome.PROVISIONED,
+                check=_read_check(result, asked=wants_check),
+                batch_right=_read_batch_right(result),
+            )
         return _classify_child_refusal(str(result.get("message", "")))
     except ProvisionRefused as exc:
         # FIRST, because ``ProvisionRefused`` IS a ``RuntimeError`` — the generic rung below

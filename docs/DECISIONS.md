@@ -23,6 +23,21 @@ Supersedes: nothing
 
 **Consequences.** The `reexec` seams stay synchronous and required; the windows pass `relaunch.relaunch_seam(page)` (schedules the coroutine with `page.run_task`). The one-file exe and the per-user Setup.exe were exposed too whenever their path held a space (a profile folder with a space in its name); the one-file exe also needed the environment reset and the working-directory change, without which the child would run from, or hold open, the parent's `_MEI` folder. The failure box is not `launcher._show_error_dialog`: that starts a second `ft.run` inside the running event loop, and its tkinter fallback is not bundled.
 
+## 2026-11-27 - DSYNC-111: `--schedule-register` checks 'Log on as a batch job' and exits 4 when it is positively missing
+
+Supersedes: nothing
+
+**Decided (owner, via the orchestrator).** After a SUCCESSFUL registration as a password or gMSA account (never `current`), the command prints the account's prerequisite lines (`GMSA_PREREQUISITES`, moved from `ui_flet/setup_flow.py` to `src/scheduler/batch_right.py` and re-exported) and reads the right (the DSYNC-33 direct read, `schedule_check.read_batch_right`, factored out of `run_for_payload`; for a local account, its whole token — below). NOT HELD keeps the task and the record and exits a new code `4` (0-3 were taken; `4` had no other use in src, docs or tests); INCONCLUSIVE is an advisory line, exit 0 (the plan 0055 M3 rule). Nothing grants the right (source-scan pin). The window's PASSWORD press shows the same outcome as a FAILED band (a gMSA press already had the DSYNC-33 check band).
+
+**Exactly when 4 is returned (round 2, coordinator 2026-11-28).** NOT HELD is only a positive determination: (a) a `SeDenyBatchLogonRight` that reaches the account; (b) a LOCAL account (SID domain part = this computer's account-domain SID; never on a domain controller) whose whole batch-logon token holds no grant — the token is the account, its SAM and local groups (`LG_INCLUDE_INDIRECT`), every local group holding any SID of the token, and the implicit batch SIDs Everyone, Authenticated Users, BATCH, This Organization, Local account (+ `S-1-5-114` in Administrators; + LOCAL and NTLM Authentication, generously); or (c) Windows refusing the logon type in the gMSA check run. A passing check run or any grant in the token is HELD. Everything else is INCONCLUSIVE, exit 0: a domain account or gMSA without a direct grant (nested domain groups cannot be expanded locally), and any read that failed.
+
+**Why.** Round 1 read only the account's own rights, so a right through a group looked like no right and nothing but a deny could be called "not held"; the lab's plain local account therefore exited 0. A local account's token is fully knowable here, so "no holder in it" is a fact, not a guess. The set is generous on purpose: an extra SID can only turn a 4 into a 0. The LSA refuses `LsaEnumerateAccountsWithUserRight` to an unelevated caller (measured on a dev box), so for a password provision the read runs in the ELEVATED child (the one UAC prompt the command already shows) and one `RightState` value comes back on the result; every read goes through the one seam `batch_right.read_right`.
+
+**Review (2026-11-28).** A deny is judged against a MINIMAL token (the account, its groups, and only the SIDs a batch token certainly carries — Everyone, BATCH, Authenticated Users, Local account, + `S-1-5-114` — with the groups they reach), and a grant against the generous one: the reviewer measured a grant via Users plus a deny on LOCAL alone giving a false 4. The window now shows the inconclusive outcome as a WARNING band (the command line's "Not confirmed") and puts the batch-right band above the green "scheduled" banner, verdict first.
+
+**Consequences.** `RightState` gains `GRANTED_VIA_GROUP` and `NOT_HELD_LOCAL`. The signed-in account registered WITH its password has no elevated read (its `register` op carries none), so it is usually INCONCLUSIVE when the console is not elevated. The troubleshooting page keeps its `_RETIRED_PHRASES` ban on the right's full name and links to the IT guide for the how-to.
+
+
 ## 2026-11-27 - DSYNC-110: the user mappings folder is created only on the write path; provisioning does not pre-create it
 
 Supersedes: nothing
