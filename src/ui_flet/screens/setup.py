@@ -81,6 +81,7 @@ from src.scheduler.provision_session import (
     delivery_secret_unreadable,
     request_provision,
     request_removal_with_revoke,
+    revoke_request_for_removal,
 )
 from src.scheduler.provisioning import ProvisionStep
 from src.scheduler.schedule_check import RightState, ScheduleCheck
@@ -3800,23 +3801,24 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
             page.update()
             _refresh_readout()
 
-        # DSYNC-33: a managed service account on a shared-settings computer is removed WITH its
-        # folder access, in ONE elevated op (``prune_principal``: delete, confirm MISSING, then
-        # prune). Read from the RECORD, before the clear, for the same reason ``removed_kind`` is.
-        revoke_account = (
-            (_removed_record.run_as_user or "").strip()
-            if removed_kind is PrincipalKind.MANAGED_SERVICE_ACCOUNT
-            and scheduler.supports_unattended_password
-            and _machine_scope_now()
-            else ""
+        # DSYNC-33 / DSYNC-115: every account a registration granted shared-folder access to (a
+        # password account or a managed service account) is removed WITH that access, in ONE
+        # elevated op (``prune_principal``: delete, confirm MISSING, then revoke what was recorded).
+        # Read from the RECORD, before the clear, for the same reason ``removed_kind`` is; the
+        # decision is the one ``--schedule-remove`` makes.
+        revoke_request = revoke_request_for_removal(
+            _removed_record.run_as_user,
+            _removed_record.run_as_kind,
+            current=_keyring_owner_account(),
+            shared_settings=scheduler.supports_unattended_password and _machine_scope_now(),
         )
 
         def _work() -> None:  # runs OFF the UI thread (an elevated delete can block on UAC)
             revoke: RevokeOutcome | None = None
             try:
-                if revoke_account:
+                if revoke_request is not None:
                     attempt = request_removal_with_revoke(
-                        cfg.schedule_task_name, user=revoke_account, kind=PrincipalKind.MANAGED_SERVICE_ACCOUNT
+                        cfg.schedule_task_name, user=revoke_request.user, kind=revoke_request.kind
                     )
                     revoke = attempt.revoke
                     ok, msg = attempt.ok, attempt.message

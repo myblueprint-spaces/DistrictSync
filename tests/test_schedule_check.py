@@ -1069,6 +1069,23 @@ class TestTheElevatedChild:
         assert order == ["provision"]
         assert out == {"ok": True, "message": ""}, "the pre-DSYNC-33 result shape, byte for byte"
 
+    def test_a_successful_provision_retires_the_previous_accounts_grants_before_the_check(self, tmp_path):
+        """DSYNC-115: a principal switch revokes the old account's recorded grants in the SAME elevated op."""
+        with patch("src.scheduler.provisioning.prune_retired_grants") as retire:
+            out, order = _child_run(tmp_path, _provision_payload(source_data_dir="C:\\x"))
+        assert out["ok"] is True
+        retire.assert_called_once()
+        assert retire.call_args[0][0]["op"] == "provision"
+
+    def test_a_failed_provision_retires_nothing(self, tmp_path):
+        with patch("src.scheduler.provisioning.prune_retired_grants") as retire:
+            _child_run(
+                tmp_path,
+                _provision_payload(source_data_dir="C:\\x"),
+                provision_exc=provisioning.ProvisionRefused(provisioning.ProvisionStep.CREATE),
+            )
+        retire.assert_not_called()
+
     def test_no_check_for_a_password_principal(self, tmp_path):
         payload = _provision_payload(
             source_data_dir="C:\\x", kind=PrincipalKind.PASSWORD.value, user="CORP\\svc", password="pw"
@@ -1293,6 +1310,37 @@ class TestRemovalWithRevoke:
         )
         assert attempt.revoke is provision_session.RevokeOutcome.FALL_BACK
         assert sent == []
+
+    # --- DSYNC-115: a password account is revoked too ------------------------------------
+    @pytest.mark.parametrize("user", ["LAB\\svc_dsyncpw", "PC01\\svc_local"], ids=["domain", "local"])
+    def test_a_password_account_is_sent_as_the_prune_op(self, monkeypatch, user):
+        sent = _child(monkeypatch, result=ElevationResult.COMPLETED, payload={"ok": True})
+        self._confirm(monkeypatch, False)
+        attempt = provision_session.request_removal_with_revoke(
+            "DistrictSync_Daily", user=user, kind=PrincipalKind.PASSWORD
+        )
+        assert sent == [{"op": "prune_principal", "task_name": "DistrictSync_Daily", "user": user, "kind": "password"}]
+        assert (attempt.ok, attempt.revoke) == (True, provision_session.RevokeOutcome.REVOKED)
+
+    @pytest.mark.parametrize("icacls_exit", [None, 5], ids=["kept on purpose", "icacls failed"])
+    def test_an_access_left_in_place_is_logged_with_no_account_name(self, monkeypatch, caplog, icacls_exit):
+        _child(
+            monkeypatch,
+            result=ElevationResult.COMPLETED,
+            payload={"ok": False, "message": _refusal(provisioning.ProvisionStep.PRUNE, icacls_exit=icacls_exit)},
+        )
+        self._confirm(monkeypatch, False)
+        with caplog.at_level(logging.INFO, logger="src.scheduler.provision_session"):
+            attempt = provision_session.request_removal_with_revoke(
+                "DistrictSync_Daily", user="LAB\\svc_dsyncpw", kind=PrincipalKind.PASSWORD
+            )
+        assert (attempt.ok, attempt.revoke) == (True, provision_session.RevokeOutcome.NOT_REVOKED)
+        assert "step: prune" in caplog.text
+        if icacls_exit is None:
+            assert "did not grant" in caplog.text, "a deliberate keep is told apart from a failure"
+        else:
+            assert f"icacls exit {icacls_exit}" in caplog.text
+        assert "svc_dsyncpw" not in caplog.text and "LAB" not in caplog.text
 
 
 # --------------------------------------------------------------------------- #

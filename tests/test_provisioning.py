@@ -24,6 +24,7 @@ runs on every OS; the seams themselves have real-API tests where the API exists.
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import sys
 from pathlib import Path
@@ -44,6 +45,14 @@ _PRINCIPAL_SID = "S-1-5-21-1-2-3-1002"
 #: 0049 S-4: the gMSA's own SID. A DISTINCT value, so a prune that reached the wrong
 #: principal cannot pass by resolving to the password service account's.
 _MSA_SID = "S-1-5-21-1-2-3-1003"
+#: DSYNC-115: a LOCAL password account (``PC01\\svc_local``) and an account DistrictSync never granted anything.
+_LOCAL_SID = "S-1-5-21-9-9-9-1004"
+_OTHER_SID = "S-1-5-21-1-2-3-1005"
+
+#: ``icacls``' own masks for the rights the rig simulates, and the ``(OI)(CI)`` flags.
+_MASKS = {"RX": int(provisioning.READ_EXECUTE, 16), "M": int(provisioning.MODIFY, 16), "F": 0x1F01FF}
+_OICI = 0x3
+_WELL_KNOWN = {"SY": "S-1-5-18", "BA": "S-1-5-32-544", "BU": "S-1-5-32-545"}
 
 
 # --------------------------------------------------------------------------- #
@@ -75,6 +84,25 @@ class _Rig:
         self.commit_raises: BaseException | None = None
         self.deleted: list[str] = []
         self.delete_confirms = True
+        # DSYNC-115: the grant record (HKLM; ``None`` = never written, i.e. an install from before it existed) and a
+        # simulated DACL per directory, so a register -> remove round trip is asserted on the ACEs themselves.
+        self.ledger: list[str] | None = None
+        self.ledger_writes: list[list[str]] = []
+        self.dacl: dict[str, list[tuple[int, int, int, str]]] = {}
+        self.events: list[tuple[str, str]] = []
+
+    def aces(self, path: Path, sid: str) -> list[tuple[int, int, int, str]]:
+        return [entry for entry in self.dacl.get(str(path), []) if entry[3] == sid]
+
+    def seed(self, path: Path, sid: str, rights: str, *, flags: int = _OICI) -> None:
+        """Put one ALLOW ace on ``path`` (creating the directory), as icacls or a hand edit would."""
+        path.mkdir(parents=True, exist_ok=True)
+        self.dacl.setdefault(str(path), []).append((0, flags, _MASKS[rights], sid))
+
+    def seed_granted(self, root: Path, sid: str) -> None:
+        """The exact shape DistrictSync grants a task principal: RX on the root, M on ``runs``."""
+        self.seed(root, sid, "RX")
+        self.seed(root / "runs", sid, "M")
 
 
 @pytest.fixture
@@ -88,10 +116,43 @@ def rig(monkeypatch, machine_root):
             raise FileExistsError(f"{path} already exists")
         path.mkdir(parents=True)
         r.sddl[path.name] = sddl
+        r.dacl[str(path)] = [
+            (0, _OICI, _MASKS["F"] if mask == "FA" else int(mask, 16), _WELL_KNOWN.get(sid, sid))
+            for mask, sid in re.findall(r"\(A;OICI;([^;]+);;;([^)]+)\)", sddl)
+        ]
 
     def _icacls(args: list[str]) -> int:
         r.icacls.append(args)
-        return r.icacls_exit
+        if r.icacls_exit != 0:
+            return r.icacls_exit
+        target, verb, trustee = args[0], args[1], args[2]
+        entries = r.dacl.setdefault(target, [])
+        if verb == "/grant":
+            name, _, spec = trustee.partition(":(")
+            sid = name[1:] if name.startswith("*") else _sid(name)
+            mask = _MASKS[spec.rsplit(")", 1)[-1]]
+            r.events.append(("grant", sid))
+            for index, (kind, flags, held, who) in enumerate(entries):
+                if kind == 0 and who == sid and flags == _OICI:
+                    entries[index] = (kind, flags, held | mask, who)  # icacls merges into the existing ace
+                    return 0
+            entries.append((0, _OICI, mask, sid))
+        elif verb == "/remove:g":
+            sid = trustee[1:] if trustee.startswith("*") else _sid(trustee)
+            r.events.append(("remove", sid))
+            r.dacl[target] = [entry for entry in entries if not (entry[0] == 0 and entry[3] == sid)]
+        return 0
+
+    def _read_ledger() -> list[str] | None:
+        return None if r.ledger is None else list(r.ledger)
+
+    def _write_ledger(sids: list[str]) -> None:
+        r.ledger = list(sids)
+        r.ledger_writes.append(list(sids))
+        r.events.append(("ledger", ",".join(sids)))
+
+    def _dacl(path: Path) -> tuple[tuple[int, int, int, str], ...]:
+        return tuple(r.dacl.get(str(path), ()))
 
     def _sid(name: str) -> str:
         if name.lower() in {"corp\\jane", "jane"}:
@@ -102,6 +163,10 @@ def rig(monkeypatch, machine_root):
         # trailing ``$`` is a naming convention, not something LookupAccountNameW cares about.
         if name.lower() in {"corp\\svc$", "svc$"}:
             return _MSA_SID
+        if name.lower() in {"pc01\\svc_local", "svc_local"}:
+            return _LOCAL_SID
+        if name.lower() in {"corp\\other", "other"}:
+            return _OTHER_SID
         # Windows resolves these perfectly well, so the rig must too — otherwise the
         # unprunable-principal fence is never what refuses them and a probe that deletes
         # the fence stays green (found by falsification, 2026-09-17).
@@ -131,6 +196,10 @@ def rig(monkeypatch, machine_root):
     monkeypatch.setattr(provisioning, "_commit_machine_switch", _commit)
     monkeypatch.setattr(provisioning, "ensure_updater_dir", lambda: None)  # its own tests: test_update_service.py
     monkeypatch.setattr(provisioning, "_delete_task_confirmed_missing", _delete)
+    # DSYNC-115 seams: the grant record and the DACL reader.
+    monkeypatch.setattr(provisioning, "_read_grant_ledger_value", _read_ledger)
+    monkeypatch.setattr(provisioning, "_write_grant_ledger_value", _write_ledger)
+    monkeypatch.setattr(provisioning, "_dacl_entries", _dacl)
     monkeypatch.setattr(provisioning, "current_run_as_user", lambda: "CORP\\jane")
     monkeypatch.setattr(paths_module, "assert_machine_dir_trusted", _verify)
     monkeypatch.setattr(paths_module, "assert_no_open_aces", _verify)
@@ -621,14 +690,17 @@ class TestPrunePrincipal:
         """S-3 left this validating with ``validate_run_as_user``, which rejects a trailing
         ``$`` — so the one principal that most needs pruning could not be pruned at all, and a
         retired gMSA would keep its ACEs on the shared profile with nothing in the app able to
-        revoke them. S-4 mirrors ``_principal_account``'s kind dispatch."""
-        machine_root.mkdir(parents=True)
+        revoke them. S-4 mirrors ``_principal_account``'s kind dispatch.
+
+        DSYNC-115: the prune names the trustee by SID (``*S-1-…``), never by account name."""
+        rig.seed_granted(machine_root, _MSA_SID)
         provisioning.apply_prune_principal(
             self._payload(user="CORP\\svc$", kind=PrincipalKind.MANAGED_SERVICE_ACCOUNT.value)
         )
         joined = " ".join(" ".join(a) for a in rig.icacls)
         assert "/remove:g" in joined
-        assert "CORP\\svc$" in joined
+        assert f"*{_MSA_SID}" in joined
+        assert "svc" not in joined
 
     def test_the_same_name_declared_a_password_logon_is_REFUSED(self, rig, machine_root):
         """The positive twin that proves the DISPATCH admits it, not a widened charset: the
@@ -645,7 +717,7 @@ class TestPrunePrincipal:
         """The absent-value rule, on the IPC side: a request built by a pre-S-4 parent carries
         no ``kind``, and the only foreign principal those builds could register was a password
         logon. So today's payload still prunes."""
-        machine_root.mkdir(parents=True)
+        rig.seed_granted(machine_root, _PRINCIPAL_SID)
         provisioning.apply_prune_principal(self._payload())
         assert rig.icacls
 
@@ -663,7 +735,7 @@ class TestPrunePrincipal:
     def test_a_garbled_kind_degrades_rather_than_raising(self, rig, machine_root, bogus):
         """A request file is unsealed from disk; an unrecognised value lands on the evidenced
         answer rather than escaping the ``(ok, message)`` contract as a bare ``ValueError``."""
-        machine_root.mkdir(parents=True)
+        rig.seed_granted(machine_root, _PRINCIPAL_SID)
         provisioning.apply_prune_principal(self._payload(kind=bogus))
         assert rig.icacls
 
@@ -703,11 +775,11 @@ class TestPrunePrincipal:
         assert rig.icacls == []
 
     def test_a_confirmed_missing_delete_prunes(self, rig, machine_root):
-        machine_root.mkdir(parents=True)
+        rig.seed_granted(machine_root, _PRINCIPAL_SID)
         provisioning.apply_prune_principal(self._payload())
         joined = " ".join(" ".join(a) for a in rig.icacls)
         assert "/remove:g" in joined
-        assert "CORP\\svc" in joined
+        assert f"*{_PRINCIPAL_SID}" in joined
 
     def test_the_prune_leaves_the_delivery_secret(self, rig, machine_root):
         machine_root.mkdir(parents=True)
@@ -741,17 +813,492 @@ class TestPrunePrincipal:
 
     def test_a_genuine_service_principal_still_prunes(self, rig, machine_root):
         """The positive twin: the fence must not refuse every account."""
-        machine_root.mkdir(parents=True)
+        rig.seed_granted(machine_root, _PRINCIPAL_SID)
         provisioning.apply_prune_principal(self._payload(user="CORP\\svc"))
         assert rig.icacls
 
     def test_a_non_zero_icacls_exit_is_fatal(self, rig, machine_root):
-        machine_root.mkdir(parents=True)
+        rig.seed_granted(machine_root, _PRINCIPAL_SID)
         rig.icacls_exit = 5
         with pytest.raises(provisioning.ProvisionRefused) as exc:
             provisioning.apply_prune_principal(self._payload())
         assert exc.value.step is Step.PRUNE
         assert exc.value.icacls_exit == 5
+
+
+# --------------------------------------------------------------------------- #
+# DSYNC-115 — every grant is RECORDED, and Remove / a switch revokes exactly   #
+# what was recorded, for every principal kind.                                 #
+# --------------------------------------------------------------------------- #
+
+_RX = _MASKS["RX"]
+_M = _MASKS["M"]
+_SYSTEM_SID = "S-1-5-18"
+_ADMINISTRATORS_SID = "S-1-5-32-544"
+
+#: The three principals a registration can grant something to. The signed-in account is the
+#: fourth kind, and it is granted nothing (its own test below).
+_GRANTED_KINDS = [
+    pytest.param("CORP\\svc", PrincipalKind.PASSWORD, _PRINCIPAL_SID, id="password-domain"),
+    pytest.param("PC01\\svc_local", PrincipalKind.PASSWORD, _LOCAL_SID, id="password-local"),
+    pytest.param("CORP\\svc$", PrincipalKind.MANAGED_SERVICE_ACCOUNT, _MSA_SID, id="gmsa"),
+]
+
+
+def _register_as(source: Path, user: str, kind: PrincipalKind) -> None:
+    """The ``provision`` op exactly as ``elevated_apply._do_provision`` runs it: provision, then retire the rest."""
+    payload = _payload(source, user=user, kind=kind.value)
+    provisioning.apply_provision(payload, register=lambda: None, update_mode=None)
+    provisioning.prune_retired_grants(payload)
+
+
+def _remove_as(user: str, kind: PrincipalKind) -> None:
+    provisioning.apply_prune_principal(
+        {"op": "prune_principal", "task_name": "DistrictSync_Daily", "user": user, "kind": kind.value}
+    )
+
+
+def _structural_aces_intact(rig: _Rig, root: Path) -> None:
+    for sid in (_SYSTEM_SID, _ADMINISTRATORS_SID, _SETUP_SID):
+        assert rig.aces(root, sid), f"{sid} lost its ace on the root"
+        assert rig.aces(root / "runs", sid), f"{sid} lost its ace on runs"
+
+
+class TestEveryGrantIsRecorded:
+    @pytest.mark.parametrize(("user", "kind", "sid"), _GRANTED_KINDS)
+    def test_a_fresh_registration_records_the_principal_by_sid(
+        self, rig, source_profile, machine_root, user, kind, sid
+    ):
+        _register_as(source_profile, user, kind)
+        assert rig.ledger == [sid]
+        assert rig.aces(machine_root, sid) == [(0, _OICI, _RX, sid)]
+        assert rig.aces(machine_root / "runs", sid) == [(0, _OICI, _M, sid)]
+
+    @pytest.mark.parametrize(("user", "kind", "sid"), _GRANTED_KINDS)
+    def test_a_resumed_registration_records_BEFORE_it_grants(self, rig, source_profile, machine_root, user, kind, sid):
+        """Recorded first, so no crash between the two can leave a grant DistrictSync does not know it made."""
+        machine_root.mkdir(parents=True)
+        (machine_root / "runs").mkdir()
+        _register_as(source_profile, user, kind)
+        assert rig.events.index(("ledger", sid)) < rig.events.index(("grant", sid))
+        assert rig.aces(machine_root, sid) == [(0, _OICI, _RX, sid)]
+
+    def test_the_signed_in_account_is_granted_and_recorded_nothing(self, rig, source_profile, machine_root):
+        _register_as(source_profile, "CORP\\jane", PrincipalKind.PASSWORD)
+        assert rig.ledger_writes == []
+        assert rig.icacls == []
+
+    def test_machine_setup_records_nothing(self, rig, source_profile, machine_root):
+        provisioning.apply_machine_setup(_machine_payload(source_profile))
+        assert rig.ledger_writes == []
+
+    def test_registering_the_same_account_again_records_it_once(self, rig, source_profile, machine_root):
+        _register_as(source_profile, "CORP\\svc", PrincipalKind.PASSWORD)
+        _register_as(source_profile, "CORP\\svc", PrincipalKind.PASSWORD)
+        assert rig.ledger == [_PRINCIPAL_SID]
+        assert rig.aces(machine_root, _PRINCIPAL_SID), "a re-registration keeps its own grant"
+
+    def test_a_record_that_cannot_be_written_grants_nothing(self, rig, source_profile, machine_root, monkeypatch):
+        def _refuse(_sids):
+            raise OSError("HKLM is read-only")
+
+        monkeypatch.setattr(provisioning, "_write_grant_ledger_value", _refuse)
+        with pytest.raises(provisioning.ProvisionRefused) as exc:
+            _register_as(source_profile, "CORP\\svc", PrincipalKind.PASSWORD)
+        assert exc.value.step is Step.PRINCIPAL
+        assert rig.committed == []
+        assert not machine_root.exists(), "nothing was created for an account whose grant could not be recorded"
+
+    def test_the_record_holds_sids_never_a_name(self, rig, source_profile, machine_root):
+        _register_as(source_profile, "CORP\\svc", PrincipalKind.PASSWORD)
+        assert rig.ledger and all(re.fullmatch(r"S-1-\d+(-\d+)+", sid) for sid in rig.ledger)
+        assert "svc" not in " ".join(rig.ledger).lower()
+
+    def test_a_malformed_entry_is_never_read_as_a_trustee(self, rig):
+        rig.ledger = ["CORP\\svc", "", _PRINCIPAL_SID, "S-1-5-21-1-2-3-1002;(A;;FA;;;WD)"]
+        assert provisioning.read_grant_ledger() == (_PRINCIPAL_SID,)
+
+    def test_no_record_at_all_reads_as_None_not_empty(self, rig):
+        """``None`` (an install from before the record) and ``()`` (nothing granted) are different facts."""
+        assert provisioning.read_grant_ledger() is None
+        rig.ledger = []
+        assert provisioning.read_grant_ledger() == ()
+
+    def test_the_record_lives_beside_the_switch_in_the_64_bit_view(self):
+        import inspect
+
+        # Read from the MODULE text: the suite-wide guard (conftest ``_no_real_grant_record``) replaces the function.
+        module = inspect.getsource(provisioning)
+        start = module.index("def _write_grant_ledger_value(")
+        source = module[start : module.index("\ndef ", start + 1)]
+        for needle in ("MACHINE_SCOPE_KEY_PATH", "MACHINE_SCOPE_KEY_ACCESS", "REG_MULTI_SZ", "GRANT_LEDGER_VALUE_NAME"):
+            assert needle in source
+        assert provisioning.GRANT_LEDGER_VALUE_NAME == "GrantedPrincipalSids"
+
+
+class TestRemoveRevokesWhatWasRecorded:
+    @pytest.mark.parametrize(("user", "kind", "sid"), _GRANTED_KINDS)
+    def test_register_then_remove_revokes_the_recorded_grants(self, rig, source_profile, machine_root, user, kind, sid):
+        _register_as(source_profile, user, kind)
+        _remove_as(user, kind)
+        assert rig.deleted == ["DistrictSync_Daily"]
+        assert rig.aces(machine_root, sid) == []
+        assert rig.aces(machine_root / "runs", sid) == []
+        assert rig.ledger == []
+        _structural_aces_intact(rig, machine_root)
+
+    @pytest.mark.parametrize(("user", "kind", "sid"), _GRANTED_KINDS)
+    def test_the_prune_names_the_trustee_by_sid_never_by_name(self, rig, source_profile, machine_root, user, kind, sid):
+        _register_as(source_profile, user, kind)
+        rig.icacls.clear()
+        _remove_as(user, kind)
+        removals = [args for args in rig.icacls if args[1] == "/remove:g"]
+        assert removals and all(args[2] == f"*{sid}" for args in removals)
+
+    def test_a_recorded_account_that_no_longer_resolves_is_still_revoked(
+        self, rig, source_profile, machine_root, monkeypatch
+    ):
+        """A gMSA deleted from the directory: the record's SID is what is revoked, not a name lookup."""
+        _register_as(source_profile, "CORP\\svc$", PrincipalKind.MANAGED_SERVICE_ACCOUNT)
+        resolve = provisioning._account_sid
+
+        def _gone(name: str) -> str:
+            if name.lower().endswith("svc$"):
+                raise provisioning.AccountLookupError(provisioning.ERROR_NONE_MAPPED)
+            return resolve(name)
+
+        monkeypatch.setattr(provisioning, "_account_sid", _gone)
+        _remove_as("CORP\\svc$", PrincipalKind.MANAGED_SERVICE_ACCOUNT)
+        assert rig.aces(machine_root, _MSA_SID) == []
+        assert rig.aces(machine_root / "runs", _MSA_SID) == []
+
+    def test_an_ace_DistrictSync_did_not_record_is_kept(self, rig, source_profile, machine_root):
+        _register_as(source_profile, "CORP\\svc", PrincipalKind.PASSWORD)
+        rig.seed_granted(machine_root, _OTHER_SID)  # the very same shape, granted by hand
+        _remove_as("CORP\\svc", PrincipalKind.PASSWORD)
+        assert rig.aces(machine_root, _OTHER_SID) == [(0, _OICI, _RX, _OTHER_SID)]
+        assert rig.aces(machine_root / "runs", _OTHER_SID) == [(0, _OICI, _M, _OTHER_SID)]
+        assert rig.aces(machine_root, _PRINCIPAL_SID) == [], "positive twin: the recorded grant WAS revoked"
+
+    def test_the_request_cannot_name_an_unrecorded_account_into_the_prune(self, rig, source_profile, machine_root):
+        """An unrecorded account the request names gets only the legacy rule (review L2): an ace that is not exactly
+        DistrictSync's shape stays, and the Remove says so."""
+        _register_as(source_profile, "CORP\\svc", PrincipalKind.PASSWORD)
+        rig.seed(machine_root, _OTHER_SID, "F")
+        rig.seed(machine_root / "runs", _OTHER_SID, "M")
+        with pytest.raises(provisioning.ProvisionRefused) as exc:
+            _remove_as("CORP\\other", PrincipalKind.PASSWORD)
+        assert (exc.value.step, exc.value.icacls_exit) == (Step.PRUNE, None)
+        assert rig.aces(machine_root, _OTHER_SID) and rig.aces(machine_root / "runs", _OTHER_SID)
+        assert rig.aces(machine_root, _PRINCIPAL_SID) == [], "positive twin: the recorded one was revoked"
+
+    @pytest.mark.parametrize(
+        ("rights", "flags"),
+        [
+            pytest.param("F", _OICI, id="widened by hand to full control"),
+            pytest.param("M", 0, id="a second, non-inheritable ace"),
+        ],
+    )
+    def test_a_recorded_account_with_an_ace_DistrictSync_did_not_make_is_kept_and_reported(
+        self, rig, source_profile, machine_root, rights, flags
+    ):
+        _register_as(source_profile, "CORP\\svc", PrincipalKind.PASSWORD)
+        rig.seed(machine_root, _PRINCIPAL_SID, rights, flags=flags)
+        before = list(rig.dacl[str(machine_root)])
+        with pytest.raises(provisioning.ProvisionRefused) as exc:
+            _remove_as("CORP\\svc", PrincipalKind.PASSWORD)
+        assert exc.value.step is Step.PRUNE
+        assert exc.value.icacls_exit is None, "kept on purpose, not an icacls failure"
+        assert rig.deleted == ["DistrictSync_Daily"], "the nightly IS removed"
+        assert rig.dacl[str(machine_root)] == before
+        assert rig.aces(machine_root / "runs", _PRINCIPAL_SID), "all or nothing per account"
+        assert rig.ledger == [_PRINCIPAL_SID], "still recorded: the grant is still there"
+
+    def test_administrators_system_and_the_setup_admin_are_never_pruned_even_if_recorded(
+        self, rig, source_profile, machine_root
+    ):
+        _register_as(source_profile, "CORP\\svc", PrincipalKind.PASSWORD)
+        rig.ledger = [_ADMINISTRATORS_SID, _SYSTEM_SID, _SETUP_SID, _PRINCIPAL_SID]  # a tampered record
+        with pytest.raises(provisioning.ProvisionRefused) as exc:
+            _remove_as("CORP\\svc", PrincipalKind.PASSWORD)
+        assert exc.value.step is Step.PRUNE
+        _structural_aces_intact(rig, machine_root)
+        assert rig.aces(machine_root, _PRINCIPAL_SID) == [], "positive twin: the real principal was revoked"
+        assert all(args[2] == f"*{_PRINCIPAL_SID}" for args in rig.icacls if args[1] == "/remove:g")
+
+    def test_the_setup_admins_ace_survives_a_remove_run_by_a_second_administrator(
+        self, rig, source_profile, machine_root, monkeypatch
+    ):
+        _register_as(source_profile, "CORP\\svc", PrincipalKind.PASSWORD)
+        rig.ledger = [_SETUP_SID, _PRINCIPAL_SID]
+        monkeypatch.setattr(provisioning, "current_run_as_user", lambda: "CORP\\other")
+        with pytest.raises(provisioning.ProvisionRefused):
+            _remove_as("CORP\\svc", PrincipalKind.PASSWORD)
+        assert rig.aces(machine_root, _SETUP_SID) == [(0, _OICI, _M, _SETUP_SID)]
+        assert rig.aces(machine_root / "runs", _SETUP_SID) == [(0, _OICI, _M, _SETUP_SID)]
+
+    def test_an_unconfirmed_delete_revokes_nothing(self, rig, source_profile, machine_root):
+        _register_as(source_profile, "CORP\\svc", PrincipalKind.PASSWORD)
+        rig.delete_confirms = False
+        with pytest.raises(provisioning.ProvisionRefused) as exc:
+            _remove_as("CORP\\svc", PrincipalKind.PASSWORD)
+        assert exc.value.step is Step.DELETE
+        assert rig.aces(machine_root, _PRINCIPAL_SID)
+        assert rig.ledger == [_PRINCIPAL_SID]
+
+    def test_an_icacls_failure_is_fatal_and_keeps_the_record(self, rig, source_profile, machine_root):
+        _register_as(source_profile, "CORP\\svc", PrincipalKind.PASSWORD)
+        rig.icacls_exit = 5
+        with pytest.raises(provisioning.ProvisionRefused) as exc:
+            _remove_as("CORP\\svc", PrincipalKind.PASSWORD)
+        assert (exc.value.step, exc.value.icacls_exit) == (Step.PRUNE, 5)
+        assert rig.ledger == [_PRINCIPAL_SID]
+
+    def test_an_unreadable_acl_revokes_nothing_and_says_so(self, rig, source_profile, machine_root, monkeypatch):
+        _register_as(source_profile, "CORP\\svc", PrincipalKind.PASSWORD)
+
+        def _unreadable(_path):
+            raise OSError("denied")
+
+        monkeypatch.setattr(provisioning, "_dacl_entries", _unreadable)
+        with pytest.raises(provisioning.ProvisionRefused) as exc:
+            _remove_as("CORP\\svc", PrincipalKind.PASSWORD)
+        assert exc.value.step is Step.PRUNE
+        assert rig.aces(machine_root, _PRINCIPAL_SID)
+
+
+class TestASwitchRevokesTheRetiredAccount:
+    @pytest.mark.parametrize(
+        ("old", "new"),
+        [
+            pytest.param(
+                ("CORP\\svc", PrincipalKind.PASSWORD, _PRINCIPAL_SID),
+                ("CORP\\svc$", PrincipalKind.MANAGED_SERVICE_ACCOUNT, _MSA_SID),
+                id="password-domain to gmsa",
+            ),
+            pytest.param(
+                ("CORP\\svc$", PrincipalKind.MANAGED_SERVICE_ACCOUNT, _MSA_SID),
+                ("PC01\\svc_local", PrincipalKind.PASSWORD, _LOCAL_SID),
+                id="gmsa to password-local",
+            ),
+            pytest.param(
+                ("PC01\\svc_local", PrincipalKind.PASSWORD, _LOCAL_SID),
+                ("CORP\\svc", PrincipalKind.PASSWORD, _PRINCIPAL_SID),
+                id="password-local to password-domain",
+            ),
+        ],
+    )
+    def test_switching_from_A_to_B_revokes_A_and_keeps_B(self, rig, source_profile, machine_root, old, new):
+        _register_as(source_profile, old[0], old[1])
+        _register_as(source_profile, new[0], new[1])
+        assert rig.aces(machine_root, old[2]) == []
+        assert rig.aces(machine_root / "runs", old[2]) == []
+        assert rig.aces(machine_root, new[2]) == [(0, _OICI, _RX, new[2])]
+        assert rig.aces(machine_root / "runs", new[2]) == [(0, _OICI, _M, new[2])]
+        assert rig.ledger == [new[2]]
+        _structural_aces_intact(rig, machine_root)
+
+    def test_a_switch_keeps_an_ace_DistrictSync_did_not_record(self, rig, source_profile, machine_root):
+        _register_as(source_profile, "CORP\\svc", PrincipalKind.PASSWORD)
+        rig.seed_granted(machine_root, _OTHER_SID)
+        _register_as(source_profile, "CORP\\svc$", PrincipalKind.MANAGED_SERVICE_ACCOUNT)
+        assert rig.aces(machine_root, _OTHER_SID)
+        assert rig.aces(machine_root, _PRINCIPAL_SID) == [], "positive twin: the recorded one was retired"
+
+    def test_a_retired_grant_that_cannot_be_removed_stays_recorded_and_never_fails_the_registration(
+        self, rig, source_profile, machine_root, monkeypatch
+    ):
+        _register_as(source_profile, "CORP\\svc", PrincipalKind.PASSWORD)
+        grant_or_remove = provisioning._run_icacls
+        monkeypatch.setattr(
+            provisioning, "_run_icacls", lambda args: 5 if args[1] == "/remove:g" else grant_or_remove(args)
+        )
+        _register_as(source_profile, "CORP\\svc$", PrincipalKind.MANAGED_SERVICE_ACCOUNT)  # does not raise
+        assert rig.aces(machine_root, _PRINCIPAL_SID), "still there"
+        assert set(rig.ledger or []) == {_PRINCIPAL_SID, _MSA_SID}, "so the next Remove revokes it and reports"
+
+    def test_machine_setup_never_retires_the_live_principal(self, rig, source_profile, machine_root):
+        _register_as(source_profile, "CORP\\svc", PrincipalKind.PASSWORD)
+        provisioning.apply_machine_setup(_machine_payload(source_profile))
+        assert rig.aces(machine_root, _PRINCIPAL_SID)
+        assert rig.ledger == [_PRINCIPAL_SID]
+
+    def test_re_registering_the_same_account_retires_nothing(self, rig, source_profile, machine_root):
+        _register_as(source_profile, "CORP\\svc", PrincipalKind.PASSWORD)
+        rig.icacls.clear()
+        _register_as(source_profile, "CORP\\svc", PrincipalKind.PASSWORD)
+        assert not [args for args in rig.icacls if args[1] == "/remove:g"]
+
+
+class TestTheShapeRuleEdges:
+    """Review notes I1 + the missing rows: which aces count as "not DistrictSync's", on the record path."""
+
+    def _remove_recorded_svc(self, rig: _Rig, source_profile: Path) -> None:
+        _register_as(source_profile, "CORP\\svc", PrincipalKind.PASSWORD)
+
+    @pytest.mark.parametrize(
+        "flags",
+        [
+            pytest.param(_OICI | 0x10, id="inherited"),
+            pytest.param(_OICI | 0x08, id="inherit-only"),
+        ],
+    )
+    def test_an_inherited_or_inherit_only_ace_is_kept(self, rig, source_profile, machine_root, flags):
+        self._remove_recorded_svc(rig, source_profile)
+        rig.seed(machine_root, _PRINCIPAL_SID, "RX", flags=flags)
+        with pytest.raises(provisioning.ProvisionRefused) as exc:
+            _remove_as("CORP\\svc", PrincipalKind.PASSWORD)
+        assert (exc.value.step, exc.value.icacls_exit) == (Step.PRUNE, None)
+        assert not [args for args in rig.icacls if args[1] == "/remove:g"]
+        assert rig.ledger == [_PRINCIPAL_SID]
+
+    @pytest.mark.parametrize(
+        "trustee",
+        [
+            pytest.param(_PRINCIPAL_SID, id="attributed to the account"),
+            pytest.param("", id="unattributed - the reader reports no SID for this type"),
+        ],
+    )
+    def test_a_conditional_or_callback_allow_ace_keeps_the_account(self, rig, source_profile, machine_root, trustee):
+        """Type 9 (ACCESS_ALLOWED_CALLBACK): ``paths.read_dacl_entries`` reports no SID for it, so an ace it cannot
+        attribute may be this account's and must keep it."""
+        self._remove_recorded_svc(rig, source_profile)
+        rig.dacl[str(machine_root)].append((9, _OICI, _RX, trustee))
+        with pytest.raises(provisioning.ProvisionRefused) as exc:
+            _remove_as("CORP\\svc", PrincipalKind.PASSWORD)
+        assert exc.value.step is Step.PRUNE
+        assert rig.aces(machine_root / "runs", _PRINCIPAL_SID), "all or nothing per account"
+
+    def test_a_deny_ace_does_not_block_the_revoke(self, rig, source_profile, machine_root):
+        self._remove_recorded_svc(rig, source_profile)
+        rig.dacl[str(machine_root)].append((1, _OICI, _M, _PRINCIPAL_SID))  # ACCESS_DENIED: a hardening measure
+        _remove_as("CORP\\svc", PrincipalKind.PASSWORD)
+        assert [entry for entry in rig.aces(machine_root, _PRINCIPAL_SID) if entry[0] == 0] == []
+        assert rig.aces(machine_root, _PRINCIPAL_SID) == [(1, _OICI, _M, _PRINCIPAL_SID)], "the deny ace stays"
+        assert rig.ledger == []
+
+    def test_a_recorded_sid_with_no_ace_runs_no_icacls_and_leaves_the_record(self, rig, machine_root):
+        rig.seed_granted(machine_root, _SETUP_SID)  # something on the folders, nothing for the recorded SID
+        rig.ledger = [_PRINCIPAL_SID]
+        _remove_as("CORP\\svc", PrincipalKind.PASSWORD)
+        assert not [args for args in rig.icacls if args[1] == "/remove:g"]
+        assert rig.ledger == []
+
+
+class TestARecordedInstallStillRevokesThePreUpgradeAccount:
+    """Review note L2: an install from before the record, whose Remove was declined, then a later registration that
+    started the record. The schedule record still names the old account; the legacy rule applies to it."""
+
+    def test_the_requested_unrecorded_account_with_exactly_DistrictSyncs_shape_is_revoked(self, rig, machine_root):
+        rig.seed_granted(machine_root, _PRINCIPAL_SID)  # P1, granted by a pre-record build
+        rig.seed_granted(machine_root, _MSA_SID)  # P2, recorded
+        rig.ledger = [_MSA_SID]
+        _remove_as("CORP\\svc", PrincipalKind.PASSWORD)
+        assert rig.aces(machine_root, _PRINCIPAL_SID) == [] and rig.aces(machine_root / "runs", _PRINCIPAL_SID) == []
+        assert rig.aces(machine_root, _MSA_SID) == []
+        assert rig.ledger == [], "the legacy account is never ADDED to the record"
+
+    def test_the_fence_still_holds_for_the_requested_account(self, rig, machine_root):
+        rig.seed_granted(machine_root, _SETUP_SID)
+        rig.ledger = []
+        with pytest.raises(provisioning.ProvisionRefused):
+            _remove_as("CORP\\jane", PrincipalKind.PASSWORD)  # the administrator running the child
+        assert rig.aces(machine_root, _SETUP_SID) and rig.aces(machine_root / "runs", _SETUP_SID)
+
+    def test_a_requested_account_that_no_longer_resolves_does_not_stop_the_recorded_revoke(
+        self, rig, machine_root, monkeypatch
+    ):
+        rig.seed_granted(machine_root, _MSA_SID)
+        rig.ledger = [_MSA_SID]
+        resolve = provisioning._account_sid
+
+        def _gone(name: str) -> str:
+            if name.lower().endswith("svc$"):
+                raise provisioning.AccountLookupError(provisioning.ERROR_NONE_MAPPED)
+            return resolve(name)
+
+        monkeypatch.setattr(provisioning, "_account_sid", _gone)
+        _remove_as("CORP\\svc$", PrincipalKind.MANAGED_SERVICE_ACCOUNT)
+        assert rig.aces(machine_root, _MSA_SID) == []
+
+
+class TestRetiringNeverFailsARegistration:
+    """Review note L1: ``prune_retired_grants`` is TOTAL - the nightly is already registered when it runs."""
+
+    @pytest.mark.parametrize("error", [RuntimeError("boom"), KeyError("x"), TypeError("y")])
+    def test_any_exception_is_contained(self, rig, source_profile, machine_root, monkeypatch, error):
+        _register_as(source_profile, "CORP\\svc", PrincipalKind.PASSWORD)
+
+        def _raise(*_args, **_kwargs):
+            raise error
+
+        monkeypatch.setattr(provisioning, "_revoke", _raise)
+        payload = _payload(source_profile, user="CORP\\svc$", kind=PrincipalKind.MANAGED_SERVICE_ACCOUNT.value)
+        assert provisioning.prune_retired_grants(payload) is None
+        assert rig.ledger == [_PRINCIPAL_SID], "nothing revoked, so still recorded for the next Remove"
+
+
+class TestTheSidPattern:
+    """Review note L3: ``\\d`` is Unicode-aware unless the pattern is ASCII; a trustee is ASCII digits only."""
+
+    def test_a_unicode_digit_sid_is_rejected(self, rig):
+        arabic_indic_one = "\u0661"
+        rig.ledger = [f"S-1-5-21-{arabic_indic_one}-2-3-1002", _PRINCIPAL_SID]
+        assert provisioning.read_grant_ledger() == (_PRINCIPAL_SID,)
+
+
+class TestAnInstallFromBeforeTheRecord:
+    """No record at all (``rig.ledger is None``): an install a pre-DSYNC-115 build registered.
+
+    The documented rule: revoke ONLY the account the schedule record names (the request's ``user``), and only when
+    its ACEs are EXACTLY the shape DistrictSync grants (RX inheritable on the root, Modify inheritable on ``runs``).
+    Anything else is kept and reported. No record is created by a Remove.
+    """
+
+    @pytest.mark.parametrize(("user", "kind", "sid"), _GRANTED_KINDS)
+    def test_the_scheduled_account_with_exactly_DistrictSyncs_shape_is_revoked(
+        self, rig, machine_root, user, kind, sid
+    ):
+        rig.seed_granted(machine_root, sid)
+        _remove_as(user, kind)
+        assert rig.aces(machine_root, sid) == []
+        assert rig.aces(machine_root / "runs", sid) == []
+        assert rig.ledger_writes == [], "a Remove never invents a record"
+
+    @pytest.mark.parametrize(
+        ("root_rights", "runs_rights", "flags"),
+        [
+            pytest.param("F", "M", _OICI, id="full control on the root"),
+            pytest.param("M", "M", _OICI, id="modify on the root - the setup admin's shape"),
+            pytest.param("RX", "F", _OICI, id="full control on runs"),
+            pytest.param("RX", "M", 0, id="not inheritable"),
+        ],
+    )
+    def test_any_other_shape_is_kept_and_reported(self, rig, machine_root, root_rights, runs_rights, flags):
+        rig.seed(machine_root, _PRINCIPAL_SID, root_rights, flags=flags)
+        rig.seed(machine_root / "runs", _PRINCIPAL_SID, runs_rights, flags=flags)
+        with pytest.raises(provisioning.ProvisionRefused) as exc:
+            _remove_as("CORP\\svc", PrincipalKind.PASSWORD)
+        assert (exc.value.step, exc.value.icacls_exit) == (Step.PRUNE, None)
+        assert rig.aces(machine_root, _PRINCIPAL_SID) and rig.aces(machine_root / "runs", _PRINCIPAL_SID)
+        assert not [args for args in rig.icacls if args[1] == "/remove:g"]
+
+    def test_another_account_with_the_same_shape_is_kept(self, rig, machine_root):
+        rig.seed_granted(machine_root, _PRINCIPAL_SID)
+        rig.seed_granted(machine_root, _OTHER_SID)
+        _remove_as("CORP\\svc", PrincipalKind.PASSWORD)
+        assert rig.aces(machine_root, _OTHER_SID) and rig.aces(machine_root / "runs", _OTHER_SID)
+        assert rig.aces(machine_root, _PRINCIPAL_SID) == []
+
+    def test_an_account_with_nothing_left_succeeds_and_removes_nothing(self, rig, machine_root):
+        machine_root.mkdir(parents=True)
+        _remove_as("CORP\\svc", PrincipalKind.PASSWORD)
+        assert rig.deleted == ["DistrictSync_Daily"]
+        assert not [args for args in rig.icacls if args[1] == "/remove:g"]
+
+    def test_a_registration_after_the_upgrade_starts_the_record(self, rig, source_profile, machine_root):
+        _register_as(source_profile, "CORP\\svc", PrincipalKind.PASSWORD)
+        assert rig.ledger == [_PRINCIPAL_SID]
 
 
 # --------------------------------------------------------------------------- #
