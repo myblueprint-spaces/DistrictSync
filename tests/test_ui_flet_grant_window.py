@@ -89,9 +89,12 @@ def _body(page, *, outcomes, reexec=None):  # noqa: ANN001 - untyped Flet tree
 # --------------------------------------------------------------------------- #
 class TestOffersGrant:
     def test_every_reason_is_decided_and_only_access_denial_is_grantable(self):
-        """Total over the enum — a reason added without a decision must not slip through."""
+        """Total over the enum — a reason added without a decision must not slip through.
+
+        DSYNC-117 adds the second access denial: the root opens but ``runs`` does not (a grant made
+        before the fix reached the root only). Both are repaired by the same one-time grant."""
         grantable = {reason for reason in MachineScopeRefusedReason if grant_access.offers_grant(reason)}
-        assert grantable == {MachineScopeRefusedReason.INACCESSIBLE}
+        assert grantable == {MachineScopeRefusedReason.INACCESSIBLE, MachineScopeRefusedReason.RUNS_UNWRITABLE}
 
     def test_the_launcher_branches_on_the_typed_reason(self):
         denied = MachineScopeRefused(MachineScopeRefusedReason.INACCESSIBLE, "C:\\ProgramData\\DistrictSync")
