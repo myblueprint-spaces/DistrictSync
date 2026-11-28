@@ -17,7 +17,9 @@ Another CALLER of the window's rules, never a second spelling of them (all in :m
 * **the output folder's PARENT** must exist and the path must not be a file (:func:`validate_output_dir`); the folder
   itself may not exist yet and is NOT created here, the conversion creates it.
 
-Every rule is checked BEFORE anything is written: a refusal writes nothing at all. The folders are saved ABSOLUTE
+Every rule is checked BEFORE anything is written: a refusal writes nothing at all. A ``config.json`` that exists but
+cannot be read is refused too (:data:`SETTINGS_UNREADABLE_LINE`): saving over it would keep the three fields and replace
+every other setting with defaults. The folders are saved ABSOLUTE
 (``os.path.abspath``), because the nightly runs from another working folder; a path the window's picker returns is
 already absolute, so this changes nothing the window would save.
 
@@ -35,7 +37,7 @@ from __future__ import annotations
 import logging
 import os
 
-from src.config.app_config import AppConfig, SettingsOverwriteRefused
+from src.config.app_config import AppConfig, ConfigLoadState, SettingsOverwriteRefused
 from src.config.authoring import current_digest
 from src.config.loader import resolve_config_path
 from src.config.setup_rules import activation_allowed, validate_input_dir, validate_output_dir
@@ -54,6 +56,12 @@ NEEDS_TEST_LINE = (
 SAVE_DENIED_LINE = (
     f"{NOTHING_SAVED} this account cannot change DistrictSync's settings on this computer. Run it as the "
     "administrator who set this computer up, or from an administrator command prompt."
+)
+#: ``config.json`` exists but could not be read: ``load()`` invented defaults, so a save would drop every other setting
+#: (delivery, schedule, identity) in favour of blanks. Refused; no path (bounded output).
+SETTINGS_UNREADABLE_LINE = (
+    f"{NOTHING_SAVED} DistrictSync's settings file could not be read, so saving would replace the other settings "
+    "with blanks. Open DistrictSync's window, or check the settings file, then configure again."
 )
 #: A nightly registered with the earlier settings keeps running them until it is scheduled again.
 RESCHEDULE_NOTE = (
@@ -84,6 +92,11 @@ def configure(*, sis: str, input_dir: str, output_dir: str) -> tuple[int, str]:
             return 1, f"{NOTHING_SAVED} {flag}: {result.message}"
 
     cfg = AppConfig.load()
+    if cfg.load_state is ConfigLoadState.UNREADABLE:
+        # Before any write: AppConfig.save() would accept this payload (it carries admin choices) and replace the
+        # unread settings with defaults, keeping only a config.corrupt-* copy. The window's repair is the way back.
+        logger.info("Headless configure refused: the settings file could not be read.")
+        return 1, SETTINGS_UNREADABLE_LINE
     if sis_id != cfg.sis_type:
         verdict = activation_allowed(
             cfg,

@@ -330,3 +330,44 @@ def test_the_settings_file_holds_exactly_what_was_given(folders):
     assert _cli(_argv(SHIPPED_ID, folders)) == 0
     data = json.loads(config_file_path().read_text(encoding="utf-8"))
     assert (data["sis_type"], data["input_dir"], data["output_dir"]) == _saved()
+
+
+class TestUnreadableSettings:
+    """Review L4: an unreadable ``config.json`` loads as invented defaults, so saving would drop every other setting."""
+
+    def test_an_unreadable_settings_file_is_refused_and_left_untouched(self, folders, capsys):
+        config_file_path().parent.mkdir(parents=True, exist_ok=True)
+        config_file_path().write_bytes(b"{ not json")
+        before = _disk_bytes()
+        assert _cli(_argv(SHIPPED_ID, folders)) == 1
+        out = capsys.readouterr().out
+        # The last line is the command's; the lines above it are load()'s own ERROR log through the console handler.
+        assert out.endswith(district_setup.SETTINGS_UNREADABLE_LINE + "\n")
+        line = district_setup.SETTINGS_UNREADABLE_LINE
+        assert "could not be read" in line and str(config_file_path()) not in line and "config.json" not in line
+        assert _disk_bytes() == before
+        assert not list(config_file_path().parent.glob("config.corrupt-*"))  # nothing quarantined either
+
+    def test_positive_twin_a_readable_settings_file_is_saved(self, folders):
+        AppConfig(sftp_host="sftp.example.org").save()
+        before = _disk_bytes()
+        assert _cli(_argv(SHIPPED_ID, folders)) == 0
+        assert _disk_bytes() != before and AppConfig.load().sftp_host == "sftp.example.org"
+
+
+class TestAnExplicitDefaultOutputIsStillAFlag:
+    """Review L3: ``--output`` has no parser default now, so ``--output data/output`` beside a non-conversion command is
+    misuse like any other ``--output`` (it used to equal the default and pass silently). Kept deliberately."""
+
+    @pytest.mark.parametrize(
+        "command",
+        [["--schedule-register", "--time", "02:00"], ["--schedule-remove"], ["--migrate"], ["--machine-setup"]],
+    )
+    def test_it_is_refused_beside_another_command(self, command):
+        assert _cli([*command, "--output", "data/output"]) == 2
+
+    def test_positive_twin_the_same_command_without_it_is_not_misuse(self, monkeypatch):
+        import src.main as main_mod
+
+        monkeypatch.setattr(main_mod, "_migrate", lambda: 0)
+        assert _cli(["--migrate"]) == 0
