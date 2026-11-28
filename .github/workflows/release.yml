@@ -201,18 +201,6 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # Velopack needs a SemVer version. A tag build uses the tag's (v3.30.0 -> 3.30.0); a rehearsal
-      # is never a version tag and uses a throwaway one that cannot collide with a release (0.0.<run number>).
-      - name: Stamp the version (the tag's, or the rehearsal's)
-        shell: bash
-        run: |
-          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
-            echo "version = '${GITHUB_REF_NAME#v}'" > src/_version.py
-          else
-            echo "version = '0.0.${{ github.run_number }}'" > src/_version.py
-          fi
-          cat src/_version.py
-
       - name: Stamp build flavour (installed)
         shell: bash
         run: |
@@ -225,6 +213,13 @@ jobs:
 
       - name: Install pinned stack (runtime + build/smoke deps)
         run: python -m pip install -r requirements.txt -r requirements-dev.txt -r requirements-updater.txt
+
+      # DSYNC-113: ONE derivation (scripts/release_version.py) for the app's stamp AND every vpk --packVersion: a tag
+      # build's is the tag's (v3.30.0 -> 3.30.0; anything not vX.Y.Z is refused), a rehearsal's the throwaway
+      # 0.0.<run number>, which cannot collide with a release.
+      - name: Stamp the version (the tag's, or the rehearsal's)
+        shell: bash
+        run: python scripts/release_version.py stamp
 
       # The private shared updater package, from the pinned commit, checked against the pinned tree hash
       # (scripts/updater_package.py). The installed flavour NEEDS it: this job fails closed without the key.
@@ -353,8 +348,9 @@ jobs:
       - name: Pack and sign with vpk (Azure Trusted Signing)
         shell: pwsh
         run: |
-          # The same version installer-build stamped: the tag's, or the rehearsal's 0.0.<run number>.
-          $version = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME.TrimStart('v') } else { "0.0.${{ github.run_number }}" }
+          # The same version installer-build stamped, from the same script (DSYNC-113).
+          $version = python scripts/release_version.py version
+          if ($LASTEXITCODE -ne 0) { Write-Error "no version to pack"; exit 1 }
           Write-Output "packing version $version"
           vpk pack --packId $env:PACK_ID --packTitle DistrictSync --packVersion $version --packDir dist/DistrictSync `
             --mainExe DistrictSync.exe --runtime win-x64 --outputDir releases `
@@ -407,6 +403,11 @@ jobs:
           $unsigned = Get-ChildItem "$root\current" -Recurse -Include *.exe, *.dll | Where-Object { (Get-AuthenticodeSignature $_.FullName).Status -eq 'NotSigned' }
           Write-Output "installed PE files not signed (information): $($unsigned.Count)"
           if ($bad.Count -gt 0) { Write-Error "not validly signed and timestamped: $($bad -join ', ')"; exit 1 }
+
+      # DSYNC-113: what the installed app prints must be the version its package carries (on a tag, the tag's).
+      - name: The installed app's version is the package's version
+        shell: bash
+        run: python scripts/release_version.py check-installed --root "$LOCALAPPDATA/$PACK_ID"
 
       - name: CLI smokes on the INSTALLED signed copy
         shell: bash
@@ -499,12 +500,14 @@ jobs:
           @{ Endpoint = $env:SIGNING_ENDPOINT; CodeSigningAccountName = $env:SIGNING_ACCOUNT_NAME; CertificateProfileName = $env:SIGNING_CERTIFICATE_PROFILE_NAME } |
             ConvertTo-Json | Set-Content -Encoding utf8 signing-metadata.json
 
-      # Two versions, so the upgrade-over-an-install path is proven (MSI product versions are numeric: 0.<run>.0, 0.<run>.1).
+      # Two versions, so the upgrade-over-an-install path is proven. One folder is packed twice, so only one can match
+      # the app's stamp: N+1 IS the stamped version (checked after the upgrade), N is one patch below it (DSYNC-113).
       - name: Pack MSI N and MSI N+1 (per-machine) and sign with vpk
         shell: pwsh
         run: |
-          $run = "${{ github.run_number }}"
-          foreach ($pair in @(@("0.$run.0", "msi-n"), @("0.$run.1", "msi-n1"))) {
+          $n, $n1 = (python scripts/release_version.py msi-versions) -split ' '
+          if ($LASTEXITCODE -ne 0 -or -not $n1) { Write-Error "no MSI versions to pack"; exit 1 }
+          foreach ($pair in @(@($n, "msi-n"), @($n1, "msi-n1"))) {
             vpk pack --packId $env:PACK_ID --packTitle DistrictSync --packVersion $pair[0] --packDir dist/DistrictSync `
               --mainExe DistrictSync.exe --runtime win-x64 --outputDir $pair[1] --msi --instLocation PerMachine `
               --shortcuts StartMenuRoot --azureTrustedSignFile signing-metadata.json
@@ -622,18 +625,12 @@ jobs:
           if ($p.ExitCode -ne 0) { Get-Content msi-install-n1.log -Tail 60; exit 1 }
           Start-Sleep -Seconds 3
           Get-Process DistrictSync, flet -ErrorAction SilentlyContinue | Stop-Process -Force
-          $want = "0.${{ github.run_number }}.1"
-          $got = ([xml](Get-Content "$env:INSTALL_ROOT\current\sq.version")).package.metadata.version
-          Write-Output "installed version after upgrade: $got (want $want)"
-          if ($got -ne $want) { Write-Error "the upgrade did not land"; exit 1 }
-          # A windowed (GUI-subsystem) exe: `&` neither waits for it nor sets $LASTEXITCODE, so wait for the real exit
-          # code. A throwaway profile, as every smoke uses, so the check never writes the runner's own profile.
-          $env:DISTRICTSYNC_DATA_DIR = Join-Path $env:RUNNER_TEMP "dsync-msi-upgrade-profile"
-          New-Item -ItemType Directory -Force $env:DISTRICTSYNC_DATA_DIR | Out-Null
-          $p = Start-Process -FilePath "$env:INSTALL_ROOT\current\DistrictSync.exe" -ArgumentList "--version" -Wait -PassThru -NoNewWindow `
-            -RedirectStandardOutput "$env:RUNNER_TEMP\upgraded-version.txt"
-          Write-Output "upgraded --version exit $($p.ExitCode): $(Get-Content "$env:RUNNER_TEMP\upgraded-version.txt" -Raw)"
-          if ($p.ExitCode -ne 0) { Write-Error "the upgraded copy does not start"; exit 1 }
+
+      # The upgrade landed AND the upgraded copy starts AND agrees with itself (DSYNC-113): its --version, its package
+      # version (current\sq.version) and the installed MSI's ProductVersion must all be N+1 under the documented mapping.
+      - name: The upgraded copy's app, package and MSI versions agree
+        shell: bash
+        run: python scripts/release_version.py check-installed --root "$INSTALL_ROOT" --msi
 
       - name: Uninstall, then assert the program is gone and the profile and task are not
         if: always()
