@@ -933,3 +933,27 @@ class TestModuleBoundaries:
                 if isinstance(node, ast.Call)
             }
             assert not called & {"unlink", "rmtree", "remove", "rmdir"}, module.__name__
+
+
+class TestThePartnerDocsQuoteTheApp:
+    """The IT guide and the troubleshooting page quote the report's words; each quote is pinned to the source."""
+
+    ROOT = Path(__file__).resolve().parent.parent
+
+    def _doc(self, relative: str) -> str:
+        return " ".join((self.ROOT / relative).read_text(encoding="utf-8").split())
+
+    def test_the_troubleshooting_page_quotes_the_no_nightly_line_and_the_sections(self):
+        text = self._doc("docs/partner/troubleshooting.md")
+        quote = "There is NO nightly now"
+        assert migration_apply.NO_NIGHTLY_NOW.startswith(quote) and f'"{quote}"' in text
+        for section in ("Left:", "Way back:"):
+            assert f"**{section}**" in text
+            assert any(line.startswith(section) for line in migration_apply.Report(left=["x"], way_back=["y"]).lines())
+
+    def test_the_it_guide_names_the_report_sections_the_app_prints(self):
+        text = self._doc("docs/partner/it-deployment.md")
+        assert "(Found, Moved, Left, Next, and a **Way back** line" in text
+        lines = migration_apply.Report(found=["a"], moved=["b"], left=["c"], next=["d"], way_back=["e"]).lines()
+        assert [line.split(":")[0] for line in lines[1:]] == ["Found", "Moved", "Left", "Next", "Way back"]
+        assert f"at least {migration_apply.NEAR_RUN_MINUTES} minutes away" in text

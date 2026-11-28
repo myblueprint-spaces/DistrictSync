@@ -155,9 +155,43 @@ DistrictSync.exe --migrate
 
 It changes nothing. It reports whether the nightly still runs the old copy, whether a copy installed for one Windows
 account is also here, whether this computer uses the shared folder and whether delivery's password is in it, with
-the next step. Moving the nightly itself is, for now, done by hand: set the computer up (Step 2), check delivery
-with `--sftp-test`, then remove the old schedule and schedule it again from the installed program at the same time and
-for the same account. Until that schedule is registered there is no nightly, so do it well away from the run time.
+the next step.
+
+To move the nightly, from an administrator command prompt and at least 30 minutes away from the nightly's run time:
+
+```
+DistrictSync.exe --migrate --apply
+```
+
+Set the computer up first (Step 2). The move then:
+
+1. reads the nightly's own facts from Task Scheduler: its run time, account, wake setting, district and folders;
+2. if the nightly delivers to SpacesEDU, makes sure delivery's settings and password are in the shared folder and
+   tests delivery from the installed program. If they are missing (for example the service account saved its own
+   password), give them the way `--sftp-configure` takes them: `--sftp-host`, `--sftp-user`, `--sftp-remote`, and
+   the password from `DISTRICTSYNC_SFTP_PASSWORD`, `--sftp-password-stdin` or a prompt. The nightly is not touched
+   until that test passes;
+3. for an account with a stored password, asks for that password (`DISTRICTSYNC_TASK_PASSWORD`,
+   `--task-password-stdin` or a prompt, never the command line);
+4. behind one Windows permission prompt: checks that Windows can start the installed program as the nightly's
+   account, removes the old nightly, and schedules it again with the same time, account and settings from the
+   installed program. If scheduling it again fails, the old nightly is put back as it was. There is never a second
+   nightly.
+
+When DistrictSync's settings do not record which kind of account the nightly uses (a nightly made by hand with
+`schtasks`), add `--principal password:DISTRICT\svc_dsync` or `--principal gmsa:DISTRICT\svc_dsync$`, naming the
+account it runs as.
+
+Old copies: a copy installed for your own Windows account (`DistrictSync-Setup.exe`) is removed once the nightly runs
+the installed program; one installed for another account is reported with the command to run as that account. The
+one-file `DistrictSync-windows.exe` is never deleted, because your own scripts may use it; delete it yourself.
+
+It prints a report (Found, Moved, Left, Next, and a **Way back** line with the old nightly's time, account kind and
+wake setting), also written to the log without account names, and exits 0 only when the nightly runs the installed
+program and delivery passed its test (or the nightly does not deliver), 1 otherwise. **The way back:** schedule the
+nightly again at the reported time for the same account, from the old copy's Setup › Schedule (or from the installed
+copy with the `--schedule-register` line the report prints). If something stops part-way, see
+[Troubleshooting](troubleshooting.md#moving-the-nightly-stopped-part-way---migrate---apply).
 
 ---
 

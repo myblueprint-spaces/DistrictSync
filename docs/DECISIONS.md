@@ -3,6 +3,16 @@
 **Convention (adopted 2026-09-23):** every new entry carries a line `Supersedes: <date — title of the replaced entry>` (or `Supersedes: nothing`) directly under its heading, so a replaced decision is found by search rather than by reading prose.
 
 
+## 2026-11-28 - DSYNC-116: `--migrate --apply` moves the nightly in ONE elevated child; `--migrate` alone stays the read-only report
+
+Supersedes: nothing
+
+**Decided.** The command form is `--migrate --apply`, and `--migrate` alone keeps D1a's report byte for byte (pinned by a golden test, including its manual-route paragraph). The shared profile is REQUIRED, not created: `--machine-setup` stays the one path that sets it up and migrates the running administrator's profile (the M2b gate already refuses `--migrate --apply` before it). Probe, delete, confirm missing, register and the put-back run as ONE new elevated op (`migrate_nightly`, `src/scheduler/migration_move.py`), not as three per-operation prompts. Its validation reuses `elevated_apply.register_params` (split out of `_do_register`) and its registration is the same `task_com.register_task_definition` call. The new action is built by `windows._build_action_args` from the facts parsed off the old command line; the put-back re-registers the old command line verbatim. The kind comes from the logon type, the settings' record, or `--principal` (also accepted with `--migrate --apply`), never from a `$`. The delivery step is required whenever the nightly delivers and the machine store lacks the settings or password, whatever the principal (a superset of the plan's "not the admin" condition).
+
+**Why.** With one prompt per step, a declined second prompt after the delete would leave no nightly and no way to put the old one back without yet another prompt. One child also keeps running when the parent is killed after consent (T7c), and its bounded steps give the parent one wait to size (`CHILD_BUDGET_S`). Rebuilding the new command line through the shared builder keeps one spelling of the nightly's arguments. A command line the app does not write is refused rather than moved, so nothing a district added by hand is dropped.
+
+**Consequences.** The probe runs for every kind (DSYNC-33 runs it only for a gMSA at registration time), so a move takes up to about two minutes longer. An inconclusive probe counts as a failure. The parent's read-back decides the report and the exit code: the child's stage only explains what happened. `MOVE_NOT_BUILT` in the D1a report now understates what exists; rewording it is a follow-up for the owner, because this slice was told to keep that output byte for byte. Lab rows T7, T7b, T7c and T8 still have to prove the real Task Scheduler, UAC and per-user uninstall paths.
+
 ## 2026-11-27 - DSYNC-110: the user mappings folder is created only on the write path; provisioning does not pre-create it
 
 Supersedes: nothing
