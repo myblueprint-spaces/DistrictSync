@@ -268,8 +268,16 @@ class TestDerivedUserPaths:
     """The mappings/log/history-db helpers hang off the resolved data dir."""
 
     def test_mappings_dir_under_resolved_data_dir(self, data_dirs):
+        # DSYNC-110: a pure path — a reader must never create the folder (a machine-wide
+        # nightly's principal has only RX on the profile root).
         d = paths_module.user_mappings_dir()
         assert d == data_dirs.new / "mappings"
+        assert not d.exists()
+
+    def test_ensure_mappings_dir_creates_it_under_resolved_data_dir(self, data_dirs):
+        """Positive twin: the WRITE-path helper creates the same folder."""
+        d = paths_module.ensure_user_mappings_dir()
+        assert d == paths_module.user_mappings_dir() == data_dirs.new / "mappings"
         assert d.exists() and d.is_dir()
 
     def test_log_file_under_resolved_data_dir(self, data_dirs):

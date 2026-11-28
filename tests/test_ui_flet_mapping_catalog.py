@@ -819,11 +819,11 @@ class TestOrigin:
         """
         import sys
 
-        from src.utils.paths import user_mappings_dir
+        from src.utils.paths import ensure_user_mappings_dir
 
         monkeypatch.delattr(sys, "frozen", raising=False)
         monkeypatch.delattr(sys, "_MEIPASS", raising=False)
-        (user_mappings_dir() / "sd94custom_mapping.yaml").write_text(
+        (ensure_user_mappings_dir() / "sd94custom_mapping.yaml").write_text(
             "mappings: [this is not a valid mappings dict\n", encoding="utf-8"
         )
 
@@ -834,8 +834,8 @@ class TestOrigin:
         assert summary.district_name == "sd94custom"  # the raw-id fallback, unchanged
 
     def test_origin_is_TOTAL_over_a_raising_resolver(self, monkeypatch) -> None:
-        """``user_mappings_dir()`` mkdir-s, so a locked-down profile can raise inside the
-        lookup. Nothing may escape: origin is a presentation fact, and losing it must cost a
+        """A locked-down profile can still raise inside the lookup (a stat on an
+        unreadable folder). Nothing may escape: origin is a presentation fact, and losing it must cost a
         marker, never a district row."""
         from src.ui_flet import mapping_catalog
 

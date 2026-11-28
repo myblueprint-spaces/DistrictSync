@@ -3,6 +3,16 @@
 **Convention (adopted 2026-09-23):** every new entry carries a line `Supersedes: <date — title of the replaced entry>` (or `Supersedes: nothing`) directly under its heading, so a replaced decision is found by search rather than by reading prose.
 
 
+## 2026-11-27 - DSYNC-110: the user mappings folder is created only on the write path; provisioning does not pre-create it
+
+Supersedes: nothing
+
+**Decided.** `paths.user_mappings_dir()` is a pure path with no side effect; `paths.ensure_user_mappings_dir()` is the one creator, called by `authoring.write_overlay` after the load-back passes. Every other caller reads (`loader._search_dirs` / `_require_search_pair`, `authoring.overlay_path`, `authoring.delete_overlay`, the catalog and Mapping screen through them), and a missing folder means "no user mappings". Machine setup does NOT create `mappings/`.
+
+**Why.** On a machine-wide install the nightly's principal has RX on the profile root (M on `runs/` only), so the old mkdir-on-every-call failed the nightly with `[WinError 5]` whenever no administrator session had created the folder first. Pre-creating it in provisioning was rejected: `migrate_profile` SKIPS a destination that already exists, so an empty `mappings/` made at step 3 would silently drop the administrator's per-user overlays at step 4, and it would not repair an already-provisioned computer. The reader fix covers every computer.
+
+**Consequences.** A writer that adds bytes to the user mappings folder must call `ensure_user_mappings_dir()` first; a failed load-back now leaves no folder behind. Tests that plant overlays create the folder themselves.
+
 ## 2026-11-27 - DSYNC-113: one script derives the installer's version; the installed app is checked against its package
 
 Supersedes: nothing

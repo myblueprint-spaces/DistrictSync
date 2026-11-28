@@ -1028,8 +1028,25 @@ def migrate_legacy_data_dir() -> bool:
 
 
 def user_mappings_dir() -> Path:
-    """Per-user directory for district mapping overrides and custom configs."""
-    path = user_data_dir() / "mappings"
+    """The profile's directory for district mapping overrides and custom configs.
+
+    A PURE path — no side effect (DSYNC-110). Every reader (the config loader's search
+    path, the catalog, the Mapping screen) goes through here, and a missing folder simply
+    means "no user mappings". On a machine-wide install the nightly's principal has only
+    read-execute on the profile root, so a reader that created the folder failed the whole
+    run with Access is denied. A WRITER calls :func:`ensure_user_mappings_dir` instead.
+    """
+    return user_data_dir() / "mappings"
+
+
+def ensure_user_mappings_dir() -> Path:
+    """Create the user mappings directory if needed and return it — the WRITE path only.
+
+    Called immediately before bytes are written into the folder (the self-service
+    authoring save). Fails loudly: an ``OSError`` (e.g. a principal without Modify on the
+    profile root) propagates to the writer, which reports that nothing was written.
+    """
+    path = user_mappings_dir()
     path.mkdir(parents=True, exist_ok=True)
     return path
 
