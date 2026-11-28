@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import logging.handlers
+import sys
 from pathlib import Path
 
 import pytest
@@ -155,16 +156,20 @@ class TestTheSinkFallsBack:
         assert "to-stderr-117" in capsys.readouterr().err
         assert _file_handlers() == []
 
-    def test_the_fallback_never_writes_the_per_user_profile(
-        self, machine, handshake, isolated_loggers, monkeypatch, isolated_user_profile
+    def test_the_fallback_writes_only_the_handshake_log_and_no_profile_state(
+        self, machine, handshake, isolated_loggers, monkeypatch
     ):
-        """A MachineScopeRefused never falls through to the per-user profile; nor does a denied log."""
+        """In production ``handshake_dir()`` IS the per-user profile root (``paths.handshake_dir``), the
+        declared refusal-log exception. What must never appear there is profile STATE: the fallback
+        writes the log and nothing else (review F5)."""
         monkeypatch.setattr(
             logger_mod.logging.handlers, "RotatingFileHandler", _deny(machine / paths_module.MACHINE_RUNS_SUBDIR)
         )
         logger_mod.get_logger("dsync117")
         _flush_all()
-        assert not (isolated_user_profile / "etl_tool.log").exists()
+        assert sorted(p.name for p in handshake.iterdir()) == ["etl_tool.log"]
+        for state in ("config.json", "mappings", "history.db"):
+            assert not (handshake / state).exists(), state
 
 
 class TestPositiveTwin:
@@ -272,3 +277,132 @@ class TestTheWindowBoot:
         )
         monkeypatch.undo()
         assert "failed to launch" in (handshake / "etl_tool.log").read_text(encoding="utf-8")
+
+
+# --------------------------------------------------------------------------- #
+# Review fixes (F1-F4).                                                        #
+# --------------------------------------------------------------------------- #
+
+
+def _open_raising(runs: Path, exc: OSError, calls: list[str]):
+    """``os.open`` that raises ``exc`` for a file in ``runs`` and counts those calls."""
+    real = paths_module.os.open
+
+    def _open(path, flags, mode=0o777, *args, **kwargs):  # noqa: ANN001, ANN202 - mirrors os.open
+        if Path(path).parent == runs:
+            calls.append(str(path))
+            if len(calls) > 50:  # the hang the review measured: stop it here rather than for hours
+                raise AssertionError("the probe is retrying")
+            raise exc
+        return real(path, flags, mode, *args, **kwargs)
+
+    return _open
+
+
+class TestTheProbeNeverRetries:
+    def test_a_denied_create_is_refused_after_one_attempt(self, machine, handshake, monkeypatch):
+        """F1: ``tempfile.mkstemp`` retries a PermissionError while ``os.access`` says writable (it never
+        reads the DACL) up to TMP_MAX times — the window launch hung. One exclusive create, no retry."""
+        runs = machine / paths_module.MACHINE_RUNS_SUBDIR
+        calls: list[str] = []
+        monkeypatch.setattr(
+            paths_module.os, "open", _open_raising(runs, PermissionError(13, "Permission denied"), calls)
+        )
+        with pytest.raises(paths_module.MachineScopeRefused) as exc:
+            paths_module.assert_runs_writable()
+        assert exc.value.reason is paths_module.MachineScopeRefusedReason.RUNS_UNWRITABLE
+        assert len(calls) == 1
+
+    def test_the_probe_is_an_exclusive_create(self, machine, handshake, monkeypatch):
+        runs = machine / paths_module.MACHINE_RUNS_SUBDIR
+        seen: list[int] = []
+        real = paths_module.os.open
+
+        def _open(path, flags, mode=0o777, *args, **kwargs):  # noqa: ANN001, ANN202 - mirrors os.open
+            if Path(path).parent == runs:
+                seen.append(flags)
+            return real(path, flags, mode, *args, **kwargs)
+
+        monkeypatch.setattr(paths_module.os, "open", _open)
+        paths_module.assert_runs_writable()
+        assert len(seen) == 1 and seen[0] & paths_module.os.O_CREAT and seen[0] & paths_module.os.O_EXCL
+        assert list(runs.iterdir()) == []
+
+
+class TestOnlyAccessDenialIsGrantable:
+    def test_winerror_5_is_runs_unwritable(self, machine, handshake, monkeypatch):
+        denied = PermissionError(13, "Access is denied")
+        denied.winerror = 5  # type: ignore[attr-defined]
+        monkeypatch.setattr(
+            paths_module.os, "open", _open_raising(machine / paths_module.MACHINE_RUNS_SUBDIR, denied, [])
+        )
+        with pytest.raises(paths_module.MachineScopeRefused) as exc:
+            paths_module.assert_runs_writable()
+        assert exc.value.reason is paths_module.MachineScopeRefusedReason.RUNS_UNWRITABLE
+
+    @pytest.mark.parametrize(
+        ("error", "errno_"),
+        [
+            pytest.param(OSError(28, "No space left on device"), 28, id="disk full"),
+            pytest.param(OSError(22, "Invalid argument"), 22, id="other oserror"),
+        ],
+    )
+    def test_any_other_failure_carries_on_and_logs_type_and_errno(
+        self, machine, handshake, monkeypatch, caplog, error, errno_
+    ):
+        """F2: a grant cannot fix a full disk or an antivirus block; the logger fallback covers the log."""
+        monkeypatch.setattr(
+            paths_module.os, "open", _open_raising(machine / paths_module.MACHINE_RUNS_SUBDIR, error, [])
+        )
+        with caplog.at_level(logging.WARNING, logger=paths_module.logger.name):
+            paths_module.assert_runs_writable()  # no refusal
+        line = "\n".join(r.getMessage() for r in caplog.records)
+        assert type(error).__name__ in line and str(errno_) in line
+        assert str(machine) not in line and "ProgramData" not in line
+
+    def test_a_sharing_violation_carries_on(self, machine, handshake, monkeypatch):
+        busy = PermissionError(13, "The process cannot access the file")
+        busy.winerror = 32  # type: ignore[attr-defined]
+        monkeypatch.setattr(
+            paths_module.os, "open", _open_raising(machine / paths_module.MACHINE_RUNS_SUBDIR, busy, [])
+        )
+        paths_module.assert_runs_writable()  # no refusal
+
+
+class TestTheRunsRefusalDialog:
+    def test_it_points_at_the_handshake_log_and_says_the_nightly_is_unaffected(self, machine, handshake):
+        """F3: the record went to the handshake log, and the nightly's principal holds M on runs."""
+        from src.ui_flet import launcher
+
+        paths_module.pin_data_dir()
+        runs = machine / paths_module.MACHINE_RUNS_SUBDIR
+        text = launcher.format_user_error(
+            paths_module.MachineScopeRefused(paths_module.MachineScopeRefusedReason.RUNS_UNWRITABLE, runs)
+        )
+        assert str(handshake / "etl_tool.log") in text
+        assert "etl_tool-interactive" not in text, "the runs log was never written"
+        assert "nightly sync is not affected" in text
+        assert "affected too" not in text
+
+    def test_positive_twin_other_refusals_still_say_the_nightly_is_affected(self, machine, handshake):
+        from src.ui_flet import launcher
+
+        text = launcher.format_user_error(
+            paths_module.MachineScopeRefused(paths_module.MachineScopeRefusedReason.FOREIGN_OWNER, machine)
+        )
+        assert "affected too" in text
+
+
+class TestTheTracebackRecordNeverRaises:
+    def test_a_failing_redact_import_writes_no_unredacted_text_and_never_raises(self, machine, handshake, monkeypatch):
+        """F4: the redaction import and formatting sit inside the net; without redaction the body is
+        skipped (a traceback can carry an account name) and only the exception TYPE is recorded."""
+        from src.ui_flet import launcher
+
+        monkeypatch.setattr(launcher, "resolve_log_path", lambda: handshake / "etl_tool.log")
+        monkeypatch.setitem(sys.modules, "src.utils.redact", None)  # any import of it now raises ImportError
+        launcher._write_traceback(RuntimeError("C:\\Users\\Zebediah\\secret detail"))
+        monkeypatch.undo()
+        text = (handshake / "etl_tool.log").read_text(encoding="utf-8")
+        assert "failed to launch" in text and "RuntimeError" in text
+        assert "Zebediah" not in text and "secret detail" not in text
