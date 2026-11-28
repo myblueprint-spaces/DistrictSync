@@ -61,10 +61,42 @@ class TestWhenTheInstallerIsBuiltAndPublished:
     def test_the_release_body_says_automatic_updates_are_not_on(self):
         assert "Automatic updates are not switched on yet" in _PUBLISH_TEXT
 
-    def test_a_tag_build_takes_the_tags_version_and_a_rehearsal_a_throwaway_one(self):
-        build, sign = _steps_text("installer-build"), _steps_text("installer-windows")
-        assert "${GITHUB_REF_NAME#v}" in build and "0.0.${{ github.run_number }}" in build
-        assert "GITHUB_REF_NAME.TrimStart('v')" in sign and "0.0.${{ github.run_number }}" in sign
+    def test_every_installer_version_comes_from_the_one_script(self):
+        """DSYNC-113: the app's stamp and every vpk --packVersion are derived by scripts/release_version.py (its rules,
+        the tag's or the rehearsal's 0.0.<run>, are pinned in tests/test_release_version.py)."""
+        assert "python scripts/release_version.py stamp" in _steps_text("installer-build")
+        assert "$version = python scripts/release_version.py version" in _steps_text("installer-windows")
+        assert "--packVersion $version" in _steps_text("installer-windows")
+        assert "python scripts/release_version.py msi-versions" in _steps_text("installer-msi")
+        assert "--packVersion $pair[0]" in _steps_text("installer-msi")
+
+    def test_no_job_spells_the_version_itself(self):
+        text = (_WORKFLOWS / "release.yml").read_text(encoding="utf8")
+        for spelling in ("run_number", "GITHUB_REF_NAME", "> src/_version.py", "TrimStart('v')"):
+            assert spelling not in text, spelling
+        assert "release_version.py" in text  # positive twin
+
+    def test_the_stamp_runs_with_the_pinned_python_and_before_the_pack(self):
+        steps = JOBS["installer-build"]["steps"]
+
+        def index(predicate):
+            hit = [i for i, s in enumerate(steps) if predicate(s)]
+            assert len(hit) == 1
+            return hit[0]
+
+        python = index(lambda s: str(s.get("uses", "")).startswith("actions/setup-python@"))
+        stamp = index(lambda s: "release_version.py stamp" in str(s.get("run", "")))
+        pack = index(lambda s: "flet pack src/main.py" in str(s.get("run", "")))
+        assert python < stamp < pack
+
+    def test_the_installed_app_is_checked_against_its_package_on_every_installer_path(self):
+        """On a tag AND a rehearsal (installer-windows), and after the MSI upgrade with the MSI's own version."""
+        windows = _steps_text("installer-windows")
+        assert 'python scripts/release_version.py check-installed --root "$LOCALAPPDATA/$PACK_ID"' in windows
+        assert windows.index("check-installed") < windows.index("--cli-smoke")  # before the smokes use the copy
+        msi = _steps_text("installer-msi")
+        assert 'python scripts/release_version.py check-installed --root "$INSTALL_ROOT" --msi' in msi
+        assert msi.index('msi-n1.msi`" /qn') < msi.index("check-installed")  # after the N+1 upgrade
 
     def test_there_is_no_pull_request_trigger_and_the_tag_trigger_is_unchanged(self):
         assert "pull_request" not in TRIGGERS and "pull_request_target" not in TRIGGERS
