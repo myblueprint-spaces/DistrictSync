@@ -654,6 +654,12 @@ class TestSecondReviewCommandLine:
         assert windows.split_command_line('"a"""b"') == ['a"b']
         assert windows.split_command_line('""""') == ['"']
         assert windows.split_command_line('a""b') == ["ab"]  # outside quotes: open then close
+        assert windows.split_command_line('a "b c') == ["a", "b c"]  # an unclosed quote reads to the end
+
+    def test_an_unclosed_quote_is_parsed_as_windows_reads_it(self):
+        """Not refused (second review, LOW 4): the program the task starts reads it this way, so the move keeps it."""
+        command = migration_apply.parse_arguments('--sis myedbc --input "C:\\in" --output "C:\\out')
+        assert command == migration_apply.NightlyCommand("myedbc", "C:\\in", "C:\\out", False)
 
     @pytest.mark.skipif(os.name != "nt", reason="CommandLineToArgvW is Windows-only")
     def test_quote_and_split_agree_with_command_line_to_argv_w(self):
@@ -695,8 +701,4 @@ class TestSecondReviewCommandLine:
             line = " ".join(windows.quote_arg(v) for v in values)
             assert real(line) == values, ascii(line)
             raw = "".join(rng.choice(alphabet) for _ in range(rng.randint(0, 10)))
-            try:
-                mine = windows.split_command_line(raw)
-            except ValueError:
-                continue  # an unclosed quote: refused as not ours (Windows would read to the end)
-            assert mine == real(raw), ascii(raw)
+            assert windows.split_command_line(raw) == real(raw), ascii(raw)

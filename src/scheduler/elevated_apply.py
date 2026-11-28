@@ -96,6 +96,7 @@ def _write_result(
     *,
     check: dict[str, object] | None = None,
     batch_right: str | None = None,
+    access_kept: bool = False,
 ) -> None:
     """Atomic plaintext result — temp + ``os.replace`` so the parent never sees a partial.
 
@@ -110,6 +111,8 @@ def _write_result(
         result["check"] = check
     if batch_right is not None:
         result["batch_right"] = batch_right
+    if access_kept:  # DSYNC-116: a NEW grant the move could not take back (one boolean; no account)
+        result["access_kept"] = True
     payload = json.dumps(result)
     tmp = res_path.with_name(res_path.name + ".tmp")
     tmp.write_text(payload, encoding="utf-8")
@@ -200,7 +203,11 @@ def _apply(req_path: Path, res_path: Path) -> int:
 
             moved = migration_move.run_in_child(payload)
             _write_result(
-                res_path, moved.stage is migration_move.MoveStage.MOVED, moved.stage.value, check=moved.wire()
+                res_path,
+                moved.stage is migration_move.MoveStage.MOVED,
+                moved.stage.value,
+                check=moved.wire(),
+                access_kept=moved.access_kept,
             )
             return 0
         else:

@@ -204,6 +204,10 @@ UNSETTLED_NOW = (
     "check Task Scheduler (or run DistrictSync.exe --migrate) for the nightly before its run time, and if there is "
     "none, put it back as the way back below says."
 )
+ACCESS_KEPT = (
+    "The nightly's account was given access to the shared settings for this move, and taking it back failed. It stays "
+    "in DistrictSync's record, so removing the nightly later (--schedule-remove) takes it back; see the log."
+)
 UNINSTALL_SKIPPED_RUNNING = (
     "The copy installed for this Windows account was not removed, because the nightly is running now. Remove it from "
     "Windows Settings > Apps later."
@@ -247,12 +251,9 @@ def parse_arguments(text: str | None) -> NightlyCommand | None:
     from src.scheduler.windows import split_command_line
     from src.utils.validators import validate_sis_type
 
-    try:
-        # CommandLineToArgvW's rules, which is how the nightly's own program reads them (review H1): POSIX shlex ate a
-        # UNC path's leading backslash and every backslash of an unquoted path.
-        tokens = split_command_line(text or "")
-    except ValueError:
-        return None
+    # CommandLineToArgvW's rules, which is how the nightly's own program reads them (review H1): POSIX shlex ate a
+    # UNC path's leading backslash and every backslash of an unquoted path.
+    tokens = split_command_line(text or "")
     if tokens[:2] == ["-m", "src.main"]:
         tokens = tokens[2:]
     values: dict[str, str] = {}
@@ -439,6 +440,7 @@ class ChildAnswer:
     stage: MoveStage | None = None
     check: ScheduleCheck | None = None
     reason: str = ""
+    access_kept: bool = False
 
 
 class Final(Enum):
@@ -602,7 +604,12 @@ def _elevate(payload: dict[str, object]) -> ChildAnswer:
                 return ChildAnswer(AnswerKind.NOT_RUN, reason="refused")
             logger.warning("The elevated move ended without a stage; reading the task back.")
             return ChildAnswer(AnswerKind.UNCONFIRMED)
-        return ChildAnswer(AnswerKind.ANSWERED, stage=stage, check=ScheduleCheck.from_wire(result.get("check")))
+        return ChildAnswer(
+            AnswerKind.ANSWERED,
+            stage=stage,
+            check=ScheduleCheck.from_wire(result.get("check")),
+            access_kept=result.get("access_kept") is True,
+        )
     except (OSError, RuntimeError, ValueError) as exc:
         logger.error("Could not prepare the move (%s).", type(exc).__name__)
         return ChildAnswer(AnswerKind.NOT_RUN, reason="unavailable")
@@ -897,6 +904,9 @@ def run(
             answer.check.verdict.name if answer.check else "none",
         )
     way_back = _way_back(old, kind)
+    if answer.access_kept:
+        logger.warning("Migration: a new grant to the shared folder could not be taken back; it stays recorded.")
+        report.left.append(ACCESS_KEPT)
 
     if answer.stage is MoveStage.UNSETTLED:
         # A timed-out step may still land: wait out its bound, read again, and never claim a result (review M4).

@@ -32,7 +32,6 @@ form (``check``): no account, no path, no password. This module never logs (the 
 
 from __future__ import annotations
 
-import contextlib
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -40,6 +39,7 @@ from enum import StrEnum
 from typing import Protocol
 
 from src.scheduler import schedule_check, task_com
+from src.scheduler.provisioning import ICACLS_TIMEOUT_S
 from src.scheduler.schedule_check import ScheduleCheck
 from src.scheduler.task_com import PrincipalKind, RegisterParams
 
@@ -66,7 +66,7 @@ REQUIRED_FIELDS: frozenset[str] = frozenset(
     }
 )
 
-#: Each bounded step the child can take, worst case (the grant's two icacls calls fit in the margin): probe, delete, confirm, register, read-back after a raise,
+#: Each bounded step the child can take, worst case (the icacls calls are listed, not hidden in the margin): probe, delete, confirm, register, read-back after a raise,
 #: put-back register, its read-back. The parent's wait is their sum plus a margin (the child is KILLED at that bound and
 #: runs no ``finally``, so the bound must cover the slowest path, not a typical one).
 _STEP_BUDGETS_S: tuple[float, ...] = (
@@ -77,6 +77,8 @@ _STEP_BUDGETS_S: tuple[float, ...] = (
     task_com.READ_TIMEOUT_S,
     task_com.REGISTER_TIMEOUT_S,
     task_com.READ_TIMEOUT_S,
+    # The grant (two icacls calls) and the take-back (up to two): second review, LOW 3.
+    *(4 * (ICACLS_TIMEOUT_S,)),
 )
 _MARGIN_S = 20.0
 CHILD_BUDGET_S = sum(_STEP_BUDGETS_S) + _MARGIN_S
@@ -99,6 +101,9 @@ class MoveStage(StrEnum):
 class MoveOutcome:
     stage: MoveStage
     check: ScheduleCheck | None = None
+    #: A NEW grant was to be taken back and taking it back failed (second review, MEDIUM 2): the account keeps access,
+    #: and its SID stays in the grant record so the next Remove retries.
+    access_kept: bool = False
 
     def wire(self) -> dict[str, object] | None:
         """The probe's bounded result-file form (``ScheduleCheck.to_wire``), or ``None`` when no probe ran."""
@@ -222,21 +227,24 @@ def move_nightly(
         except Exception:  # noqa: BLE001 - the grant is the first change; a refusal leaves nothing changed
             return MoveOutcome(MoveStage.GRANT_FAILED)
 
-    def take_back() -> None:
-        if granted:
-            with contextlib.suppress(Exception):  # best-effort: the read access was given minutes ago
-                ops.revoke(new.user, new.kind)
+    def take_back() -> bool:
+        """Revoke a NEW grant; ``True`` when that FAILED (reported, never swallowed: second review, MEDIUM 2)."""
+        if not granted:
+            return False
+        try:
+            ops.revoke(new.user, new.kind)
+        except Exception:  # noqa: BLE001 - carried back as ``access_kept``; the SID stays recorded for the next Remove
+            return True
+        return False
 
     try:
         check = ops.probe(probe_payload)
     except Exception:  # noqa: BLE001 - a probe that could not run is not a pass
         check = ScheduleCheck(verdict=schedule_check.CheckVerdict.UNAVAILABLE)
     if not check.passed:
-        take_back()
-        return MoveOutcome(MoveStage.PROBE_FAILED, check)
+        return MoveOutcome(MoveStage.PROBE_FAILED, check, access_kept=take_back())
     if clock() > deadline:
-        take_back()
-        return MoveOutcome(MoveStage.TOO_LATE, check)
+        return MoveOutcome(MoveStage.TOO_LATE, check, access_kept=take_back())
 
     timed_out = False
     try:
@@ -249,8 +257,8 @@ def move_nightly(
     if isinstance(after_delete, str):
         if timed_out:
             return MoveOutcome(MoveStage.UNSETTLED, check)  # still there now; the timed-out delete may land later
-        take_back()
-        return MoveOutcome(MoveStage.DELETE_FAILED, check)  # confirmed still there: nothing changed
+        # confirmed still there: nothing changed
+        return MoveOutcome(MoveStage.DELETE_FAILED, check, access_kept=take_back())
     if after_delete is None:  # confirmed MISSING: register the new one
         landed, late = _register(ops, task_name, new)
         timed_out = timed_out or late
@@ -261,8 +269,8 @@ def move_nightly(
     landed, late = _register(ops, task_name, old)
     if timed_out or late:
         return MoveOutcome(MoveStage.UNSETTLED, check)
-    take_back()
-    return MoveOutcome(MoveStage.ROLLED_BACK if landed else MoveStage.ROLLBACK_FAILED, check)
+    kept = take_back()
+    return MoveOutcome(MoveStage.ROLLED_BACK if landed else MoveStage.ROLLBACK_FAILED, check, access_kept=kept)
 
 
 def build_payload(

@@ -368,8 +368,9 @@ def split_command_line(text: str) -> list[str]:
     """Split a task's ``Arguments`` the way the started program sees them: ``CommandLineToArgvW``'s rules.
 
     ``2n`` backslashes before a quote are ``n`` backslashes and the quote opens or closes a quoted run; ``2n+1`` are
-    ``n`` and a literal quote; a backslash anywhere else is literal (a UNC ``\\\\srv`` stays as it is). POSIX ``shlex``
-    is NOT this. Raises ``ValueError`` for an unclosed quote: not a command line this app writes.
+    ``n`` and a literal quote; inside quotes ``""`` is a literal quote that also ends the quoted run; a backslash
+    anywhere else is literal (a UNC ``\\\\srv`` stays as it is). POSIX ``shlex`` is NOT this. Compared with the real
+    ``CommandLineToArgvW`` by a Windows-only test. An unclosed quote reads to the end, as Windows reads it (the program the task starts sees exactly this).
     """
     args: list[str] = []
     current: list[str] = []
@@ -393,6 +394,13 @@ def split_command_line(text: str) -> list[str]:
             i = j
             continue
         if char == '"':
+            if quoted and i + 1 < n and text[i + 1] == '"':
+                # Inside quotes, ``""`` is a literal quote AND ends the quoted run (measured against the real API).
+                current.append('"')
+                quoted = False
+                i += 2
+                in_arg = True
+                continue
             quoted = not quoted
             in_arg = True
         elif char in " \t" and not quoted:
@@ -403,8 +411,6 @@ def split_command_line(text: str) -> list[str]:
             current.append(char)
             in_arg = True
         i += 1
-    if quoted:
-        raise ValueError("unclosed quote")
     if in_arg:
         args.append("".join(current))
     return args

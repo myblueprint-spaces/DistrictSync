@@ -621,7 +621,6 @@ class TestParseArguments:
             '--sis myedbc --input "C:\\in" --output "C:\\out" --dry-run',  # a flag the nightly never carries
             '--sis myedbc --input "C:\\in" --output "C:\\out" --source manual',
             '--sis "../x" --input "C:\\in" --output "C:\\out"',  # not a district name
-            '--sis myedbc --input "C:\\in',  # unbalanced quote
         ],
     )
     def test_anything_else_is_not_ours(self, text):
