@@ -380,6 +380,9 @@ def _do_provision(payload: dict[str, object]) -> None:
     provisioning.apply_provision(
         payload, register=lambda: _do_register({**payload, "op": "register"}), update_mode=None
     )
+    # DSYNC-115: the new nightly is registered, so an earlier account's recorded grants are retired (a principal
+    # switch). Total: a grant that cannot be revoked stays recorded for the next Remove.
+    provisioning.prune_retired_grants(payload)
 
 
 #: Plan 0055 M2: what a ``machine_setup`` request must carry.
