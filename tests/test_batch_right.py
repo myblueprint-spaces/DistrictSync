@@ -1,0 +1,625 @@
+"""DSYNC-111: after registering an unattended nightly, say whether its account can log on as a batch job.
+
+The lab case: ``--schedule-register --principal password:<COMPUTER>\\svc_local`` printed "Scheduled" and exited 0, and the
+nightly then never ran (Last Run Result 267011, event 4625 0xC000015B): the account lacked 'Log on as a batch job'.
+
+What is pinned here is the pure decision (:func:`batch_right.assess`), the one reader seam it reuses
+(``schedule_check.read_batch_right``, the DSYNC-33 LSA read), the moved prerequisite lines, the "no automatic grant"
+source scan and the new exit code's documentation. The command's own wiring is in ``tests/test_schedule_headless.py``,
+the window's in ``tests/test_ui_flet_service_account.py``.
+
+GROUP GRANTS: the DSYNC-33 read sees only the account's OWN (direct) rights. A right that comes through a group or a
+domain policy reads ``NOT_DIRECT``, the same as "nobody granted it", so ``NOT_DIRECT`` is INCONCLUSIVE, never a finding.
+Only an explicit deny, or Windows itself refusing the logon type when it started the gMSA check run, is a positive
+"not held".
+"""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+import pytest
+
+from src.scheduler import batch_right, schedule_check
+from src.scheduler.batch_right import BatchRight, assess
+from src.scheduler.schedule_check import CheckVerdict, RightState, ScheduleCheck
+from src.scheduler.task_com import PrincipalKind
+
+ROOT = Path(__file__).resolve().parent.parent
+SRC = ROOT / "src"
+
+
+def _check(verdict: CheckVerdict, state: RightState = RightState.UNKNOWN) -> ScheduleCheck:
+    return ScheduleCheck(verdict=verdict, batch_right=state)
+
+
+class TestAssess:
+    """The decision table. Every NOT_HELD row has a non-NOT_HELD twin one fact away."""
+
+    def test_an_explicit_deny_is_not_held(self):
+        assert assess(RightState.DENIED) is BatchRight.NOT_HELD
+
+    def test_a_direct_grant_is_held(self):
+        assert assess(RightState.GRANTED) is BatchRight.HELD
+
+    def test_not_granted_directly_is_inconclusive_never_not_held(self):
+        """The group case: Administrators (or any group) holding the right reads NOT_DIRECT for its members."""
+        assert assess(RightState.NOT_DIRECT) is BatchRight.INCONCLUSIVE
+
+    def test_an_unreadable_policy_is_inconclusive(self):
+        assert assess(RightState.UNKNOWN) is BatchRight.INCONCLUSIVE
+
+    def test_windows_refusing_the_logon_type_in_the_check_run_is_not_held(self):
+        """ERROR_LOGON_TYPE_NOT_GRANTED is Windows' own verdict over the whole token, groups included."""
+        assert assess(RightState.NOT_DIRECT, check=_check(CheckVerdict.BATCH_LOGON)) is BatchRight.NOT_HELD
+
+    def test_a_passing_check_run_is_held_even_without_a_direct_grant(self):
+        """Positive twin of the row above: Windows DID start DistrictSync as the account, so it holds the right."""
+        assert assess(RightState.NOT_DIRECT, check=_check(CheckVerdict.OK)) is BatchRight.HELD
+
+    @pytest.mark.parametrize(
+        "verdict", [v for v in CheckVerdict if v not in (CheckVerdict.OK, CheckVerdict.BATCH_LOGON)]
+    )
+    def test_any_other_check_verdict_does_not_decide_it(self, verdict):
+        assert assess(RightState.NOT_DIRECT, check=_check(verdict)) is BatchRight.INCONCLUSIVE
+        assert assess(RightState.GRANTED, check=_check(verdict)) is BatchRight.HELD
+        assert assess(RightState.DENIED, check=_check(verdict)) is BatchRight.NOT_HELD
+
+    def test_it_is_total(self):
+        for state in RightState:
+            for verdict in [None, *CheckVerdict]:
+                check = None if verdict is None else _check(verdict)
+                assert assess(state, check=check) in set(BatchRight)
+
+
+class TestAfterRegistration:
+    def test_the_signed_in_account_is_never_checked(self, monkeypatch):
+        monkeypatch.setattr(batch_right, "read_right", lambda account: pytest.fail("read for a signed-in task"))
+        assert batch_right.after_registration(PrincipalKind.INTERACTIVE_TOKEN, "") is None
+
+    @pytest.mark.parametrize("kind", [PrincipalKind.PASSWORD, PrincipalKind.MANAGED_SERVICE_ACCOUNT])
+    def test_an_unattended_account_is_read_by_its_name(self, monkeypatch, kind):
+        seen = []
+        monkeypatch.setattr(batch_right, "read_right", lambda account: (seen.append(account), RightState.DENIED)[1])
+        assert batch_right.after_registration(kind, "CORP\\svc") is BatchRight.NOT_HELD
+        assert seen == ["CORP\\svc"]
+
+    def test_the_elevated_checks_own_read_is_used_when_it_answered(self, monkeypatch):
+        monkeypatch.setattr(batch_right, "read_right", lambda account: pytest.fail("read twice"))
+        check = _check(CheckVerdict.TIMEOUT, RightState.DENIED)
+        assert batch_right.after_registration(PrincipalKind.MANAGED_SERVICE_ACCOUNT, "CORP\\s$", check=check) is (
+            BatchRight.NOT_HELD
+        )
+
+    def test_an_unanswered_elevated_read_falls_back_to_this_process(self, monkeypatch):
+        monkeypatch.setattr(batch_right, "read_right", lambda account: RightState.GRANTED)
+        check = _check(CheckVerdict.TIMEOUT, RightState.UNKNOWN)
+        assert batch_right.after_registration(PrincipalKind.MANAGED_SERVICE_ACCOUNT, "CORP\\s$", check=check) is (
+            BatchRight.HELD
+        )
+
+    def test_the_log_line_names_no_account(self, monkeypatch, caplog):
+        import logging
+
+        monkeypatch.setattr(batch_right, "read_right", lambda account: RightState.DENIED)
+        with caplog.at_level(logging.DEBUG):
+            batch_right.after_registration(PrincipalKind.PASSWORD, "CORP\\svc_secretname")
+        assert "not_held" in caplog.text  # positive twin: the line was written
+        assert "svc_secretname" not in caplog.text
+
+
+class TestTheReaderIsTheDsync33Read:
+    """``schedule_check.read_batch_right`` is the elevated check's own read, factored out, never a second LSA path."""
+
+    def test_a_direct_grant(self):
+        state = schedule_check.read_batch_right(
+            "CORP\\svc", account_sid=lambda n: "S-1-5-21-1", reader=lambda sid: ["SeBatchLogonRight"]
+        )
+        assert state is RightState.GRANTED
+
+    def test_a_direct_deny_wins(self):
+        state = schedule_check.read_batch_right(
+            "CORP\\svc",
+            account_sid=lambda n: "S-1-5-21-1",
+            reader=lambda sid: ["SeBatchLogonRight", "SeDenyBatchLogonRight"],
+        )
+        assert state is RightState.DENIED
+
+    def test_no_direct_rights_is_not_direct(self):
+        def none(sid):
+            raise schedule_check.NoRightsAssigned
+
+        assert schedule_check.read_batch_right("CORP\\svc", account_sid=lambda n: "S-1", reader=none) is (
+            RightState.NOT_DIRECT
+        )
+
+    def test_an_unresolvable_account_is_unknown(self):
+        def boom(name):
+            raise LookupError("no such account")
+
+        assert schedule_check.read_batch_right("CORP\\svc", account_sid=boom, reader=lambda s: []) is (
+            RightState.UNKNOWN
+        )
+
+    def test_a_reader_that_raises_is_unknown(self):
+        def boom(sid):
+            raise OSError("access denied")
+
+        assert schedule_check.read_batch_right("CORP\\svc", account_sid=lambda n: "S-1", reader=boom) is (
+            RightState.UNKNOWN
+        )
+
+    def test_the_live_seam_calls_it(self, monkeypatch):
+        seen = []
+        monkeypatch.setattr(
+            schedule_check, "read_batch_right", lambda account, **kw: (seen.append(account), RightState.GRANTED)[1]
+        )
+        # The conftest guard replaces read_right itself; reach past it to the real seam body.
+        assert batch_right._read_right_live("CORP\\svc") is RightState.GRANTED and seen == ["CORP\\svc"]
+
+
+class TestThePrerequisiteLines:
+    def test_the_window_reads_the_same_tuple(self):
+        from src.ui_flet import setup_flow
+
+        assert setup_flow.GMSA_PREREQUISITES is batch_right.GMSA_PREREQUISITES
+
+    def test_the_batch_line_is_one_of_the_gmsa_lines(self):
+        assert batch_right.BATCH_RIGHT_PREREQUISITE in batch_right.GMSA_PREREQUISITES
+
+    def test_each_kind_gets_its_own(self):
+        assert batch_right.prerequisites_for(PrincipalKind.MANAGED_SERVICE_ACCOUNT) == batch_right.GMSA_PREREQUISITES
+        assert batch_right.prerequisites_for(PrincipalKind.PASSWORD) == (batch_right.BATCH_RIGHT_PREREQUISITE,)
+        assert batch_right.prerequisites_for(PrincipalKind.INTERACTIVE_TOKEN) == ()
+
+    def test_the_module_is_not_ui(self):
+        text = (SRC / "scheduler" / "batch_right.py").read_text(encoding="utf-8")
+        assert "ui_flet" not in text and "import flet" not in text
+
+
+class TestTheNotHeldCopy:
+    """What is missing, why the nightly will not run, and exactly how to grant it."""
+
+    def test_it_says_what_is_missing_and_why(self):
+        text = batch_right.NOT_HELD_DETAIL
+        assert "'Log on as a batch job'" in text
+        assert "won't start the nightly" in text
+
+    def test_it_says_the_nightly_stays_scheduled(self):
+        assert "stays scheduled" in batch_right.NOT_HELD_DETAIL
+        assert "don't need to schedule it again" in batch_right.NOT_HELD_DETAIL
+
+    def test_it_says_how_to_grant_it_locally_and_by_group_policy(self):
+        text = batch_right.NOT_HELD_DETAIL
+        assert "Local Security Policy > Local Policies > User Rights Assignment" in text
+        assert "Group Policy" in text
+
+    def test_it_says_a_deny_overrides_a_grant(self):
+        assert "overrides any grant" in batch_right.NOT_HELD_DETAIL
+
+    def test_the_inconclusive_line_is_an_advisory_not_a_finding(self):
+        text = batch_right.INCONCLUSIVE_LINE
+        assert "couldn't confirm" in text and "group" in text
+        assert "won't run yet" not in text
+
+    @pytest.mark.parametrize(
+        "name", ["NOT_HELD_HEADLINE", "NOT_HELD_DETAIL", "INCONCLUSIVE_LINE", "HELD_LINE", "PREREQUISITES_LEAD"]
+    )
+    def test_the_copy_is_plain_ascii_for_any_console(self, name):
+        getattr(batch_right, name).encode("ascii")
+
+
+def _src_files():
+    return sorted(SRC.rglob("*.py"))
+
+
+#: The ways a program grants a user right: the LSA call, the resource-kit tool, a security template import, and the
+#: PowerShell modules that wrap them. DSYNC-111 decision 4: granting user rights stays district IT's job. Word-bounded:
+#: ``LsaEnumerateAccountRights`` (the READ) contains "ntrights".
+_GRANT_MARKERS = re.compile(r"LsaAddAccountRights|\bntrights\b|\bsecedit\b|Grant-UserRight|\bCarbon\b", re.IGNORECASE)
+
+
+class TestNoAutomaticGrant:
+    def test_nothing_in_src_grants_a_user_right(self):
+        hits = [
+            f"{p.relative_to(ROOT)}:{n}"
+            for p in _src_files()
+            for n, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1)
+            if _GRANT_MARKERS.search(line)
+        ]
+        assert hits == []
+
+    def test_positive_twin_the_scan_sees_the_read(self):
+        """The same scan finds the READ, so it is looking at the right files."""
+        reads = [p.name for p in _src_files() if "LsaEnumerateAccountRights" in p.read_text(encoding="utf-8")]
+        assert "schedule_check.py" in reads
+
+    def test_positive_twin_the_pattern_has_teeth(self, tmp_path):
+        planted = tmp_path / "x.py"
+        planted.write_text("win32security.LsaAddAccountRights(policy, sid, ['SeBatchLogonRight'])\n", encoding="utf-8")
+        assert _GRANT_MARKERS.search(planted.read_text(encoding="utf-8"))
+        assert _GRANT_MARKERS.search('subprocess.run(["ntrights.exe", "+r", "SeBatchLogonRight"])')
+        assert not _GRANT_MARKERS.search("win32security.LsaEnumerateAccountRights(policy, sid)")
+
+
+class TestTheExitCode:
+    def test_it_is_four_and_distinct(self):
+        from src.scheduler import headless
+
+        code = headless.EXIT_REGISTERED_WITHOUT_BATCH_RIGHT
+        assert code == 4
+        exits = {v for k, v in vars(schedule_check).items() if k.startswith("CHECK_EXIT_")}
+        assert code not in exits
+
+    @pytest.mark.parametrize(
+        "doc",
+        [
+            "CLAUDE.md",
+            "docs/developer/architecture-notes.md",
+            "docs/partner/it-deployment.md",
+            "docs/partner/troubleshooting.md",
+            "docs/developer/scheduler.md",
+            "docs/developer/failure-policy.md",
+        ],
+    )
+    def test_every_written_contract_states_it(self, doc):
+        text = re.sub(r"\s+", " ", (ROOT / doc).read_text(encoding="utf-8"))
+        assert re.search(r"`4`|\*\*4\*\*|exits? (with )?(code )?4\b|\b4 registered", text), doc
+        # "batch", not the right's full name: the troubleshooting page may not carry "Log on as a batch job"
+        # (tests/test_partner_doc_schedule_copy_parity.py, _RETIRED_PHRASES); it links to the IT guide, which does.
+        assert "batch" in text, doc
+
+    @pytest.mark.parametrize(
+        "doc", ["docs/developer/architecture-notes.md", "docs/developer/scheduler.md", "docs/partner/it-deployment.md"]
+    )
+    def test_the_local_account_rule_is_stated(self, doc):
+        """Round 2: the docs say exactly when 4 is returned, including the local-account case."""
+        text = re.sub(r"\s+", " ", (ROOT / doc).read_text(encoding="utf-8"))
+        assert "local account" in text, doc
+
+
+# --------------------------------------------------------------------------------------------------------------------
+# The LOCAL-account read (DSYNC-111, round 2): a local account's whole batch-logon token is knowable on this computer,
+# so "no holder in it" is a POSITIVE "not held" (exit 4) — the lab case. Domain accounts and gMSAs keep the rule above.
+# --------------------------------------------------------------------------------------------------------------------
+_MACHINE = "S-1-5-21-1000-2000-3000"
+_DOMAIN = "S-1-5-21-7000-8000-9000"
+_USER = f"{_MACHINE}-1001"
+_DISTRICT_GROUP = f"{_MACHINE}-1010"
+_ADMINISTRATORS = "S-1-5-32-544"
+_USERS = "S-1-5-32-545"
+_EVERYONE = "S-1-1-0"
+_AUTH_USERS = "S-1-5-11"
+
+
+def _facts(*, holders=(), denies=(), groups=(_USERS,), aliases=None) -> batch_right.LocalFacts:
+    return batch_right.LocalFacts(
+        account_sid=_USER,
+        user_group_sids=frozenset(groups),
+        alias_members=aliases if aliases is not None else {},
+        batch_holders=frozenset(holders),
+        deny_holders=frozenset(denies),
+    )
+
+
+class TestIsLocalAccount:
+    def test_a_sid_in_this_computers_account_domain_is_local(self):
+        assert batch_right.is_local_account(_USER, account_domain_sid=_MACHINE, primary_domain_sid=_DOMAIN)
+
+    def test_positive_twin_a_domain_account_is_not(self):
+        assert not batch_right.is_local_account(
+            f"{_DOMAIN}-1105", account_domain_sid=_MACHINE, primary_domain_sid=_DOMAIN
+        )
+
+    def test_a_workgroup_computer_has_no_primary_domain_sid(self):
+        assert batch_right.is_local_account(_USER, account_domain_sid=_MACHINE, primary_domain_sid=None)
+
+    def test_on_a_domain_controller_nothing_is_local(self):
+        """A DC's account domain IS the domain: its accounts are domain accounts, with groups we cannot expand."""
+        assert not batch_right.is_local_account(
+            f"{_DOMAIN}-1105", account_domain_sid=_DOMAIN, primary_domain_sid=_DOMAIN
+        )
+
+    @pytest.mark.parametrize("sid", ["", "S-1-5-18", "garbage", _MACHINE])
+    def test_anything_else_is_not_local(self, sid):
+        assert not batch_right.is_local_account(sid, account_domain_sid=_MACHINE, primary_domain_sid=None)
+
+
+class TestTheBatchTokenSet:
+    def test_it_carries_the_documented_implicit_sids(self):
+        sids = batch_right.token_sids(_facts())
+        for sid in ("S-1-1-0", "S-1-5-11", "S-1-5-3", "S-1-5-15", "S-1-5-113"):
+            assert sid in sids, sid
+        assert _USER in sids and _USERS in sids
+
+    def test_s_1_5_114_only_for_a_member_of_administrators(self):
+        assert "S-1-5-114" not in batch_right.token_sids(_facts())
+        assert "S-1-5-114" in batch_right.token_sids(_facts(groups=(_USERS, _ADMINISTRATORS)))
+
+    def test_an_alias_holding_an_implicit_sid_is_in_the_token(self):
+        """BUILTIN\\Users holds NT AUTHORITY\\Authenticated Users by default, so every batch token carries Users."""
+        sids = batch_right.token_sids(_facts(groups=(), aliases={_USERS: frozenset({_AUTH_USERS})}))
+        assert _USERS in sids
+
+    def test_positive_twin_an_unrelated_alias_is_not(self):
+        sids = batch_right.token_sids(_facts(groups=(), aliases={_DISTRICT_GROUP: frozenset({f"{_MACHINE}-1099"})}))
+        assert _DISTRICT_GROUP not in sids
+
+
+class TestLocalTokenState:
+    """The coordinator's table, at the pure layer."""
+
+    def test_no_holder_in_the_token_is_positively_not_held(self):
+        assert batch_right.local_token_state(_facts(holders=(_ADMINISTRATORS,))) is RightState.NOT_HELD_LOCAL
+
+    def test_a_local_group_that_holds_it(self):
+        state = batch_right.local_token_state(_facts(holders=(_DISTRICT_GROUP,), groups=(_USERS, _DISTRICT_GROUP)))
+        assert state is RightState.GRANTED_VIA_GROUP
+
+    def test_administrators_holds_it_by_default(self):
+        state = batch_right.local_token_state(_facts(holders=(_ADMINISTRATORS,), groups=(_USERS, _ADMINISTRATORS)))
+        assert state is RightState.GRANTED_VIA_GROUP
+
+    def test_everyone_holds_it(self):
+        assert batch_right.local_token_state(_facts(holders=(_EVERYONE,))) is RightState.GRANTED_VIA_GROUP
+
+    def test_the_account_itself_holds_it(self):
+        assert batch_right.local_token_state(_facts(holders=(_USER,))) is RightState.GRANTED
+
+    def test_an_explicit_deny_on_the_account(self):
+        assert batch_right.local_token_state(_facts(holders=(_USER,), denies=(_USER,))) is RightState.DENIED
+
+    def test_a_deny_through_a_group_overrides_a_grant(self):
+        state = batch_right.local_token_state(_facts(holders=(_EVERYONE,), denies=(_USERS,)))
+        assert state is RightState.DENIED
+
+    def test_positive_twin_a_deny_on_someone_else_is_ignored(self):
+        state = batch_right.local_token_state(_facts(holders=(_EVERYONE,), denies=(f"{_MACHINE}-1099",)))
+        assert state is RightState.GRANTED_VIA_GROUP
+
+    def test_the_new_states_decide(self):
+        assert assess(RightState.NOT_HELD_LOCAL) is BatchRight.NOT_HELD
+        assert assess(RightState.GRANTED_VIA_GROUP) is BatchRight.HELD
+
+
+class TestTheLiveReadChain:
+    """``_read_right_live``: the local read when the account is local, the DSYNC-33 direct read otherwise."""
+
+    def test_a_local_account_is_decided_by_its_token(self, monkeypatch):
+        monkeypatch.setattr(batch_right, "_local_facts", lambda account: _facts(holders=(_ADMINISTRATORS,)))
+        monkeypatch.setattr(schedule_check, "read_batch_right", lambda a, **k: pytest.fail("direct read for local"))
+        assert batch_right._read_right_live("PC\\svc_local") is RightState.NOT_HELD_LOCAL
+
+    def test_a_domain_account_keeps_the_direct_read(self, monkeypatch):
+        monkeypatch.setattr(batch_right, "_local_facts", lambda account: None)
+        monkeypatch.setattr(schedule_check, "read_batch_right", lambda a, **k: RightState.NOT_DIRECT)
+        assert batch_right._read_right_live("CORP\\svc") is RightState.NOT_DIRECT
+
+    def test_a_local_read_that_raises_falls_back_never_decides(self, monkeypatch):
+        def boom(account):
+            raise OSError("access denied")
+
+        monkeypatch.setattr(batch_right, "_local_facts", boom)
+        monkeypatch.setattr(schedule_check, "read_batch_right", lambda a, **k: RightState.UNKNOWN)
+        assert batch_right._read_right_live("PC\\svc_local") is RightState.UNKNOWN
+
+    def test_the_conftest_guard_covers_the_local_read_too(self):
+        assert batch_right._local_facts("PC\\svc_local") is None
+
+
+class TestTheElevatedChildCarriesIt:
+    """On the provisioning path the read runs in the ELEVATED child (the LSA refuses an unelevated caller)."""
+
+    def test_a_password_provision_returns_the_state(self, tmp_path, monkeypatch):
+        import json
+
+        from tests.test_schedule_check import _child_run, _provision_payload
+
+        monkeypatch.setattr(batch_right, "read_right", lambda account: RightState.NOT_HELD_LOCAL)
+        payload = _provision_payload(
+            source_data_dir="C:\\x", kind=PrincipalKind.PASSWORD.value, user="PC\\svc_local", password="pw"
+        )
+        out, _ = _child_run(tmp_path, payload)
+        assert out["batch_right"] == "not_held_local"
+        assert "svc_local" not in json.dumps(out)
+
+    def test_positive_twin_a_gmsa_provision_does_not(self, tmp_path, monkeypatch):
+        from tests.test_schedule_check import _child_run, _provision_payload
+
+        monkeypatch.setattr(batch_right, "read_right", lambda account: pytest.fail("read for a gMSA in the child"))
+        out, _ = _child_run(tmp_path, _provision_payload(source_data_dir="C:\\x"))
+        assert "batch_right" not in out
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [("not_held_local", RightState.NOT_HELD_LOCAL), ("granted", RightState.GRANTED), ("bogus", None), (7, None)],
+    )
+    def test_the_parent_reads_it_back_revalidated(self, monkeypatch, raw, expected):
+        from src.scheduler import provision_session
+        from src.scheduler.elevation import ElevationResult
+        from tests.test_provision_session import _child, _provision, _store
+
+        _child(monkeypatch, result=ElevationResult.COMPLETED, payload={"ok": True, "batch_right": raw})
+        _store(monkeypatch)
+        attempt = _provision()
+        assert attempt.outcome is provision_session.ProvisionOutcome.PROVISIONED
+        assert attempt.batch_right is expected
+
+    def test_after_registration_prefers_the_elevated_state(self, monkeypatch):
+        monkeypatch.setattr(batch_right, "read_right", lambda account: pytest.fail("read again in the parent"))
+        outcome = batch_right.after_registration(
+            PrincipalKind.PASSWORD, "PC\\svc_local", elevated_state=RightState.NOT_HELD_LOCAL
+        )
+        assert outcome is BatchRight.NOT_HELD
+
+    def test_an_unknown_elevated_state_falls_back_to_this_process(self, monkeypatch):
+        monkeypatch.setattr(batch_right, "read_right", lambda account: RightState.GRANTED)
+        outcome = batch_right.after_registration(
+            PrincipalKind.PASSWORD, "PC\\svc_local", elevated_state=RightState.UNKNOWN
+        )
+        assert outcome is BatchRight.HELD
+
+
+# --------------------------------------------------------------------------------------------------------------------
+# Review F1: the generous token is for GRANTS only. A deny is judged against the SIDs a batch token CERTAINLY carries,
+# or a deny on a SID the token may not carry (LOCAL, NTLM Authentication) would produce a false exit 4.
+# --------------------------------------------------------------------------------------------------------------------
+_LOCAL_SID = "S-1-2-0"
+_NTLM_SID = "S-1-5-64-10"
+
+
+class TestTheDenyTokenIsMinimal:
+    def test_a_deny_on_local_alone_is_not_denied(self):
+        """The reviewer's measured case: a grant via Users plus a deny on S-1-2-0 alone was exit 4."""
+        state = batch_right.local_token_state(_facts(holders=(_USERS,), denies=(_LOCAL_SID,)))
+        assert state is RightState.GRANTED_VIA_GROUP
+
+    def test_a_deny_on_ntlm_authentication_alone_is_not_denied(self):
+        state = batch_right.local_token_state(_facts(holders=(_USERS,), denies=(_NTLM_SID,)))
+        assert state is RightState.GRANTED_VIA_GROUP
+
+    def test_a_deny_on_an_alias_reached_only_through_a_generous_sid_is_not_denied(self):
+        aliases = {_DISTRICT_GROUP: frozenset({_LOCAL_SID})}
+        state = batch_right.local_token_state(
+            _facts(holders=(_USERS,), denies=(_DISTRICT_GROUP,), groups=(_USERS,), aliases=aliases)
+        )
+        assert state is RightState.GRANTED_VIA_GROUP
+
+    def test_positive_twin_a_grant_through_a_generous_sid_still_counts(self):
+        assert batch_right.local_token_state(_facts(holders=(_LOCAL_SID,), groups=())) is RightState.GRANTED_VIA_GROUP
+
+    @pytest.mark.parametrize("sid", ["S-1-1-0", "S-1-5-3", "S-1-5-11", "S-1-5-113"])
+    def test_positive_twin_a_deny_on_a_certain_implicit_sid_is_denied(self, sid):
+        assert batch_right.local_token_state(_facts(holders=(_USERS,), denies=(sid,))) is RightState.DENIED
+
+    def test_positive_twin_a_deny_on_an_alias_reached_through_a_certain_sid_is_denied(self):
+        aliases = {_USERS: frozenset({_AUTH_USERS})}
+        state = batch_right.local_token_state(
+            _facts(holders=(_EVERYONE,), denies=(_USERS,), groups=(), aliases=aliases)
+        )
+        assert state is RightState.DENIED
+
+    def test_the_deny_set_is_the_certain_one(self):
+        sids = batch_right.deny_token_sids(_facts(groups=(_USERS, _ADMINISTRATORS)))
+        for sid in ("S-1-1-0", "S-1-5-3", "S-1-5-11", "S-1-5-113", "S-1-5-114", _USER, _USERS, _ADMINISTRATORS):
+            assert sid in sids, sid
+        for sid in (_LOCAL_SID, _NTLM_SID, "S-1-5-15"):
+            assert sid not in sids, sid
+        assert "S-1-5-114" not in batch_right.deny_token_sids(_facts())
+
+    def test_the_deny_set_is_inside_the_grant_set(self):
+        facts = _facts(groups=(_USERS, _ADMINISTRATORS), aliases={_DISTRICT_GROUP: frozenset({_LOCAL_SID})})
+        assert batch_right.deny_token_sids(facts) <= batch_right.token_sids(facts)
+
+
+# --------------------------------------------------------------------------------------------------------------------
+# Review F3/F4: who may return 4; the stale "stays 0" comment.
+# --------------------------------------------------------------------------------------------------------------------
+def _returns_and_names(paths=None):
+    import ast
+
+    found = []
+    for path in paths if paths is not None else _src_files():
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name) and node.id == "EXIT_REGISTERED_WITHOUT_BATCH_RIGHT":
+                found.append(("name", path.name))
+            if isinstance(node, ast.Attribute) and node.attr == "EXIT_REGISTERED_WITHOUT_BATCH_RIGHT":
+                found.append(("attr", path.name))
+            value = None
+            if isinstance(node, ast.Return):
+                value = node.value
+            elif isinstance(node, ast.Call) and getattr(node.func, "attr", getattr(node.func, "id", "")) == "exit":
+                value = node.args[0] if node.args else None
+            if isinstance(value, ast.Tuple) and value.elts:
+                value = value.elts[0]
+            if isinstance(value, ast.Constant) and value.value == 4 and not isinstance(value.value, bool):
+                found.append(("literal 4", f"{path.name}:{value.lineno}"))
+    return found
+
+
+class TestOnlyHeadlessRegisterReturnsFour:
+    def test_the_constant_lives_only_in_headless(self):
+        found = _returns_and_names()
+        assert {where for kind, where in found if kind in ("name", "attr")} == {"headless.py"}
+
+    def test_no_function_in_src_returns_or_exits_a_literal_4(self):
+        assert [where for kind, where in _returns_and_names() if kind == "literal 4"] == []
+
+    def test_positive_twin_the_scan_has_teeth(self, tmp_path):
+        """The same walk over a planted module reports a returned tuple, a bare return and a sys.exit of 4."""
+        planted = tmp_path / "planted.py"
+        planted.write_text(
+            "import sys\ndef f():\n    return 4, 'x'\ndef g():\n    return 4\ndef h():\n    sys.exit(4)\n",
+            encoding="utf-8",
+        )
+        assert len([k for k, _ in _returns_and_names([planted]) if k == "literal 4"]) == 3
+
+    def test_headless_register_is_where_it_is_returned(self):
+        source = (SRC / "scheduler" / "headless.py").read_text(encoding="utf-8")
+        assert "EXIT_REGISTERED_WITHOUT_BATCH_RIGHT if outcome is batch_right.BatchRight.NOT_HELD" in source
+
+    def test_the_stale_stays_0_comment_is_gone(self):
+        assert "so the exit code stays 0" not in (SRC / "scheduler" / "headless.py").read_text(encoding="utf-8")
+
+
+# --------------------------------------------------------------------------------------------------------------------
+# Review F4: the seam over the Net/LSA calls — how ``_local_facts`` assembles the facts, without the real machine.
+# --------------------------------------------------------------------------------------------------------------------
+class _FakeApi:
+    def __init__(self, *, account_sid=_USER, primary=None):
+        self.sid, self.primary = account_sid, primary
+        self.calls: list[str] = []
+
+    def account_sid(self, name):
+        self.calls.append(f"sid:{name}")
+        return self.sid
+
+    def domain_sids(self):
+        self.calls.append("domains")
+        return _MACHINE, self.primary
+
+    def holders(self, right):
+        self.calls.append(f"holders:{right}")
+        return frozenset({_ADMINISTRATORS}) if right == "SeBatchLogonRight" else frozenset({"S-1-5-32-546"})
+
+    def local_groups(self, user):
+        self.calls.append(f"local:{user}")
+        return frozenset({_USERS})
+
+    def sam_groups(self, prefix, user):
+        self.calls.append(f"sam:{prefix}:{user}")
+        return frozenset({f"{_MACHINE}-513"})
+
+    def aliases(self):
+        self.calls.append("aliases")
+        return {_USERS: frozenset({_AUTH_USERS})}
+
+
+class TestAssemblingTheLocalFacts:
+    def test_a_local_account_is_assembled_from_every_read(self):
+        api = _FakeApi()
+        facts = batch_right._assemble_local_facts("PC\\svc_local", api)
+        assert facts == batch_right.LocalFacts(
+            account_sid=_USER,
+            user_group_sids=frozenset({_USERS, f"{_MACHINE}-513"}),
+            alias_members={_USERS: frozenset({_AUTH_USERS})},
+            batch_holders=frozenset({_ADMINISTRATORS}),
+            deny_holders=frozenset({"S-1-5-32-546"}),
+        )
+        assert "local:svc_local" in api.calls and "sam:PC:svc_local" in api.calls  # the bare user name, its prefix
+
+    def test_a_domain_account_reads_no_rights_and_no_groups(self):
+        api = _FakeApi(account_sid=f"{_DOMAIN}-1105", primary=_DOMAIN)
+        assert batch_right._assemble_local_facts("CORP\\svc", api) is None
+        assert api.calls == ["sid:CORP\\svc", "domains"]
+
+    def test_a_bare_name_has_no_prefix(self):
+        api = _FakeApi()
+        batch_right._assemble_local_facts("svc_local", api)
+        assert "sam::svc_local" in api.calls
+
+    def test_the_assembled_lab_facts_decide_not_held(self):
+        facts = batch_right._assemble_local_facts("PC\\svc_local", _FakeApi())
+        assert facts is not None and batch_right.local_token_state(facts) is RightState.NOT_HELD_LOCAL

@@ -1107,6 +1107,8 @@ def _cli(argv: list[str] | None) -> int:
     #       option without --schedule-register (or --migrate --apply), --apply without --migrate, or a
     #       --*-password-stdin with an empty stdin
     #   3 — SFTP delivery failure (ETL succeeded; upload did not)
+    #   4 — --schedule-register only (DSYNC-111): registered, but the account lacks 'Log on as a batch job'
+    #       (headless.EXIT_REGISTERED_WITHOUT_BATCH_RIGHT; a conversion never returns it)
     if result.sftp_attempted and not result.sftp_ok:
         # _sftp_upload already logged at ERROR level with the host; re-emit
         # a brief summary here so the Task Scheduler "Last Run Result" note
