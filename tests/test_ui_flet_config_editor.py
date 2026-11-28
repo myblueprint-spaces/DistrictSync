@@ -1360,7 +1360,9 @@ class TestActivationAllowed:
         # An AST walk, not a text grep: the creator's docstring QUOTES the old inline spelling
         # to explain why it no longer does it, and a text scan would read that as a call.
         assert len(calls) == 1, f"more than one 'has this been tested?' comparison: {calls}"
-        assert calls[0].startswith("config_editor.py:"), calls
+        # Its home is ``src/config/setup_rules.py`` since DSYNC-109 (re-exported by config_editor), so the headless
+        # ``--configure`` reaches the same comparison without importing the UI layer.
+        assert calls[0].startswith("setup_rules.py:"), calls
 
 
 class TestCreatorGateCurrentDelegates:

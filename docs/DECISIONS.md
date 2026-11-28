@@ -3,6 +3,17 @@
 **Convention (adopted 2026-09-23):** every new entry carries a line `Supersedes: <date — title of the replaced entry>` (or `Supersedes: nothing`) directly under its heading, so a replaced decision is found by search rather than by reading prose.
 
 
+## 2026-11-27 - DSYNC-109: headless `--configure` saves the district and folders with the window's rules, moved to the config layer
+
+Supersedes: nothing
+
+**Decided.** `DistrictSync.exe --configure --sis <district> --input <folder> --output <folder>` saves `sis_type`, `input_dir` and `output_dir` to the active profile (the shared one on a machine-wide install), so a Server Core computer can pass `--schedule-register`'s INCOMPLETE gate; that gate's line now names the window's Setup and this command. The window's rules were MOVED, unchanged, from `ui_flet/filepicker.py` (folder validators) and `ui_flet/config_editor.py` (`activation_allowed` and its stored facts) into `src/config/setup_rules.py` and re-exported from both, because the config layer may not import the UI package (architecture fitness rule (a)) and `filepicker` imports flet. Rules applied: input folder exists; output folder's parent exists (the folder is not created); district resolves on this computer; a user-dir district must have passed a test conversion, checked only on a district CHANGE (the folders card's rule, not the wizard's always-check: this command, like the card, writes all three at once and must not block a folder repair). Refusal = exit 1 with nothing written; missing flags and other subcommands = exit 2. No elevation: a plain save, as in the window (the setup administrator holds Modify on the shared profile; an elevated Administrators token can write too).
+
+**Why.** Before this the window was the only writer of the three settings, so the MSI's headless path had a parity gap with the one-file exe (which passes them per run). One rule set for both callers is how two surfaces stop drifting. Two judgement calls: folders are saved ABSOLUTE (a relative path would follow the nightly's working folder), and `--output` lost its parser default so `--configure` can tell "not given" (a conversion still defaults to `data/output` through `main.DEFAULT_OUTPUT_DIR`).
+
+**Consequences.** The `verified_is_current` single-call AST pin now points at `setup_rules.py`. A changed setting under a registered nightly is not re-registered by the command; it prints a note to run `--schedule-register` again (the window's reconcile does this itself). A district authored on a Server Core computer still needs the window's Mapping test conversion before `--configure` accepts it.
+
+
 ## 2026-11-27 - Plan 0055 M2b: a machine-wide install refuses a per-user profile until machine setup has run
 
 Supersedes: nothing

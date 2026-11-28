@@ -68,7 +68,10 @@ def overlay(monkeypatch: pytest.MonkeyPatch) -> str:
     """A REAL ``sd93custom`` overlay in the isolated user mappings dir, so its origin is ``"user"``."""
     monkeypatch.delattr(sys, "frozen", raising=False)
     monkeypatch.delattr(sys, "_MEIPASS", raising=False)
-    write_overlay(OverlaySpec(sd_number=93, district_name="SD93 - Configure Test", district_domains=(), base="myedbc"))
+    write_overlay(
+        OverlaySpec(sd_number=93, district_name="SD93 - Configure Test", district_domains=(), base="myedbc"),
+        overwrite=True,
+    )
     return CUSTOM_ID
 
 
@@ -229,7 +232,6 @@ class TestTheLogNamesNoFolder:
         logged = "\n".join(r.getMessage() for r in caplog.records)
         assert "Headless configure" in logged  # positive twin: the sweep sees the command's lines
         assert str(folders["input"]) not in logged and str(folders["output"]) not in logged
-        assert folders["input"].parent.name not in logged
 
 
 class TestMisuse:

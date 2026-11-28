@@ -18,8 +18,9 @@ Per-release download links and auto-generated commit notes live on the
   (settings, run history and the delivery password move to one shared folder) and asks how new versions are handled:
   tell me (the default), install automatically, or never check (update checks start when a later release switches
   the update service on, and automatic installing on these installs comes after that). Group Policy can set this for the whole district,
-  and DistrictSync cannot override it. Server Core and scripted installs use `--machine-setup`, `--schedule-register`
-  and `--schedule-remove` instead of the window, and `--migrate` reports what moving an existing copy involves.
+  and DistrictSync cannot override it. Server Core and scripted installs use `--machine-setup`,
+  `--configure --sis <district> --input <folder> --output <folder>` (the district and folders, with the window's
+  rules), `--schedule-register` and `--schedule-remove` instead of the window, and `--migrate` reports what moving an existing copy involves.
   `--diagnose` gains an Installation block. DistrictSync is built not to write Windows account names into its logs,
   log file names or run history: it tells accounts apart with a short code. Districts already using `DistrictSync-windows.exe` or `DistrictSync-Setup.exe` do not
   need to change anything. See the IT deployment guide (plan 0055).

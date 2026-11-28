@@ -367,6 +367,10 @@ from src.scheduler.machine_setup import MACHINE_SETUP_COPY as MACHINE_SETUP_COPY
 from src.scheduler.machine_setup import MACHINE_SETUP_DONE as MACHINE_SETUP_DONE  # noqa: E402
 from src.scheduler.machine_setup import MACHINE_SETUP_REFUSED_FOLDER as MACHINE_SETUP_REFUSED_FOLDER  # noqa: E402
 
+#: A conversion's output folder when ``--output`` is not given. The parser's own default is ``None`` so ``--configure``
+#: can tell "not given" from "given" (it never defaults a folder); the conversion applies this one.
+DEFAULT_OUTPUT_DIR = "data/output"
+
 #: The argparse destinations of a conversion or of SFTP setup: none rides along with --machine-setup or a schedule command.
 _CONVERSION_AND_SFTP_DESTS = (
     "sis",
@@ -383,6 +387,9 @@ _CONVERSION_AND_SFTP_DESTS = (
     "sftp_remote",
     "sftp_password_stdin",
 )
+
+#: The destinations ``--configure`` takes: the district and the two folders, exactly what Setup's folders card saves.
+_CONFIGURE_DESTS = ("sis", "input", "output")
 
 TASK_PASSWORD_ENV_VAR = "DISTRICTSYNC_TASK_PASSWORD"  # nosec B105 - the NAME of the variable, not a secret
 
@@ -434,6 +441,26 @@ def _schedule_register(args: argparse.Namespace) -> int:
         return 1
     password = _read_task_password(args, spec.account) if spec.needs_password else None
     code, message = headless.register(run_time=args.time or "", spec=spec, password=password, wake_to_run=args.wake)
+    print(message)
+    return code
+
+
+def _configure(args: argparse.Namespace) -> int:
+    """``--configure --sis <district> --input <folder> --output <folder>`` (DSYNC-109): Setup's district and folders, headless.
+
+    The rules are the window's (``src.config.district_setup``); all three flags are required, never defaulted (D9).
+    """
+    missing = [
+        flag for flag, value in (("--sis", args.sis), ("--input", args.input), ("--output", args.output)) if not value
+    ]
+    if missing:
+        print(
+            f"Error: --configure needs {', '.join(missing)} (--configure --sis <district> --input <folder> --output <folder>)."
+        )
+        return 2
+    from src.config import district_setup
+
+    code, message = district_setup.configure(sis=args.sis, input_dir=args.input, output_dir=args.output)
     print(message)
     return code
 
@@ -766,7 +793,7 @@ def _cli(argv: list[str] | None) -> int:
     # ETL pipeline flags (required only when running the pipeline)
     parser.add_argument("--sis", help="SIS type (e.g., myedbc, sd40myedbc)")
     parser.add_argument("--input", help="Path to input GDE files")
-    parser.add_argument("--output", default="data/output", help="Output path for CSV files")
+    parser.add_argument("--output", help=f"Output path for CSV files (default: {DEFAULT_OUTPUT_DIR})")
     parser.add_argument("--dry-run", action="store_true", help="Run without writing output files")
     parser.add_argument("--diff", action="store_true", help="Show diff against existing output files")
     parser.add_argument("--quality", action="store_true", help="Generate a data quality report")
@@ -806,6 +833,13 @@ def _cli(argv: list[str] | None) -> int:
         help=f"With --machine-setup: off, notify or on (default: {policy.DEFAULT_UPDATE_MODE})",
     )
 
+    configure_group = parser.add_argument_group("Settings (Setup's district and folders, without the window)")
+    configure_group.add_argument(
+        "--configure",
+        action="store_true",
+        help="Save the district and folders for the nightly: --configure --sis <district> --input <folder> --output <folder>",
+    )
+
     schedule_group = parser.add_argument_group("Schedule (the nightly, from the saved settings)")
     schedule_group.add_argument(
         "--schedule-register", action="store_true", help="Schedule the nightly conversion (like Setup's Schedule)"
@@ -840,11 +874,12 @@ def _cli(argv: list[str] | None) -> int:
         + int(args.schedule_register)
         + int(args.schedule_remove)
         + int(args.migrate)
+        + int(args.configure)
     )
     if commands > 1:
         print(
             "Error: choose only one of --sftp-configure, --sftp-test, --sftp-show, --machine-setup, "
-            "--schedule-register, --schedule-remove, --migrate."
+            "--schedule-register, --schedule-remove, --migrate, --configure."
         )
         return 2
     # Decided on PARSED values, never on spellings: argparse accepts abbreviations (--wak, --sftp-h).
@@ -859,8 +894,8 @@ def _cli(argv: list[str] | None) -> int:
     if args.schedule_register or args.schedule_remove:
         if conversion_or_sftp:
             print(
-                "Error: a schedule uses the saved district, folders and delivery; set those in Setup, "
-                "then schedule without --sis/--input/--output/--sftp flags."
+                "Error: a schedule uses the saved district, folders and delivery; set those in Setup (or with "
+                "--configure), then schedule without --sis/--input/--output/--sftp flags."
             )
             return 2
         return _schedule_register(args) if args.schedule_register else _schedule_remove()
@@ -869,6 +904,13 @@ def _cli(argv: list[str] | None) -> int:
             print("Error: --migrate only reports; run a conversion or SFTP setup separately.")
             return 2
         return _migrate()
+    if args.configure:
+        # The three settings flags are the command's own; anything else a conversion or SFTP setup takes is misuse.
+        extra = [dest for dest in _CONVERSION_AND_SFTP_DESTS if dest not in _CONFIGURE_DESTS]
+        if any(getattr(args, dest) != parser.get_default(dest) for dest in extra):
+            print("Error: --configure saves the district and folders only; run a conversion or SFTP setup separately.")
+            return 2
+        return _configure(args)
     if args.machine_setup:
         if conversion_or_sftp:
             print("Error: --machine-setup sets the computer up only; run a conversion or SFTP setup separately.")
@@ -915,7 +957,7 @@ def _cli(argv: list[str] | None) -> int:
         result = run_pipeline(
             sis,
             args.input,
-            args.output,
+            args.output if args.output is not None else DEFAULT_OUTPUT_DIR,
             dry_run=args.dry_run,
             diff=args.diff,
             quality=args.quality,
@@ -952,7 +994,7 @@ def _cli(argv: list[str] | None) -> int:
     #   0 — success (ETL complete; SFTP succeeded or not requested)
     #   1 — ETL / validation error (run did not complete)
     #   2 — argument misuse: an argparse usage error (missing/unknown flags),
-    #       more than one subcommand (SFTP, --machine-setup, --schedule-*), a schedule
+    #       more than one subcommand (SFTP, --machine-setup, --schedule-*, --migrate, --configure), a schedule
     #       option without --schedule-register, or a --*-password-stdin with an empty stdin
     #   3 — SFTP delivery failure (ETL succeeded; upload did not)
     if result.sftp_attempted and not result.sftp_ok:

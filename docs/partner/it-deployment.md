@@ -80,8 +80,21 @@ and every command except `--machine-setup`, `--version`, `--help`, `--diagnose` 
 ## Step 3 — District, folders and delivery
 
 In the DistrictSync window, the setup walks through the district, the MyEdBC extract folder, the output folder and
-**Delivery to SpacesEDU**. Without a desktop, delivery is set with `--sftp-configure` (see the
-[headless guide](headless-sftp-setup.md)); run it from the installed program.
+**Delivery to SpacesEDU**. Without a desktop, after Step 2 and before scheduling, save the district and the two
+folders with:
+
+```
+DistrictSync.exe --configure --sis <district> --input <folder> --output <folder>
+```
+
+`<district>` is the district's mapping name (for example `sd48myedbc`), `<folder>` a full path. It applies the
+window's rules: the extract folder must already exist, the output folder's parent must exist (DistrictSync creates
+the output folder itself at the first run), and a mapping added on this computer must have passed a test conversion
+first. It prints one line and exits 0 when saved, 1 (with nothing saved) when refused. Run it as the administrator who
+set the computer up, or from an administrator command prompt.
+
+Delivery is set with `--sftp-configure` (see the [headless guide](headless-sftp-setup.md)); run it from the installed
+program.
 
 ---
 
