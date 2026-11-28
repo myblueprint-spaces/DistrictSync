@@ -291,7 +291,8 @@ def _dispatch(cfg, scheduler, foreign, principal, run_time, wake_to_run, persist
         )
     lines = [f"Scheduled: DistrictSync runs every day at {run_time} as the account given, using the shared settings."]
     if attempt.check is not None:
-        # Advisory, as in the window: the nightly IS registered and recorded, so the exit code stays 0.
+        # Advisory, as in the window: the nightly IS registered and recorded. The test run itself never decides the
+        # exit code; _with_batch_right below does (4 only on a positive 'not held', DSYNC-111).
         verdict = "passed" if attempt.check.passed else f"did not pass ({attempt.check.verdict.value}); see the log"
         lines.append(
             f"Warning: the account's test run {verdict}."

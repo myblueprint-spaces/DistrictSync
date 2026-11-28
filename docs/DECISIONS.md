@@ -13,6 +13,8 @@ Supersedes: nothing
 
 **Why.** Round 1 read only the account's own rights, so a right through a group looked like no right and nothing but a deny could be called "not held"; the lab's plain local account therefore exited 0. A local account's token is fully knowable here, so "no holder in it" is a fact, not a guess. The set is generous on purpose: an extra SID can only turn a 4 into a 0. The LSA refuses `LsaEnumerateAccountsWithUserRight` to an unelevated caller (measured on a dev box), so for a password provision the read runs in the ELEVATED child (the one UAC prompt the command already shows) and one `RightState` value comes back on the result; every read goes through the one seam `batch_right.read_right`.
 
+**Review (2026-11-28).** A deny is judged against a MINIMAL token (the account, its groups, and only the SIDs a batch token certainly carries — Everyone, BATCH, Authenticated Users, Local account, + `S-1-5-114` — with the groups they reach), and a grant against the generous one: the reviewer measured a grant via Users plus a deny on LOCAL alone giving a false 4. The window now shows the inconclusive outcome as a WARNING band (the command line's "Not confirmed") and puts the batch-right band above the green "scheduled" banner, verdict first.
+
 **Consequences.** `RightState` gains `GRANTED_VIA_GROUP` and `NOT_HELD_LOCAL`. The signed-in account registered WITH its password has no elevated read (its `register` op carries none), so it is usually INCONCLUSIVE when the console is not elevated. The troubleshooting page keeps its `_RETIRED_PHRASES` ban on the right's full name and links to the IT guide for the how-to.
 
 

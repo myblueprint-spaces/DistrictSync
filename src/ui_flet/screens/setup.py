@@ -450,16 +450,27 @@ def schedule_check_band(page: ft.Page, check: ScheduleCheck, *, task_name: str) 
     return components.HealthVerdictBanner(band.verdict, headline=band.headline, detail=band.detail, trailing=trailing)
 
 
-def batch_right_band() -> ft.Control:
-    """DSYNC-111: the nightly IS scheduled, but its account positively lacks 'Log on as a batch job'.
+def batch_right_bands(outcome: batch_right.BatchRight | None) -> list[ft.Control]:
+    """DSYNC-111: the toned band for a password nightly's 'Log on as a batch job' outcome, or ``[]``.
 
-    A FAILED toned band beside the success banner (the DSYNC-33 check band's shape), every word from
-    ``batch_right`` — the same lines the headless ``--schedule-register`` prints before exiting 4. No action: granting
-    the right is IT's job, and the task needs no re-run once it is granted.
+    NOT HELD is a FAILED band (the nightly IS scheduled but won't run yet — what the command line exits 4 on);
+    INCONCLUSIVE is a WARNING band (the command line's "Not confirmed" line, review F2); HELD needs no band. Every word
+    from ``batch_right``. No action in either: granting the right is IT's job, and the task needs no re-run once it is.
+    Callers paint these ABOVE the green "scheduled" banner — verdict first (review F2).
     """
-    return components.HealthVerdictBanner(
-        Verdict.FAILED, headline=batch_right.NOT_HELD_HEADLINE, detail=batch_right.NOT_HELD_DETAIL
-    )
+    if outcome is batch_right.BatchRight.NOT_HELD:
+        return [
+            components.HealthVerdictBanner(
+                Verdict.FAILED, headline=batch_right.NOT_HELD_HEADLINE, detail=batch_right.NOT_HELD_DETAIL
+            )
+        ]
+    if outcome is batch_right.BatchRight.INCONCLUSIVE:
+        return [
+            components.HealthVerdictBanner(
+                Verdict.WARNING, headline=batch_right.INCONCLUSIVE_HEADLINE, detail=batch_right.INCONCLUSIVE_LINE
+            )
+        ]
+    return []
 
 
 def handover_banner(result: handover_result.HandoverResult, *, page: ft.Page, task_name: str) -> ft.Control:
@@ -484,11 +495,9 @@ def handover_banner(result: handover_result.HandoverResult, *, page: ft.Page, ta
         done = components.HealthVerdictBanner(
             Verdict.HEALTHY, headline=HANDOVER_DONE_HEADLINE, detail=HANDOVER_DONE_DETAIL
         )
-        controls: list[ft.Control] = [done]
+        controls: list[ft.Control] = [*batch_right_bands(result.batch_right), done]  # DSYNC-111: verdict first
         if result.check is not None:
             controls.append(schedule_check_band(page, result.check, task_name=task_name))
-        if result.batch_right is batch_right.BatchRight.NOT_HELD:
-            controls.append(batch_right_band())  # DSYNC-111
         if len(controls) == 1:
             return done
         return ft.Column(spacing=tokens.space_md, controls=controls)
@@ -3397,8 +3406,8 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
                     f"Runs as {sent_account or _keyring_owner_account()}, whether or not you're "
                     f"signed in, daily at {run_time}.",
                 )
-                if batch is batch_right.BatchRight.NOT_HELD:
-                    result_slot.controls.append(batch_right_band())  # DSYNC-111: scheduled, but won't run yet
+                # DSYNC-111: the batch-right verdict leads the green "scheduled" banner (review F2).
+                result_slot.controls[:0] = batch_right_bands(batch)
             elif ok and scheduler.supports_unattended_password:
                 _on_register_success(
                     "Scheduled — logged-on only",
@@ -3617,8 +3626,7 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
                     result_slot.controls.append(
                         schedule_check_band(page, attempt.check, task_name=cfg.schedule_task_name)
                     )
-                if batch is batch_right.BatchRight.NOT_HELD:
-                    result_slot.controls.append(batch_right_band())  # DSYNC-111: and so is its batch right
+                result_slot.controls[:0] = batch_right_bands(batch)  # DSYNC-111: and its batch right, leading
                 if on_schedule_changed is not None:
                     with contextlib.suppress(Exception):
                         on_schedule_changed()
