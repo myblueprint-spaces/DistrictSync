@@ -36,7 +36,9 @@ Four families live here:
   precedent), :func:`verified_is_current` compares it against what would convert today,
   :func:`activation_allowed` is the ONE comparison behind every ``sis_type`` writer —
   FIVE writer surfaces reach it through FOUR call sites (plan 0044 S6) — before
-  switching onto a district authored on this computer, and
+  switching onto a district authored on this computer (those three live in
+  :mod:`src.config.setup_rules` since DSYNC-109, re-exported here, so the headless
+  ``--configure`` applies the same rule without the UI layer), and
   :func:`overlay_staleness` turns an overlay's ``authored_with`` provenance into the
   two booleans the Files step's note reads.
 
@@ -89,16 +91,18 @@ from src.config.models import (
     MappingConfig,
     is_valid_district_domain,
 )
+from src.config.setup_rules import ActivationVerdict as ActivationVerdict
+from src.config.setup_rules import activation_allowed as activation_allowed
+from src.config.setup_rules import stored_verified_digest as stored_verified_digest
+from src.config.setup_rules import verified_is_current as verified_is_current
 from src.etl.errors import EmptyRequiredOutputError, IncompleteInputError, NoUsableInputError
 from src.etl.outcomes import EntityOutcome, OutcomeKind
 from src.etl.transformers.grades import CEDS_MAPPING
 from src.ui_flet.failure_copy import entity_phrase, note_sentence, outcome_tier, warning_notes
 from src.ui_flet.identity_gate import sd_number_digits
 from src.ui_flet.verdict import Verdict
-from src.utils.validators import is_config_digest, validate_sis_type
 
 if TYPE_CHECKING:  # pragma: no cover - typing only; no runtime import of either layer
-    from src.config.app_config import AppConfig
     from src.config.authoring import AuthoredWith
     from src.etl.pipeline import PipelineResult
     from src.etl.preflight import MissingColumn, PreflightReport
@@ -1252,123 +1256,9 @@ def _entities_of(outcomes: Iterable[object]) -> list[object]:
 
 # ---------------------------------------------------------------------------
 # The stored facts: what was tested, and what wrote the file
+# (``stored_verified_digest`` / ``verified_is_current`` / ``activation_allowed`` live in
+# ``src.config.setup_rules`` since DSYNC-109 and are re-exported above.)
 # ---------------------------------------------------------------------------
-
-
-def _safe_sis_type(value: object) -> str:
-    """TOTAL wrapper over :func:`src.utils.validators.validate_sis_type`: ``""`` on refusal."""
-    if not isinstance(value, str):
-        return ""
-    try:
-        return validate_sis_type(value)
-    except ValueError:
-        return ""
-
-
-def stored_verified_digest(app_config: AppConfig, sis_id: str) -> str | None:
-    """The digest recorded when ``sis_id`` last passed the gate, or ``None``. TOTAL.
-
-    Re-validates at READ time (the ``identity_gate.stored_identity_email`` precedent):
-    ``config.json`` is hand-editable and ``AppConfig``'s load-time type check sees only
-    the CONTAINER, so ``{"sd93custom": 123}`` loads clean. Everything malformed — a
-    non-dict map, an id that is not a valid config id, a nested dict, a 63-character or
-    upper-cased value — reads as ABSENT, i.e. "please run the test again". That is the
-    only safe direction: an absent fact can force another test run, never unlock one.
-
-    Deliberately NOT gated on ``authoring.is_custom_sis_id``. Activation is gated on the
-    config's ORIGIN (S2's ``ConfigSummary.origin == "user"``), so a support-handed
-    user-dir override of a SHIPPED id (``sd40myedbc``) must stay activatable after
-    passing this same gate.
-
-    Reads ``creator_verified`` through ``getattr`` so the rule is testable against any
-    settings object and a profile written by an older build (no such field) answers
-    "absent" rather than raising.
-    """
-    stored = getattr(app_config, "creator_verified", None)
-    if not isinstance(stored, dict):
-        return None
-    key = _safe_sis_type(sis_id)
-    if not key:
-        return None
-    value = stored.get(key)
-    return value if is_config_digest(value) else None
-
-
-def verified_is_current(stored: str | None, current: str | None) -> bool:
-    """True only when a digest was stored AND matches what would convert today.
-
-    Two ``None``s are NOT "fine": an unknown stored fact and an unloadable config are
-    the two states that most need another test run, and reading them as agreement would
-    activate a district nobody has run. Equality is over the whole digest string; the
-    shape was already validated where each value came from.
-    """
-    return stored is not None and current is not None and stored == current
-
-
-@dataclass(frozen=True)
-class ActivationVerdict:
-    """May this district become the one this install converts, and if not, why not.
-
-    TWO booleans rather than one ``Literal``, deliberately: a future third refusal
-    reason added to a single enum would read as "allowed" at every ``verdict ==
-    "allowed"`` call site that had not been updated, whereas an unset ``allowed``
-    can only ever refuse.
-
-    Attributes:
-        allowed: the switch may proceed.
-        needs_test: it may not, because this district was authored HERE and has not
-            passed a test conversion as it currently reads.
-    """
-
-    allowed: bool
-    needs_test: bool
-
-
-def activation_allowed(
-    app_config: AppConfig,
-    *,
-    sis_id: str,
-    origin: str,
-    current_digest: str | None,
-) -> ActivationVerdict:
-    """Whether ``sis_id`` may be made the district this install converts. PURE, TOTAL.
-
-    THE one verified-fact comparison behind every surface that can write ``sis_type``
-    onto a district authored on this computer. There are FIVE such surfaces — the
-    wizard's standard District pick, the wizard's creator activation, Mapping's Apply,
-    Mapping's panel activation and the Settings folders card's Save (that last one only
-    when it changes the district) — reaching this function through FOUR call sites:
-    :func:`screens.creator.creator_gate_current` (which serves BOTH creator
-    activations, in the wizard and in Mapping's panel), the wizard's District step and
-    the folders card in :mod:`screens.setup`, and Mapping's Apply. Five surfaces, four
-    call sites, ONE comparison: a second spelling of "has this been tested?" is how one
-    surface activates what another refuses.
-
-    The rule:
-
-    * ``origin != "user"`` — a SHIPPED mapping (or one whose provenance could not be
-      read, which :func:`mapping_catalog._origin_of` already fails OPEN on) ⇒ allowed,
-      and ``current_digest`` is never read. Shipped configs are ours; gating them would
-      strand every install that has one.
-    * ``origin == "user"`` ⇒ allowed only when the digest recorded at the last passing
-      test conversion still equals what would convert TODAY
-      (:func:`verified_is_current`), else :attr:`ActivationVerdict.needs_test`.
-
-    ``current_digest`` is a required keyword with NO default (CLAUDE.md: no permissive
-    default on a safety-relevant parameter). It is the EFFECTFUL half — the caller
-    computes it with ``authoring.current_digest(sis_id)`` — and a default of ``None``
-    would let a caller that forgot it refuse every user-authored district instead of
-    failing to compile. Callers pass ``None`` deliberately on the bundled branch, so the
-    20 shipped rows never pay a config load.
-
-    Takes ``origin`` as a plain string rather than the ``ConfigSummary`` both view call
-    sites hold: that is the only field the rule reads, and importing the catalog's
-    published shape into this pure module would put a UI type in front of a truth table.
-    """
-    if origin != "user":
-        return ActivationVerdict(allowed=True, needs_test=False)
-    current = verified_is_current(stored_verified_digest(app_config, sis_id), current_digest)
-    return ActivationVerdict(allowed=current, needs_test=not current)
 
 
 @dataclass(frozen=True)

@@ -191,6 +191,8 @@ mappings:
 | Module | Purpose |
 |--------|---------|
 | `src/config/app_config.py` | Runtime config (`config.json` in the per-user app-data dir) — SFTP host, schedule, paths, `setup_completed` |
+| `src/config/setup_rules.py` | The rules a district + folders save obeys (folder validators, `activation_allowed`) — one source for the window and `--configure` |
+| `src/config/district_setup.py` | Headless `--configure`: saves the district and both folders with the window's rules (DSYNC-109) |
 | `src/history/store.py` | SQLite run store (`history.db`) — sole run-record writer/reader; source of Run History (replaces the retired log parser) |
 | `src/sftp/uploader.py` | `SFTPUploader` — paramiko SFTP + OS keyring credential retrieval |
 | `src/scheduler/windows.py` | Windows Task Scheduler: PowerShell `Register-ScheduledTask` register + tri-state `read_schedule` read-back + `delete_task`; per-op elevation via `elevation.py` |

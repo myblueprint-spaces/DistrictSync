@@ -32,71 +32,17 @@ from typing import TYPE_CHECKING
 
 import flet as ft
 
+# The folder rules (``ValidationResult``, ``validate_input_dir``, ``validate_output_dir``) live in
+# ``src.config.setup_rules`` since DSYNC-109, so the headless ``--configure`` applies the same ones without
+# flet; re-exported here for ``setup_state``, ``PickerField`` and the screens that import them from this module.
+from src.config.setup_rules import ValidationResult as ValidationResult
+from src.config.setup_rules import validate_input_dir as validate_input_dir
+from src.config.setup_rules import validate_output_dir as validate_output_dir
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
-
-
-# --------------------------------------------------------------------------- #
-# Validation result — a small typed value consumed uniformly by PickerField /  #
-# setup_state (so a UI line + a save-gate read the same shape).                #
-# --------------------------------------------------------------------------- #
-@dataclass(frozen=True)
-class ValidationResult:
-    """Outcome of validating a picked path: ``ok`` + a plain-language ``message``."""
-
-    ok: bool
-    message: str
-
-
-# --------------------------------------------------------------------------- #
-# Boundary validation — both PURE (RC3)                                        #
-#   * validate_input_dir   — PURE (read-only stat: exists + is_dir)            #
-#   * validate_output_dir  — PURE-STRUCTURAL (parent exists + is_dir)          #
-# Paths are resolved first (``Path.resolve()``) to normalize. UNC paths        #
-# (``\\\\server\\share``) and symlinks are ACCEPTED — district servers use     #
-# them, and ``resolve()`` follows symlinks to a real target before the stat.   #
-# --------------------------------------------------------------------------- #
-def validate_input_dir(path: str) -> ValidationResult:
-    """PURE: an input GDE folder must EXIST and be a DIRECTORY.
-
-    Mirrors ``run_pipeline``'s ``input_dir.exists() and input_dir.is_dir()``
-    boundary (``src/etl/pipeline.py:292``). Rejects a missing path AND a path
-    that points at a file. Read-only stat — no side effects.
-    """
-    if not path or not path.strip():
-        return ValidationResult(False, "Choose the folder that holds your MyEd BC extract files.")
-    resolved = Path(path).resolve()
-    if not resolved.exists():
-        return ValidationResult(False, "That folder doesn't exist. Pick an existing folder.")
-    if not resolved.is_dir():
-        return ValidationResult(False, "That's a file, not a folder. Pick the folder it lives in.")
-    return ValidationResult(True, "Looks good — this folder is ready to read.")
-
-
-def validate_output_dir(path: str) -> ValidationResult:
-    """PURE-STRUCTURAL: the output folder's PARENT must exist and be a directory.
-
-    The output folder itself may not exist yet (the loader creates it), so we
-    validate the *parent* is a real directory — which rejects a path whose
-    parent is a file (an impossible location). This is read-only stat: it is
-    cheap enough to run on every keystroke, which is why it stays structural.
-
-    It deliberately does NOT answer "can we write there?" — that needs a real
-    filesystem effect and belongs at run time, where
-    ``etl.loader.output_target_problem`` performs it (and where its durable
-    backstop, the loader's backup-and-restore atomic ``save_all``, lives).
-    """
-    if not path or not path.strip():
-        return ValidationResult(False, "Choose where DistrictSync should write the output CSV files.")
-    resolved = Path(path).resolve()
-    parent = resolved.parent
-    if not parent.exists() or not parent.is_dir():
-        return ValidationResult(False, "That location isn't valid — its parent folder doesn't exist.")
-    if resolved.exists() and not resolved.is_dir():
-        return ValidationResult(False, "That's a file, not a folder. Pick a folder to write into.")
-    return ValidationResult(True, "Looks good — output will be written here.")
 
 
 # --------------------------------------------------------------------------- #

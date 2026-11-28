@@ -72,7 +72,8 @@ def parse_principal(text: str) -> PrincipalSpec:
 #: What each gate rung means on the command line. Every member has a line (pinned by a test).
 GATE_COPY: dict[RegisterBlock, str] = {
     RegisterBlock.INCOMPLETE: (
-        "The district and folders are not set up yet. Finish them in DistrictSync's Setup, then schedule."
+        "The district and folders are not set up yet. Finish them in DistrictSync's Setup or, on a computer with no "
+        "desktop, with DistrictSync.exe --configure --sis <district> --input <folder> --output <folder>, then schedule."
     ),
     RegisterBlock.RUN_TIME: "Give a run time with --time HH:MM.",
     RegisterBlock.INSTALL_NOT_SHAREABLE: (

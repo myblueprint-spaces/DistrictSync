@@ -1001,7 +1001,7 @@ def current_digest(sis_id: str) -> str | None:
 
     TOTAL: any load failure (absent config, unreadable file, failed version gate, invalid
     values after a hand edit) answers ``None``. ``None`` can only ever mean "not current"
-    — :func:`src.ui_flet.config_editor.verified_is_current` reads two ``None``s as False —
+    — :func:`src.config.setup_rules.verified_is_current` reads two ``None``s as False —
     so a broken config closes the activation gate instead of holding it open on a
     fingerprint nobody could compute.
     """

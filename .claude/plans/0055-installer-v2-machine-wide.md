@@ -200,7 +200,7 @@ The one-file exe keeps shipping. From the first MSI release it shows one Home ba
 | T3 | Stored-password local service account nightly | L | task fires as the account from Program Files, no console noise, run record carries a tag and the kind shows `service account` |
 | T4 | Domain service account (password) | L | same |
 | T5 | gMSA nightly, including the DSYNC-33 schedule check | L | check HEALTHY; nightly runs; Remove revokes |
-| T6 | Server Core: MSI, machine setup, schedule, nightly, `--diagnose` (no window), over console, WinRM and SSH | L | all headless steps succeed in each session type, or the refusal says what to do |
+| T6 | Server Core: MSI, machine setup, `--configure` (district and folders), schedule, nightly, `--diagnose` (no window), over console, WinRM and SSH | L | all headless steps succeed in each session type, or the refusal says what to do |
 | T7 | Upgrade from the one-file exe for each principal kind (signed-in, local password, domain password, gMSA), window and headless | L | settings, history, SFTP settings + secret (machine store) and task carried; `--sftp-test` passes as the principal before the task moves; old exe reported, not deleted |
 | T7b | Same, where the service account seeded its own keyring and the admin's profile has no SFTP settings | L | migration asks for them, tests delivery, then moves the nightly; never a night with exit 3 |
 | T7c | Migration interrupted at each step (kill the process), and a register failure after the delete | L | exactly one enabled nightly afterwards (the new one, or the old one re-registered); never two |
@@ -344,9 +344,10 @@ and existing partners we dont need to disturb but if anything comes up we can te
 | SFTP credential set-up (`--sftp-configure` interactive and headless, `--sftp-test`, `--sftp-show`) | Same; on a machine-wide install the secret lives in the machine store (plan 0049) | existing tests; lab row T4 (local domain) |
 | Schedule from Setup: signed-in account, stored-password service account, gMSA + the DSYNC-33 schedule check | Same code; the program sits in Program Files, which every account can read (the per-user install could not: G0) | existing tests; lab rows T4, T5 (local domain) |
 | Headless schedule set-up (one-file: raw `schtasks` from the docs) | **Gap fill:** `--schedule-register` / `--schedule-remove` (M3) | M3 tests; lab row T6 (lab-core) |
+| Headless district and folders (one-file: `--sis/--input/--output` on every run; the nightly bakes them in) | **Gap fill:** `--configure --sis <district> --input <folder> --output <folder>` (DSYNC-109) saves them to the shared profile with the window's rules, which `--schedule-register`'s gate needs | `tests/test_cli_configure.py`; lab row T6 (lab-core), to be rerun in the lab with the `--configure` step |
 | Machine scope provisioning (one-file: at the first foreign-principal Schedule press) | Same, plus `--machine-setup` (M2a, merged) and the first-run window step (M2b) | `tests/test_machine_setup.py`; lab row T6 (lab-core) |
 | Per-operation elevation (`--elevated-apply`), never running elevated | Same; the elevated child is the Program Files exe | existing tests; lab rows |
-| Server Core / headless servers | `msiexec /qn` + `--machine-setup` + `--schedule-register` + `--sftp-configure`, no window needed | lab row T6 (lab-core, Server Core) |
+| Server Core / headless servers | `msiexec /qn` + `--machine-setup` + `--configure` + `--sftp-configure` + `--schedule-register`, no window needed | lab row T6 (lab-core, Server Core) |
 | Scheduled task path (one-file: wherever the exe was saved, often Downloads) | **Improvement:** the stable `current\DistrictSync.exe`, unchanged by upgrades | B1 rehearsal upgrade step |
 | Updates (one-file: none, manual re-download) | **Improvement:** off / notify (default) / on, Group Policy enforceable (U1a), SYSTEM updater (U2) | `tests/test_update_mode.py`; U2/U3 tests; CI rehearsal |
 | Uninstall (one-file: delete the file) | MSI uninstall from Apps & features or `msiexec /x`, keeping profile, secret and nightly | B1 rehearsal (stand-in profile and task kept) |
