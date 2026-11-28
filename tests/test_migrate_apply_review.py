@@ -156,32 +156,8 @@ class TestH2TheGrant:
         assert _run().code == 0
         assert "grant" not in [step for step, _ in world["sched"].events]
 
-    def test_the_grant_is_provisionings_own_step(self, monkeypatch, tmp_path):
-        """The live grant goes through provisioning's existing additive step (RX root, M runs), and reports whether
-        the account was new so only a new grant is ever taken back."""
-        from src.scheduler import provisioning
-
-        root = tmp_path / "ProgramData" / "DistrictSync"
-        (root / "runs").mkdir(parents=True)
-        monkeypatch.setattr(provisioning, "_refuse_under_override", lambda: None)
-        monkeypatch.setattr(provisioning, "_machine_root", lambda: root)
-        monkeypatch.setattr(provisioning.paths, "assert_machine_dir_trusted", lambda path: None)
-        monkeypatch.setattr(provisioning, "current_run_as_user", lambda: ADMIN)
-        monkeypatch.setattr(
-            provisioning, "_sid_for", lambda account: {ADMIN: "S-1-5-21-1", ACCOUNT: "S-1-5-21-2"}[account]
-        )
-        aces: list[tuple[int, str]] = [(0, "S-1-5-21-1")]
-        monkeypatch.setattr(provisioning.paths, "_read_dacl_aces", lambda path: tuple(aces))
-        calls: list[list[str]] = []
-        monkeypatch.setattr(provisioning, "_run_icacls", lambda args: calls.append(args) or 0)
-
-        assert provisioning.grant_principal(ACCOUNT, PrincipalKind.PASSWORD) is True
-        assert [c[-1] for c in calls] == [f"{ACCOUNT}:(OI)(CI)RX", f"{ACCOUNT}:(OI)(CI)M"]
-        aces.append((0, "S-1-5-21-2"))
-        assert provisioning.grant_principal(ACCOUNT, PrincipalKind.PASSWORD) is False  # already there
-        calls.clear()
-        provisioning.revoke_principal(ACCOUNT, PrincipalKind.PASSWORD)
-        assert all("/remove:g" in c for c in calls) and len(calls) == 2
+    # The grant itself (recorded first, 115's revoke, the record kept in step) is pinned against 115's own rig:
+    # tests/test_provisioning.py::TestMigrateGrantRecord.
 
 
 # --------------------------------------------------------------------------- #

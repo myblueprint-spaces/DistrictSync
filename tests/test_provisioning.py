@@ -1698,3 +1698,77 @@ class TestNoAccountNameInTheRegistry:
 
     def test_no_key_is_written_the_tag_uses_the_machine_guid(self):
         assert "SALT" not in self._source() and "REG_BINARY" not in self._source()
+
+
+class TestMigrateGrantRecord:
+    """DSYNC-116 + DSYNC-115: ``--migrate --apply``'s grant goes through the grant RECORD, so a later Remove revokes it,
+    and the move's own rollback revokes a NEW grant and takes it out of the record. 115's functions, not copies."""
+
+    PAYLOAD = {"op": "prune_principal", "task_name": "DistrictSync_Daily", "user": "CORP\\svc", "kind": "password"}
+
+    @pytest.fixture()
+    def root(self, rig, machine_root):
+        (machine_root / "runs").mkdir(parents=True)
+        return machine_root
+
+    def test_the_sid_is_recorded_before_any_ace_is_granted(self, rig, root):
+        rig.ledger = []
+        assert provisioning.grant_principal("CORP\\svc", PrincipalKind.PASSWORD) is True
+        assert rig.events[0] == ("ledger", _PRINCIPAL_SID)
+        assert [kind for kind, _sid in rig.events[1:]] == ["grant", "grant"]
+        assert rig.ledger == [_PRINCIPAL_SID]
+        assert rig.aces(root, _PRINCIPAL_SID) and rig.aces(root / "runs", _PRINCIPAL_SID)
+
+    def test_a_later_remove_revokes_what_the_move_granted(self, rig, root):
+        rig.ledger = []
+        provisioning.grant_principal("CORP\\svc", PrincipalKind.PASSWORD)
+        provisioning.apply_prune_principal(self.PAYLOAD)
+        assert rig.aces(root, _PRINCIPAL_SID) == [] and rig.aces(root / "runs", _PRINCIPAL_SID) == []
+        assert rig.ledger == []
+
+    def test_the_moves_rollback_revokes_a_new_grant_and_drops_only_it_from_the_record(self, rig, root):
+        rig.ledger = [_OTHER_SID]
+        rig.seed_granted(root, _OTHER_SID)
+        assert provisioning.grant_principal("CORP\\svc", PrincipalKind.PASSWORD) is True
+        assert rig.ledger == [_OTHER_SID, _PRINCIPAL_SID]
+        provisioning.revoke_principal("CORP\\svc", PrincipalKind.PASSWORD)
+        assert rig.aces(root, _PRINCIPAL_SID) == [] and rig.aces(root / "runs", _PRINCIPAL_SID) == []
+        assert rig.ledger == [_OTHER_SID]
+        assert rig.aces(root, _OTHER_SID)  # positive twin: another recorded account is untouched
+        assert all(args[2] == f"*{_PRINCIPAL_SID}" for args in rig.icacls if args[1] == "/remove:g")  # by SID
+
+    def test_an_account_that_already_had_access_is_not_new_but_is_recorded(self, rig, root):
+        """Not new: the move never takes it back (the old nightly may use it). Recorded: a later Remove revokes it."""
+        rig.seed_granted(root, _PRINCIPAL_SID)
+        assert provisioning.grant_principal("CORP\\svc", PrincipalKind.PASSWORD) is False
+        assert rig.ledger == [_PRINCIPAL_SID]
+
+    def test_the_rollback_keeps_an_ace_districtsync_did_not_make(self, rig, root):
+        rig.ledger = []
+        rig.seed(root, _PRINCIPAL_SID, "F")  # somebody else's full control
+        provisioning.grant_principal("CORP\\svc", PrincipalKind.PASSWORD)
+        with pytest.raises(provisioning.ProvisionRefused) as caught:
+            provisioning.revoke_principal("CORP\\svc", PrincipalKind.PASSWORD)
+        assert caught.value.step is provisioning.ProvisionStep.PRUNE
+        assert rig.aces(root, _PRINCIPAL_SID)  # kept
+        assert rig.ledger == [_PRINCIPAL_SID]  # and still recorded, so a Remove reports it
+
+    def test_a_record_that_cannot_be_written_grants_nothing(self, rig, root, monkeypatch):
+        def refuse(_sids):
+            raise OSError("registry denied")
+
+        monkeypatch.setattr(provisioning, "_write_grant_ledger_value", refuse)
+        rig.ledger = []
+        with pytest.raises(provisioning.ProvisionRefused):
+            provisioning.grant_principal("CORP\\svc", PrincipalKind.PASSWORD)
+        assert rig.icacls == []
+
+    def test_the_administrator_is_never_recorded_or_granted(self, rig, root):
+        rig.ledger = []
+        assert provisioning.grant_principal("CORP\\jane", PrincipalKind.PASSWORD) is False
+        assert rig.ledger == [] and rig.icacls == []
+
+    def test_no_todo_is_left_for_the_record(self):
+        source = Path(provisioning.__file__).read_text(encoding="utf-8")
+        assert "TODO(DSYNC-115" not in source
+        assert "_record_grant(principal_sid)" in source  # positive twin: the scan reads the module
