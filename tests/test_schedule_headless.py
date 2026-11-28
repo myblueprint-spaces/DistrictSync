@@ -478,6 +478,93 @@ class TestTheBatchRight:
         assert "Log on as a batch job" in capsys.readouterr().out
 
 
+class TestTheLabCaseLocalAccount:
+    """DSYNC-111 round 2: the LAB case — ``password:<COMPUTER>\\svc_local``, a plain local account — must exit 4.
+
+    The elevated child reads the local account's whole batch-logon token (``batch_right._read_right_live``) and hands the
+    state back on ``ProvisionAttempt.batch_right``. Driven here through the real chain with only the two OS seams
+    replaced: ``batch_right._local_facts`` (LSA + Net API) and ``schedule_check.read_batch_right`` (the direct read).
+    """
+
+    MACHINE = "S-1-5-21-1000-2000-3000"
+    USER = f"{MACHINE}-1001"
+
+    @pytest.fixture()
+    def run(self, sched, monkeypatch):
+        from src.scheduler import batch_right
+        from src.scheduler.schedule_check import RightState
+
+        facts: dict = {"value": None, "direct": RightState.NOT_DIRECT}
+        monkeypatch.setattr(batch_right, "_local_facts", lambda account: facts["value"])
+        monkeypatch.setattr("src.scheduler.schedule_check.read_batch_right", lambda account, **kw: facts["direct"])
+
+        def request_provision(*args, **kwargs):
+            # What the elevated child does: run the live read and carry the state back.
+            state = batch_right._read_right_live(kwargs["principal"].user)
+            return provision_session.ProvisionAttempt(
+                outcome=provision_session.ProvisionOutcome.PROVISIONED, batch_right=state
+            )
+
+        def complete_handover(*, persist, reenter):
+            persist()
+            return provision_session.HandoverOutcome(handed_over=True)
+
+        monkeypatch.setattr(provision_session, "request_provision", request_provision)
+        monkeypatch.setattr(provision_session, "complete_handover", complete_handover)
+        monkeypatch.setattr(batch_right, "read_right", lambda account: pytest.fail("the parent re-read the right"))
+        return facts
+
+    def _local(self, *, holders=(), denies=(), groups=("S-1-5-32-545",)):
+        from src.scheduler import batch_right
+
+        return batch_right.LocalFacts(
+            account_sid=self.USER,
+            user_group_sids=frozenset(groups),
+            alias_members={},
+            batch_holders=frozenset(holders),
+            deny_holders=frozenset(denies),
+        )
+
+    def _register(self, account="PC\\svc_local"):
+        return headless.register(
+            run_time="02:00", spec=_spec(f"password:{account}"), password=SECRET, wake_to_run=False
+        )
+
+    def test_a_local_account_with_no_right_exits_4(self, run):
+        from src.scheduler import batch_right
+
+        run["value"] = self._local(holders=("S-1-5-32-544", "S-1-5-32-551", "S-1-5-32-559"))  # Windows' defaults
+        code, message = self._register()
+        assert code == 4 and AppConfig.load().schedule_registered
+        assert batch_right.NOT_HELD_DETAIL in message
+
+    def test_a_local_group_that_holds_it_exits_0(self, run):
+        group = f"{self.MACHINE}-1010"
+        run["value"] = self._local(holders=(group,), groups=("S-1-5-32-545", group))
+        code, _ = self._register()
+        assert code == 0
+
+    def test_administrators_exits_0(self, run):
+        run["value"] = self._local(holders=("S-1-5-32-544",), groups=("S-1-5-32-545", "S-1-5-32-544"))
+        assert self._register()[0] == 0
+
+    def test_everyone_exits_0(self, run):
+        run["value"] = self._local(holders=("S-1-1-0",))
+        assert self._register()[0] == 0
+
+    def test_explicitly_denied_exits_4(self, run):
+        run["value"] = self._local(holders=("S-1-1-0",), denies=(self.USER,))
+        assert self._register()[0] == 4
+
+    def test_a_domain_account_is_unchanged(self, run):
+        """Not local (``_local_facts`` answers None): the direct read's NOT_DIRECT stays an advisory, exit 0."""
+        from src.scheduler import batch_right
+
+        run["value"] = None
+        code, message = self._register("CORP\\svc")
+        assert code == 0 and batch_right.INCONCLUSIVE_LINE in message
+
+
 class TestRemove:
     def test_it_removes_and_clears_the_record(self, sched):
         headless.register(run_time="02:30", spec=_spec("current"), password=None, wake_to_run=False)

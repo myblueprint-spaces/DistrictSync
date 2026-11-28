@@ -304,6 +304,9 @@ def _no_real_lsa_read(monkeypatch: pytest.MonkeyPatch) -> None:
     from src.scheduler.schedule_check import RightState
 
     monkeypatch.setattr(batch_right, "read_right", lambda account: RightState.UNKNOWN)
+    # Round 2: the local-account token read (LSA + Net API) behind it, for tests that restore the live chain.
+    # ``tests/test_batch_right.py`` asserts this patch lands, so ``raising=False`` cannot hide a rename.
+    monkeypatch.setattr(batch_right, "_local_facts", lambda account: None, raising=False)
 
 
 @pytest.fixture(autouse=True)
