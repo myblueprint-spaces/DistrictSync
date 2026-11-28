@@ -13,6 +13,16 @@ Supersedes: nothing
 
 **Consequences.** A writer that adds bytes to the user mappings folder must call `ensure_user_mappings_dir()` first; a failed load-back now leaves no folder behind. Tests that plant overlays create the folder themselves.
 
+## 2026-11-27 - DSYNC-113: one script derives the installer's version; the installed app is checked against its package
+
+Supersedes: nothing
+
+**Decided.** `scripts/release_version.py` is the only place `release.yml`'s installer jobs get a version: it stamps `src/_version.py` and supplies every `vpk pack --packVersion`. Mapping: tag `vX.Y.Z` -> package `X.Y.Z` -> MSI ProductVersion `X.Y.Z.0` -> `--version` prints `DistrictSync X.Y.Z`; a dispatch rehearsal uses `0.0.<run>`. A tag that is not exactly `vX.Y.Z` now fails the installer build (every tag to date has that shape). The MSI rehearsal's pair moved from `0.<run>.0`/`0.<run>.1` to `0.0.(<run>-1)`/`0.0.<run>`, so N+1 IS the stamped version. `installer-windows` (tag and rehearsal) and `installer-msi` (after the N+1 upgrade, plus the installed MSI's ProductVersion) fail unless the installed app agrees with its package.
+
+**Why.** The plan 0055 lab saw `DistrictSync 0.0.57` from MSI `0.57.1.0` (run 46057942795): the app was stamped `0.0.<run>` while the MSI job invented its own scheme for the same folder. On a tag the two already agreed, but through two hand-written spellings (bash and PowerShell) with nothing checking the result. The old MSI scheme would also have broken at run 256 (an MSI minor field holds at most 255).
+
+**Consequences.** MSI N's app still reports N+1's version (one folder packed twice; rebuilding it per version is not worth a second PyInstaller pack). `flet-pack.yml`'s one-file exe still stamps itself (`dev` off a tag) and is not covered: it has no package version to agree with.
+
 
 ## 2026-11-27 - DSYNC-109: headless `--configure` saves the district and folders with the window's rules, moved to the config layer
 

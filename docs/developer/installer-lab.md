@@ -27,6 +27,11 @@ VirtualBox or VMware installed.
    Server Core and Desktop Experience.
 3. Nothing else: the MSI comes from the B1 rehearsal artifact, and the repo's fixtures are the data.
 
+**Rehearsal MSI versions changed (DSYNC-113).** Rehearsal MSIs before DSYNC-113 were `0.R.0`/`0.R.1` (`R` = the
+run number); from DSYNC-113 they are `0.0.(R-1)`/`0.0.R`, the version stamped into the app. A VM that installed
+an old-scheme MSI must uninstall it (`msiexec /x`), or revert to the `clean` snapshot, before a new-scheme MSI is
+used: `0.0.R` is lower than `0.R.x`, so over an old install the new one looks like a downgrade.
+
 **Capacity.** RAM is the limit: a Server Core VM needs 2 GB, a Desktop Experience VM 4 GB. A domain pair (DC 2 GB + member
 4 GB) fits while other heavy apps are closed; a third VM (Server Core member) runs only with the Desktop member stopped.
 Disk: each VM has a 32 GB thin disk (the Server 2022 minimum; owner 2026-11-26), so the three can never pass 96 GB together.

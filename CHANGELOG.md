@@ -51,6 +51,12 @@ Per-release download links and auto-generated commit notes live on the
   such a nightly sync registered fine but never started. Setup now says so before any permission
   prompt and points to the single-file `DistrictSync-windows.exe` for those setups (plan 0055 G0).
 
+- **A settings file edited by hand in Windows PowerShell is read again.** Saving `config.json` with
+  `Set-Content -Encoding UTF8` (Windows PowerShell 5.1) adds a byte-order mark at the start of the file.
+  DistrictSync reported such a file as "truncated or corrupt" and ran on default settings; it now reads
+  it normally, including during computer setup and `--migrate`. Files DistrictSync saves itself still have
+  no byte-order mark (DSYNC-112).
+
 ### Changed
 
 - **SD74: every teacher MyEd lists on a class is enrolled.** A class can have more than one

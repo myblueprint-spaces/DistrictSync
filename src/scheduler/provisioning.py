@@ -65,6 +65,7 @@ from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
 
+from src.config.app_config import decode_settings_bytes
 from src.scheduler import task_com
 from src.scheduler.windows import current_run_as_user
 from src.update import policy
@@ -514,7 +515,7 @@ def migrate_profile(source: Path, destination: Path) -> None:
             staged = staging / name
             if name == "config.json":
                 staged.write_text(
-                    json.dumps(json.loads(origin.read_text(encoding="utf-8")), indent=2), encoding="utf-8"
+                    json.dumps(json.loads(decode_settings_bytes(origin.read_bytes())), indent=2), encoding="utf-8"
                 )
             else:
                 shutil.copy2(origin, staged)
