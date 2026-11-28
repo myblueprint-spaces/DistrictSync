@@ -215,6 +215,7 @@ def world(monkeypatch, tmp_path):
     monkeypatch.setattr(migration_apply, "_own_update_exe", lambda: None)
     monkeypatch.setattr(migration_apply, "_uninstall", lambda exe: state["uninstalled"].append(exe) or 0)
     monkeypatch.setattr(migration_move, "_live_ops", lambda: state["ops"])
+    monkeypatch.setattr(migration_move, "_clock", lambda: 0.0)  # always before the parent's deadline
     # The child (a real elevated_apply) checks an interactive-token registration against the signed-in account.
     monkeypatch.setattr(windows, "current_run_as_user", lambda: ADMIN)
 
@@ -265,9 +266,12 @@ class Collect:
         self.asked_password.append(account)
         return self.password
 
-    def delivery(self) -> str | None:
+    def prepare_delivery(self) -> str | None:
         self.delivery_calls += 1
         return self.delivery_error
+
+    def save_delivery(self) -> None:
+        self.saved = True
 
 
 def _run(*, declared=None, collect=None, flags=False, now=NOON) -> migration_apply.ApplyResult:
@@ -526,8 +530,13 @@ class TestDiscoveryCases:
         assert world["state"]["uninstalled"] == []
 
     def test_another_accounts_per_user_install_gets_the_one_command(self, world, monkeypatch):
-        _with_record()
+        """The signed-in administrator's nightly ran a copy installed under another account's profile. (Run by a
+        DIFFERENT account, that copy could not be put back: review M3 refuses it.)"""
         monkeypatch.setattr(migration_apply, "_old_is_per_user_install", lambda program: True)
+        facts = world["sched"].tasks[NAME]
+        world["sched"].tasks[NAME] = TaskFacts(
+            **{**facts.__dict__, "run_as": ADMIN, "logon_type": task_com.TASK_LOGON_INTERACTIVE_TOKEN}
+        )
         result = _run()
         assert result.code == 0
         assert world["state"]["uninstalled"] == []
@@ -757,13 +766,14 @@ class TestTheSequenceInIsolation:
         assert out.stage is migration_move.MoveStage.MOVED and out.check == OK_CHECK
 
     def test_a_register_that_raised_but_landed_is_moved(self, world):
-        """A bounded register that TIMED OUT may still have completed: the read-back decides, never the raise."""
+        """A register that RAISED may still have completed: the read-back decides, never the raise. (A TIMED-OUT one
+        is UNSETTLED instead, review M4: tests/test_migrate_apply_review.py.)"""
         sched = world["sched"]
 
         class LateOps(FakeOps):
             def register(self, params):
                 super().register(params)
-                raise task_com.BoundedTimeout("register")
+                raise TaskComError(None, task_com.MSG_OPERATION_FAILED)
 
         new = self._params(world, world["new"], "--sis myedbc")
         old = self._params(world, world["old"], "--sis myedbc")
@@ -940,6 +950,7 @@ class TestTheChildOp:
             old_exe="C:\\old.exe",
             old_arguments="--sis myedbc",
             old_working_dir="C:\\",
+            deadline=0.0,
         )
         assert payload["op"] == migration_move.OP
         assert set(payload) >= migration_move.REQUIRED_FIELDS

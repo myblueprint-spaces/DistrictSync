@@ -342,6 +342,74 @@ def module_prefix(exe_path: Path) -> str:
     return "-m src.main " if PureWindowsPath(exe_path).name.lower().startswith("python") else ""
 
 
+def quote_arg(value: str) -> str:
+    """One argument, double-quoted so ``CommandLineToArgvW`` gives back exactly ``value`` (DSYNC-116 review H1).
+
+    A backslash is literal unless quotes follow it, so only the backslashes that run into a quote (an embedded one, or
+    the closing one) are doubled: ``D:\\`` becomes ``"D:\\\\"``, not ``"D:\\"``, whose closing quote Windows would read
+    as a literal quote. An ordinary path is unchanged: ``"C:\\GDE\\in"``. :func:`split_command_line` is the inverse.
+    """
+    out: list[str] = []
+    backslashes = 0
+    for char in value:
+        if char == "\\":
+            backslashes += 1
+            continue
+        if char == '"':
+            out.append("\\" * (2 * backslashes + 1) + '"')
+        else:
+            out.append("\\" * backslashes + char)
+        backslashes = 0
+    out.append("\\" * (2 * backslashes))
+    return '"' + "".join(out) + '"'
+
+
+def split_command_line(text: str) -> list[str]:
+    """Split a task's ``Arguments`` the way the started program sees them: ``CommandLineToArgvW``'s rules.
+
+    ``2n`` backslashes before a quote are ``n`` backslashes and the quote opens or closes a quoted run; ``2n+1`` are
+    ``n`` and a literal quote; a backslash anywhere else is literal (a UNC ``\\\\srv`` stays as it is). POSIX ``shlex``
+    is NOT this. Raises ``ValueError`` for an unclosed quote: not a command line this app writes.
+    """
+    args: list[str] = []
+    current: list[str] = []
+    in_arg = quoted = False
+    i, n = 0, len(text)
+    while i < n:
+        char = text[i]
+        if char == "\\":
+            j = i
+            while j < n and text[j] == "\\":
+                j += 1
+            count = j - i
+            in_arg = True
+            if j < n and text[j] == '"':
+                current.append("\\" * (count // 2))
+                if count % 2:
+                    current.append('"')
+                    j += 1
+            else:
+                current.append("\\" * count)
+            i = j
+            continue
+        if char == '"':
+            quoted = not quoted
+            in_arg = True
+        elif char in " \t" and not quoted:
+            if in_arg:
+                args.append("".join(current))
+                current, in_arg = [], False
+        else:
+            current.append(char)
+            in_arg = True
+        i += 1
+    if quoted:
+        raise ValueError("unclosed quote")
+    if in_arg:
+        args.append("".join(current))
+    return args
+
+
 def _build_action_args(
     exe_path: Path,
     sis_type: str,
@@ -377,9 +445,9 @@ def _build_action_args(
             "--sis",
             sis_type,
             "--input",
-            f'"{input_dir}"',
+            quote_arg(str(input_dir)),
             "--output",
-            f'"{output_dir}"',
+            quote_arg(str(output_dir)),
         ]
     else:
         working_dir = exe_path.parent
@@ -387,9 +455,9 @@ def _build_action_args(
             "--sis",
             sis_type,
             "--input",
-            f'"{input_dir}"',
+            quote_arg(str(input_dir)),
             "--output",
-            f'"{output_dir}"',
+            quote_arg(str(output_dir)),
         ]
     if sftp:
         arg_parts.append("--sftp")

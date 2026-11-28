@@ -30,11 +30,12 @@ for misuse).
 from __future__ import annotations
 
 import logging
-import shlex
 import subprocess
+import sys
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
@@ -45,6 +46,7 @@ from src.scheduler.schedule_check import ScheduleCheck
 from src.scheduler.task_com import (
     TASK_LOGON_INTERACTIVE_TOKEN,
     TASK_LOGON_PASSWORD,
+    TASK_STATE_RUNNING,
     PrincipalKind,
     TaskFacts,
 )
@@ -123,7 +125,10 @@ PROBE_FAILED = (
     "changed. See the schedule check in the managed service accounts guide, fix it, then run this again."
 )
 DELETE_FAILED = "The old nightly could not be removed, so it was left exactly as it was."
-ROLLED_BACK = "Scheduling the nightly for this copy failed, so the old nightly was put back as it was."
+ROLLED_BACK = (
+    "Scheduling the nightly for this copy failed, so the old nightly was registered again: the same time, account, "
+    "program and command line, with DistrictSync's own run level and limits."
+)
 NO_NIGHTLY_NOW = (
     "There is NO nightly now: the old one was removed and the new one could not be confirmed or registered. Put it "
     "back as the way back below says, before the next run time."
@@ -142,6 +147,7 @@ NOT_RUN_REASONS: dict[str, str] = {
     "launch_failed": "Windows did not show the permission prompt",
     "different_account": "the permission prompt was answered by a different administrator",
     "unavailable": "the request could not be prepared; see the log",
+    "refused": "the elevated step refused the request; see the log",
 }
 OLD_COPIES_KEPT = "Old copies were left as they are, because the nightly does not run this copy."
 ONE_FILE_KEPT = (
@@ -167,6 +173,44 @@ WAY_BACK = (
     "time for that account: from the old copy, in its Setup > Schedule; or from this copy, DistrictSync.exe "
     "--schedule-register --time {time} --principal {principal}{wake_flag}."
 )
+
+DISABLED = (
+    "The nightly is switched off in Task Scheduler, so it was not moved (scheduling it again would switch it on). "
+    "Switch it on, or remove it and schedule from this copy when you want it."
+)
+RUNNING_NOW = "The nightly is running now, so nothing was changed. Run this again once it has finished."
+INPUT_MISSING = (
+    "The nightly's extract folder cannot be found from this account, so nothing was changed. Check the folder, or "
+    "set it again with --configure, then run this again."
+)
+OUTPUT_PARENT_MISSING = (
+    "The folder that holds the nightly's output folder cannot be found from this account, so nothing was changed."
+)
+DISTRICT_UNRESOLVED = (
+    "The nightly's district settings ({sis}) cannot be loaded from the shared settings, so nothing was changed. A "
+    "mapping saved only in the nightly account's own profile is not copied: add it to this copy (Mapping) first."
+)
+OLD_PER_USER_FOREIGN = (
+    "The old nightly runs a copy installed for one Windows account as a different account, so it could not be put "
+    "back if the move failed, and nothing was changed. Remove it (DistrictSync.exe --schedule-remove from the old "
+    "copy) and schedule it again from this copy (--schedule-register)."
+)
+GRANT_FAILED = (
+    "The nightly's account could not be given access to the shared settings, so nothing was changed. See the log."
+)
+TOO_LATE = "It got too close to the nightly's run time before the old nightly was removed, so nothing was changed."
+UNSETTLED_NOW = (
+    "A step in Task Scheduler did not answer in time and may still finish, so what it holds now is not certain: "
+    "check Task Scheduler (or run DistrictSync.exe --migrate) for the nightly before its run time, and if there is "
+    "none, put it back as the way back below says."
+)
+UNINSTALL_SKIPPED_RUNNING = (
+    "The copy installed for this Windows account was not removed, because the nightly is running now. Remove it from "
+    "Windows Settings > Apps later."
+)
+
+#: After an UNSETTLED answer the parent waits this long before its read-back: the longest a timed-out step can run.
+UNSETTLED_WAIT_S = 120.0
 
 #: The kind, in words, and the ``--principal`` form a person types, with the account as a placeholder (N1).
 KIND_WORDS: dict[PrincipalKind, tuple[str, str]] = {
@@ -200,10 +244,13 @@ def parse_arguments(text: str | None) -> NightlyCommand | None:
     Accepted: ``[-m src.main] --sis S --input "I" --output "O" [--sftp] [--source scheduled]``, each at most once. Any
     other token is a nightly someone changed by hand, and moving it would silently drop what they added.
     """
+    from src.scheduler.windows import split_command_line
     from src.utils.validators import validate_sis_type
 
     try:
-        tokens = shlex.split(text or "", posix=True)
+        # CommandLineToArgvW's rules, which is how the nightly's own program reads them (review H1): POSIX shlex ate a
+        # UNC path's leading backslash and every backslash of an unquoted path.
+        tokens = split_command_line(text or "")
     except ValueError:
         return None
     if tokens[:2] == ["-m", "src.main"]:
@@ -280,8 +327,11 @@ class OldNightly:
             and facts.run_as
             and facts.logon_type is not None
             and facts.wake_to_run is not None
+            and facts.enabled is not None
         ):
             return UNREADABLE_FACTS
+        if not facts.enabled:
+            return DISABLED
         command = parse_arguments(facts.arguments)
         if command is None:
             return UNKNOWN_COMMAND
@@ -368,8 +418,12 @@ class Collect(Protocol):
         """The nightly account's Windows password: env, ``--task-password-stdin`` or a prompt. Never logged."""
         ...
 
-    def delivery(self) -> str | None:
-        """Put delivery's settings and password in the shared settings; ``None`` when done, else why not."""
+    def prepare_delivery(self) -> str | None:
+        """Gather delivery's settings and password (nothing saved yet); ``None`` when ready, else why not."""
+        ...
+
+    def save_delivery(self) -> None:
+        """Save what :meth:`prepare_delivery` gathered into the shared settings and the machine store."""
         ...
 
 
@@ -393,6 +447,16 @@ class Final(Enum):
     MISSING = "missing"
     ELSEWHERE = "elsewhere"
     UNKNOWN = "unknown"
+
+
+#: What the parent's read-back found, in words (for the UNSETTLED report; it is never claimed as the result).
+FINAL_WORDS: dict[Final, str] = {
+    Final.NEW: "the nightly runs this copy.",
+    Final.OLD: "the old nightly is in place.",
+    Final.MISSING: "there is no nightly.",
+    Final.ELSEWHERE: "the nightly runs a program that is neither this copy nor the old one.",
+    Final.UNKNOWN: "the nightly could not be read.",
+}
 
 
 # --------------------------------------------------------------------------- #
@@ -458,9 +522,30 @@ def _install_root(program: str) -> Path | None:
         return None
 
 
-def _uninstall(update_exe: Path) -> int:  # pragma: no cover - runs the real per-user uninstaller (lab T8)
-    """``Update.exe uninstall --silent``, as THIS account, on its own copy. The exit code; -1 when it could not run."""
+def _new_program() -> Path:
+    """The program the moved nightly runs: this executable as Windows started it, NOT resolved (review L3), exactly
+    as ``--schedule-register`` registers it (``…\\current\\DistrictSync.exe``)."""
+    return Path(sys.executable)
+
+
+def _load_district(sis: str) -> object:
+    """Load the nightly's district config the way the nightly will: under the shared profile (review M6). Raises."""
+    from src.config.loader import load_config
+
+    return load_config(sis)
+
+
+def _sleep(seconds: float) -> None:
+    time.sleep(seconds)
+
+
+def _uninstall(update_exe: Path) -> int:
+    """``Update.exe uninstall --silent``, as THIS account, on its own copy. The exit code; -1 when it could not run.
+
+    Its environment has no password variable in it (review M5).
+    """
     from src.utils.helpers import subprocess_no_window_flags
+    from src.utils.secret_env import scrubbed_environ
 
     try:
         completed = subprocess.run(  # nosec B603 - this account's own installer, list-form, shell=False
@@ -469,6 +554,7 @@ def _uninstall(update_exe: Path) -> int:  # pragma: no cover - runs the real per
             timeout=UNINSTALL_TIMEOUT_S,
             check=False,
             creationflags=subprocess_no_window_flags(),
+            env=scrubbed_environ(),
         )
     except (OSError, subprocess.SubprocessError):
         return -1
@@ -506,8 +592,15 @@ def _elevate(payload: dict[str, object]) -> ChildAnswer:
         try:
             stage = MoveStage(message)
         except ValueError:
-            # A refusal before the sequence (an invalid request, no COM): the read-back still decides.
-            logger.warning("The elevated move refused before it started.")
+            from src.scheduler.elevated_apply import _MSG_CHILD_FLOOR, CHILD_REFUSALS
+            from src.scheduler.task_com import MSG_COM_UNAVAILABLE
+
+            # The floor can be written AFTER the sequence (a result-file write that failed), so it is never "not run".
+            if message in (*CHILD_REFUSALS, MSG_COM_UNAVAILABLE) and message != _MSG_CHILD_FLOOR:
+                # The child validates the whole request before it changes anything (review M3).
+                logger.warning("The elevated move refused the request before it started.")
+                return ChildAnswer(AnswerKind.NOT_RUN, reason="refused")
+            logger.warning("The elevated move ended without a stage; reading the task back.")
             return ChildAnswer(AnswerKind.UNCONFIRMED)
         return ChildAnswer(AnswerKind.ANSWERED, stage=stage, check=ScheduleCheck.from_wire(result.get("check")))
     except (OSError, RuntimeError, ValueError) as exc:
@@ -559,22 +652,16 @@ def _final(task_name: str, old_program: str) -> Final:
     return Final.ELSEWHERE
 
 
-def _delivery_step(
-    report: Report, cfg: AppConfig, *, delivers: bool, collect: Collect, flags_given: bool
-) -> ApplyResult | None:
-    """Step 3. ``None`` when delivery is fine (or off); the refusal otherwise. Nothing here touches the nightly."""
+def _delivery_needed(cfg: AppConfig, *, delivers: bool, flags_given: bool) -> bool:
+    return delivers and (
+        flags_given or not cfg.sftp_is_configured() or migration._delivery_in_machine_store(cfg) is not True
+    )
+
+
+def _delivery_test(report: Report) -> ApplyResult | None:
+    """The ``--sftp-test`` logic; the refusal when it fails. Nothing here touches the nightly."""
     from src.config.app_config import AppConfig
 
-    if not delivers:
-        report.found.append(DELIVERY_OFF)
-        if flags_given:
-            report.left.append(DELIVERY_FLAGS_UNUSED)
-        return None
-    if flags_given or not cfg.sftp_is_configured() or migration._delivery_in_machine_store(cfg) is not True:
-        problem = collect.delivery()
-        if problem is not None:
-            return _refuse(report, problem)
-        report.moved.append("Delivery's settings and password were saved in the shared settings.")
     ok, _detail = _test_delivery(AppConfig.load())  # the detail can carry the SFTP account: printed by --sftp-test only
     if not ok:
         return _refuse(report, DELIVERY_FAILED)
@@ -597,17 +684,21 @@ def _recorded(cfg: AppConfig) -> tuple[str, PrincipalKind] | None:
     return record.run_as_user or "", record.run_as_kind
 
 
-def _old_copies(report: Report, old_program: str | None) -> None:
-    """Step 5, only once the nightly runs this copy."""
+def _old_copies(report: Report, old_program: str | None, task_name: str) -> None:
+    """Step 5, only once the nightly runs this copy, and never while it is running (review M2)."""
     from src.update.package import PACK_ID
 
     own = _own_update_exe()
     if own is not None:
-        code = _uninstall(own)
-        if code == 0:
-            report.moved.append(OWN_COPY_REMOVED)
+        _state, facts = _read(task_name)
+        if facts is not None and facts.state == TASK_STATE_RUNNING:
+            report.left.append(UNINSTALL_SKIPPED_RUNNING)
         else:
-            report.left.append(OWN_COPY_NOT_REMOVED.format(code=code))
+            code = _uninstall(own)
+            if code == 0:
+                report.moved.append(OWN_COPY_REMOVED)
+            else:
+                report.left.append(OWN_COPY_NOT_REMOVED.format(code=code))
     if old_program is None:
         return
     if _old_is_per_user_install(old_program):
@@ -628,6 +719,45 @@ def _way_back(old: OldNightly, kind: PrincipalKind) -> str:
         principal=principal,
         wake_flag=" --wake" if old.wake_to_run else "",
     )
+
+
+def _deadline(run_time: str, now: datetime) -> float:
+    """Epoch seconds after which the child refuses the delete: :data:`NEAR_RUN_MINUTES` before the next run."""
+    hour, minute = (int(part) for part in run_time.split(":"))
+    run_at = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if run_at <= now:
+        run_at += timedelta(days=1)
+    return (run_at - timedelta(minutes=NEAR_RUN_MINUTES)).timestamp()
+
+
+def _folders_problem(command: NightlyCommand) -> str | None:
+    """The nightly's folders, checked from this account before anything changes (review H1)."""
+    try:
+        if not Path(command.input_dir).is_dir():
+            return INPUT_MISSING
+        output = Path(command.output_dir)
+        if not (output.is_dir() or output.parent.is_dir()):
+            return OUTPUT_PARENT_MISSING
+    except OSError:
+        return INPUT_MISSING
+    return None
+
+
+def _not_ready(old: OldNightly, kind: PrincipalKind, account: str, current: str) -> str | None:
+    """Every refusal that needs no prompt and no change, in one place (H1 folders, M6 district, M3 old copy)."""
+    folders = _folders_problem(old.command)
+    if folders is not None:
+        return folders
+    try:
+        _load_district(old.command.sis)
+    except Exception as exc:  # noqa: BLE001 - any failure to load is "not resolvable here"; the class is logged
+        logger.warning("Migration: the nightly's district config did not load (%s).", type(exc).__name__)
+        return DISTRICT_UNRESOLVED.format(sis=old.command.sis)
+    foreign = kind is PrincipalKind.MANAGED_SERVICE_ACCOUNT or not _same_account(account, current)
+    if foreign and _old_is_per_user_install(old.program):
+        # The child's own floor (``_refuse_per_user_install``) would refuse the put-back: said here, in words (M3).
+        return OLD_PER_USER_FOREIGN
+    return None
 
 
 def run(
@@ -661,10 +791,19 @@ def run(
         report.found.append(ALREADY_HERE)
         command = parse_arguments(facts.arguments)
         delivers = command.sftp if command is not None else bool(cfg.sftp_enabled)
-        refused = _delivery_step(report, cfg, delivers=delivers, collect=collect, flags_given=delivery_flags_given)
-        if refused is not None:
-            return refused
-        _old_copies(report, None)
+        if not delivers:
+            report.found.append(DELIVERY_OFF)
+        elif _delivery_needed(cfg, delivers=delivers, flags_given=delivery_flags_given):
+            problem = collect.prepare_delivery()
+            if problem is not None:
+                return _refuse(report, problem)
+            collect.save_delivery()
+            report.moved.append("Delivery's settings and password were saved in the shared settings.")
+        if delivers:
+            refused = _delivery_test(report)
+            if refused is not None:
+                return refused
+        _old_copies(report, None, task_name)
         report.next.append(NEXT_DONE)
         return _done(0, report)
 
@@ -675,7 +814,8 @@ def run(
         f"The nightly runs {migration._other_copy_kind(old.program)} every day at {old.run_time}"
         + (", waking the computer to run." if old.wake_to_run else ".")
     )
-    resolved = resolve_principal(old, declared=declared, recorded=_recorded(cfg), current=_current_account())
+    current = _current_account()
+    resolved = resolve_principal(old, declared=declared, recorded=_recorded(cfg), current=current)
     if isinstance(resolved, str):
         return _refuse(report, resolved)
     kind, account = resolved
@@ -688,19 +828,48 @@ def run(
         logger.info("Migration: the nightly's account kind is %s (account tag %s).", kind.value, account_tag(account))
     except Exception:  # noqa: BLE001 - a diagnostic line, never a stop
         logger.info("Migration: the nightly's account kind is %s.", kind.value)
+    if facts.state == TASK_STATE_RUNNING:
+        return _refuse(report, RUNNING_NOW)
     if near_run_time(old.run_time, now()):
         return _refuse(report, NEAR_RUN.format(time=old.run_time))
+    problem = _not_ready(old, kind, account, current)
+    if problem is not None:
+        return _refuse(report, problem)
 
-    # 3. Delivery, tested before the nightly is touched.
-    refused = _delivery_step(report, cfg, delivers=old.command.sftp, collect=collect, flags_given=delivery_flags_given)
-    if refused is not None:
-        return refused
-
-    # 4. Everything collected first, then ONE elevated child.
+    # 3-4. Collect EVERYTHING before anything is saved (review L4): delivery's settings and password, then the
+    # account's password; then save delivery and test it. The nightly is not touched until that test passes.
+    delivers = old.command.sftp
+    needs_delivery = _delivery_needed(cfg, delivers=delivers, flags_given=delivery_flags_given)
+    if needs_delivery:
+        problem = collect.prepare_delivery()
+        if problem is not None:
+            return _refuse(report, problem)
     password = collect.task_password(account) if kind is PrincipalKind.PASSWORD else None
+    if not delivers:
+        report.found.append(DELIVERY_OFF)
+        if delivery_flags_given:
+            report.left.append(DELIVERY_FLAGS_UNUSED)
+    else:
+        if needs_delivery:
+            collect.save_delivery()
+            report.moved.append("Delivery's settings and password were saved in the shared settings.")
+        refused = _delivery_test(report)
+        if refused is not None:
+            return refused
+
+    # The prompts and the delivery test can take minutes: read the task and the clock again (review M2).
+    state, again = _read(task_name)
+    if state != "found" or again is None or not migration_move._same(again.action_path, old.program):
+        return _refuse(report, NIGHTLY_UNREADABLE if state != "missing" else NO_NIGHTLY)
+    if again.state == TASK_STATE_RUNNING:
+        return _refuse(report, RUNNING_NOW)
+    moment = now()
+    if near_run_time(old.run_time, moment):
+        return _refuse(report, NEAR_RUN.format(time=old.run_time))
+
     from src.scheduler.windows import _build_action_args
 
-    new_exe = migration._this_program()
+    new_exe = _new_program()
     arguments, working_dir = _build_action_args(
         new_exe, old.command.sis, Path(old.command.input_dir), Path(old.command.output_dir), old.command.sftp
     )
@@ -717,6 +886,7 @@ def run(
         old_exe=old.program,
         old_arguments=old.arguments,
         old_working_dir=old.working_dir,
+        deadline=_deadline(old.run_time, moment),
     )
     answer = _elevate(payload)
     del password, payload
@@ -726,33 +896,47 @@ def run(
             answer.stage.name if answer.stage else "unknown",
             answer.check.verdict.name if answer.check else "none",
         )
-    final = _final(task_name, old.program)
     way_back = _way_back(old, kind)
 
+    if answer.stage is MoveStage.UNSETTLED:
+        # A timed-out step may still land: wait out its bound, read again, and never claim a result (review M4).
+        _sleep(UNSETTLED_WAIT_S)
+        report.found.append("Task Scheduler, read again after waiting: " + FINAL_WORDS[_final(task_name, old.program)])
+        report.left.extend((UNSETTLED_NOW, OLD_COPIES_KEPT))
+        report.next.append("Check the nightly in Task Scheduler now; run --migrate --apply again once it is settled.")
+        report.way_back.append(way_back)
+        return _done(1, report)
+
+    final = _final(task_name, old.program)
     if final is Final.NEW:
         report.moved.append(MOVED.format(time=old.run_time, kind=KIND_WORDS[kind][0]))
         _record(old, kind, account)
-        _old_copies(report, old.program)
+        _old_copies(report, old.program, task_name)
         report.next.append(NEXT_DONE)
         report.way_back.append(way_back)
         return _done(0, report)
 
     report.left.append(OLD_COPIES_KEPT)
     if final is Final.OLD:
+        stage_copy = {
+            MoveStage.DELETE_FAILED: DELETE_FAILED,
+            MoveStage.ROLLED_BACK: ROLLED_BACK,
+            MoveStage.GRANT_FAILED: GRANT_FAILED,
+            MoveStage.TOO_LATE: TOO_LATE,
+        }
         if answer.kind is AnswerKind.NOT_RUN:
-            report.left.insert(0, NOT_RUN.format(reason=NOT_RUN_REASONS.get(answer.reason, answer.reason)))
+            first = NOT_RUN.format(reason=NOT_RUN_REASONS.get(answer.reason, answer.reason))
         elif answer.stage is MoveStage.PROBE_FAILED:
             verdict = answer.check.verdict.value if answer.check is not None else "unavailable"
-            report.left.insert(0, PROBE_FAILED.format(verdict=verdict))
-        elif answer.stage is MoveStage.DELETE_FAILED:
-            report.left.insert(0, DELETE_FAILED)
-        elif answer.stage is MoveStage.ROLLED_BACK:
-            report.left.insert(0, ROLLED_BACK)
+            first = PROBE_FAILED.format(verdict=verdict)
         else:
-            report.left.insert(0, STILL_OLD)
+            first = stage_copy.get(answer.stage, STILL_OLD) if answer.stage is not None else STILL_OLD
+        report.left.insert(0, first)
         report.next.append("Fix what is named above, then run DistrictSync.exe --migrate --apply again.")
         return _done(1, report)
 
+    if final is Final.UNKNOWN and answer.stage is MoveStage.ROLLBACK_FAILED:
+        final = Final.MISSING  # the child said neither registered; an unreadable read-back does not undo that (L1)
     report.left.insert(0, {Final.MISSING: NO_NIGHTLY_NOW, Final.ELSEWHERE: ELSEWHERE_NOW}.get(final, UNKNOWN_NOW))
     report.next.append("Put the nightly back now, as the way back below says, or run --migrate --apply again.")
     report.way_back.append(way_back)

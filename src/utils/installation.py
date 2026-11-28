@@ -71,6 +71,16 @@ def msi_product_version() -> str | None:
     return None
 
 
+def _local_app_data() -> Path | None:
+    """This account's Local AppData through the known-folder API (``platformdirs``, as ``paths`` resolves the profile),
+    not the ``LOCALAPPDATA`` environment variable, which any parent process can set (DSYNC-116 review L5)."""
+    if sys.platform != "win32":
+        return None
+    import platformdirs
+
+    return Path(platformdirs.user_data_dir(appname=None, appauthor=False, roaming=False))
+
+
 def per_user_update_exe() -> Path | None:
     """The ``Update.exe`` of a copy installed for THIS Windows account (the per-user ``Setup.exe`` install), or ``None``.
 
@@ -80,9 +90,11 @@ def per_user_update_exe() -> Path | None:
     try:
         from src.update.package import PACK_ID
 
-        local = os.environ.get("LOCALAPPDATA", "").strip()
-        update_exe = Path(local) / PACK_ID / "Update.exe"
-        return update_exe if local and update_exe.is_file() else None
+        local = _local_app_data()
+        if local is None:
+            return None
+        update_exe = local / PACK_ID / "Update.exe"
+        return update_exe if update_exe.is_file() else None
     except Exception:  # noqa: BLE001 - a report line, never a stop
         return None
 

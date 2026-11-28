@@ -3,10 +3,14 @@
 ``--migrate --apply`` (:mod:`src.scheduler.migration_apply`, unelevated) collects every fact and secret first, then
 asks for ONE elevated child (``elevated_apply``'s ``migrate_nightly`` op), which runs :func:`move_nightly`:
 
+0. **grant** a service account the shared profile (RX on the root, M on ``runs``; provisioning's own step 3b,
+   ``provisioning.grant_principal``). The signed-in account needs none. A grant that was NEW is taken back whenever
+   the move does not happen (review H2);
 1. **probe** the NEW program as the nightly's own account: the DSYNC-33 schedule check
    (``schedule_check.run_for_payload``), a one-shot check task with the new nightly's exact principal, program,
    start-in folder and run level. Anything but a pass (an inconclusive check included) stops here: nothing changed;
-2. **delete** the old task, then **confirm it is MISSING** with a read-back;
+2. refuse once the parent's **deadline** (30 minutes before the run time) has passed; otherwise **delete** the old
+   task, then **confirm it is MISSING** with a read-back;
 3. **register** ``DistrictSync_Daily`` with the same facts and the new program, through the same validators and the
    same ``RegisterTaskDefinition`` call every registration uses (``elevated_apply.register_params`` +
    ``task_com.register_task_definition``);
@@ -29,7 +33,8 @@ form (``check``): no account, no path, no password. This module never logs (the 
 from __future__ import annotations
 
 import contextlib
-from collections.abc import Mapping
+import time
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
@@ -57,10 +62,11 @@ REQUIRED_FIELDS: frozenset[str] = frozenset(
         "old_exe",
         "old_arguments",
         "old_working_dir",
+        "deadline",
     }
 )
 
-#: Each bounded step the child can take, worst case: probe, delete, confirm, register, read-back after a raise,
+#: Each bounded step the child can take, worst case (the grant's two icacls calls fit in the margin): probe, delete, confirm, register, read-back after a raise,
 #: put-back register, its read-back. The parent's wait is their sum plus a margin (the child is KILLED at that bound and
 #: runs no ``finally``, so the bound must cover the slowest path, not a typical one).
 _STEP_BUDGETS_S: tuple[float, ...] = (
@@ -80,6 +86,9 @@ class MoveStage(StrEnum):
     """Where the sequence ended. The wire value is the member VALUE (the result's ``message``)."""
 
     MOVED = "migrate_moved"  # the new nightly is registered
+    GRANT_FAILED = "migrate_grant_failed"  # the account could not be given the shared profile: nothing changed
+    TOO_LATE = "migrate_too_late"  # the deadline passed before the delete: nothing changed
+    UNSETTLED = "migrate_unsettled"  # a bounded delete or register timed out: it may still land (review M4)
     PROBE_FAILED = "migrate_probe_failed"  # the new program did not start as the account: nothing changed
     DELETE_FAILED = "migrate_delete_failed"  # the old task is still there (confirmed): nothing changed
     ROLLED_BACK = "migrate_rolled_back"  # the new one could not be registered; the old one is registered again
@@ -99,6 +108,12 @@ class MoveOutcome:
 class NightlyOps(Protocol):
     """Every Task Scheduler call the sequence makes: one seam, so a fake can drive every path (including a kill)."""
 
+    def grant(self, user: str, kind: PrincipalKind) -> bool:
+        """Give the principal the shared profile; ``True`` when the access was NEW (only that is ever taken back)."""
+        ...
+
+    def revoke(self, user: str, kind: PrincipalKind) -> None: ...
+
     def probe(self, payload: Mapping[str, object]) -> ScheduleCheck: ...
 
     def delete(self, task_name: str) -> None: ...
@@ -111,6 +126,16 @@ class NightlyOps(Protocol):
 
 
 class _LiveOps:  # pragma: no cover - drives the real Task Scheduler (Windows, elevated); the lab's T7/T7c
+    def grant(self, user: str, kind: PrincipalKind) -> bool:
+        from src.scheduler import provisioning
+
+        return provisioning.grant_principal(user, kind)
+
+    def revoke(self, user: str, kind: PrincipalKind) -> None:
+        from src.scheduler import provisioning
+
+        provisioning.revoke_principal(user, kind)
+
     def probe(self, payload: Mapping[str, object]) -> ScheduleCheck:
         return schedule_check.run_for_payload(payload)
 
@@ -156,13 +181,16 @@ def _same(program: object, exe: str) -> bool:
     return isinstance(program, str) and program.strip().strip('"').casefold() == exe.strip().strip('"').casefold()
 
 
-def _register(ops: NightlyOps, task_name: str, params: RegisterParams) -> bool:
-    """Register and say whether it LANDED: a raise is settled by the read-back, never taken as "did not happen"."""
+def _register(ops: NightlyOps, task_name: str, params: RegisterParams) -> tuple[bool, bool]:
+    """``(landed, timed_out)``. A raise is settled by the read-back, never taken as "did not happen"; a TIMED-OUT one
+    is also reported, because its worker cannot be cancelled and may still land after the read (review M4)."""
     try:
         ops.register(params)
-        return True
-    except Exception:  # noqa: BLE001 - a bounded register that timed out may still have landed: read it back
-        return _same(_program(ops, task_name), params.exe)
+        return True, False
+    except task_com.BoundedTimeout:
+        return _same(_program(ops, task_name), params.exe), True
+    except Exception:  # noqa: BLE001 - settled by the read-back
+        return _same(_program(ops, task_name), params.exe), False
 
 
 def move_nightly(
@@ -172,32 +200,69 @@ def move_nightly(
     old: RegisterParams,
     probe_payload: Mapping[str, object],
     ops: NightlyOps,
+    deadline: float,
+    clock: Callable[[], float],
 ) -> MoveOutcome:
-    """Probe, delete, confirm missing, register; put the old one back if that fails. TOTAL for ``Exception``.
+    """Grant, probe, delete, confirm missing, register; put the old one back if that fails. TOTAL for ``Exception``.
+
+    * The principal's access to the shared profile is granted FIRST (review H2): the probe writes its marker into
+      ``runs/`` and the moved nightly reads the profile. The signed-in account needs none. A grant that was NEW is taken
+      back whenever the move does not happen (a failed probe, the deadline, a refused delete, a put-back).
+    * ``deadline`` (epoch seconds, from the parent, review M2): after it the delete is refused, so the only window with
+      no task can never reach the run time.
+    * Any bounded delete or register that TIMED OUT makes the outcome :attr:`MoveStage.UNSETTLED` (review M4).
 
     A ``BaseException`` (the process being killed) is deliberately NOT caught: what is left then is exactly what the
     steps so far made, and the parent's read-back reports it (T7c).
     """
+    granted = False
+    if new.kind is not PrincipalKind.INTERACTIVE_TOKEN:
+        try:
+            granted = ops.grant(new.user, new.kind)
+        except Exception:  # noqa: BLE001 - the grant is the first change; a refusal leaves nothing changed
+            return MoveOutcome(MoveStage.GRANT_FAILED)
+
+    def take_back() -> None:
+        if granted:
+            with contextlib.suppress(Exception):  # best-effort: the read access was given minutes ago
+                ops.revoke(new.user, new.kind)
+
     try:
         check = ops.probe(probe_payload)
     except Exception:  # noqa: BLE001 - a probe that could not run is not a pass
         check = ScheduleCheck(verdict=schedule_check.CheckVerdict.UNAVAILABLE)
     if not check.passed:
+        take_back()
         return MoveOutcome(MoveStage.PROBE_FAILED, check)
+    if clock() > deadline:
+        take_back()
+        return MoveOutcome(MoveStage.TOO_LATE, check)
 
-    # A delete that raised ("already gone" included) is settled by the read-back below, never by the raise.
-    with contextlib.suppress(Exception):
+    timed_out = False
+    try:
         ops.delete(task_name)
+    except task_com.BoundedTimeout:
+        timed_out = True
+    except Exception:  # noqa: BLE001 # nosec B110 - settled by the read-back below ("already gone" included)
+        pass
     after_delete = _program(ops, task_name)
     if isinstance(after_delete, str):
+        if timed_out:
+            return MoveOutcome(MoveStage.UNSETTLED, check)  # still there now; the timed-out delete may land later
+        take_back()
         return MoveOutcome(MoveStage.DELETE_FAILED, check)  # confirmed still there: nothing changed
-    if after_delete is None and _register(ops, task_name, new):  # confirmed MISSING: register the new one
-        return MoveOutcome(MoveStage.MOVED, check)
+    if after_delete is None:  # confirmed MISSING: register the new one
+        landed, late = _register(ops, task_name, new)
+        timed_out = timed_out or late
+        if landed:
+            return MoveOutcome(MoveStage.UNSETTLED if timed_out else MoveStage.MOVED, check)
     # The register failed, or the delete could not be confirmed: register the OLD facts (same name, so this can only
     # replace, never add a second nightly).
-    if _register(ops, task_name, old):
-        return MoveOutcome(MoveStage.ROLLED_BACK, check)
-    return MoveOutcome(MoveStage.ROLLBACK_FAILED, check)
+    landed, late = _register(ops, task_name, old)
+    if timed_out or late:
+        return MoveOutcome(MoveStage.UNSETTLED, check)
+    take_back()
+    return MoveOutcome(MoveStage.ROLLED_BACK if landed else MoveStage.ROLLBACK_FAILED, check)
 
 
 def build_payload(
@@ -214,6 +279,7 @@ def build_payload(
     old_exe: str,
     old_arguments: str,
     old_working_dir: str,
+    deadline: float,
 ) -> dict[str, object]:
     """The ONE spelling of the request (the parent's side). ``password`` only where the kind has one."""
     payload: dict[str, object] = {
@@ -230,6 +296,7 @@ def build_payload(
         "old_exe": old_exe,
         "old_arguments": old_arguments,
         "old_working_dir": old_working_dir,
+        "deadline": float(deadline),
     }
     if password:
         payload["password"] = password
@@ -254,6 +321,11 @@ def _register_payload(payload: Mapping[str, object], *, old: bool) -> dict[str, 
     }
 
 
+def _clock() -> float:
+    """A seam: the child's wall clock, compared with the parent's deadline (epoch seconds)."""
+    return time.time()
+
+
 def run_in_child(payload: Mapping[str, object], *, ops: NightlyOps | None = None) -> MoveOutcome:
     """The ``migrate_nightly`` op. ``ValueError`` BEFORE anything is touched when the request is not one this build
     writes (both registrations are validated up front, by kind, through ``elevated_apply.register_params``); total
@@ -265,6 +337,17 @@ def run_in_child(payload: Mapping[str, object], *, ops: NightlyOps | None = None
     new_payload = _register_payload(payload, old=False)
     new = elevated_apply.register_params(new_payload)
     old = elevated_apply.register_params(_register_payload(payload, old=True))
+    deadline = payload["deadline"]
+    if isinstance(deadline, bool) or not isinstance(deadline, (int, float)):
+        raise ValueError("deadline")
     if new.task_name != old.task_name:  # pragma: no cover - both are built from the one field
         raise ValueError("two task names")
-    return move_nightly(new.task_name, new=new, old=old, probe_payload=new_payload, ops=ops or _live_ops())
+    return move_nightly(
+        new.task_name,
+        new=new,
+        old=old,
+        probe_payload=new_payload,
+        ops=ops or _live_ops(),
+        deadline=float(deadline),
+        clock=_clock,
+    )

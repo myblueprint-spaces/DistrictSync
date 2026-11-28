@@ -1152,3 +1152,75 @@ def apply_prune_principal(payload: Mapping[str, object]) -> None:
         exit_code = _run_icacls([str(target), "/remove:g", principal])
         if exit_code != 0:
             raise ProvisionRefused(ProvisionStep.PRUNE, icacls_exit=exit_code)
+
+
+# --------------------------------------------------------------------------- #
+# --migrate --apply (DSYNC-116 review H2): the moved nightly's access         #
+# --------------------------------------------------------------------------- #
+
+
+def _trusted_root() -> Path:
+    _refuse_under_override()
+    root = _machine_root()
+    try:
+        paths.assert_machine_dir_trusted(root)
+    except paths.MachineScopeRefused as exc:
+        raise ProvisionRefused(ProvisionStep.PRE_EXISTING) from exc
+    return root
+
+
+def _migrating_principal(account: str, kind: task_com.PrincipalKind) -> tuple[str, str]:
+    """``(account, sid)`` for the nightly's principal, validated by its KIND. Raises ``PRINCIPAL``."""
+    try:
+        principal = task_com.validate_principal_account(kind, account)
+    except ValueError as exc:
+        raise ProvisionRefused(ProvisionStep.PRINCIPAL) from exc
+    return principal, _sid_for(principal)
+
+
+def grant_principal(account: str, kind: task_com.PrincipalKind) -> bool:
+    """Give a moved nightly's principal its access to the shared profile: RX on the root, M on ``runs/``.
+
+    The SAME additive step a Schedule press for that account runs (step 3b, :func:`_ensure_runs_and_principal`, as
+    ``request_provision`` does), so ``--migrate --apply``'s schedule check (which writes its marker into ``runs/``) and
+    the moved nightly can use the shared profile on a computer that machine setup provisioned for the administrator
+    only. Returns whether the account was NEW to the root's DACL: only a new grant is ever taken back
+    (:func:`revoke_principal`), because an account that already had access may be the one the OLD nightly needs.
+
+    TODO(DSYNC-115, PR #232): record the grant (``GrantedPrincipalSids``) so a later Remove revokes it through
+    ``prune_retired_grants``. Until that merges, Remove revokes a managed service account's grant (DSYNC-33's
+    ``prune_principal``) but not a password account's: plan 0049's named hole, unchanged by this slice.
+
+    Raises:
+        ProvisionRefused: ``OVERRIDE``, ``PRE_EXISTING`` or ``PRINCIPAL`` (an icacls exit code with the last).
+    """
+    root = _trusted_root()
+    principal, principal_sid = _migrating_principal(account, kind)
+    setup_sid = _sid_for(current_run_as_user())
+    if principal_sid in _UNPRUNABLE_SIDS or principal_sid == setup_sid:
+        return False  # SYSTEM, Administrators or the administrator: their access is in the descriptor itself
+    try:
+        already = principal_sid in {sid for _ace_type, sid in paths._read_dacl_aces(root)}
+    except OSError as exc:
+        # Without the answer a later take-back could strip access someone else relies on: refuse, change nothing.
+        raise ProvisionRefused(ProvisionStep.PRINCIPAL) from exc
+    _ensure_runs_and_principal(root, setup_sid=setup_sid, principal_sid=principal_sid, principal_account=principal)
+    return not already
+
+
+def revoke_principal(account: str, kind: task_com.PrincipalKind) -> None:
+    """Take back a grant :func:`grant_principal` made NEW, after a move that did not happen. Raises ``PRUNE``.
+
+    The account is fenced exactly as :func:`apply_prune_principal` fences it: never SYSTEM, Administrators or the
+    administrator running this child.
+    """
+    root = _trusted_root()
+    principal, principal_sid = _migrating_principal(account, kind)
+    if principal_sid in _UNPRUNABLE_SIDS or principal_sid == _sid_for(current_run_as_user()):
+        raise ProvisionRefused(ProvisionStep.PRINCIPAL)
+    for target in (root, root / paths.MACHINE_RUNS_SUBDIR):
+        if not target.exists():
+            continue
+        exit_code = _run_icacls([str(target), "/remove:g", principal])
+        if exit_code != 0:
+            raise ProvisionRefused(ProvisionStep.PRUNE, icacls_exit=exit_code)

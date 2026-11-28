@@ -163,7 +163,9 @@ To move the nightly, from an administrator command prompt and at least 30 minute
 DistrictSync.exe --migrate --apply
 ```
 
-Set the computer up first (Step 2). The move then:
+Set the computer up first (Step 2). It does not move a nightly that is running or switched off in Task Scheduler,
+and the nightly's extract folder, its output folder's parent and its district settings must all be reachable from the
+installed program first. The move then:
 
 1. reads the nightly's own facts from Task Scheduler: its run time, account, wake setting, district and folders;
 2. if the nightly delivers to SpacesEDU, makes sure delivery's settings and password are in the shared folder and
@@ -175,7 +177,8 @@ Set the computer up first (Step 2). The move then:
    `--task-password-stdin` or a prompt, never the command line);
 4. behind one Windows permission prompt: checks that Windows can start the installed program as the nightly's
    account, removes the old nightly, and schedules it again with the same time, account and settings from the
-   installed program. If scheduling it again fails, the old nightly is put back as it was. There is never a second
+   installed program. If scheduling it again fails, the old nightly is registered again with the same time,
+   account, program and command line (DistrictSync's own run level and limits apply). There is never a second
    nightly.
 
 When DistrictSync's settings do not record which kind of account the nightly uses (a nightly made by hand with

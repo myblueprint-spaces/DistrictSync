@@ -3,6 +3,16 @@
 **Convention (adopted 2026-09-23):** every new entry carries a line `Supersedes: <date — title of the replaced entry>` (or `Supersedes: nothing`) directly under its heading, so a replaced decision is found by search rather than by reading prose.
 
 
+## 2026-11-28 (later) - DSYNC-116 review: the move grants the account first, parses the task as Windows does, and never claims an unsettled result
+
+Supersedes: nothing (amends the entry below)
+
+**Decided.** (H1) A nightly's command line is split by `CommandLineToArgvW`'s rules (`windows.split_command_line`) and every path the action builder writes is quoted by its inverse (`windows.quote_arg`), so a UNC path, a drive root and a trailing backslash survive build -> parse -> build; the folders must exist (input) or have an existing parent (output) before anything changes. (H2) The elevated op first grants a service account the shared profile through provisioning's own step 3b (`provisioning.grant_principal`: RX root, M `runs`), and takes the grant back only when it was NEW and the move did not happen; the signed-in account gets none. Recording the grant for a later Remove waits on DSYNC-115 (PR #232, `GrantedPrincipalSids`): a TODO names it in `grant_principal`. (M1) A switched-off nightly is NOT moved (re-registering would switch it on), and only the exact shape the app writes counts as "once a day at HH:MM" (one daily trigger, interval 1, no random delay, repetition or end, a local boundary). (M2) The run-time window is checked again right before the prompt, the child refuses the delete after a deadline sealed in the request (30 minutes before the next run), and a RUNNING nightly is neither moved nor has its old per-user copy uninstalled. (M3) A put-back the child's own floor would refuse (an old per-user copy run by another account) is refused first, in words, and a child validation refusal reads "did not start". (M4) Any bounded delete or register that timed out makes the result UNSETTLED: the parent waits out the bound, reads again, and reports "check Task Scheduler" with the way back, exit 1. (M5) Both password variables are popped at the start of `--migrate --apply` (one spelling: `src/utils/secret_env.py`) and the uninstaller gets a scrubbed environment. (M6) The district's config must load under the shared profile. (L4) Every password is collected before delivery is saved.
+
+**Why.** The refuting review measured H1 (`shlex` turned `\\srv\share\in` into `\srv\share\in`) and reasoned H2 (the probe writes into `runs\`, which a freshly set-up computer grants the administrator only). A disabled nightly made "exit 0 = the nightly runs this copy" untrue. A timed-out COM call can land after the read-back, so a confident report could be wrong.
+
+**Consequences.** The quoting change also applies to every Schedule press (identical output for ordinary paths; only a path ending in a backslash or containing a quote now quotes correctly). `TaskFacts` gains `state` and `enabled`. A password account moved by `--migrate --apply` keeps its grant after a later Remove until DSYNC-115 lands, the same open hole a Schedule press has today.
+
 ## 2026-11-28 - DSYNC-116: `--migrate --apply` moves the nightly in ONE elevated child; `--migrate` alone stays the read-only report
 
 Supersedes: nothing
@@ -11,7 +21,7 @@ Supersedes: nothing
 
 **Why.** With one prompt per step, a declined second prompt after the delete would leave no nightly and no way to put the old one back without yet another prompt. One child also keeps running when the parent is killed after consent (T7c), and its bounded steps give the parent one wait to size (`CHILD_BUDGET_S`). Rebuilding the new command line through the shared builder keeps one spelling of the nightly's arguments. A command line the app does not write is refused rather than moved, so nothing a district added by hand is dropped.
 
-**Consequences.** The probe runs for every kind (DSYNC-33 runs it only for a gMSA at registration time), so a move takes up to about two minutes longer. An inconclusive probe counts as a failure. The parent's read-back decides the report and the exit code: the child's stage only explains what happened. `MOVE_NOT_BUILT` in the D1a report now understates what exists; rewording it is a follow-up for the owner, because this slice was told to keep that output byte for byte. Lab rows T7, T7b, T7c and T8 still have to prove the real Task Scheduler, UAC and per-user uninstall paths.
+**Consequences.** The probe runs for every kind (DSYNC-33 runs it only for a gMSA at registration time), so a move takes up to about two minutes longer. An inconclusive probe counts as a failure. The parent's read-back decides the report and the exit code: the child's stage only explains what happened. The D1a report's manual-route sentence now points at `--migrate --apply` (`MOVE_ADVICE`; review L6, owner direction: the byte-for-byte rule was about behaviour). Lab rows T7, T7b, T7c and T8 still have to prove the real Task Scheduler, UAC and per-user uninstall paths.
 
 ## 2026-11-28 - DSYNC-114: the pre-shell windows relaunch through one quoted, window-closing helper, not `os.execv`
 

@@ -42,7 +42,7 @@ class TestTheMsiVersion:
 
 class TestThePerUserCopy:
     def test_it_is_found_by_its_update_exe(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+        monkeypatch.setattr(installation, "_local_app_data", lambda: tmp_path)  # the known folder (DSYNC-116 L5)
         assert installation.per_user_copy_present() is False
         (tmp_path / "myBlueprint.DistrictSync").mkdir()
         (tmp_path / "myBlueprint.DistrictSync" / "Update.exe").write_bytes(b"")

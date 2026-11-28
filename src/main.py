@@ -76,6 +76,7 @@ from src.sftp.uploader import SFTPUploader
 from src.update import policy
 from src.utils.logger import get_logger
 from src.utils.paths import MachineScopeRefused, handshake_dir, migrate_legacy_data_dir, pin_data_dir
+from src.utils.secret_env import SFTP_PASSWORD_ENV_VAR, TASK_PASSWORD_ENV_VAR  # one spelling (DSYNC-116 M5)
 from src.utils.validators import validate_sftp_host, validate_sis_type
 from src.utils.version import app_version, startup_banner
 
@@ -255,8 +256,6 @@ def _attach_parent_console() -> bool:
 # SFTP CLI subcommands — headless / Docker / scripted setup
 # ----------------------------------------------------------------------
 
-SFTP_PASSWORD_ENV_VAR = "DISTRICTSYNC_SFTP_PASSWORD"  # nosec B105
-
 
 def _read_sftp_password(args: argparse.Namespace) -> str:
     """Resolve the SFTP password from (in order): env var, stdin, interactive prompt.
@@ -395,8 +394,6 @@ _CONVERSION_AND_SFTP_DESTS = (
 #: The destinations ``--configure`` takes: the district and the two folders, exactly what Setup's folders card saves.
 _CONFIGURE_DESTS = ("sis", "input", "output")
 
-TASK_PASSWORD_ENV_VAR = "DISTRICTSYNC_TASK_PASSWORD"  # nosec B105 - the NAME of the variable, not a secret
-
 
 def _read_task_password(args: argparse.Namespace, account: str) -> str:
     """The scheduled task's Windows password: env var, then stdin, then a prompt (the --sftp-configure routes).
@@ -484,15 +481,23 @@ _MIGRATE_DELIVERY_DESTS = ("sftp_host", "sftp_port", "sftp_user", "sftp_remote",
 
 
 class _MigrateCollect:
-    """``--migrate --apply``'s input routes: the same three as ``--sftp-configure`` and ``--schedule-register``."""
+    """``--migrate --apply``'s input routes: the same three as ``--sftp-configure`` and ``--schedule-register``.
+
+    Both password variables are POPPED here, at the start of the command (review M5), so neither reaches a child this
+    process starts: the elevated child, the schedule check or the per-user uninstaller. Nothing is saved until
+    :meth:`save_delivery`, which the ladder calls only after the account's password has been collected too (L4).
+    """
 
     def __init__(self, args: argparse.Namespace) -> None:
         self._args = args
+        self._task_env = os.environ.pop(TASK_PASSWORD_ENV_VAR, None) or None
+        self._sftp_env = os.environ.pop(SFTP_PASSWORD_ENV_VAR, None) or None
+        self._pending: dict[str, object] | None = None
 
     def task_password(self, account: str) -> str:
-        return _read_task_password(self._args, account)
+        return self._task_env or _read_task_password(self._args, account)
 
-    def delivery(self) -> str | None:
+    def prepare_delivery(self) -> str | None:
         args = self._args
         cfg = AppConfig.load()
         if args.sftp_host:
@@ -508,11 +513,30 @@ class _MigrateCollect:
                 "Delivery is on for the nightly, but its settings are not in the shared settings, so nothing was "
                 "changed. Run this again with --sftp-host <host> --sftp-user <user> --sftp-remote <path>."
             )
-        password = _read_sftp_password(args)
+        password = self._sftp_env or _read_sftp_password(args)
         if not password:
             return "Delivery's password is required, so nothing was changed."
-        _save_sftp(cfg, host=host, port=port, username=username, remote_path=remote_path, password=password)
+        self._pending = {
+            "host": host,
+            "port": port,
+            "username": username,
+            "remote_path": remote_path,
+            "password": password,
+        }
         return None
+
+    def save_delivery(self) -> None:
+        pending, self._pending = self._pending, None
+        if pending is None:  # pragma: no cover - the ladder calls this only after a successful prepare
+            raise RuntimeError("save_delivery before prepare_delivery")
+        _save_sftp(
+            AppConfig.load(),
+            host=str(pending["host"]),
+            port=int(pending["port"]),  # type: ignore[call-overload]
+            username=str(pending["username"]),
+            remote_path=str(pending["remote_path"]),
+            password=str(pending["password"]),
+        )
 
 
 def _migrate_apply(args: argparse.Namespace) -> int:
@@ -523,6 +547,7 @@ def _migrate_apply(args: argparse.Namespace) -> int:
         return 1
     from src.scheduler import headless, migration_apply
 
+    collect = _MigrateCollect(args)  # FIRST: pops both password variables before anything can start a child (M5)
     declared = None
     if args.principal is not None:
         try:
@@ -530,9 +555,7 @@ def _migrate_apply(args: argparse.Namespace) -> int:
         except ValueError as exc:
             print(f"Error: {exc}")
             return 2
-    result = migration_apply.run(
-        declared=declared, collect=_MigrateCollect(args), delivery_flags_given=bool(args.sftp_host)
-    )
+    result = migration_apply.run(declared=declared, collect=collect, delivery_flags_given=bool(args.sftp_host))
     for line in result.lines:
         print(line)
     return result.code

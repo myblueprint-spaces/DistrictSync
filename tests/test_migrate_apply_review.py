@@ -193,6 +193,8 @@ def _trigger_task(**trigger):
     task = MagicMock(name="IRegisteredTask")
     task.Enabled = True
     task.State = task_com.TASK_STATE_READY
+    task.NextRunTime = task.LastRunTime = None
+    task.LastTaskResult = 0
     task.Definition.Actions.Count = 1
     task.Definition.Triggers.Count = 1
     item = task.Definition.Triggers.Item.return_value
@@ -277,6 +279,7 @@ class TestM2TheWindow:
         assert deadline == pytest.approx(run_at.timestamp() - 30 * 60)
 
         sched = world["sched"]
+        sched.events.clear()  # only this call's steps
         new = old = _params(world["new"])
         out = migration_move.move_nightly(
             NAME, new=new, old=old, probe_payload={}, ops=FakeOps(sched), deadline=100.0, clock=lambda: 101.0
@@ -287,7 +290,21 @@ class TestM2TheWindow:
     def test_a_running_nightly_is_not_moved(self, world):
         _with_record()
         _set(world, state=task_com.TASK_STATE_RUNNING)
-        result = _run()
+        collect = Collect()
+        result = _run(collect=collect)
+        assert result.code == 1 and "running now" in _text(result)
+        assert world["state"]["elevated"] == 0
+        assert collect.asked_password == []  # refused before anyone is asked for a password
+
+    def test_a_nightly_that_starts_while_the_passwords_are_typed_is_not_moved(self, world):
+        _with_record()
+
+        class StartsRunning(Collect):
+            def task_password(self, account):
+                _set(world, state=task_com.TASK_STATE_RUNNING)
+                return super().task_password(account)
+
+        result = _run(collect=StartsRunning())
         assert result.code == 1 and "running now" in _text(result)
         assert world["state"]["elevated"] == 0
 

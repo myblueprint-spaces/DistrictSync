@@ -2,9 +2,9 @@
 
 D1a is READ-ONLY: it finds what is on the computer and prints the report, and changes nothing. Moving the live nightly
 (delete the old task, confirm it is gone, register ``DistrictSync_Daily`` with the same facts and the installed
-program, re-register the old one if that fails) is D1b: it depends on facts the lab confirms (L1: whether a
-stored-password principal's password can be avoided, the schedule check's probe against the new path), and migration
-is optional for existing partners (owner decision R3-3), so it is never pushed and must be safe at any time.
+program, re-register the old one if that fails) is D1b, ``--migrate --apply`` (DSYNC-116,
+:mod:`src.scheduler.migration_apply`); this report points at it. Migration is optional for existing partners (owner
+decision R3-3), so it is never pushed and must be safe at any time.
 
 What it reads: the install kind, the nightly's own task (``task_com.read_task``: the program it runs, its account kind),
 whether a copy installed for this Windows account is also present, whether this computer uses the shared profile, and
@@ -17,14 +17,13 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-#: What the report says when the move itself is asked for (D1b is not built). Settings and delivery first, the same run
-#: time and account, and the one risk said plainly (review G7).
-MOVE_NOT_BUILT = (
-    "Moving the nightly to this copy is not automatic yet. Before you move it, make sure this copy uses the shared "
-    "settings and that DistrictSync.exe --sftp-test passes from it. Then remove the old schedule "
-    "(DistrictSync.exe --schedule-remove) and schedule it again from this copy at the same time and for the same "
-    "account (DistrictSync.exe --schedule-register --time HH:MM --principal ... [--wake]). Until that register succeeds "
-    "there is no nightly, so do it well away from the run time."
+#: What the report says to move the nightly: ``--migrate --apply`` (D1b, DSYNC-116; review L6 replaced D1a's manual
+#: route). Delivery first, the same time and account, and the put-back (review G7).
+MOVE_ADVICE = (
+    "To move the nightly to this copy, run DistrictSync.exe --migrate --apply from an administrator command prompt, "
+    "at least 30 minutes away from the nightly's run time. It tests delivery first, checks that Windows can start this "
+    "copy as the nightly's account, schedules the nightly again with the same time, account and settings, and "
+    "registers the old one again if that fails."
 )
 #: The old program, by KIND: its path can name a person (review G3).
 OTHER_COPY_PER_USER = "a copy installed for one Windows account"
@@ -149,7 +148,7 @@ def report_lines(f: Findings) -> list[str]:
         lines.append("The nightly already runs this copy.")
     else:
         lines.append(f"The nightly still runs another copy: {_other_copy_kind(f.nightly_program)}.")
-        lines.append(MOVE_NOT_BUILT)
+        lines.append(MOVE_ADVICE)
     if f.per_user_copy:
         lines.append(
             "A copy installed for this Windows account is also here. Once the nightly runs this copy, remove it from "

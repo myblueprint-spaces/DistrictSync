@@ -920,6 +920,10 @@ class TaskFacts:
     arguments: str | None = None
     working_dir: str | None = None
     run_time: str | None = None
+    #: ``IRegisteredTask.State`` (``TASK_STATE_*``; review M2: a running nightly is never moved) and whether the task AND
+    #: its trigger are switched on (review M1: ``None`` unless both read as real bools).
+    state: int | None = None
+    enabled: bool | None = None
 
 
 def com_error_scode(exc: BaseException) -> int | None:
@@ -1073,30 +1077,47 @@ def _text_or_none(value: Any) -> str | None:
     return (value.strip() or None) if isinstance(value, str) else None
 
 
-_BOUNDARY_TIME = re.compile(r"^\d{4}-\d{2}-\d{2}T(\d{2}):(\d{2})(?::\d{2})?")
+#: A LOCAL ISO boundary, anchored at both ends (DSYNC-116 review M1): a ``Z`` or ``+hh:mm`` suffix makes Task Scheduler
+#: fire at that UTC instant, which "HH:MM" re-registered as local time would silently shift.
+_BOUNDARY_TIME = re.compile(r"^\d{4}-\d{2}-\d{2}T(\d{2}):(\d{2})(?::\d{2})?$")
 
 
-def _daily_run_time(triggers: Any) -> str | None:
-    """The ``"HH:MM"`` of a task's ONE daily trigger (DSYNC-116), else ``None``. Total; owns its COM-ref release.
+def _blank(value: Any) -> bool:
+    """An unset COM string property ("" or ``None``). A MagicMock or anything else is NOT blank: no guess."""
+    return value is None or (isinstance(value, str) and not value.strip())
 
-    Exactly one trigger, of type daily, with an ISO ``StartBoundary`` (the shape :func:`apply_definition` writes): any
-    other shape is not "a nightly at one time", and a guess would re-register a different schedule.
+
+def _daily_trigger(triggers: Any) -> tuple[str | None, bool | None]:
+    """``(run_time, enabled)`` of a task's ONE trigger (DSYNC-116). Total; owns its COM-ref release.
+
+    ``run_time`` is ``"HH:MM"`` only for exactly the shape :func:`apply_definition` writes: one trigger, daily, every
+    day (``DaysInterval`` 1), a local ISO ``StartBoundary``, and no random delay, repetition or end. Any other shape is
+    not "a nightly at one time", and re-registering it as one would change the schedule (review M1). ``enabled`` is the
+    trigger's own ``Enabled`` (``None`` when not a real bool).
     """
-    trigger = None
+    trigger = repetition = None
     try:
         count = getattr(triggers, "Count", None)
         if not isinstance(count, int) or isinstance(count, bool) or count != 1:
-            return None
+            return None, None
         trigger = triggers.Item(1)
-        if _logon_or_none(getattr(trigger, "Type", None)) != TASK_TRIGGER_DAILY:
-            return None
+        enabled = _bool_or_none(getattr(trigger, "Enabled", None))
+        repetition = getattr(trigger, "Repetition", None)
+        if (
+            _logon_or_none(getattr(trigger, "Type", None)) != TASK_TRIGGER_DAILY
+            or _logon_or_none(getattr(trigger, "DaysInterval", None)) != 1
+            or not _blank(getattr(trigger, "RandomDelay", None))
+            or not _blank(getattr(trigger, "EndBoundary", None))
+            or not _blank(getattr(repetition, "Interval", None))
+        ):
+            return None, enabled
         boundary = getattr(trigger, "StartBoundary", None)
         match = _BOUNDARY_TIME.match(boundary) if isinstance(boundary, str) else None
-        return f"{match.group(1)}:{match.group(2)}" if match else None
+        return (f"{match.group(1)}:{match.group(2)}" if match else None), enabled
     except Exception:  # noqa: BLE001 - a read-back fact: an unreadable trigger is "no answer", never a raise
-        return None
+        return None, None
     finally:
-        trigger = None  # noqa: F841 - releases THIS frame's COM ref pre-teardown
+        trigger = repetition = None  # noqa: F841 - releases THIS frame's COM refs pre-teardown
 
 
 def task_facts(task: Any) -> TaskFacts:
@@ -1131,6 +1152,9 @@ def task_facts(task: Any) -> TaskFacts:
         principal = task.Definition.Principal
         settings = task.Definition.Settings
         triggers = getattr(task.Definition, "Triggers", None)
+        run_time, trigger_enabled = _daily_trigger(triggers)
+        task_enabled = _bool_or_none(getattr(task, "Enabled", None))
+        enabled = None if task_enabled is None or trigger_enabled is None else (task_enabled and trigger_enabled)
         return TaskFacts(
             next_run=_iso_or_none(task.NextRunTime),
             last_run=_iso_or_none(task.LastRunTime),
@@ -1141,7 +1165,9 @@ def task_facts(task: Any) -> TaskFacts:
             wake_to_run=_bool_or_none(getattr(settings, "WakeToRun", None)),
             arguments=_text_or_none(getattr(action, "Arguments", None)),
             working_dir=_text_or_none(getattr(action, "WorkingDirectory", None)),
-            run_time=_daily_run_time(triggers),
+            run_time=run_time,
+            state=_logon_or_none(getattr(task, "State", None)),
+            enabled=enabled,
         )
     finally:
         actions = action = principal = settings = triggers = None  # noqa: F841 - releases THIS frame's COM refs pre-teardown
