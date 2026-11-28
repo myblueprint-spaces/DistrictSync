@@ -47,7 +47,7 @@ dev = [
     "mypy>=1.0",
     "pandas-stubs>=2.0",
     "bandit>=1.7",
-    "pyinstaller>=5.0",
+    "pyinstaller>=6.10,<7",  # DSYNC-114: PYINSTALLER_RESET_ENVIRONMENT; mirrors requirements-dev.txt
 ]
 
 [project.scripts]

@@ -157,8 +157,9 @@ def reexec_argv() -> list[str]:
     boot path is the last place to guess. A fresh process re-runs the real ladder from the
     top, which is also the only honest confirmation that the grant worked.
 
-    Pure and returned rather than executed, so the one thing that cannot be exercised in a
-    test (``os.execv``) is a single line with nothing to get wrong.
+    Pure and returned rather than executed: :mod:`src.ui_flet.relaunch` hands it to
+    ``subprocess.Popen`` as a LIST, so Windows quotes it (DSYNC-114 — ``os.execv`` did not,
+    and an exe under ``Program Files`` split at the space).
     """
     if getattr(sys, "frozen", False):
         return [sys.executable, *sys.argv[1:]]

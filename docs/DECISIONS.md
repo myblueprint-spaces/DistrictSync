@@ -13,6 +13,16 @@ Supersedes: nothing
 
 **Consequences.** The probe runs for every kind (DSYNC-33 runs it only for a gMSA at registration time), so a move takes up to about two minutes longer. An inconclusive probe counts as a failure. The parent's read-back decides the report and the exit code: the child's stage only explains what happened. `MOVE_NOT_BUILT` in the D1a report now understates what exists; rewording it is a follow-up for the owner, because this slice was told to keep that output byte for byte. Lab rows T7, T7b, T7c and T8 still have to prove the real Task Scheduler, UAC and per-user uninstall paths.
 
+## 2026-11-28 - DSYNC-114: the pre-shell windows relaunch through one quoted, window-closing helper, not `os.execv`
+
+Supersedes: nothing
+
+**Decided.** `src/ui_flet/relaunch.py` is the ONE relaunch both pre-shell windows (machine setup, auto-grant) use: awaited `page.window.destroy()` (bounded, 5 s), then `subprocess.Popen` with a LIST (`list2cmdline` quoting, no shell, `close_fds`, stdio to `DEVNULL`, `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP`), then `os._exit` (0 started; 1 not, after a native `MessageBoxW` saying "DistrictSync couldn't restart. Open it again from the Start menu.", because the window is already gone). A frozen child is made independent of the parent's `_MEI` folder by TWO things, neither enough alone: `PYINSTALLER_RESET_ENVIRONMENT=1` (so the PyInstaller floor is now 6.10, the first bootloader that reads it, checked against the 6.9 and 6.10 wheels) stops it reusing the parent's unpacked bundle, and `cwd=` the exe's folder stops it inheriting `_MEIPASS` as its working directory (`launcher.main` chdir'd there), which held the folder open so the old bootloader could not delete it (WinError 32, measured in review). A source run keeps the current directory (`-m src.main` needs it). No `exec*`/`spawn*` from `os`, `nt` or `posix` (attribute, alias or from-import) may appear in `src/` (AST-pinned in `tests/test_ui_flet_relaunch.py`).
+
+**Why.** On Windows `os.execv` does not quote: the MSI's `C:\Program Files\...` exe split at the space, the child exited 2 on an unrecognised argument, and the old view was never closed (lab-confirmed on Server 2022). Spawn and exit sit in a `finally` because the view exiting ends `ft.run`, which cancels the pending `destroy()`. `CREATE_BREAKAWAY_FROM_JOB` is not set: it fails inside a job that forbids breakaway, and nothing in the chain uses a job object.
+
+**Consequences.** The `reexec` seams stay synchronous and required; the windows pass `relaunch.relaunch_seam(page)` (schedules the coroutine with `page.run_task`). The one-file exe and the per-user Setup.exe were exposed too whenever their path held a space (a profile folder with a space in its name); the one-file exe also needed the environment reset and the working-directory change, without which the child would run from, or hold open, the parent's `_MEI` folder. The failure box is not `launcher._show_error_dialog`: that starts a second `ft.run` inside the running event loop, and its tkinter fallback is not bundled.
+
 ## 2026-11-27 - DSYNC-110: the user mappings folder is created only on the write path; provisioning does not pre-create it
 
 Supersedes: nothing

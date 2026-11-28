@@ -84,6 +84,7 @@ FLET_FREE_MODULES: tuple[str, ...] = (
     "src/ui_flet/handover_result.py",
     "src/ui_flet/home_status.py",
     "src/ui_flet/humanize.py",
+    "src/ui_flet/relaunch.py",
     "src/ui_flet/identity_gate.py",
     "src/ui_flet/mapping_catalog.py",
     "src/ui_flet/nav.py",

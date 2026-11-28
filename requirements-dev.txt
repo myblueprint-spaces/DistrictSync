@@ -32,6 +32,8 @@ flet-cli==0.85.3
 # it installs these via `-r requirements-dev.txt` only (NO inline `pip install pkg`
 # that could drift). pyinstaller is the packer flet-cli drives; pefile reads the
 # PE subsystem (no-console proof); psutil walks the process tree (zero-orphan close).
-pyinstaller>=6,<7
+# >=6.10: the bootloader honours PYINSTALLER_RESET_ENVIRONMENT, which src/ui_flet/relaunch.py
+# sets so a relaunched one-file exe extracts its own copy instead of reusing the parent's (DSYNC-114).
+pyinstaller>=6.10,<7
 pefile>=2024.8.26
 psutil>=5.9
