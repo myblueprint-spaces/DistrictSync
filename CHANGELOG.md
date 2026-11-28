@@ -38,6 +38,14 @@ Per-release download links and auto-generated commit notes live on the
 
 ### Fixed
 
+- **The nightly sync no longer fails with "Access is denied" on a machine-wide install where no
+  custom mapping was ever saved.** When the nightly ran as a service account before an
+  administrator had opened DistrictSync's window, it tried to create the
+  `C:\ProgramData\DistrictSync\mappings` folder, which that account is not allowed to do, and
+  the run failed with 0 rows. DistrictSync now creates that folder only when an administrator
+  saves a custom mapping; reading the mappings never creates it. Nothing needs to change on the
+  server (DSYNC-110).
+
 - **The installed copy can no longer be scheduled to run as a service account or managed service
   account.** It is installed for one Windows account only, so another account cannot run it and
   such a nightly sync registered fine but never started. Setup now says so before any permission

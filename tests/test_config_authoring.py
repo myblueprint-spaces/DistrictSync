@@ -55,7 +55,7 @@ from src.config.authoring import (
 )
 from src.config.loader import available_configs, load_config, validate_overlay
 from src.etl.pipeline import run_pipeline
-from src.utils.paths import bundle_mappings_dir, user_mappings_dir
+from src.utils.paths import bundle_mappings_dir, ensure_user_mappings_dir, user_mappings_dir
 from src.utils.version import app_version
 
 SNAPSHOT_INPUT = Path(__file__).parent / "snapshots" / "input"
@@ -635,7 +635,8 @@ class TestWriteOverlay:
         """A secondary-only scope over the INHERITED K-7 homeroom is a chain violation."""
         with pytest.raises(ValueError, match="homeroom_grades"):
             write_overlay(_spec(student_rostering_grades=("08", "09")), overwrite=False)
-        assert list(user_mappings_dir().iterdir()) == []
+        # DSYNC-110: the folder is made on the write path only, after the load-back passed.
+        assert not user_mappings_dir().exists()
 
     def test_a_valid_spec_DOES_write_there(self):
         """Positive twin for the assertion above (no vacuous greens)."""
@@ -645,7 +646,7 @@ class TestWriteOverlay:
     def test_an_unauthorable_enabled_entities_never_reaches_disk(self):
         with pytest.raises(ValueError):
             write_overlay(_spec(enabled_entities=("Nope",)), overwrite=False)
-        assert list(user_mappings_dir().iterdir()) == []
+        assert not user_mappings_dir().exists()
 
     def test_a_torn_write_leaves_no_target_and_no_staging_litter(self, monkeypatch):
         import src.config.authoring as authoring
@@ -711,7 +712,7 @@ class TestDeleteOverlay:
     def test_refuses_a_non_custom_id(self):
         # A user-dir `sd40myedbc` is a hand-placed HOTFIX override of a shipped
         # config — deleting it here would silently revert a district mid-season.
-        (user_mappings_dir() / "sd40myedbc_mapping.yaml").write_text("_base: myedbc\n", encoding="utf-8")
+        (ensure_user_mappings_dir() / "sd40myedbc_mapping.yaml").write_text("_base: myedbc\n", encoding="utf-8")
         with pytest.raises(ValueError, match="not a self-service config id"):
             delete_overlay("sd40myedbc")
         assert (user_mappings_dir() / "sd40myedbc_mapping.yaml").exists()
@@ -890,7 +891,7 @@ class TestSearchDirsSeam:
         also_empty.mkdir()
         with pytest.raises(FileNotFoundError, match="myedbc_mapping.yaml"):
             write_overlay(_spec(), overwrite=False, search_dirs=[empty, also_empty])
-        assert list(user_mappings_dir().iterdir()) == []
+        assert not user_mappings_dir().exists()
 
 
 class TestBaseSentinelComparison:
@@ -1094,7 +1095,7 @@ class TestDeleteRefusesToLeaveTheMappingsDir:
         """
         outside = tmp_path / "outside.yaml"
         outside.write_text("_base: myedbc\n", encoding="utf-8")
-        link = user_mappings_dir() / "sd93custom_mapping.yaml"
+        link = ensure_user_mappings_dir() / "sd93custom_mapping.yaml"
         link.symlink_to(outside)
         with pytest.raises(ValueError, match="outside the user mappings dir"):
             delete_overlay("sd93custom")

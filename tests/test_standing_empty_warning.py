@@ -64,7 +64,7 @@ from src.ui_flet.home_status import (
 )
 from src.ui_flet.run_history import derive_history_banner, to_run_row
 from src.ui_flet.verdict import Verdict
-from src.utils.paths import user_mappings_dir
+from src.utils.paths import ensure_user_mappings_dir
 from tests.test_contract import _create_sd51_inputs
 
 _H, _W, _F = Verdict.HEALTHY, Verdict.WARNING, Verdict.FAILED
@@ -345,7 +345,7 @@ _SD51_SHAPE = "sd51familyshape"
 
 def _write_sd51_shape_overlay() -> None:
     """Drop the overlay into the (autouse-isolated) user mappings dir, and prove what it is."""
-    (user_mappings_dir() / f"{_SD51_SHAPE}_mapping.yaml").write_text(
+    (ensure_user_mappings_dir() / f"{_SD51_SHAPE}_mapping.yaml").write_text(
         "_base: sd51myedbc\n"
         "global_config:\n"
         "  enabled_entities: [Students, Staff, Family, Classes, Enrollments, StudentAttendance]\n",
