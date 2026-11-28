@@ -153,6 +153,20 @@ def format_user_error(exc: BaseException) -> str:
     exactly this failure — the nightly reads the same shared folder and fails the same
     way — and a true sentence is worth more here than a calm one.
     """
+    if isinstance(exc, MachineScopeRefused) and exc.reason is MachineScopeRefusedReason.RUNS_UNWRITABLE:
+        # DSYNC-117 review F3: the shared folder is fine and the nightly's own account holds Modify on
+        # runs by its descriptor, so the nightly IS unaffected; and the runs log was never written —
+        # the record went to the per-user handshake log, so that is the path to name.
+        return (
+            "DistrictSync couldn't open its window.\n\n"
+            "This computer shares DistrictSync's settings between accounts, and Windows has not yet "
+            "given your account permission to save in the shared folder's run log:\n"
+            f"{exc.path}\n\n"
+            "Your scheduled nightly sync is not affected — it runs as its own account. An administrator "
+            "can open DistrictSync once and approve the Windows prompt to give your account access.\n\n"
+            f"Technical details were saved to:\n{handshake_dir() / _LOG_NAME}\n\n"
+            "Please share that file with support if this keeps happening."
+        )
     log_path = resolve_log_path()
     if isinstance(exc, MachineScopeRefused):
         cause = _MACHINE_SCOPE_CAUSES.get(exc.reason, "DistrictSync could not use the shared folder on this computer.")
@@ -207,9 +221,14 @@ def _write_traceback(exc: BaseException) -> None:
     goes to the per-user handshake folder instead — the same declared exception the log sink falls
     back to — rather than being lost.
     """
-    from src.utils.redact import redact  # noqa: PLC0415 - best-effort crash path
+    try:
+        from src.utils.redact import redact  # noqa: PLC0415 - best-effort crash path
 
-    text = redact("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
+        text = redact("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
+    except Exception:  # noqa: BLE001 - review F4: this record must never raise
+        # Without redaction the body is skipped, never written raw: a traceback can carry an
+        # account name (plan 0055 N1). The exception TYPE alone is still worth recording.
+        text = f"{type(exc).__name__} (details withheld: the log could not be redacted)\n"
     candidates = [resolve_log_path]
     candidates.append(lambda: handshake_dir() / _LOG_NAME)
     for candidate in candidates:

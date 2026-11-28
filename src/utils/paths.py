@@ -24,6 +24,7 @@ from __future__ import annotations
 import ctypes
 import logging
 import os
+import secrets
 import shutil
 import stat
 import sys
@@ -761,25 +762,47 @@ def pin_data_dir() -> Path:
 def _probe_write(folder: Path) -> None:
     """Create and remove one file in ``folder``; raise ``OSError`` when Windows will not let us.
 
-    A real create, because ``os.access`` on Windows reads the read-only attribute and never the
-    DACL. The file is removed at once; a removal failure is ignored (the create already proved
-    what the probe asks, and the name is unmistakably ours).
+    ONE exclusive create, never retried. ``tempfile.mkstemp`` is not usable here: on Windows it
+    retries a ``PermissionError`` for as long as ``os.access(dir, W_OK)`` is true, and ``os.access``
+    reads the read-only attribute, never the DACL, so a denied ``runs/`` looped up to ``TMP_MAX``
+    (2147483647) times and the window launch hung (DSYNC-117 review F1). A real create is the point:
+    an ace read cannot see the filtered token, group membership or a deny ace. The random name cannot
+    collide, so ``O_EXCL`` failing is not a case to retry either. A removal failure is logged and
+    otherwise ignored (the create already answered the question, and the name is unmistakably ours).
     """
-    handle, name = tempfile.mkstemp(prefix=".write-probe-", dir=folder)
+    probe = folder / f".write-probe-{secrets.token_hex(8)}"
+    handle = os.open(probe, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     os.close(handle)
     try:
-        os.unlink(name)
-    except OSError:
-        logger.warning("A write probe could not be removed from the run folder; it is safe to delete.")
+        os.unlink(probe)
+    except OSError as exc:
+        logger.warning(
+            "A write probe could not be removed from the run folder (%s, errno %s); it is safe to delete.",
+            type(exc).__name__,
+            exc.errno,
+        )
+
+
+#: Windows' ERROR_ACCESS_DENIED. ``os.open`` goes through the C runtime, which sets ``errno`` only, so
+#: a denial usually arrives with NO ``winerror``; one that does carry it must carry this value.
+_ERROR_ACCESS_DENIED = 5
+
+
+def _is_access_denied(exc: OSError) -> bool:
+    """Whether ``exc`` is an access denial — the one failure a grant can repair (review F2)."""
+    return isinstance(exc, PermissionError) and getattr(exc, "winerror", None) in (None, _ERROR_ACCESS_DENIED)
 
 
 def assert_runs_writable() -> None:
     """Refuse a machine-scoped session that cannot create a file in ``runs/`` (DSYNC-117).
 
     No-op unless :func:`is_machine_scope`. A missing ``runs/`` is ``MISSING`` (only provisioning
-    can re-create it with its descriptor); any other failure to create a file is
-    ``RUNS_UNWRITABLE``, which the window routes to the one-time grant. Called by the window's
-    boot only: the CLI and the nightly fall back to a per-user log instead (``logger.get_logger``).
+    can re-create it with its descriptor). An ACCESS DENIAL is ``RUNS_UNWRITABLE``, which the window
+    routes to the one-time grant. Any other failure (a full disk, an antivirus or Controlled Folder
+    Access block, a sharing violation) is not something a grant can fix: it is logged by type and
+    errno only and the boot carries on, where the log sink's own fallback covers the log. Called by
+    the window's boot only: the CLI and the nightly fall back to a per-user log instead
+    (``logger.get_logger``).
     """
     if not is_machine_scope():
         return
@@ -789,7 +812,13 @@ def assert_runs_writable() -> None:
     try:
         _probe_write(runs)
     except OSError as exc:
-        raise MachineScopeRefused(MachineScopeRefusedReason.RUNS_UNWRITABLE, runs) from exc
+        if _is_access_denied(exc):
+            raise MachineScopeRefused(MachineScopeRefusedReason.RUNS_UNWRITABLE, runs) from exc
+        logger.warning(
+            "The run folder could not be checked for writing (%s, errno %s); carrying on.",
+            type(exc).__name__,
+            exc.errno,
+        )
 
 
 def reset_data_dir_pin() -> None:

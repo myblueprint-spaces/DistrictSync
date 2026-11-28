@@ -45,10 +45,13 @@ _FALLBACK_STDERR = "standard error"
 def _fallback_handler() -> tuple[logging.Handler, str]:
     """The sink used when the real log file cannot be opened, and a bounded name for it.
 
-    The per-user :func:`~src.utils.paths.handshake_dir` is the ONE declared per-user location on a
-    machine-scoped install (it already holds the UAC handshake files and the refusal log), so it is
-    the only place a file is tried. It is resolved through ``paths`` at call time and never through
-    ``user_data_dir()``: a denied shared log must never fall through to the per-user PROFILE.
+    The per-user :func:`~src.utils.paths.handshake_dir` is the only place a file is tried. In
+    production it IS the per-user profile ROOT (``handshake_dir()`` returns ``per_user_data_dir()``):
+    the declared exception that already holds the UAC handshake files, ``MOVED.txt`` and the
+    machine-scope refusal log. What must never land there is profile STATE: this writes the log file
+    alone — no ``config.json``, ``mappings/`` or ``history.db`` — and it is resolved through ``paths``
+    at call time, never through ``user_data_dir()``, so the session's settings and run records stay
+    in the shared profile.
     When even that cannot be opened the line goes to stderr; a windowed exe has no stderr, and then
     nothing can carry it, which is said here rather than hidden.
     """
