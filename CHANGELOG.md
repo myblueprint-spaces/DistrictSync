@@ -41,6 +41,16 @@ Per-release download links and auto-generated commit notes live on the
 
 ### Fixed
 
+- **A second administrator on a shared install can now open DistrictSync after giving their account
+  access.** On a computer where DistrictSync's settings are shared (the machine-wide installer, or the
+  `DistrictSync-windows.exe` scheduled for a service account), the "Ask Windows for permission" step gave
+  the account access to `C:\ProgramData\DistrictSync` but not to its `runs` folder, so DistrictSync then
+  stopped with a "Permission denied" error window. The step now covers every folder, and an account
+  given access by an earlier version is asked once more the next time it opens DistrictSync, which
+  completes the access. If the log file still cannot be opened, DistrictSync keeps running and writes
+  its log to that account's own DistrictSync folder instead. The nightly sync was not affected
+  (DSYNC-117).
+
 - **The nightly sync no longer fails with "Access is denied" on a machine-wide install where no
   custom mapping was ever saved.** When the nightly ran as a service account before an
   administrator had opened DistrictSync's window, it tried to create the

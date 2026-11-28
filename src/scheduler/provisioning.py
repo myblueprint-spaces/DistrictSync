@@ -9,7 +9,8 @@ press since S-2b and ``grant_current_user`` from the launcher's grant window, an
 
 * ``provision`` — create ``C:\\ProgramData\\DistrictSync``, migrate the admin's per-user
   profile into it, seal the delivery secret, VERIFY, then commit the HKLM switch.
-* ``grant_current_user`` — one additive ``:M`` ace for a second administrator.
+* ``grant_current_user`` — additive aces for a second administrator: the setup admin's rights on
+  every protected folder (:data:`PROTECTED_SUBTREES`, DSYNC-117).
 * ``prune_principal`` — remove a retired task principal's aces, after a confirmed delete.
 
 **Every grant to a task principal is RECORDED (DSYNC-115)** — its SID, in ``HKLM\\SOFTWARE\\DistrictSync`` →
@@ -68,6 +69,7 @@ import subprocess  # nosec B404 - icacls (DACL edits) is a trusted, absolute-pat
 import sys
 import time
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
@@ -129,7 +131,7 @@ class ProvisionStep(StrEnum):
     VERIFY = "verify"  # the app's OWN predicate rejects what we just built
     COMMIT = "commit"  # the HKLM switch could not be written
     ROLLBACK = "rollback"  # a pre-commit failure left a directory we could not remove
-    GRANT = "grant"  # the additive :M ace failed
+    GRANT = "grant"  # an additive ace (root or a protected folder under it) failed
     DELETE = "delete"  # the task's removal was not confirmed, so nothing was pruned
     PRUNE = "prune"  # the retired principal's aces could not be removed
 
@@ -463,11 +465,21 @@ _DENY_ACE_TYPES = frozenset({1, 6, 10, 12})
 _INHERIT_OI_CI = 0x3  # OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE — icacls' (OI)(CI), and nothing else
 _READ_EXECUTE_MASK = int(READ_EXECUTE, 16)
 _MODIFY_MASK = int(MODIFY, 16)
+#: ``icacls`` right -> the access mask a DACL read returns for it.
+_PRINCIPAL_ACCESS_MASKS = {"RX": _READ_EXECUTE_MASK, "M": _MODIFY_MASK}
 
 
 def _granted_targets(root: Path) -> tuple[tuple[Path, int], ...]:
-    """Where a task principal is granted, and with which mask: RX on the root, Modify on ``runs`` (D2)."""
-    return ((root, _READ_EXECUTE_MASK), (root / paths.MACHINE_RUNS_SUBDIR, _MODIFY_MASK))
+    """Where a task principal is granted, and with which mask: RX on the root, Modify on ``runs`` (D2).
+
+    Built from :data:`PROTECTED_SUBTREES`' ``principal_rights`` (DSYNC-117 F6), the same column the
+    descriptors and :func:`_ensure_runs_and_principal`'s grant read, so the exact shape the revoke accepts
+    is the shape that was granted. A second administrator's grant (``setup_rights``: Modify on the root)
+    is never this shape, so the revoke keeps it.
+    """
+    return tuple(
+        (root / subtree.relative, _PRINCIPAL_ACCESS_MASKS[subtree.principal_rights]) for subtree in PROTECTED_SUBTREES
+    )
 
 
 def _revoke(root: Path, sids: tuple[str, ...], *, protected: frozenset[str]) -> tuple[set[str], set[str]]:
@@ -580,26 +592,65 @@ def _descriptor(*, owner_sid: str, aces: list[str]) -> str:
     return f"O:{owner_sid}G:{owner_sid}D:P" + "".join(aces)
 
 
-def _machine_root_sddl(*, setup_sid: str, principal_sid: str, owner_sid: str) -> str:
-    """The shared profile root (D2): SYSTEM F · Administrators F · setup user M · principal RX.
+@dataclass(frozen=True)
+class ProtectedSubtree:
+    """One folder of the shared profile created with a PROTECTED descriptor (inheritance off).
+
+    Rights are ``icacls`` spellings (``M``/``RX``); :data:`_SDDL_MASKS` maps them for the
+    descriptor. ``relative`` is the path under the profile root (``""`` = the root itself).
+    """
+
+    relative: str
+    setup_rights: str  # the setup administrator, and every administrator granted later (DSYNC-117)
+    principal_rights: str  # the nightly's task principal
+
+
+#: THE table (DSYNC-117): every protected folder provisioning creates, and what each account gets
+#: on it. The descriptors, the creation step and the second-administrator grant all read it, so a
+#: new protected folder cannot be created without the grant reaching it. Before this table the
+#: grant added one ace to the root only, and because ``runs/`` is protected, nothing granted on the
+#: root ever reached it: the granted administrator could open the profile but not create its own
+#: log (lab, MSI 0.57.1: ``[Errno 13]`` and PyInstaller's traceback dialog).
+PROTECTED_SUBTREES: tuple[ProtectedSubtree, ...] = (
+    # The principal READS the profile; it cannot alter the admin's trust-bearing state.
+    ProtectedSubtree("", setup_rights="M", principal_rights="RX"),
+    # The principal WRITES its log and the run store here, and nowhere else.
+    ProtectedSubtree(paths.MACHINE_RUNS_SUBDIR, setup_rights="M", principal_rights="M"),
+)
+
+_SDDL_MASKS = {"M": MODIFY, "RX": READ_EXECUTE}
+
+
+def _protected_subtree(relative: str) -> ProtectedSubtree:
+    return next(subtree for subtree in PROTECTED_SUBTREES if subtree.relative == relative)
+
+
+def _subtree_sddl(subtree: ProtectedSubtree, *, setup_sid: str, principal_sid: str, owner_sid: str) -> str:
+    """SYSTEM F · Administrators F · setup user (the row's right) · principal (the row's right), protected.
 
     The setup user is granted **explicitly** because ``BUILTIN\\Administrators`` in a DACL
     grants nothing to a non-elevated process (the UAC filtered token) — the admin's own
-    un-elevated session has to be able to write ``config.json``.
-
-    The principal gets READ-EXECUTE here and Modify only on ``runs/``: the service account
-    reads what it needs and writes only run artefacts; it cannot alter the admin's
-    trust-bearing state. When the principal IS the setup user its single ``M`` ace stands
-    alone — a second ace for the same SID would be redundant and confusing in a read-back.
+    un-elevated session has to be able to write ``config.json``. When the principal IS the
+    setup user its single ace stands alone — a second ace for the same SID would be redundant
+    and confusing in a read-back.
     """
     aces = [
         _ace(FULL_CONTROL, SID_SYSTEM),
         _ace(FULL_CONTROL, SID_ADMINISTRATORS),
-        _ace(MODIFY, setup_sid),
+        _ace(_SDDL_MASKS[subtree.setup_rights], setup_sid),
     ]
     if principal_sid != setup_sid:
-        aces.append(_ace(READ_EXECUTE, principal_sid))
+        aces.append(_ace(_SDDL_MASKS[subtree.principal_rights], principal_sid))
     return _descriptor(owner_sid=owner_sid, aces=aces)
+
+
+def _machine_root_sddl(*, setup_sid: str, principal_sid: str, owner_sid: str) -> str:
+    """The shared profile root (D2): SYSTEM F · Administrators F · setup user M · principal RX.
+
+    The principal gets READ-EXECUTE here and Modify only on ``runs/``: the service account
+    reads what it needs and writes only run artefacts. Rights come from :data:`PROTECTED_SUBTREES`.
+    """
+    return _subtree_sddl(_protected_subtree(""), setup_sid=setup_sid, principal_sid=principal_sid, owner_sid=owner_sid)
 
 
 def _runs_sddl(*, setup_sid: str, principal_sid: str, owner_sid: str) -> str:
@@ -609,14 +660,12 @@ def _runs_sddl(*, setup_sid: str, principal_sid: str, owner_sid: str) -> str:
     non-creating, because a ``runs/`` created later by an admin process would inherit the
     root's RX and silently break the principal's log.
     """
-    aces = [
-        _ace(FULL_CONTROL, SID_SYSTEM),
-        _ace(FULL_CONTROL, SID_ADMINISTRATORS),
-        _ace(MODIFY, setup_sid),
-    ]
-    if principal_sid != setup_sid:
-        aces.append(_ace(MODIFY, principal_sid))
-    return _descriptor(owner_sid=owner_sid, aces=aces)
+    return _subtree_sddl(
+        _protected_subtree(paths.MACHINE_RUNS_SUBDIR),
+        setup_sid=setup_sid,
+        principal_sid=principal_sid,
+        owner_sid=owner_sid,
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -1117,16 +1166,11 @@ def _resume_or_refuse(root: Path) -> bool:
 
 
 def _create_profile(root: Path, *, setup_sid: str, principal_sid: str) -> None:
-    """Step 3 — the root and ``runs/``, each created WITH its descriptor."""
-    for path, sddl in (
-        (root, _machine_root_sddl(setup_sid=setup_sid, principal_sid=principal_sid, owner_sid=OWNER_ADMINISTRATORS)),
-        (
-            root / paths.MACHINE_RUNS_SUBDIR,
-            _runs_sddl(setup_sid=setup_sid, principal_sid=principal_sid, owner_sid=OWNER_ADMINISTRATORS),
-        ),
-    ):
+    """Step 3 — every :data:`PROTECTED_SUBTREES` folder (root first), each created WITH its descriptor."""
+    for subtree in PROTECTED_SUBTREES:
+        sddl = _subtree_sddl(subtree, setup_sid=setup_sid, principal_sid=principal_sid, owner_sid=OWNER_ADMINISTRATORS)
         try:
-            _create_directory_with_sddl(path, sddl)
+            _create_directory_with_sddl(root / subtree.relative, sddl)
         except FileExistsError as exc:
             # The atomic gate. Reached only when step 2 saw nothing there, i.e. something
             # was planted in between — refuse, never adopt-and-fix.
@@ -1138,18 +1182,20 @@ def _create_profile(root: Path, *, setup_sid: str, principal_sid: str) -> None:
 def _ensure_runs_and_principal(root: Path, *, setup_sid: str, principal_sid: str, principal_account: str) -> None:
     """Step 3b — the idempotent half of step 3, for a resumed or re-scheduled profile.
 
-    ``runs/`` may be missing (a kill right after the root was created) and the principal may
+    A protected folder (``runs/``; any :data:`PROTECTED_SUBTREES` row) may be missing (a kill right
+    after the root was created) and the principal may
     be a NEW one (Remove pruned the last). Both are repaired additively with ``icacls``,
     where **every non-zero exit is fatal** — the inverse of
     ``elevation._set_owner_only_dacl``'s warn-and-continue, because here the DACL is the
     confidentiality boundary rather than a defence-in-depth layer over DPAPI.
     """
-    runs = root / paths.MACHINE_RUNS_SUBDIR
-    if not runs.exists():
+    for subtree in PROTECTED_SUBTREES:
+        folder = root / subtree.relative
+        if folder.exists():
+            continue
+        sddl = _subtree_sddl(subtree, setup_sid=setup_sid, principal_sid=principal_sid, owner_sid=OWNER_ADMINISTRATORS)
         try:
-            _create_directory_with_sddl(
-                runs, _runs_sddl(setup_sid=setup_sid, principal_sid=principal_sid, owner_sid=OWNER_ADMINISTRATORS)
-            )
+            _create_directory_with_sddl(folder, sddl)
         except FileExistsError as exc:
             raise ProvisionRefused(ProvisionStep.PRE_EXISTING) from exc
         except OSError as exc:
@@ -1162,8 +1208,10 @@ def _ensure_runs_and_principal(root: Path, *, setup_sid: str, principal_sid: str
         # two installs of the same shape never read back differently through ``icacls``.
         return
 
-    for target, rights in ((root, "RX"), (runs, "M")):
-        exit_code = _run_icacls([str(target), "/grant", f"{principal_account}:(OI)(CI){rights}"])
+    # One source (DSYNC-117 F6): the same rows and rights the descriptors and the revoke read.
+    for subtree in PROTECTED_SUBTREES:
+        target = root / subtree.relative
+        exit_code = _run_icacls([str(target), "/grant", f"{principal_account}:(OI)(CI){subtree.principal_rights}"])
         if exit_code != 0:
             raise ProvisionRefused(ProvisionStep.PRINCIPAL, icacls_exit=exit_code)
 
@@ -1202,8 +1250,10 @@ def _verify_provisioned(root: Path, source: Path) -> None:
     reader will not look.
     """
     try:
-        paths.assert_machine_dir_trusted(root)
-        paths.assert_no_open_aces(root / paths.MACHINE_RUNS_SUBDIR)
+        paths.assert_machine_dir_trusted(root)  # the root's ace walk is part of the trust predicate
+        for subtree in PROTECTED_SUBTREES:
+            if subtree.relative:
+                paths.assert_no_open_aces(root / subtree.relative)
     except paths.MachineScopeRefused as exc:
         raise ProvisionRefused(ProvisionStep.VERIFY) from exc
     if (source / paths.RUN_STORE_NAME).is_file() and not paths.history_db_in(root, machine_scope=True).is_file():
@@ -1231,7 +1281,16 @@ def apply_grant_current_user(payload: Mapping[str, object]) -> None:
     grant an arbitrary principal Modify on the shared profile — including the service
     account's, or a standard user's.
 
-    Consequence, stated rather than solved here: root aces only ever GROW. A granted admin
+    **Every protected folder, not just the root (DSYNC-117).** The grantee gets the setup
+    administrator's rights on each :data:`PROTECTED_SUBTREES` row: ``runs/`` is protected, so an
+    ace on the root never reaches it, and a root-only grant left the administrator unable to
+    create its own log. ``icacls /grant`` MERGES into an existing explicit ace, so the op is
+    idempotent, and re-running it on an install granted by an earlier build adds exactly the
+    missing ``runs/`` ace (the repair). A row whose folder is absent is skipped: this op never
+    creates a profile folder (it cannot know the setup administrator's SID); ``provision``'s
+    resume re-creates ``runs/`` with its descriptor.
+
+    Consequence, stated rather than solved here: these aces only ever GROW. A granted admin
     keeps Modify on ``config.json`` and read access to ``sftp_secret.bin`` after demotion,
     and only the *task principal* has a prune. → backlog.
 
@@ -1247,9 +1306,13 @@ def apply_grant_current_user(payload: Mapping[str, object]) -> None:
         raise ProvisionRefused(ProvisionStep.PRE_EXISTING) from exc
 
     grantee = current_run_as_user()
-    exit_code = _run_icacls([str(root), "/grant", f"{grantee}:(OI)(CI)M"])
-    if exit_code != 0:
-        raise ProvisionRefused(ProvisionStep.GRANT, icacls_exit=exit_code)
+    for subtree in PROTECTED_SUBTREES:
+        target = root / subtree.relative
+        if not target.exists():
+            continue
+        exit_code = _run_icacls([str(target), "/grant", f"{grantee}:(OI)(CI){subtree.setup_rights}"])
+        if exit_code != 0:
+            raise ProvisionRefused(ProvisionStep.GRANT, icacls_exit=exit_code)
 
 
 # SIDs whose aces hold the shared profile together. Pruning any of them would lock the

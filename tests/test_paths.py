@@ -838,6 +838,8 @@ class TestMachineDirTrust:
             # S-1b-i: the open-group ace walk, and the WIN_PD_OVERRIDE_* redirect.
             "open_ace",
             "redirected",
+            # DSYNC-117: the root opens but runs/ cannot be written (window boot only; grantable).
+            "runs_unwritable",
         }
 
 

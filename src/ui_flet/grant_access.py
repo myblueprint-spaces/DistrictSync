@@ -105,12 +105,15 @@ _FAILURE_COPY: dict[GrantOutcome, GrantCopy] = {
     GrantOutcome.UNAVAILABLE: GrantCopy(UNAVAILABLE_HEADLINE, UNAVAILABLE_DETAIL, RETRY_LABEL),
 }
 
-# The ONE refusal an added ace can fix. Everything else describes a folder whose owner,
+# The refusals an added ace can fix. Everything else describes a folder whose owner,
 # link-ness, inheritance or open-group ace is wrong — a grant would not repair any of them,
 # and ``provisioning.apply_grant_current_user`` refuses outright on a directory its own
 # trust predicate rejects. Keeping this a frozenset (not ``reason is INACCESSIBLE``) is what
 # lets the completeness test enumerate the whole enum and pin BOTH sides of the answer.
-_GRANTABLE_REASONS = frozenset({MachineScopeRefusedReason.INACCESSIBLE})
+# DSYNC-117: ``RUNS_UNWRITABLE`` is the second access denial — the root opens but ``runs/`` does not
+# (a grant from an earlier build reached the root only). The same grant, now covering every
+# protected folder, repairs it.
+_GRANTABLE_REASONS = frozenset({MachineScopeRefusedReason.INACCESSIBLE, MachineScopeRefusedReason.RUNS_UNWRITABLE})
 
 
 def offers_grant(reason: MachineScopeRefusedReason) -> bool:
