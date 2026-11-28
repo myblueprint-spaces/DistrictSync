@@ -336,8 +336,37 @@ class TestRemoveRevokesTheManagedServiceAccount:
         assert cfg.schedule_registered is False
         assert _contains(tree, classify_provision_step(ProvisionStep.PRUNE))
 
-    def test_a_password_principal_is_removed_the_ordinary_way(self, tmp_path, stub_page, monkeypatch):
+    def test_a_password_principal_is_removed_with_its_access_too(self, tmp_path, stub_page, monkeypatch):
+        """DSYNC-115 (lab row T4): this row used to pin the hole - a password account kept its ACEs after Remove."""
         cfg, tree, revokes, deletes = self._mount(tmp_path, stub_page, monkeypatch, kind=PrincipalKind.PASSWORD)
+        self._revoke_returns(
+            monkeypatch, revokes, RemovalAttempt(True, "Schedule removed and confirmed.", RevokeOutcome.REVOKED)
+        )
+        self._remove(tree, stub_page)
+        assert revokes == [(cfg.schedule_task_name, "CORP\\svc", PrincipalKind.PASSWORD)]
+        assert deletes == [], "ONE elevated op - no second removal"
+        assert cfg.schedule_registered is False
+        assert _contains(tree, setup_mod.REVOKE_DONE_NOTE)
+
+    def test_the_signed_in_account_is_removed_the_ordinary_way(self, tmp_path, stub_page, monkeypatch):
+        """Granted nothing at registration, so nothing to revoke - and no extra prompt."""
+        cfg = _settings(
+            tmp_path,
+            monkeypatch,
+            schedule_registered=True,
+            schedule_unattended=False,
+            schedule_run_as_user="",
+            schedule_run_as_kind=PrincipalKind.INTERACTIVE_TOKEN.value,
+        )
+        cfg.schedule_task_args = _registered_args(cfg)
+        _force_machine_scope(monkeypatch, tmp_path)
+        deletes: list[str] = []
+        monkeypatch.setattr(
+            "src.scheduler.windows.delete_task",
+            lambda name: deletes.append(name) or (True, "The scheduled task was removed."),
+        )
+        tree, _ = _schedule_section(cfg, stub_page)
+        revokes: list[tuple] = []
         self._revoke_returns(monkeypatch, revokes, RemovalAttempt(True, "x", RevokeOutcome.REVOKED))
         self._remove(tree, stub_page)
         assert revokes == []

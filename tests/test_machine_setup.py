@@ -82,6 +82,13 @@ class TestTheChildHalf:
         assert applied[0]["update_mode"] == "on"
         assert applied[0]["payload"]["user"] == ""
 
+    def test_it_never_retires_a_recorded_grant(self, applied, monkeypatch):
+        """DSYNC-115: machine setup on a computer with a live nightly must not revoke that nightly's account."""
+        retired: list[object] = []
+        monkeypatch.setattr(provisioning, "prune_retired_grants", retired.append, raising=False)
+        elevated_apply._do_machine_setup(self._payload())
+        assert len(applied) == 1 and retired == []
+
     @pytest.mark.parametrize(
         "bad",
         [{"update_mode": "auto"}, {"user": "CORP\\svc"}],
