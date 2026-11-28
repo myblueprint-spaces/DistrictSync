@@ -270,7 +270,7 @@ class TestClassify:
             CHECK_EXIT_BAD_REQUEST,
         }
         assert len(exits) == 5
-        assert exits.isdisjoint({0, 1, 2, 3}), "the real run's exit-code contract"
+        assert exits.isdisjoint({0, 1, 2, 3, 4}), "the real exit-code contract (4: DSYNC-111)"
         results = {v for k, v in vars(task_com).items() if k.startswith("RESULT_")}
         assert exits.isdisjoint(results)
 

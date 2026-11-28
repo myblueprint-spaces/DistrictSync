@@ -72,7 +72,7 @@ import flet as ft
 
 from src.config.app_config import AppConfig
 from src.config.authoring import current_digest
-from src.scheduler import get_scheduler, windows
+from src.scheduler import batch_right, get_scheduler, windows
 from src.scheduler.provision_session import (
     ProvisionAttempt,
     ProvisionOutcome,
@@ -83,7 +83,7 @@ from src.scheduler.provision_session import (
     request_removal_with_revoke,
 )
 from src.scheduler.provisioning import ProvisionStep
-from src.scheduler.schedule_check import ScheduleCheck
+from src.scheduler.schedule_check import RightState, ScheduleCheck
 from src.scheduler.schedule_record import clear_registered_record, write_registered_record
 from src.scheduler.task_com import Principal, PrincipalKind, runs_from_per_user_install
 from src.sftp.uploader import LISTING_DENIED_NOTE, SFTPUploader
@@ -450,6 +450,29 @@ def schedule_check_band(page: ft.Page, check: ScheduleCheck, *, task_name: str) 
     return components.HealthVerdictBanner(band.verdict, headline=band.headline, detail=band.detail, trailing=trailing)
 
 
+def batch_right_bands(outcome: batch_right.BatchRight | None) -> list[ft.Control]:
+    """DSYNC-111: the toned band for a password nightly's 'Log on as a batch job' outcome, or ``[]``.
+
+    NOT HELD is a FAILED band (the nightly IS scheduled but won't run yet — what the command line exits 4 on);
+    INCONCLUSIVE is a WARNING band (the command line's "Not confirmed" line, review F2); HELD needs no band. Every word
+    from ``batch_right``. No action in either: granting the right is IT's job, and the task needs no re-run once it is.
+    Callers paint these ABOVE the green "scheduled" banner — verdict first (review F2).
+    """
+    if outcome is batch_right.BatchRight.NOT_HELD:
+        return [
+            components.HealthVerdictBanner(
+                Verdict.FAILED, headline=batch_right.NOT_HELD_HEADLINE, detail=batch_right.NOT_HELD_DETAIL
+            )
+        ]
+    if outcome is batch_right.BatchRight.INCONCLUSIVE:
+        return [
+            components.HealthVerdictBanner(
+                Verdict.WARNING, headline=batch_right.INCONCLUSIVE_HEADLINE, detail=batch_right.INCONCLUSIVE_LINE
+            )
+        ]
+    return []
+
+
 def handover_banner(result: handover_result.HandoverResult, *, page: ft.Page, task_name: str) -> ft.Control:
     """The one-shot post-handover surface. TOTAL over :class:`HandoverBanner`.
 
@@ -472,12 +495,12 @@ def handover_banner(result: handover_result.HandoverResult, *, page: ft.Page, ta
         done = components.HealthVerdictBanner(
             Verdict.HEALTHY, headline=HANDOVER_DONE_HEADLINE, detail=HANDOVER_DONE_DETAIL
         )
-        if result.check is None:
+        controls: list[ft.Control] = [*batch_right_bands(result.batch_right), done]  # DSYNC-111: verdict first
+        if result.check is not None:
+            controls.append(schedule_check_band(page, result.check, task_name=task_name))
+        if len(controls) == 1:
             return done
-        return ft.Column(
-            spacing=tokens.space_md,
-            controls=[done, schedule_check_band(page, result.check, task_name=task_name)],
-        )
+        return ft.Column(spacing=tokens.space_md, controls=controls)
     if result.banner is HandoverBanner.HANDED_OVER_NIGHTLY_UNCONFIRMED:
         return components.HealthVerdictBanner(
             Verdict.WARNING,
@@ -3370,7 +3393,7 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
         # a credential-hygiene hazard — for a service account. Computed from what was SENT.
         account_is_current = principal_key(sent_account, _keyring_owner_account()) == ""
 
-        async def _apply_result(ok: bool, msg: str) -> None:
+        async def _apply_result(ok: bool, msg: str, batch: batch_right.BatchRight | None = None) -> None:
             _set_busy(False)
             _repaint_register_gate()
             unregister_btn.disabled = False
@@ -3383,6 +3406,8 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
                     f"Runs as {sent_account or _keyring_owner_account()}, whether or not you're "
                     f"signed in, daily at {run_time}.",
                 )
+                # DSYNC-111: the batch-right verdict leads the green "scheduled" banner (review F2).
+                result_slot.controls[:0] = batch_right_bands(batch)
             elif ok and scheduler.supports_unattended_password:
                 _on_register_success(
                     "Scheduled — logged-on only",
@@ -3485,7 +3510,26 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
                 with contextlib.suppress(Exception):
                     on_terminal(card)
 
-        async def _apply_provision(attempt: ProvisionAttempt) -> None:
+        def _batch_right_after(
+            registered: bool, elevated_state: RightState | None = None
+        ) -> batch_right.BatchRight | None:
+            """DSYNC-111: a PASSWORD nightly's 'Log on as a batch job' right, read IN the worker (it may reach a DC).
+
+            The same shared read and decision as the headless ``--schedule-register``. A gMSA press is left to the
+            DSYNC-33 check band, which already reports a denied right; a signed-in task has nothing to check.
+            ``elevated_state`` is the provisioning child's own read (the LSA refuses this unelevated process).
+            """
+            if not (registered and scheduler.supports_unattended_password and declared_kind is PrincipalKind.PASSWORD):
+                return None
+            try:
+                return batch_right.after_registration(
+                    declared_kind, sent_account or _keyring_owner_account(), elevated_state=elevated_state
+                )
+            except Exception as exc:  # noqa: BLE001 - advisory: it may not strand the spinner over a registered task
+                logger.error("The batch-logon right could not be read after scheduling: %s", type(exc).__name__)
+                return None
+
+        async def _apply_provision(attempt: ProvisionAttempt, batch: batch_right.BatchRight | None = None) -> None:
             """Finish the handover on the LOOP, then paint whichever outcome it ended in.
 
             ``complete_handover`` runs here rather than in the worker on purpose: its last step
@@ -3536,7 +3580,7 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
                 _refresh_readout()
                 return
 
-            result = handover_result.compose(attempt, handover, nightly_detail=nightly)
+            result = handover_result.compose(attempt, handover, nightly_detail=nightly, batch_right=batch)
             if result is not None and reentry["requested"] and on_reenter is not None:
                 handover_result.remember(result)
                 try:
@@ -3582,6 +3626,7 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
                     result_slot.controls.append(
                         schedule_check_band(page, attempt.check, task_name=cfg.schedule_task_name)
                     )
+                result_slot.controls[:0] = batch_right_bands(batch)  # DSYNC-111: and its batch right, leading
                 if on_schedule_changed is not None:
                     with contextlib.suppress(Exception):
                         on_schedule_changed()
@@ -3624,7 +3669,12 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
             except Exception as exc:  # noqa: BLE001 - it contracts never to raise; belt anyway
                 logger.error("The shared-settings change raised unexpectedly: %s", type(exc).__name__)
                 attempt = ProvisionAttempt(outcome=ProvisionOutcome.UNAVAILABLE)
-            page.run_task(_apply_provision, attempt)
+            batch = _batch_right_after(attempt.outcome is ProvisionOutcome.PROVISIONED, attempt.batch_right)
+            # Marshalled only when there IS an outcome, so every other result keeps its (attempt,) shape.
+            if batch is None:
+                page.run_task(_apply_provision, attempt)
+            else:
+                page.run_task(_apply_provision, attempt, batch)
 
         if provisioning_run:
             register_btn.disabled = True
@@ -3660,7 +3710,11 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
             except Exception as exc:  # noqa: BLE001 - a worker crash must not strand the spinner
                 logger.error("Scheduling the nightly sync raised unexpectedly: %s", type(exc).__name__)
                 ok, msg = False, _WORKER_ERROR_REGISTER
-            page.run_task(_apply_result, ok, msg)
+            batch = _batch_right_after(ok)
+            if batch is None:
+                page.run_task(_apply_result, ok, msg)  # the (ok, msg) shape every other result keeps
+            else:
+                page.run_task(_apply_result, ok, msg, batch)
 
         register_btn.disabled = True
         unregister_btn.disabled = True
