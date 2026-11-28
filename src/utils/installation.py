@@ -71,15 +71,25 @@ def msi_product_version() -> str | None:
     return None
 
 
-def per_user_copy_present() -> bool:
-    """Whether a copy installed for this Windows account (the per-user ``Setup.exe`` install) is also here."""
+def per_user_update_exe() -> Path | None:
+    """The ``Update.exe`` of a copy installed for THIS Windows account (the per-user ``Setup.exe`` install), or ``None``.
+
+    Its own uninstaller (``Update.exe uninstall --silent``) is what ``--migrate --apply`` runs, and only as this account
+    (DSYNC-116). Never raises.
+    """
     try:
         from src.update.package import PACK_ID
 
         local = os.environ.get("LOCALAPPDATA", "").strip()
-        return bool(local) and (Path(local) / PACK_ID / "Update.exe").is_file()
+        update_exe = Path(local) / PACK_ID / "Update.exe"
+        return update_exe if local and update_exe.is_file() else None
     except Exception:  # noqa: BLE001 - a report line, never a stop
-        return False
+        return None
+
+
+def per_user_copy_present() -> bool:
+    """Whether a copy installed for this Windows account (the per-user ``Setup.exe`` install) is also here."""
+    return per_user_update_exe() is not None
 
 
 def updater_last_line(log_file: Path) -> str | None:

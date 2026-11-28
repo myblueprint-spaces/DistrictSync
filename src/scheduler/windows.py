@@ -661,7 +661,7 @@ def delete_task(task_name: str) -> tuple[bool, str]:
 # CONFIRMED by reading the real task back (read_schedule) — never assumed from an exit code.
 
 
-def _run_elevated_child(req_path: Path, res_path: Path) -> ElevationOutcome:
+def _run_elevated_child(req_path: Path, res_path: Path, *, timeout_s: float = _ELEV_TIMEOUT_S) -> ElevationOutcome:
     """Launch OUR OWN exe elevated in ``--elevated-apply`` mode (S1b — no PowerShell child).
 
     The child is ``sys.executable``: the frozen DistrictSync.exe in production, the Python
@@ -676,10 +676,10 @@ def _run_elevated_child(req_path: Path, res_path: Path) -> ElevationOutcome:
     """
     exe = Path(sys.executable)
     params = f'{module_prefix(exe)}--elevated-apply "{req_path}" "{res_path}"'
-    return elevation.run_elevated(str(exe), params, timeout_s=_ELEV_TIMEOUT_S)
+    return elevation.run_elevated(str(exe), params, timeout_s=timeout_s)
 
 
-def run_elevated_child(req_path: Path, res_path: Path) -> ElevationOutcome:
+def run_elevated_child(req_path: Path, res_path: Path, *, timeout_s: float | None = None) -> ElevationOutcome:
     """Public face of :func:`_run_elevated_child`, for the non-schedule elevated ops.
 
     Plan 0049 S-1b-ii.2's grant window runs `grant_current_user` behind the same single UAC
@@ -687,8 +687,13 @@ def run_elevated_child(req_path: Path, res_path: Path) -> ElevationOutcome:
     in this module — it lives in ``src/scheduler/provision_session.py``. Delegating (rather
     than that module re-deriving ``sys.executable`` + the ``-m src.main`` dev prefix) keeps
     ONE spelling of how this app launches itself elevated.
+
+    ``timeout_s`` (DSYNC-116) is for an op whose bounded steps outlast the schedule budget (``--migrate --apply``'s
+    probe, delete, register and put-back); ``None`` keeps :data:`_ELEV_TIMEOUT_S`.
     """
-    return _run_elevated_child(req_path, res_path)
+    if timeout_s is None:
+        return _run_elevated_child(req_path, res_path)
+    return _run_elevated_child(req_path, res_path, timeout_s=timeout_s)
 
 
 def _map_pre_consent_failure(outcome: ElevationOutcome) -> str | None:
