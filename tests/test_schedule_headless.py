@@ -265,7 +265,8 @@ class TestRegisterAnotherAccount:
         code, message = headless.register(
             run_time="03:00", spec=_spec("gmsa:CORP\\svc$"), password=None, wake_to_run=False
         )
-        assert code == 0 and message.splitlines()[-1].startswith("Warning: the account's test run did not pass")
+        assert code == 0
+        assert any(line.startswith("Warning: the account's test run did not pass") for line in message.splitlines())
         assert AppConfig.load().schedule_registered
 
     def test_an_engine_error_is_a_fixed_line_never_the_account_or_a_traceback(
@@ -282,6 +283,199 @@ class TestRegisterAnotherAccount:
         assert code == 1 and "unexpected error" in message
         assert "svc" not in message and "svc" not in caplog.text and SECRET not in caplog.text
         assert "ValueError" in caplog.text
+
+
+class TestTheBatchRight:
+    """DSYNC-111: an unattended account must hold 'Log on as a batch job', or the nightly never runs.
+
+    After a successful registration as a password or gMSA account the command prints the prerequisite lines and reads
+    the right (the DSYNC-33 read, through ``batch_right.read_right``; the LSA is never touched). A positive NOT HELD
+    keeps the task and exits ``EXIT_REGISTERED_WITHOUT_BATCH_RIGHT`` (4); anything it cannot see is an advisory, exit 0.
+    """
+
+    @pytest.fixture()
+    def provision(self, monkeypatch):
+        calls: dict = {"check": None, "reads": [], "outcome": provision_session.ProvisionOutcome.PROVISIONED}
+
+        def request_provision(*args, **kwargs):
+            calls["principal"] = kwargs["principal"]
+            return provision_session.ProvisionAttempt(outcome=calls["outcome"], check=calls["check"])
+
+        def complete_handover(*, persist, reenter):
+            persist()
+            return provision_session.HandoverOutcome(handed_over=True)
+
+        monkeypatch.setattr(provision_session, "request_provision", request_provision)
+        monkeypatch.setattr(provision_session, "complete_handover", complete_handover)
+        return calls
+
+    @pytest.fixture()
+    def right(self, monkeypatch, provision):
+        from src.scheduler import batch_right
+        from src.scheduler.schedule_check import RightState
+
+        state = {"value": RightState.UNKNOWN}
+
+        def read(account):
+            provision["reads"].append(account)
+            return state["value"]
+
+        monkeypatch.setattr(batch_right, "read_right", read)
+        return state
+
+    def _password(self):
+        return headless.register(
+            run_time="03:00", spec=_spec("password:PC\\svc_local"), password=SECRET, wake_to_run=False
+        )
+
+    def _gmsa(self):
+        return headless.register(
+            run_time="03:00", spec=_spec("gmsa:CORP\\svc_dsync$"), password=None, wake_to_run=False
+        )
+
+    # --- password principal ----------------------------------------------------------------------------------------
+    def test_password_not_held_exits_4_and_keeps_the_task(self, sched, provision, right):
+        from src.scheduler import batch_right
+        from src.scheduler.schedule_check import RightState
+
+        right["value"] = RightState.DENIED
+        code, message = self._password()
+        assert code == headless.EXIT_REGISTERED_WITHOUT_BATCH_RIGHT == 4
+        assert "principal" in provision  # it WAS registered
+        assert AppConfig.load().schedule_registered  # and the record kept: a later grant needs no re-run
+        assert batch_right.NOT_HELD_DETAIL in message and batch_right.NOT_HELD_HEADLINE in message
+        assert message.splitlines()[0].startswith("Scheduled:")
+
+    def test_password_held_exits_0(self, sched, provision, right):
+        from src.scheduler import batch_right
+        from src.scheduler.schedule_check import RightState
+
+        right["value"] = RightState.GRANTED
+        code, message = self._password()
+        assert code == 0
+        assert batch_right.HELD_LINE in message
+        assert batch_right.NOT_HELD_DETAIL not in message and batch_right.INCONCLUSIVE_LINE not in message
+
+    def test_password_through_a_group_exits_0_with_the_advisory(self, sched, provision, right):
+        """The read sees only DIRECT rights: a member of a group holding the right reads NOT_DIRECT."""
+        from src.scheduler import batch_right
+        from src.scheduler.schedule_check import RightState
+
+        right["value"] = RightState.NOT_DIRECT
+        code, message = self._password()
+        assert code == 0
+        assert batch_right.INCONCLUSIVE_LINE in message and batch_right.NOT_HELD_DETAIL not in message
+
+    def test_password_inconclusive_exits_0_with_the_advisory(self, sched, provision, right):
+        from src.scheduler import batch_right
+        from src.scheduler.schedule_check import RightState
+
+        right["value"] = RightState.UNKNOWN
+        code, message = self._password()
+        assert code == 0 and batch_right.INCONCLUSIVE_LINE in message
+
+    def test_the_account_read_is_the_one_registered(self, sched, provision, right):
+        self._password()
+        assert provision["reads"] == ["PC\\svc_local"]
+
+    def test_the_prerequisite_lines_are_printed_for_a_password_account(self, sched, provision, right):
+        from src.scheduler import batch_right
+
+        _, message = self._password()
+        assert batch_right.PREREQUISITES_LEAD in message
+        assert batch_right.BATCH_RIGHT_PREREQUISITE in message
+        assert "Install-ADServiceAccount" not in message  # a gMSA line, not this account's
+
+    def test_a_password_account_that_is_the_signed_in_one_is_checked_too(self, sched, right):
+        """The signed-in account registered WITH its password is an unattended batch logon all the same."""
+        from src.scheduler.schedule_check import RightState
+
+        sched.account = "PC\\svc_local"
+        right["value"] = RightState.DENIED
+        code, _ = self._password()
+        assert sched.registered and code == headless.EXIT_REGISTERED_WITHOUT_BATCH_RIGHT
+
+    # --- gMSA principal --------------------------------------------------------------------------------------------
+    def test_gmsa_not_held_exits_4(self, sched, provision, right):
+        from src.scheduler.schedule_check import RightState
+
+        right["value"] = RightState.DENIED
+        code, _ = self._gmsa()
+        assert code == 4 and AppConfig.load().schedule_registered
+
+    def test_gmsa_windows_refused_the_logon_type_exits_4(self, sched, provision, right):
+        from src.scheduler.schedule_check import CheckVerdict, RightState, ScheduleCheck
+
+        provision["check"] = ScheduleCheck(verdict=CheckVerdict.BATCH_LOGON, batch_right=RightState.NOT_DIRECT)
+        code, _ = self._gmsa()
+        assert code == 4
+
+    def test_gmsa_held_exits_0(self, sched, provision, right):
+        from src.scheduler.schedule_check import CheckVerdict, RightState, ScheduleCheck
+
+        provision["check"] = ScheduleCheck(verdict=CheckVerdict.OK, batch_right=RightState.GRANTED)
+        code, _ = self._gmsa()
+        assert code == 0
+
+    def test_gmsa_through_a_group_exits_0(self, sched, provision, right):
+        """NOT_DIRECT, and the check run started DistrictSync as the account: it holds the right through a group."""
+        from src.scheduler import batch_right
+        from src.scheduler.schedule_check import CheckVerdict, RightState, ScheduleCheck
+
+        provision["check"] = ScheduleCheck(verdict=CheckVerdict.OK, batch_right=RightState.NOT_DIRECT)
+        code, message = self._gmsa()
+        assert code == 0 and batch_right.NOT_HELD_DETAIL not in message
+
+    def test_gmsa_inconclusive_exits_0_with_the_advisory(self, sched, provision, right):
+        from src.scheduler import batch_right
+        from src.scheduler.schedule_check import CheckVerdict, RightState, ScheduleCheck
+
+        provision["check"] = ScheduleCheck(verdict=CheckVerdict.TIMEOUT, batch_right=RightState.NOT_DIRECT)
+        code, message = self._gmsa()
+        assert code == 0 and batch_right.INCONCLUSIVE_LINE in message
+
+    def test_the_prerequisite_lines_are_printed_for_a_gmsa(self, sched, provision, right):
+        from src.scheduler import batch_right
+
+        _, message = self._gmsa()
+        assert batch_right.PREREQUISITES_LEAD in message
+        assert all(line in message for line in batch_right.GMSA_PREREQUISITES)
+
+    # --- the signed-in account and the failure paths ---------------------------------------------------------------
+    def test_the_signed_in_account_gets_no_check_and_no_lines(self, sched, provision, monkeypatch):
+        from src.scheduler import batch_right
+
+        monkeypatch.setattr(batch_right, "read_right", lambda account: pytest.fail("checked a signed-in task"))
+        code, message = headless.register(run_time="02:30", spec=_spec("current"), password=None, wake_to_run=False)
+        assert code == 0 and message.startswith("Scheduled:")
+        assert batch_right.PREREQUISITES_LEAD not in message and batch_right.INCONCLUSIVE_LINE not in message
+
+    def test_a_failed_registration_reads_nothing_and_stays_1(self, sched, provision, right):
+        provision["outcome"] = provision_session.ProvisionOutcome.FAILED
+        code, _ = self._password()
+        assert code == 1 and provision["reads"] == []
+        provision["outcome"] = provision_session.ProvisionOutcome.PROVISIONED  # positive twin: success reads it
+        code, _ = self._password()
+        assert code == 0 and provision["reads"] == ["PC\\svc_local"]
+
+    def test_no_account_name_in_the_log(self, sched, provision, right, caplog):
+        from src.scheduler.schedule_check import RightState
+
+        right["value"] = RightState.DENIED
+        with caplog.at_level(logging.DEBUG):
+            self._password()
+        assert "batch" in caplog.text.lower()  # positive twin: the outcome was logged
+        assert "svc_local" not in caplog.text
+
+    def test_the_command_line_returns_4(self, sched, provision, right, monkeypatch, capsys):
+        from src.main import cli
+        from src.scheduler.schedule_check import RightState
+
+        right["value"] = RightState.DENIED
+        monkeypatch.setenv("DISTRICTSYNC_TASK_PASSWORD", SECRET)
+        argv = ["--schedule-register", "--time", "03:00", "--principal", "password:PC\\svc_local"]
+        assert cli(argv) == 4
+        assert "Log on as a batch job" in capsys.readouterr().out
 
 
 class TestRemove:
