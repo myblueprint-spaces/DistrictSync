@@ -83,7 +83,7 @@ from src.scheduler.provision_session import (
     request_removal_with_revoke,
 )
 from src.scheduler.provisioning import ProvisionStep
-from src.scheduler.schedule_check import ScheduleCheck
+from src.scheduler.schedule_check import RightState, ScheduleCheck
 from src.scheduler.schedule_record import clear_registered_record, write_registered_record
 from src.scheduler.task_com import Principal, PrincipalKind, runs_from_per_user_install
 from src.sftp.uploader import LISTING_DENIED_NOTE, SFTPUploader
@@ -3501,16 +3501,21 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
                 with contextlib.suppress(Exception):
                     on_terminal(card)
 
-        def _batch_right_after(registered: bool) -> batch_right.BatchRight | None:
+        def _batch_right_after(
+            registered: bool, elevated_state: RightState | None = None
+        ) -> batch_right.BatchRight | None:
             """DSYNC-111: a PASSWORD nightly's 'Log on as a batch job' right, read IN the worker (it may reach a DC).
 
             The same shared read and decision as the headless ``--schedule-register``. A gMSA press is left to the
             DSYNC-33 check band, which already reports a denied right; a signed-in task has nothing to check.
+            ``elevated_state`` is the provisioning child's own read (the LSA refuses this unelevated process).
             """
             if not (registered and scheduler.supports_unattended_password and declared_kind is PrincipalKind.PASSWORD):
                 return None
             try:
-                return batch_right.after_registration(declared_kind, sent_account or _keyring_owner_account())
+                return batch_right.after_registration(
+                    declared_kind, sent_account or _keyring_owner_account(), elevated_state=elevated_state
+                )
             except Exception as exc:  # noqa: BLE001 - advisory: it may not strand the spinner over a registered task
                 logger.error("The batch-logon right could not be read after scheduling: %s", type(exc).__name__)
                 return None
@@ -3656,7 +3661,7 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
             except Exception as exc:  # noqa: BLE001 - it contracts never to raise; belt anyway
                 logger.error("The shared-settings change raised unexpectedly: %s", type(exc).__name__)
                 attempt = ProvisionAttempt(outcome=ProvisionOutcome.UNAVAILABLE)
-            batch = _batch_right_after(attempt.outcome is ProvisionOutcome.PROVISIONED)
+            batch = _batch_right_after(attempt.outcome is ProvisionOutcome.PROVISIONED, attempt.batch_right)
             # Marshalled only when there IS an outcome, so every other result keeps its (attempt,) shape.
             if batch is None:
                 page.run_task(_apply_provision, attempt)

@@ -122,13 +122,16 @@ The account in the first two needs the **'Log on as a batch job'** right on this
 the nightly (Task Scheduler then shows *Last Run Result* `0x41303`, "has not yet run"). After scheduling, the command
 lists what the account needs and checks the right:
 
-- **The right is missing** (the account is denied it, or Windows refused the logon type when it tested a managed
-  service account): the nightly stays scheduled and the command **exits with code 4**. Grant the right in **Local
+- **The right is missing**: the account is denied it (directly, or for a local account through one of its
+  groups); or it is a local account of this computer and nothing in its logon (the account, its local groups,
+  Everyone, Authenticated Users, BATCH) holds the right; or Windows refused the logon type when it tested a managed
+  service account. The nightly stays scheduled and the command **exits with code 4**. Grant the right in **Local
   Security Policy › Local Policies › User Rights Assignment › Log on as a batch job** (for a domain account, through
   Group Policy), and make sure the account and its groups are not under **Deny log on as a batch job**, which
   overrides any grant. Nothing needs to be scheduled again: the next nightly runs.
-- **It could not be confirmed** (the right may come through a group or a domain policy, which DistrictSync cannot
-  see): a "Not confirmed" line, exit code 0. Check the right is granted.
+- **It could not be confirmed** (a domain account may get the right through a domain group or policy, which
+  DistrictSync cannot see from this computer, and the check needs the administrator rights the scheduling prompt
+  gives it): a "Not confirmed" line, exit code 0. Check the right is granted.
 - **It is in place:** exit code 0.
 
 DistrictSync never grants user rights itself.

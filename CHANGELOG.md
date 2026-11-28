@@ -45,10 +45,11 @@ Per-release download links and auto-generated commit notes live on the
 - **Scheduling as a service account now checks 'Log on as a batch job'.** Before, `--schedule-register` with a
   stored-password or managed service account said "Scheduled" even when that account lacked the right, and the
   nightly sync then silently never ran. Now, after scheduling, it lists what the account needs and checks the right.
-  When the account is denied it (or Windows refuses that logon type when it tests a managed service account), the
-  nightly stays scheduled, the command explains how to grant the right, and it **exits with code 4**: once your IT
-  team grants it, the next nightly runs with nothing to schedule again. When DistrictSync cannot tell (the right may
-  come through a group or a domain policy), it prints a "Not confirmed" line and exits 0. Setup shows the same
+  When the account is denied it, when it is a local account of the computer and neither it nor any of its groups
+  (Everyone and Administrators included) holds the right, or when Windows refuses that logon type when it tests a
+  managed service account, the nightly stays scheduled, the command explains how to grant the right, and it **exits with code 4**: once your IT
+  team grants it, the next nightly runs with nothing to schedule again. When DistrictSync cannot tell (a domain account
+  may get the right through a domain group or policy), it prints a "Not confirmed" line and exits 0. Setup shows the same
   warning after scheduling with an account and its Windows password. DistrictSync never grants the right itself
   (DSYNC-111).
 

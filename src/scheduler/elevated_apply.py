@@ -85,17 +85,27 @@ CHILD_REFUSALS: tuple[str, ...] = (
 )
 
 
-def _write_result(res_path: Path, ok: bool, message: str = "", *, check: dict[str, object] | None = None) -> None:
+def _write_result(
+    res_path: Path,
+    ok: bool,
+    message: str = "",
+    *,
+    check: dict[str, object] | None = None,
+    batch_right: str | None = None,
+) -> None:
     """Atomic plaintext result — temp + ``os.replace`` so the parent never sees a partial.
 
     The result carries NO secret by design (the parent's ``read_result`` cap and the D5
     handshake both assume that), so plain UTF-8 JSON is correct here. ``check`` is the
     schedule check's BOUNDED wire form (``ScheduleCheck.to_wire``) and is present only when a
-    check ran — every other result keeps its exact pre-DSYNC-33 shape.
+    check ran — every other result keeps its exact pre-DSYNC-33 shape. ``batch_right`` (DSYNC-111) is one
+    ``RightState`` value, present only after a PASSWORD-account provision.
     """
     result: dict[str, object] = {"ok": ok, "message": message}
     if check is not None:
         result["check"] = check
+    if batch_right is not None:
+        result["batch_right"] = batch_right
     payload = json.dumps(result)
     tmp = res_path.with_name(res_path.name + ".tmp")
     tmp.write_text(payload, encoding="utf-8")
@@ -160,6 +170,7 @@ def _apply(req_path: Path, res_path: Path) -> int:
     # --- dispatch (re-validating EVERYTHING in the privileged half) ------------------
     op = payload.get("op")
     check: dict[str, object] | None = None
+    batch: str | None = None
     try:
         if op == "register":
             _do_register(payload)
@@ -168,6 +179,7 @@ def _apply(req_path: Path, res_path: Path) -> int:
         elif op == "provision":
             _do_provision(payload)
             check = _schedule_check(payload)
+            batch = _batch_right(payload)
         elif op == "machine_setup":
             _do_machine_setup(payload)
         elif op == "set_update_mode":
@@ -197,7 +209,7 @@ def _apply(req_path: Path, res_path: Path) -> int:
         _write_result(res_path, False, _MSG_REQUEST_INVALID)
         return 0
 
-    _write_result(res_path, True, check=check)
+    _write_result(res_path, True, check=check, batch_right=batch)
     return 0
 
 
@@ -214,6 +226,28 @@ def _schedule_check(payload: dict[str, object]) -> dict[str, object] | None:
     if not schedule_check.requested(payload):
         return None
     return schedule_check.run_for_payload(payload).to_wire()
+
+
+def _batch_right(payload: dict[str, object]) -> str | None:
+    """A PASSWORD account's 'Log on as a batch job' state, read HERE because the LSA refuses an unelevated caller.
+
+    DSYNC-111. Only after ``_do_provision`` returned (the nightly is registered), only for the PASSWORD kind (a gMSA's
+    read rides the schedule check), and through the ONE seam ``batch_right.read_right`` — which is bounded and total
+    and only ever READS the policy. One enum value crosses back; never the account. ``None`` = not read, or read as
+    UNKNOWN (which the parent treats the same) — so an unread right leaves the result's pre-DSYNC-111 shape.
+    """
+    from src.scheduler import batch_right, task_com
+    from src.scheduler.schedule_check import RightState
+
+    try:
+        kind = task_com.PrincipalKind(str(payload.get("kind", "")))
+        if kind is not task_com.PrincipalKind.PASSWORD:
+            return None
+        user = task_com.validate_principal_account(kind, str(payload["user"]))
+        state = batch_right.read_right(user)
+        return None if state is RightState.UNKNOWN else state.value
+    except Exception:  # noqa: BLE001 - advisory: the nightly is registered; an unread right is the parent's UNKNOWN
+        return None
 
 
 def _do_register(payload: dict[str, object]) -> None:

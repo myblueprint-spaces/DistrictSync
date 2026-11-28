@@ -185,6 +185,10 @@ class RightState(StrEnum):
     DENIED = "denied"  # SeDenyBatchLogonRight is assigned directly — definitive, it overrides any grant
     NOT_DIRECT = "not_direct"  # neither directly — it may still come through a group or policy
     UNKNOWN = "unknown"  # the policy could not be read — never reported as a problem
+    # DSYNC-111: a LOCAL account's whole batch-logon token, read by ``batch_right`` (never by the gMSA check,
+    # whose accounts are domain accounts). DENIED / GRANTED above are reused when the token says so.
+    GRANTED_VIA_GROUP = "granted_via_group"  # a group (or implicit SID) in the account's token holds the right
+    NOT_HELD_LOCAL = "not_held_local"  # a local account: nothing in its token holds the right — positive
 
 
 class InstallState(StrEnum):

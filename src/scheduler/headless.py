@@ -31,7 +31,7 @@ from src.config.app_config import AppConfig
 from src.scheduler import batch_right, get_scheduler
 from src.scheduler.messages import ABSENT_TASK_MARKERS
 from src.scheduler.register_gate import RegisterBlock, ScheduleAccountFacts, principal_key, register_block
-from src.scheduler.schedule_check import ScheduleCheck
+from src.scheduler.schedule_check import RightState, ScheduleCheck
 from src.scheduler.schedule_record import (
     TaskArgs,
     clear_registered_record,
@@ -212,14 +212,19 @@ LOGGED_ON_ONLY_NOTE = (
 
 
 def _with_batch_right(
-    scheduler, principal: Principal, account: str, lines: list[str], check: ScheduleCheck | None = None
+    scheduler,
+    principal: Principal,
+    account: str,
+    lines: list[str],
+    check: ScheduleCheck | None = None,
+    elevated_state: RightState | None = None,
 ) -> tuple[int, str]:
     """Append the prerequisites and the batch-right read to a SUCCESS report (DSYNC-111) and pick its exit code.
 
     Only on Windows (``supports_unattended_password``) and only for an unattended principal; the task is never undone.
     """
     outcome = (
-        batch_right.after_registration(principal.kind, account, check=check)
+        batch_right.after_registration(principal.kind, account, check=check, elevated_state=elevated_state)
         if scheduler.supports_unattended_password
         else None
     )
@@ -293,7 +298,7 @@ def _dispatch(cfg, scheduler, foreign, principal, run_time, wake_to_run, persist
             if not attempt.check.passed
             else f"The account's test run {verdict}."
         )
-    return _with_batch_right(scheduler, principal, account, lines, attempt.check)
+    return _with_batch_right(scheduler, principal, account, lines, attempt.check, attempt.batch_right)
 
 
 def remove() -> tuple[int, str]:
