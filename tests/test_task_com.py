@@ -500,7 +500,12 @@ class TestTaskFacts:
         action.WorkingDirectory = "C:\\DistrictSync"
         task.Definition.Triggers.Count = 1
         task.Definition.Triggers.Item.return_value.Type = task_com.TASK_TRIGGER_DAILY
-        task.Definition.Triggers.Item.return_value.StartBoundary = "2024-01-01T02:05:00"
+        trigger = task.Definition.Triggers.Item.return_value
+        trigger.StartBoundary = "2024-01-01T02:05:00"
+        trigger.DaysInterval = 1
+        trigger.RandomDelay = ""
+        trigger.EndBoundary = ""
+        trigger.Repetition.Interval = ""
         facts = task_com.task_facts(task)
         assert facts.arguments == '--sis myedbc --input "C:\\in"'
         assert facts.working_dir == "C:\\DistrictSync"

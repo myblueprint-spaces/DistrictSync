@@ -35,6 +35,11 @@ ADMIN = "CORP\\admin_quillfeather"
 OK_CHECK = ScheduleCheck(verdict=CheckVerdict.OK, code=81)
 BAD_CHECK = ScheduleCheck(verdict=CheckVerdict.LOGON_FAILURE, code=task_com.RESULT_LOGON_FAILURE)
 NOON = datetime(2026, 11, 28, 12, 0)
+FAR = 4_000_000_000.0  # a deadline far in the future (epoch seconds)
+
+
+def CLOCK() -> float:  # noqa: N802 - the child's fixed clock
+    return 1_000_000_000.0
 
 
 # --------------------------------------------------------------------------- #
@@ -55,6 +60,7 @@ class FakeTaskScheduler:
         self.events: list[tuple[str, str]] = []
         self.registered: list[task_com.RegisterParams] = []
         self.names_touched: set[str] = set()
+        self.granted: set[str] = set()
 
     def facts(self, name: str) -> TaskFacts:
         self.names_touched.add(name)
@@ -81,6 +87,21 @@ class FakeOps:
         if self.kill_at == step:
             raise Killed(step)
 
+    def grant(self, user: str, kind: PrincipalKind) -> bool:
+        """Review H2: the principal's access to the shared profile, granted before the probe; True = new grant."""
+        self.sched.events.append(("grant", ""))
+        if "grant" in self.fail:
+            raise RuntimeError("icacls refused")
+        if self.kill_at == "grant":
+            raise Killed("grant")
+        new = user not in self.sched.granted
+        self.sched.granted.add(user)
+        return new
+
+    def revoke(self, user: str, kind: PrincipalKind) -> None:
+        self.sched.events.append(("revoke", ""))
+        self.sched.granted.discard(user)
+
     def probe(self, payload) -> ScheduleCheck:
         self.sched.events.append(("probe", str(payload.get("exe"))))
         if self.kill_at == "probe":
@@ -89,6 +110,9 @@ class FakeOps:
 
     def delete(self, task_name: str) -> None:
         self.sched.names_touched.add(task_name)
+        if "delete_timeout" in self.fail:  # review M4: the bounded worker gave up; the delete may still land
+            self.sched.events.append(("delete", "timeout"))
+            raise task_com.BoundedTimeout("delete")
         if "delete" in self.fail:
             self.sched.events.append(("delete", "refused"))
             raise TaskComError(task_com.HR_ACCESS_DENIED, task_com.MSG_ACCESS_DENIED)
@@ -120,6 +144,8 @@ class FakeOps:
             arguments=params.arguments,
             working_dir=params.working_dir,
             run_time=params.run_time,
+            state=task_com.TASK_STATE_READY,
+            enabled=True,
         )
         self._step(which)
 
@@ -150,6 +176,8 @@ def world(monkeypatch, tmp_path):
         arguments=old_args,
         working_dir=str(old_exe.parent),
         run_time="02:00",
+        state=task_com.TASK_STATE_READY,
+        enabled=True,
     )
 
     state = {
@@ -176,6 +204,9 @@ def world(monkeypatch, tmp_path):
         ),
     )
     monkeypatch.setattr(migration, "_this_program", lambda: new_exe.resolve())
+    monkeypatch.setattr(
+        migration_apply, "_new_program", lambda: new_exe
+    )  # review L3: unresolved, like --schedule-register
     monkeypatch.setattr(migration, "_delivery_in_machine_store", lambda settings: True)
     monkeypatch.setattr(migration_apply, "_in_machine_scope", lambda: True)
     monkeypatch.setattr(migration_apply, "_current_account", lambda: ADMIN)
@@ -286,7 +317,7 @@ class TestTheMove:
         assert task.working_dir == str(Path(world["new"]).parent)
         # The ORDER is the safety property: probe the new program, delete, confirm missing, register.
         steps = [step for step, _ in sched.events]
-        assert steps == ["probe", "delete", "register_new"]
+        assert steps == ["grant", "probe", "delete", "register_new"]
         assert [p.exe for p in sched.registered] == [world["new"]]
         assert any(line.startswith("Moved: ") for line in result.lines)
 
@@ -588,7 +619,8 @@ class TestNeverLoseTheNightly:
         result = _run()
         assert result.code == 1
         assert world["sched"].tasks[NAME].action_path == world["old"]
-        assert [step for step, _ in world["sched"].events] == ["probe"]  # nothing after the probe
+        # nothing after the probe but taking back the grant made for it (review H2)
+        assert [step for step, _ in world["sched"].events] == ["grant", "probe", "revoke"]
         assert "logon_failure" in _text(result).lower() or "LOGON_FAILURE" in _text(result)
 
     def test_an_inconclusive_probe_is_not_a_pass(self, world):
@@ -619,7 +651,7 @@ class TestNeverLoseTheNightly:
         assert task.run_as == ACCOUNT and task.run_time == "02:00" and task.wake_to_run is True
         assert [p.exe for p in world["sched"].registered] == [world["old"]]
         assert world["sched"].registered[0].password == SECRET  # the password already in hand
-        assert "put back" in _text(result)
+        assert "registered again" in _text(result) and "run level" in _text(result)  # review L2
 
     def test_a_failed_register_and_a_failed_rollback_say_there_is_no_nightly(self, world):
         _with_record()
@@ -646,7 +678,7 @@ class TestNeverLoseTheNightly:
         _run()
         assert world["sched"].names_touched == {NAME}
 
-    @pytest.mark.parametrize("kill_at", ["probe", "delete", "register_new"])
+    @pytest.mark.parametrize("kill_at", ["grant", "probe", "delete", "register_new"])
     def test_interrupted_at_each_step_leaves_one_nightly_or_a_state_the_report_names(self, world, kill_at):
         """T7c: the child is killed after each step. Afterwards there is exactly one ``DistrictSync_Daily`` (old or
         new) or none, and when there is none the parent's report (the child wrote no result) names it."""
@@ -676,7 +708,7 @@ class TestNeverLoseTheNightly:
         else:
             assert program.action_path == world["old"]
             assert result.code == 1
-        expected = {"probe": world["old"], "delete": None, "register_new": world["new"]}[kill_at]
+        expected = {"grant": world["old"], "probe": world["old"], "delete": None, "register_new": world["new"]}[kill_at]
         assert (program.action_path if program else None) == expected
 
     def test_a_timed_out_child_is_resolved_by_reading_the_task_back(self, world):
@@ -720,7 +752,7 @@ class TestTheSequenceInIsolation:
         new = self._params(world, world["new"], "--sis myedbc")
         old = self._params(world, world["old"], "--sis myedbc")
         out = migration_move.move_nightly(
-            NAME, new=new, old=old, probe_payload={"exe": world["new"]}, ops=FakeOps(sched)
+            NAME, new=new, old=old, probe_payload={"exe": world["new"]}, ops=FakeOps(sched), deadline=FAR, clock=CLOCK
         )
         assert out.stage is migration_move.MoveStage.MOVED and out.check == OK_CHECK
 
@@ -735,7 +767,9 @@ class TestTheSequenceInIsolation:
 
         new = self._params(world, world["new"], "--sis myedbc")
         old = self._params(world, world["old"], "--sis myedbc")
-        out = migration_move.move_nightly(NAME, new=new, old=old, probe_payload={}, ops=LateOps(sched))
+        out = migration_move.move_nightly(
+            NAME, new=new, old=old, probe_payload={}, ops=LateOps(sched), deadline=FAR, clock=CLOCK
+        )
         assert out.stage is migration_move.MoveStage.MOVED
         assert sched.tasks[NAME].action_path == world["new"]
 

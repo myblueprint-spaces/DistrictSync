@@ -29,7 +29,7 @@ class TestTheReport:
     def test_a_nightly_on_another_copy_says_so_and_how_to_move_it(self):
         lines = migration.report_lines(_f())
         assert any("still runs another copy" in line for line in lines)
-        assert migration.MOVE_NOT_BUILT in lines
+        assert migration.MOVE_ADVICE in lines
         assert migration.needs_action(_f())
 
     def test_nothing_left_to_do(self):
@@ -196,11 +196,13 @@ class TestReviewFixes:
         monkeypatch.setattr(secret_store.MachineSecretStore, "get_password", lambda self, h, u: None)
         assert migration._delivery_in_machine_store(Settings()) is False  # positive twin: really absent
 
-    def test_the_move_advice_puts_settings_and_delivery_first_and_names_the_risk(self):
-        """Review G7."""
-        text = migration.MOVE_NOT_BUILT
-        assert text.index("--sftp-test") < text.index("--schedule-remove") < text.index("--schedule-register")
-        assert "--principal" in text and "there is no nightly" in text
+    def test_the_move_advice_names_the_command_and_its_order(self):
+        """Review G7, as D1b built it (DSYNC-116 review L6): the advice points at --migrate --apply, says delivery is
+        tested first, and names the 30-minute rule and the put-back."""
+        text = migration.MOVE_ADVICE
+        assert "--migrate --apply" in text
+        assert text.index("delivery") < text.index("schedules the nightly again")
+        assert "30 minutes" in text and "registers the old one again" in text
 
 
 class TestItIsDispatchedFirst:
@@ -219,17 +221,16 @@ class TestItIsDispatchedFirst:
 
 
 class TestTheReportIsByteForByteD1a:
-    """DSYNC-116: ``--migrate --apply`` is the new way in; ``--migrate`` alone keeps D1a's report, byte for byte."""
+    """DSYNC-116: ``--migrate`` alone keeps D1a's report byte for byte, except the one sentence review L6 pointed at ``--migrate --apply``."""
 
     GOLDEN = (
         "DistrictSync migration report (nothing was changed).\n"
         "Shared settings on this computer: yes\n"
         "The nightly still runs another copy: a copy in another folder (for example the one-file DistrictSync.exe).\n"
-        "Moving the nightly to this copy is not automatic yet. Before you move it, make sure this copy uses the shared "
-        "settings and that DistrictSync.exe --sftp-test passes from it. Then remove the old schedule "
-        "(DistrictSync.exe --schedule-remove) and schedule it again from this copy at the same time and for the same "
-        "account (DistrictSync.exe --schedule-register --time HH:MM --principal ... [--wake]). Until that register "
-        "succeeds there is no nightly, so do it well away from the run time.\n"
+        "To move the nightly to this copy, run DistrictSync.exe --migrate --apply from an administrator command "
+        "prompt, at least 30 minutes away from the nightly's run time. It tests delivery first, checks that Windows can "
+        "start this copy as the nightly's account, schedules the nightly again with the same time, account and "
+        "settings, and registers the old one again if that fails.\n"
         "A copy installed for this Windows account is also here. Once the nightly runs this copy, remove it from "
         "Windows Settings > Apps (it is not removed for you).\n"
         "Delivery is set up, but its password is not in the shared settings yet. Run DistrictSync.exe "
