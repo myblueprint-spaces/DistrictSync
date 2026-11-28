@@ -247,11 +247,16 @@ The one-file exe keeps shipping. From the first MSI release it shows one Home ba
 | T21 (MSI half) | PASS | Both MSIs carry a valid Authenticode signature. |
 | T24 | Recorded outcome | An older MSI over a newer one is refused by Windows Installer (1603, "A newer version of DistrictSync is already installed"), and the version is unchanged. |
 | T25 | PASS (repair half) | `msiexec /fa` exits 0 and the version is kept. The half after an updater apply is blocked on the feed. |
-| T20, T23, T26 | To run | |
+| T20 | PASS | Standard user: the 0049 grant window says only an administrator can be granted, and the UAC prompt shows "Verified publisher: myBlueprint Corp.". When another admin's credentials are entered, the window honestly reports "A different administrator approved that prompt…" and grants nothing (ACL unchanged). The user's profile gets only the declared handshake folder: no Velopack files, and no account name in its log. |
+| T23 | **FAIL → DSYNC-117** | Second admin (filtered token): the consent prompt was approved and the grant added M on the profile root only. `runs\` has protected permissions and does not inherit it, so the relaunched app (filtered token) cannot create `runs\etl_tool-interactive-<tag>.log` and crashes with PyInstaller's raw "Unhandled exception in script" traceback ([Errno 13]). Rerun after DSYNC-117. |
+| T26 | To run | |
 
 **Other findings.**
 - A `config.json` saved with a UTF-8 BOM was treated as corrupt (**DSYNC-112**, fixed).
-- Polish list: at 1024×768 the window's right edge is clipped (on the Setup wizard, the top-right "Start over with a di…" link and the long explanatory lines are cut off).
+- Polish list:
+  - At 1024×768 the window's right edge is clipped. On the Setup wizard, the top-right "Start over with a di…" link and the long explanatory lines are cut off.
+  - The grant window offers a known non-administrator the filled "Ask Windows for permission" button, although it cannot succeed for them. It could say "ask an administrator" instead.
+  - At the grant window's default size, the "Close DistrictSync" link after a refusal is clipped at the bottom.
 
 ## Affected files
 
