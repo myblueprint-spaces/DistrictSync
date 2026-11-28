@@ -231,6 +231,34 @@ class TestTheSpawn:
         assert relaunch.RESET_ENVIRONMENT_VAR not in env
         assert env["DISTRICTSYNC_DATA_DIR"] == r"C:\Temp\profile"
 
+    def test_a_frozen_child_starts_in_the_exe_s_folder_not_the_old_mei_folder(self, popen, monkeypatch, tmp_path):
+        """Review F1: the one-file launcher has chdir'd into ``_MEIPASS``. A child that inherits that cwd holds the old
+        ``_MEI`` folder open, and the old bootloader cannot delete it (WinError 32)."""
+        mei = tmp_path / "_MEI12345"
+        mei.mkdir()
+        monkeypatch.chdir(mei)
+        monkeypatch.setattr(relaunch.sys, "frozen", True, raising=False)
+        exe = tmp_path / "Program Files" / "myBlueprint.DistrictSync" / "current" / "DistrictSync.exe"
+        monkeypatch.setattr(relaunch.sys, "executable", str(exe))
+        relaunch.spawn([str(exe)])
+        ((_, kwargs),) = popen.calls
+        assert kwargs["cwd"] == str(exe.parent)
+        assert kwargs["cwd"] != str(mei)
+
+    def test_a_source_run_keeps_the_current_directory(self, popen, monkeypatch, tmp_path):
+        """Positive twin: ``python -m src.main`` needs the checkout as its working directory."""
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delattr(relaunch.sys, "frozen", raising=False)
+        relaunch.spawn([PLAIN_EXE])
+        ((_, kwargs),) = popen.calls
+        assert kwargs["cwd"] == str(tmp_path)
+
+    def test_the_child_directory_rule_is_pure(self, tmp_path):
+        exe = str(tmp_path / "Program Files" / "DistrictSync.exe")
+        mei, repo = str(tmp_path / "_MEI1"), str(tmp_path / "repo")
+        assert relaunch.child_cwd(frozen=True, executable=exe, current=mei) == str(tmp_path / "Program Files")
+        assert relaunch.child_cwd(frozen=False, executable=exe, current=repo) == repo
+
     def test_the_child_environment_is_a_copy_not_the_parent_s(self):
         base = {"PATH": "x"}
         env = relaunch.child_environment(base, frozen=True)
@@ -250,6 +278,7 @@ def order(monkeypatch):
     monkeypatch.setattr(relaunch.subprocess, "Popen", _PopenRecorder(calls))
     monkeypatch.setattr(relaunch.os, "_exit", lambda code: calls.append(f"exit:{code}"))
     monkeypatch.setattr(relaunch.grant_access, "reexec_argv", lambda: [MSI_EXE])
+    monkeypatch.setattr(relaunch, "show_failure_notice", lambda: calls.append("notice"))
     return calls
 
 
@@ -301,20 +330,64 @@ class TestTheRelaunch:
         assert order == ["destroy", "spawn", "exit:0"]
 
     def test_a_close_cancelled_by_flet_shutting_down_still_relaunches(self, order):
-        """The view exiting ends ``ft.run``, which cancels the pending ``destroy`` — the relaunch must survive that."""
+        """The real teardown (review F3a): the view exits, ``ft.run``'s main coroutine returns while the relaunch task is
+        still awaiting ``destroy``, and ``asyncio.run`` cancels that task. Its ``finally`` must still spawn and exit."""
 
-        async def cancelled() -> None:
-            order.append("destroy")
-            raise asyncio.CancelledError
+        async def never_answers() -> None:
+            await asyncio.sleep(60)
 
-        with pytest.raises(asyncio.CancelledError):
-            asyncio.run(relaunch.relaunch(_page(order, destroy=cancelled)))
-        assert order == ["destroy", "spawn", "exit:0"]
+        async def ft_run_main() -> None:
+            asyncio.get_running_loop().create_task(relaunch.relaunch(_page(order, destroy=never_answers)))
+            await asyncio.sleep(0)  # the task starts and is now parked on destroy()
+            await asyncio.sleep(0)
 
-    def test_a_spawn_that_fails_exits_one_not_zero(self, order, monkeypatch):
+        asyncio.run(ft_run_main())  # returning cancels the parked task, as ft.run's teardown does
+        assert order == ["spawn", "exit:0"]
+
+    def test_a_spawn_that_fails_tells_the_user_then_exits_one(self, order, monkeypatch):
+        """Review F2: the window is already gone, so a plain notice is the only thing the user sees."""
         monkeypatch.setattr(relaunch.subprocess, "Popen", _PopenRecorder(order, raises=FileNotFoundError(2, "gone")))
         asyncio.run(relaunch.relaunch(_page(order)))
-        assert order == ["destroy", "spawn", "exit:1"]
+        assert order == ["destroy", "spawn", "notice", "exit:1"]
+
+    def test_a_spawn_that_succeeds_shows_no_notice(self, order):
+        """Positive twin: a working relaunch never pops a failure box."""
+        asyncio.run(relaunch.relaunch(_page(order)))
+        assert "notice" not in order
+
+
+# --------------------------------------------------------------------------- #
+# The failure notice (review F2)                                               #
+# --------------------------------------------------------------------------- #
+
+
+class TestTheFailureNotice:
+    def test_the_copy_is_plain_and_points_to_the_start_menu(self):
+        assert relaunch.RESTART_FAILED_MESSAGE == "DistrictSync couldn't restart. Open it again from the Start menu."
+
+    def test_it_shows_one_error_box_with_the_copy(self, monkeypatch):
+        shown: list[tuple[object, str, str, int]] = []
+        monkeypatch.setattr(relaunch, "_message_box", lambda: lambda *a: shown.append(a) or 1)
+        relaunch.show_failure_notice()
+        ((owner, text, title, style),) = shown
+        assert (owner, text, title) == (None, relaunch.RESTART_FAILED_MESSAGE, "DistrictSync")
+        assert style & 0x10  # MB_ICONERROR
+
+    def test_a_box_that_raises_never_escapes(self, monkeypatch):
+        def boom(*_a: object) -> int:
+            raise OSError("no desktop")
+
+        monkeypatch.setattr(relaunch, "_message_box", lambda: boom)
+        relaunch.show_failure_notice()  # must not raise
+
+    def test_no_message_box_available_is_a_quiet_no_op(self, monkeypatch):
+        """Off Windows (or with no user32) there is no box to show, and that is not an error."""
+        monkeypatch.setattr(relaunch, "_message_box", lambda: None)
+        relaunch.show_failure_notice()
+
+    def test_the_message_box_is_looked_up_only_on_windows(self, monkeypatch):
+        monkeypatch.setattr(relaunch.sys, "platform", "linux")
+        assert relaunch._message_box() is None
 
     def test_the_seam_schedules_the_relaunch_on_the_page_loop(self):
         page = MagicMock()
@@ -329,18 +402,35 @@ class TestTheRelaunch:
 # --------------------------------------------------------------------------- #
 
 
+_EXEC_MODULES = frozenset({"os", "nt", "posix"})
+_EXEC_PREFIXES = ("exec", "spawn", "posix_spawn")
+
+
 def _os_exec_calls(source: str) -> list[str]:
-    """Every ``os.exec*`` / ``os.spawn*`` attribute in ``source`` (the detector both tests below share)."""
+    """Every ``exec*`` / ``spawn*`` reached from ``os``, ``nt`` or ``posix`` in ``source`` — the shared detector.
+
+    Catches ``os.execv``, an aliased module (``import os as _os`` then ``_os.execv``), ``nt``/``posix`` directly, and a
+    name imported out of them (``from os import execv``, aliased or not).
+    """
     import ast
 
-    return [
-        f"{node.lineno}:os.{node.attr}"
-        for node in ast.walk(ast.parse(source))
-        if isinstance(node, ast.Attribute)
-        and isinstance(node.value, ast.Name)
-        and node.value.id == "os"
-        and node.attr.startswith(("exec", "spawn"))
-    ]
+    tree = ast.parse(source)
+    aliases = set(_EXEC_MODULES)
+    hits: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            aliases.update(a.asname for a in node.names if a.name in _EXEC_MODULES and a.asname)
+        elif isinstance(node, ast.ImportFrom) and node.module in _EXEC_MODULES:
+            hits += [f"{node.lineno}:{node.module}.{a.name}" for a in node.names if a.name.startswith(_EXEC_PREFIXES)]
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id in aliases
+            and node.attr.startswith(_EXEC_PREFIXES)
+        ):
+            hits.append(f"{node.lineno}:{node.value.id}.{node.attr}")
+    return sorted(hits, key=lambda h: int(h.split(":")[0]))
 
 
 class TestNoUnquotedExec:
@@ -360,6 +450,27 @@ class TestNoUnquotedExec:
         """Positive twin: the walk above really does see ``os.execv`` and ``os.spawnv``."""
         source = "import os\nos.execv(a, b)\nos.spawnv(0, a, b)\n"
         assert _os_exec_calls(source) == ["2:os.execv", "3:os.spawnv"]
+
+    def test_the_detector_finds_a_name_imported_from_os(self):
+        assert _os_exec_calls("from os import execv\nexecv(a, b)\n") == ["1:os.execv"]
+
+    def test_the_detector_finds_an_aliased_name_imported_from_os(self):
+        assert _os_exec_calls("from os import spawnl as go\ngo(0, a)\n") == ["1:os.spawnl"]
+
+    def test_the_detector_finds_an_aliased_os_module(self):
+        assert _os_exec_calls("import os as _os\n_os.execv(a, b)\n") == ["2:_os.execv"]
+
+    def test_the_detector_finds_the_nt_module(self):
+        assert _os_exec_calls("import nt\nnt.execv(a, b)\n") == ["2:nt.execv"]
+
+    def test_the_detector_finds_the_posix_module_and_posix_spawn(self):
+        source = "import posix\nfrom posix import execve\nposix.posix_spawn(a, b, c)\n"
+        assert _os_exec_calls(source) == ["2:posix.execve", "3:posix.posix_spawn"]
+
+    def test_the_detector_ignores_harmless_os_names(self):
+        """Negative twin: ``os._exit``, ``os.environ`` and an unrelated ``execute`` are not process replacement."""
+        source = "import os\nfrom os import path\nos._exit(0)\nos.environ\ndb.execute(q)\n"
+        assert _os_exec_calls(source) == []
 
     def test_both_windows_wire_the_shared_relaunch(self):
         from pathlib import Path
