@@ -222,10 +222,10 @@ function New-AnswerIso([string]$name, [int]$imageIndex, [string]$pw, [string]$is
       <ComputerName>$name</ComputerName><TimeZone>Pacific Standard Time</TimeZone>
     </component>
     <!-- VMware Tools installs here, as SYSTEM: oobeSystem FirstLogonCommands never run on Server Core (no Explorer).
-         Newer Tools ISOs ship setup.exe; older ones setup64.exe. -->
+         The logic lives in lab-tools.ps1 on the answer disc: setup rejects a Path over 259 characters. -->
     <component name="Microsoft-Windows-Deployment" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
       <RunSynchronous><RunSynchronousCommand wcm:action="add"><Order>1</Order>
-        <Path>powershell -NoProfile -Command "`$d = (Get-Volume | Where-Object FileSystemLabel -eq 'VMware Tools').DriveLetter; foreach (`$f in 'setup64.exe','setup.exe') { `$s = `$d + ':\' + `$f; if (`$d -and (Test-Path `$s)) { Start-Process `$s -ArgumentList '/s /v\`"/qn REBOOT=R\`"' -Wait; break } }"</Path>
+        <Path>cmd /c for %d in (D E F G H) do if exist %d:\lab-tools.ps1 powershell -NoProfile -ExecutionPolicy Bypass -File %d:\lab-tools.ps1</Path>
         <Description>VMware Tools</Description></RunSynchronousCommand></RunSynchronous>
     </component>
   </settings>
@@ -243,6 +243,14 @@ function New-AnswerIso([string]$name, [int]$imageIndex, [string]$pw, [string]$is
     Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force $stage | Out-Null
     Set-Content -Encoding UTF8 (Join-Path $stage 'autounattend.xml') $xml
+    # Run by the specialize pass as SYSTEM. Newer Tools discs ship setup.exe, older ones setup64.exe.
+    Set-Content -Encoding UTF8 (Join-Path $stage 'lab-tools.ps1') @'
+$drive = (Get-Volume | Where-Object FileSystemLabel -eq 'VMware Tools').DriveLetter
+foreach ($file in 'setup64.exe', 'setup.exe') {
+    $setup = "${drive}:\$file"
+    if ($drive -and (Test-Path $setup)) { Start-Process $setup -ArgumentList '/s /v"/qn REBOOT=R"' -Wait; break }
+}
+'@
     $image = New-Object -ComObject IMAPI2FS.MsftFileSystemImage
     $image.FileSystemsToCreate = 3   # ISO9660 + Joliet
     $image.VolumeName = 'ANSWER'
