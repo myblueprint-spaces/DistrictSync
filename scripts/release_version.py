@@ -120,9 +120,13 @@ def mismatches(expected: str, *, app_stdout: str, package: str | None, msi: str 
     return found
 
 
-def _run_version(exe: Path) -> str:  # pragma: no cover - runs the real installed exe (CI only)
-    """``<exe> --version``'s stdout, run on a throwaway profile so the check never writes a real one."""
-    with tempfile.TemporaryDirectory(prefix="dsync-version-check-") as profile:
+def _run_version(exe: Path) -> str:
+    """``<exe> --version``'s stdout, run on a throwaway profile so the check never writes a real one.
+
+    The profile's cleanup ignores errors: a log file the app still holds open must not turn agreeing versions into a
+    false red. The result is decided only by the exit code and stdout, so a cleanup failure can never make a pass.
+    """
+    with tempfile.TemporaryDirectory(prefix="dsync-version-check-", ignore_cleanup_errors=True) as profile:
         env = {**os.environ, "DISTRICTSYNC_DATA_DIR": profile}
         proc = subprocess.run(  # nosec B603 - fixed argv on the installed exe under test, no shell
             [str(exe), "--version"], capture_output=True, text=True, timeout=_VERSION_TIMEOUT_S, check=False, env=env
@@ -193,6 +197,9 @@ def main(argv: list[str] | None = None) -> int:
             args.path.write_bytes(f"version = '{version}'\n".encode())  # bytes: no CRLF on Windows
             print(args.path.read_text(encoding="utf8"), end="")
         elif args.command == "msi-versions":
+            # A dispatch from a tag would sign a throwaway MSI carrying a real release number (review L1).
+            if os.environ["GITHUB_REF_TYPE"] == "tag":
+                raise VersionError("the MSI rehearsal runs from a branch, not a tag; dispatch Release from main")
             print(" ".join(msi_rehearsal_versions(version)))
         else:
             problems = check_installed(args.root, version, msi=args.msi)
