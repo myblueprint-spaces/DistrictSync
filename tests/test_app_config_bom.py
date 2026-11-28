@@ -102,6 +102,20 @@ class TestSave:
 
         assert list(config_file.parent.glob("config.corrupt-*.json")) == []
 
+    def test_positive_twin_a_torn_bom_file_is_quarantined_byte_for_byte(self, config_file: Path) -> None:
+        planted = _BOM + b'{"sis_type": "sd74my'
+        config_file.write_bytes(planted)
+        cfg = AppConfig.load()
+        assert cfg.load_state is ConfigLoadState.UNREADABLE
+        # A chosen setting, so the save is not refused by the "no defaults over an
+        # unreadable file" guard (SettingsOverwriteRefused) and reaches the quarantine.
+        cfg.sis_type = "sd74myedbc"
+        cfg.save()
+
+        quarantined = list(config_file.parent.glob("config.corrupt-*.json"))
+        assert len(quarantined) == 1
+        assert quarantined[0].read_bytes() == planted
+
 
 class TestTheOtherReaders:
     """The readers that parse the per-user file directly, without ``AppConfig.load()``."""
@@ -153,3 +167,9 @@ class TestOneRule:
 
         assert decode_settings_bytes(_BOM + b"{}") == "{}"
         assert decode_settings_bytes(b"{}") == "{}"
+
+    def test_the_shared_decoder_still_raises_on_bytes_that_are_not_utf8(self) -> None:
+        from src.config.app_config import decode_settings_bytes
+
+        with pytest.raises(UnicodeDecodeError):
+            decode_settings_bytes(b"\xff\xfe{}")
