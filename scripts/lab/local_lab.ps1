@@ -372,8 +372,12 @@ tools.syncTime = "TRUE"
 }
 
 function Initialize-LabDomain {
+    # At most two VMs run at once (the PC's RAM): lab-dc stays up and each member joins in turn, is snapshotted
+    # 'domain' and is stopped before the next one starts.
     $read = "`$pw = ConvertTo-SecureString (Get-Content -Raw '$GuestSecret') -AsPlainText -Force"
-    foreach ($vm in 'lab-dc', 'lab-desktop', 'lab-core') { Send-GuestSecret $vm }
+    foreach ($vm in 'lab-desktop', 'lab-core') { try { Invoke-Vmrun @('stop', (Get-Vmx $vm), 'soft') | Out-Null } catch { } }
+    Start-LabVm 'lab-dc'
+    Send-GuestSecret 'lab-dc'
     Say 'promote lab-dc'
     Invoke-Guest 'lab-dc' "$read; Install-WindowsFeature AD-Domain-Services | Out-Null; Install-ADDSForest -DomainName $Domain -DomainNetbiosName $Netbios -SafeModeAdministratorPassword `$pw -Force -NoRebootOnCompletion -ErrorAction Stop | Out-Null; 'promoted'" 'promoted' | Out-Null
     Invoke-Vmrun @('reset', (Get-Vmx 'lab-dc'), 'soft') | Out-Null
@@ -381,33 +385,40 @@ function Initialize-LabDomain {
     $dcIp = (Invoke-Vmrun @('getGuestIPAddress', (Get-Vmx 'lab-dc'), '-wait')).Trim()
     Say "lab-dc is $dcIp; make it static and point the members at it"
     Invoke-Guest 'lab-dc' "`$i = Get-NetIPConfiguration | Where-Object IPv4DefaultGateway | Select-Object -First 1; `$a = `$i.IPv4Address | Select-Object -First 1; `$gw = `$i.IPv4DefaultGateway.NextHop; Set-NetIPInterface -InterfaceIndex `$i.InterfaceIndex -Dhcp Disabled; Remove-NetIPAddress -InterfaceIndex `$i.InterfaceIndex -AddressFamily IPv4 -Confirm:`$false -ErrorAction SilentlyContinue; Remove-NetRoute -InterfaceIndex `$i.InterfaceIndex -DestinationPrefix 0.0.0.0/0 -Confirm:`$false -ErrorAction SilentlyContinue; New-NetIPAddress -InterfaceIndex `$i.InterfaceIndex -IPAddress $dcIp -PrefixLength `$a.PrefixLength -DefaultGateway `$gw -ErrorAction Stop | Out-Null; Set-DnsClientServerAddress -InterfaceIndex `$i.InterfaceIndex -ServerAddresses 127.0.0.1; 'static'" 'static' | Out-Null
-    foreach ($member in 'lab-desktop', 'lab-core') {
-        Say "join $member"
-        Invoke-Guest $member "$read; `$i = Get-NetIPConfiguration | Where-Object IPv4DefaultGateway | Select-Object -First 1; Set-DnsClientServerAddress -InterfaceIndex `$i.InterfaceIndex -ServerAddresses $dcIp; `$c = New-Object PSCredential('$Netbios\Administrator', `$pw); Add-Computer -DomainName $Domain -Credential `$c -Force -ErrorAction Stop; 'joined'" 'joined' | Out-Null
-        Invoke-Vmrun @('reset', (Get-Vmx $member), 'soft') | Out-Null
-        Wait-Tools $member
-    }
     Say 'gMSA and the stored-password service account'
     Invoke-Guest 'lab-dc' @"
 $read
 `$ErrorActionPreference = 'Stop'
 Add-KdsRootKey -EffectiveTime ((Get-Date).AddHours(-10)) | Out-Null
 New-ADGroup -Name DSyncHosts -GroupScope Global
-Add-ADGroupMember DSyncHosts -Members 'lab-desktop`$','lab-core`$'
 New-ADServiceAccount -Name svc_dsync -DNSHostName svc_dsync.$Domain -PrincipalsAllowedToRetrieveManagedPassword DSyncHosts
 New-ADUser -Name svc_dsyncpw -AccountPassword `$pw -Enabled `$true -PasswordNeverExpires `$true
 New-ADUser -Name lab_user -AccountPassword `$pw -Enabled `$true
 'accounts done'
 "@ 'accounts done' | Out-Null
     foreach ($member in 'lab-desktop', 'lab-core') {
-        Invoke-Vmrun @('reset', (Get-Vmx $member), 'soft') | Out-Null   # picks up DSyncHosts
+        Start-LabVm $member
+        Send-GuestSecret $member
+        Say "join $member"
+        Invoke-Guest $member "$read; `$i = Get-NetIPConfiguration | Where-Object IPv4DefaultGateway | Select-Object -First 1; Set-DnsClientServerAddress -InterfaceIndex `$i.InterfaceIndex -ServerAddresses $dcIp; `$c = New-Object PSCredential('$Netbios\Administrator', `$pw); Add-Computer -DomainName $Domain -Credential `$c -Force -ErrorAction Stop; 'joined'" 'joined' | Out-Null
+        Invoke-Guest 'lab-dc' "Add-ADGroupMember DSyncHosts -Members '$member`$' -ErrorAction Stop; 'member added'" 'member added' | Out-Null
+        Invoke-Vmrun @('reset', (Get-Vmx $member), 'soft') | Out-Null   # joins, and picks up DSyncHosts
         Wait-Tools $member
         Invoke-Guest $member "Install-WindowsFeature RSAT-AD-PowerShell | Out-Null; Install-ADServiceAccount svc_dsync -ErrorAction Stop; if (Test-ADServiceAccount svc_dsync) { 'gmsa ok' }" 'gmsa ok' | Out-Null
         Say "$member : gMSA svc_dsync installed and tested"
+        Remove-GuestSecret $member
+        Invoke-Vmrun @('snapshot', (Get-Vmx $member), 'domain') | Out-Null
+        Invoke-Vmrun @('stop', (Get-Vmx $member), 'soft') | Out-Null
+        Say "$member : snapshot 'domain' taken, stopped"
     }
-    foreach ($vm in 'lab-dc', 'lab-desktop', 'lab-core') { Remove-GuestSecret $vm }
-    foreach ($member in 'lab-desktop', 'lab-core') { Invoke-Vmrun @('snapshot', (Get-Vmx $member), 'domain') | Out-Null }
-    Say "domain ready; snapshot 'domain' taken on the members"
+    Remove-GuestSecret 'lab-dc'
+    Invoke-Vmrun @('snapshot', (Get-Vmx 'lab-dc'), 'domain') | Out-Null
+    Say "domain ready; snapshot 'domain' taken on lab-dc and the members"
+}
+
+function Start-LabVm([string]$name) {
+    if ((Invoke-Vmrun @('list')) -notmatch [regex]::Escape((Get-Vmx $name))) { Invoke-Vmrun @('start', (Get-Vmx $name), 'nogui') | Out-Null }
+    Wait-Tools $name
 }
 
 $targets = if ($Vm) { @($Vm) } else { @($Vms.Keys) }
