@@ -21,7 +21,7 @@
     .\local_lab.ps1 -Action domain                                                 # promote lab-dc, join the members, gMSA
     .\local_lab.ps1 -Action destroy [-Vm lab-core]                                 # delete the VM(s) and their files
 
-  Guest commands go through VMware Tools (vmrun runProgramInGuest), installed by the answer file at first logon, so no
+  Guest commands go through VMware Tools (vmrun runProgramInGuest), installed by SetupComplete.cmd (staged by the answer file's specialize pass), so no
   network share or remote session is opened. Synthetic data only. The lab administrator password is generated once,
   kept in <LabDir>\lab-secret.txt (owner-only ACL), and never printed; the lab is throwaway.
 #>
@@ -170,7 +170,8 @@ function Invoke-Guest([string]$name, [string]$script, [string]$expect = '') {
     $remoteOut = 'C:\Windows\Temp\lab-out.txt'
     $wrapped = "& { $script } *> $remoteOut"
     $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($wrapped))
-    Invoke-Vmrun @('-gu', 'Administrator', '-gp', $pw, 'runProgramInGuest', $vmx, 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe', "-NoProfile -EncodedCommand $encoded") | Out-Null
+    # Through cmd /c: powershell.exe started directly by vmrun (Tools 13) exits 1 before running anything.
+    Invoke-Vmrun @('-gu', 'Administrator', '-gp', $pw, 'runProgramInGuest', $vmx, 'C:\Windows\System32\cmd.exe', "/c C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -EncodedCommand $encoded") | Out-Null
     $local = Join-Path $env:TEMP "lab-out-$name.txt"
     Invoke-Vmrun @('-gu', 'Administrator', '-gp', $pw, 'CopyFileFromGuestToHost', $vmx, $remoteOut, $local) | Out-Null
     $out = Get-Content -Raw $local
@@ -188,7 +189,23 @@ function Remove-GuestSecret([string]$name) { Invoke-Guest $name "Remove-Item -Fo
 function Wait-Tools([string]$name, [int]$minutes = 60) {
     $deadline = (Get-Date).AddMinutes($minutes)
     while ((Get-Date) -lt $deadline) {
-        try { if ((Invoke-Vmrun @('checkToolsState', (Get-Vmx $name))) -match 'running') { return } } catch { }
+        # checkToolsState alone is not enough: Workstation 26 with Tools 13 keeps reporting 'installed' while guest
+        # operations already work. So probe with a real guest operation, but only once Tools are present at all:
+        # without them the probe hangs rather than failing. Each probe is bounded (a job killed after 60 s), so a hang
+        # anywhere still ends at the deadline.
+        try {
+            if ((Invoke-Vmrun @('checkToolsState', (Get-Vmx $name))) -match 'installed|running') {
+                $probe = Start-Job -ScriptBlock {
+                    param($vmrun, $pw, $vmx)
+                    & $vmrun -T ws -gu Administrator -gp $pw listProcessesInGuest $vmx *> $null
+                    $LASTEXITCODE
+                } -ArgumentList (Join-Path (Get-VMwareDir) 'vmrun.exe'), (Get-LabSecret), (Get-Vmx $name)
+                $done = Wait-Job $probe -Timeout 60
+                $code = if ($done) { Receive-Job $probe } else { $null }
+                Remove-Job $probe -Force
+                if ($code -eq 0) { return }
+            }
+        } catch { }
         Start-Sleep -Seconds 20
     }
     throw "$name did not finish installing within $minutes minutes"
@@ -219,17 +236,20 @@ function New-AnswerIso([string]$name, [int]$imageIndex, [string]$pw, [string]$is
     <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
       <ComputerName>$name</ComputerName><TimeZone>Pacific Standard Time</TimeZone>
     </component>
+    <!-- VMware Tools is installed by SetupComplete.cmd (SYSTEM, after setup, before any logon). Not FirstLogonCommands:
+         they never run on Server Core (no Explorer). Not specialize itself: the MSI reports success there but no
+         service is left. This step only stages the two files (setup rejects a Path over 259 characters). -->
+    <component name="Microsoft-Windows-Deployment" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <RunSynchronous><RunSynchronousCommand wcm:action="add"><Order>1</Order>
+        <Path>cmd /c for %d in (D E F G H) do if exist %d:\lab-tools.ps1 (mkdir C:\Windows\Setup\Scripts &amp; copy /y %d:\lab-tools.ps1 C:\Windows\Setup\Scripts\ &amp; copy /y %d:\SetupComplete.cmd C:\Windows\Setup\Scripts\)</Path>
+        <Description>Stage the VMware Tools install</Description></RunSynchronousCommand></RunSynchronous>
+    </component>
   </settings>
   <settings pass="oobeSystem">
     <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
       <UserAccounts><AdministratorPassword><Value>$pw</Value><PlainText>true</PlainText></AdministratorPassword></UserAccounts>
       <AutoLogon><Enabled>true</Enabled><Username>Administrator</Username><Password><Value>$pw</Value><PlainText>true</PlainText></Password><LogonCount>1</LogonCount></AutoLogon>
       <OOBE><HideEULAPage>true</HideEULAPage><SkipMachineOOBE>true</SkipMachineOOBE><ProtectYourPC>3</ProtectYourPC></OOBE>
-      <FirstLogonCommands>
-        <SynchronousCommand wcm:action="add"><Order>1</Order>
-          <CommandLine>powershell -NoProfile -Command "foreach (`$d in 'D','E','F','G') { `$s = `$d + ':\setup64.exe'; if (Test-Path `$s) { Start-Process `$s -ArgumentList '/s /v\`"/qn REBOOT=R\`"' -Wait } }"</CommandLine>
-          <Description>VMware Tools</Description></SynchronousCommand>
-      </FirstLogonCommands>
     </component>
   </settings>
 </unattend>
@@ -239,6 +259,23 @@ function New-AnswerIso([string]$name, [int]$imageIndex, [string]$pw, [string]$is
     Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force $stage | Out-Null
     Set-Content -Encoding UTF8 (Join-Path $stage 'autounattend.xml') $xml
+    # Run by SetupComplete.cmd as SYSTEM. Newer Tools discs ship setup.exe, older ones setup64.exe.
+    Set-Content -Encoding ASCII (Join-Path $stage 'SetupComplete.cmd') "powershell -NoProfile -ExecutionPolicy Bypass -File C:\Windows\Setup\Scripts\lab-tools.ps1 > C:\Windows\Temp\lab-tools.log 2>&1"
+    Set-Content -Encoding UTF8 (Join-Path $stage 'lab-tools.ps1') @'
+$drive = (Get-Volume | Where-Object FileSystemLabel -eq 'VMware Tools').DriveLetter
+"tools disc: $drive"
+foreach ($file in 'setup64.exe', 'setup.exe') {
+    $setup = "${drive}:\$file"
+    if ($drive -and (Test-Path $setup)) {
+        $p = Start-Process $setup -ArgumentList '/s /v"/qn REBOOT=R"' -Wait -PassThru
+        "$file exit $($p.ExitCode)"
+        break
+    }
+}
+$svc = Get-Service VMTools -ErrorAction SilentlyContinue
+if ($svc -and $svc.Status -ne 'Running') { Start-Service VMTools }
+"VMTools: $((Get-Service VMTools -ErrorAction SilentlyContinue).Status)"
+'@
     $image = New-Object -ComObject IMAPI2FS.MsftFileSystemImage
     $image.FileSystemsToCreate = 3   # ISO9660 + Joliet
     $image.VolumeName = 'ANSWER'
@@ -294,6 +331,19 @@ guestOS = "$GuestOs"
 firmware = "bios"
 memsize = "$($spec.MemoryMB)"
 numvcpus = "$($spec.Cpus)"
+pciBridge0.present = "TRUE"
+pciBridge4.present = "TRUE"
+pciBridge4.virtualDev = "pcieRootPort"
+pciBridge4.functions = "8"
+pciBridge5.present = "TRUE"
+pciBridge5.virtualDev = "pcieRootPort"
+pciBridge5.functions = "8"
+pciBridge6.present = "TRUE"
+pciBridge6.virtualDev = "pcieRootPort"
+pciBridge6.functions = "8"
+pciBridge7.present = "TRUE"
+pciBridge7.virtualDev = "pcieRootPort"
+pciBridge7.functions = "8"
 scsi0.present = "TRUE"
 scsi0.virtualDev = "lsisas1068"
 scsi0:0.present = "TRUE"
@@ -323,42 +373,61 @@ tools.syncTime = "TRUE"
 }
 
 function Initialize-LabDomain {
+    # At most two VMs run at once (the PC's RAM): lab-dc stays up and each member joins in turn, is snapshotted
+    # 'domain' and is stopped before the next one starts.
     $read = "`$pw = ConvertTo-SecureString (Get-Content -Raw '$GuestSecret') -AsPlainText -Force"
-    foreach ($vm in 'lab-dc', 'lab-desktop', 'lab-core') { Send-GuestSecret $vm }
-    Say 'promote lab-dc'
-    Invoke-Guest 'lab-dc' "$read; Install-WindowsFeature AD-Domain-Services | Out-Null; Install-ADDSForest -DomainName $Domain -DomainNetbiosName $Netbios -SafeModeAdministratorPassword `$pw -Force -NoRebootOnCompletion -ErrorAction Stop | Out-Null; 'promoted'" 'promoted' | Out-Null
-    Invoke-Vmrun @('reset', (Get-Vmx 'lab-dc'), 'soft') | Out-Null
-    Wait-Tools 'lab-dc'
+    foreach ($vm in 'lab-desktop', 'lab-core') { try { Invoke-Vmrun @('stop', (Get-Vmx $vm), 'soft') | Out-Null } catch { } }
+    Start-LabVm 'lab-dc'
+    Send-GuestSecret 'lab-dc'
+    $role = Invoke-Guest 'lab-dc' "'role=' + (Get-CimInstance Win32_ComputerSystem).DomainRole" 'role='
+    if ($role -notmatch 'role=[45]') {
+        Say 'promote lab-dc'
+        # Until the reboot the guest refuses the lab logon, so reading this step's output back fails: the marker file
+        # is checked after the reboot instead, and that check is what fails loudly.
+        try {
+            Invoke-Guest 'lab-dc' "$read; Install-WindowsFeature AD-Domain-Services | Out-Null; Install-ADDSForest -DomainName $Domain -DomainNetbiosName $Netbios -SafeModeAdministratorPassword `$pw -Force -NoRebootOnCompletion -ErrorAction Stop | Out-Null; 'promoted' | Set-Content C:\Windows\Temp\lab-promoted.txt; 'promoted'" 'promoted' | Out-Null
+        } catch { Say "lab-dc : promote output not readable before the reboot ($($_.Exception.Message)); checking after it" }
+        Invoke-Vmrun @('reset', (Get-Vmx 'lab-dc'), 'soft') | Out-Null
+        Wait-Tools 'lab-dc'
+        Invoke-Guest 'lab-dc' "Get-Content C:\Windows\Temp\lab-promoted.txt" 'promoted' | Out-Null
+    }
     $dcIp = (Invoke-Vmrun @('getGuestIPAddress', (Get-Vmx 'lab-dc'), '-wait')).Trim()
     Say "lab-dc is $dcIp; make it static and point the members at it"
     Invoke-Guest 'lab-dc' "`$i = Get-NetIPConfiguration | Where-Object IPv4DefaultGateway | Select-Object -First 1; `$a = `$i.IPv4Address | Select-Object -First 1; `$gw = `$i.IPv4DefaultGateway.NextHop; Set-NetIPInterface -InterfaceIndex `$i.InterfaceIndex -Dhcp Disabled; Remove-NetIPAddress -InterfaceIndex `$i.InterfaceIndex -AddressFamily IPv4 -Confirm:`$false -ErrorAction SilentlyContinue; Remove-NetRoute -InterfaceIndex `$i.InterfaceIndex -DestinationPrefix 0.0.0.0/0 -Confirm:`$false -ErrorAction SilentlyContinue; New-NetIPAddress -InterfaceIndex `$i.InterfaceIndex -IPAddress $dcIp -PrefixLength `$a.PrefixLength -DefaultGateway `$gw -ErrorAction Stop | Out-Null; Set-DnsClientServerAddress -InterfaceIndex `$i.InterfaceIndex -ServerAddresses 127.0.0.1; 'static'" 'static' | Out-Null
-    foreach ($member in 'lab-desktop', 'lab-core') {
-        Say "join $member"
-        Invoke-Guest $member "$read; `$i = Get-NetIPConfiguration | Where-Object IPv4DefaultGateway | Select-Object -First 1; Set-DnsClientServerAddress -InterfaceIndex `$i.InterfaceIndex -ServerAddresses $dcIp; `$c = New-Object PSCredential('$Netbios\Administrator', `$pw); Add-Computer -DomainName $Domain -Credential `$c -Force -ErrorAction Stop; 'joined'" 'joined' | Out-Null
-        Invoke-Vmrun @('reset', (Get-Vmx $member), 'soft') | Out-Null
-        Wait-Tools $member
-    }
     Say 'gMSA and the stored-password service account'
     Invoke-Guest 'lab-dc' @"
 $read
 `$ErrorActionPreference = 'Stop'
 Add-KdsRootKey -EffectiveTime ((Get-Date).AddHours(-10)) | Out-Null
 New-ADGroup -Name DSyncHosts -GroupScope Global
-Add-ADGroupMember DSyncHosts -Members 'lab-desktop`$','lab-core`$'
 New-ADServiceAccount -Name svc_dsync -DNSHostName svc_dsync.$Domain -PrincipalsAllowedToRetrieveManagedPassword DSyncHosts
 New-ADUser -Name svc_dsyncpw -AccountPassword `$pw -Enabled `$true -PasswordNeverExpires `$true
 New-ADUser -Name lab_user -AccountPassword `$pw -Enabled `$true
 'accounts done'
 "@ 'accounts done' | Out-Null
     foreach ($member in 'lab-desktop', 'lab-core') {
-        Invoke-Vmrun @('reset', (Get-Vmx $member), 'soft') | Out-Null   # picks up DSyncHosts
+        Start-LabVm $member
+        Send-GuestSecret $member
+        Say "join $member"
+        Invoke-Guest $member "$read; `$i = Get-NetIPConfiguration | Where-Object IPv4DefaultGateway | Select-Object -First 1; Set-DnsClientServerAddress -InterfaceIndex `$i.InterfaceIndex -ServerAddresses $dcIp; `$c = New-Object PSCredential('$Netbios\Administrator', `$pw); Add-Computer -DomainName $Domain -Credential `$c -Force -ErrorAction Stop; 'joined'" 'joined' | Out-Null
+        Invoke-Guest 'lab-dc' "Add-ADGroupMember DSyncHosts -Members '$member`$' -ErrorAction Stop; 'member added'" 'member added' | Out-Null
+        Invoke-Vmrun @('reset', (Get-Vmx $member), 'soft') | Out-Null   # joins, and picks up DSyncHosts
         Wait-Tools $member
         Invoke-Guest $member "Install-WindowsFeature RSAT-AD-PowerShell | Out-Null; Install-ADServiceAccount svc_dsync -ErrorAction Stop; if (Test-ADServiceAccount svc_dsync) { 'gmsa ok' }" 'gmsa ok' | Out-Null
         Say "$member : gMSA svc_dsync installed and tested"
+        Remove-GuestSecret $member
+        Invoke-Vmrun @('snapshot', (Get-Vmx $member), 'domain') | Out-Null
+        Invoke-Vmrun @('stop', (Get-Vmx $member), 'soft') | Out-Null
+        Say "$member : snapshot 'domain' taken, stopped"
     }
-    foreach ($vm in 'lab-dc', 'lab-desktop', 'lab-core') { Remove-GuestSecret $vm }
-    foreach ($member in 'lab-desktop', 'lab-core') { Invoke-Vmrun @('snapshot', (Get-Vmx $member), 'domain') | Out-Null }
-    Say "domain ready; snapshot 'domain' taken on the members"
+    Remove-GuestSecret 'lab-dc'
+    Invoke-Vmrun @('snapshot', (Get-Vmx 'lab-dc'), 'domain') | Out-Null
+    Say "domain ready; snapshot 'domain' taken on lab-dc and the members"
+}
+
+function Start-LabVm([string]$name) {
+    if ((Invoke-Vmrun @('list')) -notmatch [regex]::Escape((Get-Vmx $name))) { Invoke-Vmrun @('start', (Get-Vmx $name), 'nogui') | Out-Null }
+    Wait-Tools $name
 }
 
 $targets = if ($Vm) { @($Vm) } else { @($Vms.Keys) }
