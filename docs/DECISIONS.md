@@ -3,6 +3,18 @@
 **Convention (adopted 2026-09-23):** every new entry carries a line `Supersedes: <date — title of the replaced entry>` (or `Supersedes: nothing`) directly under its heading, so a replaced decision is found by search rather than by reading prose.
 
 
+## 2026-11-28 - DSYNC-115: every task-principal grant is recorded by SID; Remove and a switch revoke only what was recorded
+
+Supersedes: nothing (closes the "open hole" DSYNC-33 narrowed: `prune_principal` had no producer for a retired PASSWORD principal)
+
+**Decided.** `provisioning.apply_provision` records the task principal's SID in `HKLM\SOFTWARE\DistrictSync` → `GrantedPrincipalSids` (REG_MULTI_SZ, the switch's key and 64-bit view) BEFORE it grants anything; `provisioning.py` stays the only registry writer. Both Removes (Setup's and `--schedule-remove`) send `prune_principal` for every principal a registration granted access to (a password account, local or domain, and a managed service account), through one decision, `provision_session.revoke_request_for_removal`; the signed-in account was granted nothing and keeps the plain delete. After a confirmed delete the child revokes every RECORDED SID (the request never adds one), by `icacls /remove:g *<SID>`, and only where every allow ace that SID holds is exactly DistrictSync's shape (`(OI)(CI)` RX on the root, `(OI)(CI)` M on `runs`); otherwise all of that SID's aces stay and the Remove reports "access kept" (`ProvisionStep.PRUNE` with no icacls code). SYSTEM, Administrators and the administrator running the child are never touched. A successful `provision` then retires every other recorded SID (`prune_retired_grants`, the principal switch), never raising: a grant it cannot revoke stays recorded for the next Remove. `machine_setup` never retires anything.
+
+**Legacy (no record — the value is absent, not empty).** Remove revokes only the account the schedule record names, and only an exact-shape ace that is none of the fenced accounts; anything else is kept and reported. Chosen over "leave it and report" because the lab bug (row T4) is exactly such an install, and an exact-shape ace for the account DistrictSync itself scheduled is one DistrictSync made. A Remove creates no record. An account a pre-DSYNC-115 build granted whose Remove already ran is unknown and stays (manual `icacls` line in `machine-scope.md`).
+
+**Why.** The owner's direction: Remove revokes exactly what registration granted, for every kind, and never a grant DistrictSync did not make. The request's account (from a user-editable `config.json`) cannot decide that; an admin-only HKLM value written at grant time can, and it survives the account itself (a deleted gMSA no longer resolves to a name, but its SID is still revoked). SIDs, not the keyed account tag: a tag cannot be turned back into a trustee, and plan 0055 N1 bars names, not SIDs. Shape-checking per SID, all or nothing, is forced by `icacls /remove:g`, which removes every grant ace of a trustee at once.
+
+**Consequences.** A switch revokes the old account even when its Remove's revoke was declined or failed. An `icacls` merge of a hand-added ace into DistrictSync's (same SID, same flags) is indistinguishable and is revoked with it. The PRUNE copy ("the account still has access… ask your IT team") now also covers a deliberate keep; the log line tells the two apart. Tests: `tests/test_provisioning.py` (`TestEveryGrantIsRecorded`, `TestRemoveRevokesWhatWasRecorded`, `TestASwitchRevokesTheRetiredAccount`, `TestAnInstallFromBeforeTheRecord`), the suite guard `conftest._no_real_grant_record`.
+
 ## 2026-11-27 - DSYNC-110: the user mappings folder is created only on the write path; provisioning does not pre-create it
 
 Supersedes: nothing

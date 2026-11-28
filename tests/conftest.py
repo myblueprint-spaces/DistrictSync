@@ -303,6 +303,21 @@ def _no_real_updater_folder(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> 
     monkeypatch.setattr("src.update.service.state_dir", lambda: tmp_path / "ProgramData" / "DistrictSync-Updater")
 
 
+@pytest.fixture(autouse=True)
+def _no_real_grant_record(monkeypatch: pytest.MonkeyPatch) -> None:
+    """HARD test-safety guard (DSYNC-115): no test reads or writes the real ``HKLM\\SOFTWARE\\DistrictSync`` grant record.
+
+    Read as "no record" (an install from before it existed); a write is a test bug and fails loudly rather than
+    reaching the registry. ``tests/test_provisioning.py``'s rig replaces both with an in-memory record.
+    """
+
+    def _refuse(_sids: list[str]) -> None:
+        raise AssertionError("a test tried to write the real grant record")
+
+    monkeypatch.setattr("src.scheduler.provisioning._read_grant_ledger_value", lambda: None)
+    monkeypatch.setattr("src.scheduler.provisioning._write_grant_ledger_value", _refuse)
+
+
 @pytest.fixture
 def transformer():
     """Fresh DataTransformer with school year pre-set."""

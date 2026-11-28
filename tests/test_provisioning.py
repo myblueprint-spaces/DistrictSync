@@ -196,10 +196,10 @@ def rig(monkeypatch, machine_root):
     monkeypatch.setattr(provisioning, "_commit_machine_switch", _commit)
     monkeypatch.setattr(provisioning, "ensure_updater_dir", lambda: None)  # its own tests: test_update_service.py
     monkeypatch.setattr(provisioning, "_delete_task_confirmed_missing", _delete)
-    # DSYNC-115 seams (``raising=False``: the tests that pin them landed before the code did).
-    monkeypatch.setattr(provisioning, "_read_grant_ledger_value", _read_ledger, raising=False)
-    monkeypatch.setattr(provisioning, "_write_grant_ledger_value", _write_ledger, raising=False)
-    monkeypatch.setattr(provisioning, "_dacl_entries", _dacl, raising=False)
+    # DSYNC-115 seams: the grant record and the DACL reader.
+    monkeypatch.setattr(provisioning, "_read_grant_ledger_value", _read_ledger)
+    monkeypatch.setattr(provisioning, "_write_grant_ledger_value", _write_ledger)
+    monkeypatch.setattr(provisioning, "_dacl_entries", _dacl)
     monkeypatch.setattr(provisioning, "current_run_as_user", lambda: "CORP\\jane")
     monkeypatch.setattr(paths_module, "assert_machine_dir_trusted", _verify)
     monkeypatch.setattr(paths_module, "assert_no_open_aces", _verify)
@@ -902,7 +902,7 @@ class TestEveryGrantIsRecorded:
         def _refuse(_sids):
             raise OSError("HKLM is read-only")
 
-        monkeypatch.setattr(provisioning, "_write_grant_ledger_value", _refuse, raising=False)
+        monkeypatch.setattr(provisioning, "_write_grant_ledger_value", _refuse)
         with pytest.raises(provisioning.ProvisionRefused) as exc:
             _register_as(source_profile, "CORP\\svc", PrincipalKind.PASSWORD)
         assert exc.value.step is Step.PRINCIPAL
@@ -927,7 +927,10 @@ class TestEveryGrantIsRecorded:
     def test_the_record_lives_beside_the_switch_in_the_64_bit_view(self):
         import inspect
 
-        source = inspect.getsource(provisioning._write_grant_ledger_value)
+        # Read from the MODULE text: the suite-wide guard (conftest ``_no_real_grant_record``) replaces the function.
+        module = inspect.getsource(provisioning)
+        start = module.index("def _write_grant_ledger_value(")
+        source = module[start : module.index("\ndef ", start + 1)]
         for needle in ("MACHINE_SCOPE_KEY_PATH", "MACHINE_SCOPE_KEY_ACCESS", "REG_MULTI_SZ", "GRANT_LEDGER_VALUE_NAME"):
             assert needle in source
         assert provisioning.GRANT_LEDGER_VALUE_NAME == "GrantedPrincipalSids"
@@ -1052,7 +1055,7 @@ class TestRemoveRevokesWhatWasRecorded:
         def _unreadable(_path):
             raise OSError("denied")
 
-        monkeypatch.setattr(provisioning, "_dacl_entries", _unreadable, raising=False)
+        monkeypatch.setattr(provisioning, "_dacl_entries", _unreadable)
         with pytest.raises(provisioning.ProvisionRefused) as exc:
             _remove_as("CORP\\svc", PrincipalKind.PASSWORD)
         assert exc.value.step is Step.PRUNE

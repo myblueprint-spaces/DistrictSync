@@ -12,6 +12,12 @@ press since S-2b and ``grant_current_user`` from the launcher's grant window, an
 * ``grant_current_user`` — one additive ``:M`` ace for a second administrator.
 * ``prune_principal`` — remove a retired task principal's aces, after a confirmed delete.
 
+**Every grant to a task principal is RECORDED (DSYNC-115)** — its SID, in ``HKLM\\SOFTWARE\\DistrictSync`` →
+``GrantedPrincipalSids``, before the grant — and a Remove (``prune_principal``) or a principal switch
+(:func:`prune_retired_grants`) revokes only what is recorded, only where the ace is exactly the shape DistrictSync
+grants. Since DSYNC-115 Setup's Remove and ``--schedule-remove`` produce ``prune_principal`` for every principal a
+registration granted access to (a password account, local or domain, and a managed service account).
+
 **The directory is created WITH its DACL, atomically** (S-1b-i.1). The plan's original
 sequence (create → ``icacls /inheritance:r`` → verify empty → apply DACL → ``/setowner``)
 cannot work, and both reasons were MEASURED on this machine: ``/inheritance:r`` leaves a
@@ -54,6 +60,7 @@ import contextlib
 import ctypes
 import json
 import os
+import re
 import secrets
 import shutil
 import sqlite3
@@ -364,6 +371,143 @@ def _commit_machine_switch(*, update_mode: str | None) -> None:  # pragma: no co
                 key, policy.MACHINE_SETTING_VALUE_NAME, 0, winreg.REG_SZ, policy.parse_update_mode(update_mode)
             )
         winreg.SetValueEx(key, paths.MACHINE_SCOPE_VALUE_NAME, 0, winreg.REG_DWORD, 1)
+
+
+#: DSYNC-115: the grant record — ``HKLM\SOFTWARE\DistrictSync`` → ``GrantedPrincipalSids`` (REG_MULTI_SZ), beside the
+#: switch. The SID of every task principal DistrictSync granted access to the shared folder, and nothing else: no
+#: account name (plan 0055 N1), and only an administrator can write it, so no standard user can name an account into a
+#: prune. Absent = an install provisioned before the record existed (see :func:`apply_prune_principal`).
+GRANT_LEDGER_VALUE_NAME = "GrantedPrincipalSids"
+_REG_VALUE_NOT_FOUND = 2  # ERROR_FILE_NOT_FOUND: the key or the value is not there
+
+
+def _read_grant_ledger_value() -> list[str] | None:  # pragma: no cover - Windows-only registry read
+    """The raw record: ``None`` when the key or the value is absent, else its strings. Raises ``OSError`` otherwise."""
+    if sys.platform != "win32":
+        return None
+    import winreg
+
+    try:
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE, paths.MACHINE_SCOPE_KEY_PATH, 0, paths.MACHINE_SCOPE_KEY_ACCESS
+        ) as key:
+            value, kind = winreg.QueryValueEx(key, GRANT_LEDGER_VALUE_NAME)
+    except FileNotFoundError:
+        return None
+    if kind != winreg.REG_MULTI_SZ or not isinstance(value, list):
+        raise OSError("The grant record is not a list of SIDs.")
+    return [str(item) for item in value]
+
+
+def _write_grant_ledger_value(sids: list[str]) -> None:  # pragma: no cover - Windows-only registry write
+    """Replace the record with ``sids`` in the 64-bit view of ``HKLM\\SOFTWARE\\DistrictSync`` (the switch's key)."""
+    if sys.platform != "win32":
+        raise OSError("The grant record is Windows-only.")
+    import winreg
+
+    access = paths.MACHINE_SCOPE_KEY_ACCESS | winreg.KEY_WRITE
+    with winreg.CreateKeyEx(winreg.HKEY_LOCAL_MACHINE, paths.MACHINE_SCOPE_KEY_PATH, 0, access) as key:
+        winreg.SetValueEx(key, GRANT_LEDGER_VALUE_NAME, 0, winreg.REG_MULTI_SZ, list(sids))
+
+
+_SID_RE = re.compile(r"S-1-\d+(-\d+)+")
+
+
+def read_grant_ledger() -> tuple[str, ...] | None:
+    """The SIDs DistrictSync recorded granting, or ``None`` for an install from before the record (DSYNC-115).
+
+    ``()`` (nothing granted) and ``None`` (never recorded) are different facts and stay different. An entry that is not
+    a SID string is dropped rather than handed to ``icacls`` as a trustee. Raises ``OSError`` when the value cannot be
+    read; every caller refuses (or skips) on that rather than guessing.
+    """
+    raw = _read_grant_ledger_value()
+    if raw is None:
+        return None
+    sids: list[str] = []
+    for entry in raw:
+        sid = entry.strip().upper()
+        if _SID_RE.fullmatch(sid) and sid not in sids:
+            sids.append(sid)
+    return tuple(sids)
+
+
+def _record_grant(sid: str) -> None:
+    """Add ``sid`` to the record BEFORE it is granted anything. Raises :class:`ProvisionRefused` (``PRINCIPAL``).
+
+    Recorded first so no failure between the two can leave a grant DistrictSync does not know it made; the opposite
+    leftover (a recorded SID with no ACE, after a refusal) is harmless: a prune finds nothing for it and drops it.
+    """
+    try:
+        recorded = read_grant_ledger() or ()
+        if sid not in recorded:
+            _write_grant_ledger_value([*recorded, sid])
+    except OSError as exc:
+        raise ProvisionRefused(ProvisionStep.PRINCIPAL) from exc
+
+
+def _dacl_entries(path: Path) -> tuple[tuple[int, int, int, str], ...]:
+    """``(ace type, flags, mask, SID)`` for ``path``'s DACL — :func:`paths.read_dacl_entries` behind one seam."""
+    return paths.read_dacl_entries(path)
+
+
+_ACCESS_ALLOWED = 0
+_INHERIT_OI_CI = 0x3  # OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE — icacls' (OI)(CI), and nothing else
+_READ_EXECUTE_MASK = int(READ_EXECUTE, 16)
+_MODIFY_MASK = int(MODIFY, 16)
+
+
+def _granted_targets(root: Path) -> tuple[tuple[Path, int], ...]:
+    """Where a task principal is granted, and with which mask: RX on the root, Modify on ``runs`` (D2)."""
+    return ((root, _READ_EXECUTE_MASK), (root / paths.MACHINE_RUNS_SUBDIR, _MODIFY_MASK))
+
+
+def _revoke(root: Path, sids: tuple[str, ...], *, protected: frozenset[str]) -> tuple[set[str], set[str]]:
+    """Remove each SID's grant ONLY where every ALLOW ace it holds is exactly the one DistrictSync makes.
+
+    Per SID, all or nothing: if it holds any other ALLOW ace on the root or on ``runs`` (full control, an extra
+    non-inheritable ace, the setup administrator's Modify on the root…), nothing of that SID's is touched — the ace
+    is not DistrictSync's to remove and ``icacls /remove:g`` cannot remove one ace of several. ``protected`` SIDs
+    (plus SYSTEM and Administrators) are never touched at all. The trustee is passed as ``*S-1-…``: no name lookup
+    (a retired managed service account may no longer resolve) and no account name in the argument list.
+
+    Returns ``(revoked, kept)``. A SID with nothing left is reported revoked. Raises :class:`ProvisionRefused`
+    (``PRUNE``) when a DACL cannot be read or ``icacls`` exits non-zero.
+    """
+    targets = tuple((path, mask) for path, mask in _granted_targets(root) if path.exists())
+    try:
+        dacls = {path: _dacl_entries(path) for path, _mask in targets}
+    except OSError as exc:
+        raise ProvisionRefused(ProvisionStep.PRUNE) from exc
+
+    revoked: set[str] = set()
+    kept: set[str] = set()
+    for sid in sids:
+        if sid in protected or sid in _UNPRUNABLE_SIDS:
+            kept.add(sid)
+            continue
+        to_remove: list[Path] = []
+        ours = True
+        for path, mask in targets:
+            held = [
+                (flags, held_mask)
+                for kind, flags, held_mask, who in dacls[path]
+                if kind == _ACCESS_ALLOWED and who.upper() == sid
+            ]
+            if not held:
+                continue
+            if all(entry == (_INHERIT_OI_CI, mask) for entry in held):
+                to_remove.append(path)
+            else:
+                ours = False
+        if not ours:
+            kept.add(sid)
+            continue
+        for path in to_remove:
+            exit_code = _run_icacls([str(path), "/remove:g", f"*{sid}"])
+            if exit_code != 0:
+                raise ProvisionRefused(ProvisionStep.PRUNE, icacls_exit=exit_code)
+        revoked.add(sid)
+    return revoked, kept
 
 
 def _delete_task_confirmed_missing(task_name: str) -> bool:
@@ -900,6 +1044,8 @@ def apply_provision(payload: Mapping[str, object], *, register: Callable[[], Non
     principal_sid = _sid_for(principal_account)
 
     resuming = _resume_or_refuse(root)  # 2
+    if principal_sid != setup_sid:
+        _record_grant(principal_sid)  # 2b (DSYNC-115) — recorded BEFORE anything is granted
     created = False
     try:
         if not resuming:
@@ -1094,7 +1240,7 @@ _UNPRUNABLE_SIDS = frozenset({"S-1-5-18", "S-1-5-32-544"})
 
 
 def apply_prune_principal(payload: Mapping[str, object]) -> None:
-    """Remove the nightly, then the retired principal's aces — in that order, never before.
+    """Remove the nightly, then revoke what DistrictSync granted its account — in that order, never before.
 
     The delete and the prune are ONE elevated operation so the admin sees ONE UAC prompt,
     and the prune runs only after a read-back confirms the task is MISSING.
@@ -1102,26 +1248,32 @@ def apply_prune_principal(payload: Mapping[str, object]) -> None:
     The secret deliberately STAYS: Convert's manual delivery still needs it, and the setup
     user's ``:M`` is what owns it thereafter.
 
-    The principal is taken from the payload (it is the RECORDED account, which the child
-    cannot re-derive) but it is fenced: a blank value, the child's own account, SYSTEM and
-    Administrators are all refused. Unlike the grant, a payload-named account here removes
-    access rather than adding it — the damage is a locked-out profile, not an escalation,
-    and this fence makes the unsafe call unrepresentable rather than merely unlikely.
+    **What is revoked comes from the grant record** (DSYNC-115, :data:`GRANT_LEDGER_VALUE_NAME`), for every
+    principal kind: every recorded SID, because once the one nightly is gone none of them has a task to run. The
+    record — written by this module, before each grant, in a key only an administrator can write — is what decides,
+    never the request: a request naming an account DistrictSync did not record revokes nothing of that account's.
+    A recorded SID that no longer resolves to a name (a retired managed service account) is still revoked: the
+    trustee is the SID. Each revoke goes through :func:`_revoke`'s shape rule, so an ace DistrictSync did not make
+    stays, and SYSTEM, Administrators and the administrator running this child are never touched. What was
+    revoked (or found already gone) leaves the record; what was kept stays in it.
 
-    **The name is validated against its KIND** (plan 0049 S-4), mirroring
-    :func:`_principal_account` rung for rung. Until S-4 this was ``validate_run_as_user``
-    unconditionally, which rejects a trailing ``$`` — so the one principal that most needs
-    pruning could not be pruned at all, and a retired managed service account would keep its
-    ACEs on the shared profile with nothing in the app able to revoke them. The kind travels
-    on the payload and an ABSENT one resolves through
-    ``task_com.principal_kind_from_record`` (the same evidenced rule the durable record uses):
-    a request built by an earlier build carries no ``kind``, and the only foreign principal
-    those builds could register was a password logon. An unrecognised value lands there too
-    rather than raising, and the ``$``-disagreement is then caught by the validator itself —
-    a ``SVC$`` name checked as a password logon is REFUSED, which is the safe direction.
+    **An install from before the record** (the value is ABSENT, not empty) falls back to the request: the account
+    the schedule record names is revoked only when its aces are EXACTLY the shape DistrictSync grants (``(OI)(CI)``
+    read-and-execute on the root, ``(OI)(CI)`` Modify on ``runs``) and it is none of the fenced accounts; anything
+    else is kept and reported. No record is created by a Remove. An account a pre-record build granted and whose
+    Remove (under that build) left it in place is not known to DistrictSync at all, and stays: the developer guide
+    ``docs/developer/machine-scope.md`` gives the ``icacls`` line that removes it by hand.
+
+    The request's account is validated against its KIND either way (plan 0049 S-4), mirroring
+    :func:`_principal_account` rung for rung: an ABSENT kind resolves through
+    ``task_com.principal_kind_from_record`` (a pre-S-4 parent's request means a password logon), and the
+    ``$``-disagreement is caught by the validator itself — a ``SVC$`` name checked as a password logon is REFUSED.
+    Every refusal up to here happens BEFORE the delete, so the parent falls back to the plain remove.
 
     Raises:
-        ProvisionRefused: with ``OVERRIDE``, ``PRE_EXISTING``, ``PRINCIPAL``, ``DELETE`` or ``PRUNE``.
+        ProvisionRefused: ``OVERRIDE``, ``PRE_EXISTING`` or ``PRINCIPAL`` before the delete; ``DELETE`` when the
+            task's removal was not confirmed (nothing revoked); ``PRUNE`` after a confirmed delete when an ace was
+            kept, a DACL could not be read, or ``icacls`` failed (with its exit code).
     """
     _refuse_under_override()
     root = _machine_root()
@@ -1138,17 +1290,62 @@ def apply_prune_principal(payload: Mapping[str, object]) -> None:
         principal = task_com.validate_principal_account(kind, requested)
     except ValueError as exc:
         raise ProvisionRefused(ProvisionStep.PRINCIPAL) from exc
-    principal_sid = _sid_for(principal)
-    if principal_sid in _UNPRUNABLE_SIDS or principal_sid == _sid_for(current_run_as_user()):
-        raise ProvisionRefused(ProvisionStep.PRINCIPAL)
+    try:
+        recorded = read_grant_ledger()
+    except OSError as exc:
+        raise ProvisionRefused(ProvisionStep.PRINCIPAL) from exc
+    admin_sid = _sid_for(current_run_as_user()).upper()
+
+    if recorded is None:
+        principal_sid = _sid_for(principal).upper()
+        if principal_sid in _UNPRUNABLE_SIDS or principal_sid == admin_sid:
+            raise ProvisionRefused(ProvisionStep.PRINCIPAL)
+        candidates: tuple[str, ...] = (principal_sid,)
+    else:
+        candidates = recorded
 
     task_name = str(payload.get("task_name", "")).strip()
     if not task_name or not _delete_task_confirmed_missing(task_name):
         raise ProvisionRefused(ProvisionStep.DELETE)
 
-    for target in (root, root / paths.MACHINE_RUNS_SUBDIR):
-        if not target.exists():
-            continue
-        exit_code = _run_icacls([str(target), "/remove:g", principal])
-        if exit_code != 0:
-            raise ProvisionRefused(ProvisionStep.PRUNE, icacls_exit=exit_code)
+    revoked, kept = _revoke(root, candidates, protected=frozenset({admin_sid}))
+    if recorded is not None and revoked:
+        try:
+            _write_grant_ledger_value([sid for sid in recorded if sid not in revoked])
+        except OSError as exc:
+            raise ProvisionRefused(ProvisionStep.PRUNE) from exc
+    if kept:
+        raise ProvisionRefused(ProvisionStep.PRUNE)
+
+
+def prune_retired_grants(payload: Mapping[str, object]) -> None:
+    """After a successful ``provision``: revoke every recorded grant but the new principal's (DSYNC-115). TOTAL.
+
+    This is the principal SWITCH. The Register gate already makes a switch Remove-then-Schedule, and that Remove
+    revokes; this covers a Remove whose revoke did not happen (declined, kept, or an ``icacls`` failure) — the old
+    account is still recorded, so scheduling the new one retires it. Called by ``elevated_apply._do_provision`` only
+    AFTER the new nightly registered, which replaced any task under the same name, so no live task loses its account.
+    ``machine_setup`` never calls it: a nightly may be live there.
+
+    The same :func:`_revoke` rule as a Remove: only recorded SIDs, only DistrictSync's shape, never SYSTEM,
+    Administrators, the administrator running this child or the new principal.
+
+    **Never raises.** The nightly is registered and recorded when this runs; a retired grant that could not be
+    revoked must not turn that into a reported failure. It stays in the record, so the next Remove revokes it and
+    reports the outcome. An install with no record has nothing recorded to retire.
+    """
+    try:
+        recorded = read_grant_ledger()
+        if not recorded:
+            return
+        setup_account = current_run_as_user()
+        admin_sid = _sid_for(setup_account).upper()
+        keep = _sid_for(_principal_account(payload, setup_account=setup_account)).upper()
+        retired = tuple(sid for sid in recorded if sid != keep)
+        if not retired:
+            return
+        revoked, _kept = _revoke(_machine_root(), retired, protected=frozenset({admin_sid, keep}))
+        if revoked:
+            _write_grant_ledger_value([sid for sid in recorded if sid not in revoked])
+    except (ProvisionRefused, OSError, LookupError, ValueError):
+        return

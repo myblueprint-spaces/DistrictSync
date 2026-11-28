@@ -85,7 +85,7 @@ class TestTheChildHalf:
     def test_it_never_retires_a_recorded_grant(self, applied, monkeypatch):
         """DSYNC-115: machine setup on a computer with a live nightly must not revoke that nightly's account."""
         retired: list[object] = []
-        monkeypatch.setattr(provisioning, "prune_retired_grants", retired.append, raising=False)
+        monkeypatch.setattr(provisioning, "prune_retired_grants", retired.append)
         elevated_apply._do_machine_setup(self._payload())
         assert len(applied) == 1 and retired == []
 

@@ -268,24 +268,24 @@ def _dispatch(cfg, scheduler, foreign, principal, run_time, wake_to_run, persist
 
 
 def remove() -> tuple[int, str]:
-    """Remove the nightly (and a retired gMSA's folder access). 0 when no nightly is left, 1 otherwise."""
+    """Remove the nightly (and the folder access its registration granted, DSYNC-115). 0 when no nightly is left."""
     from src.scheduler import provision_session
     from src.utils import paths
 
     cfg = AppConfig.load()
     scheduler = get_scheduler()
     record = _record(cfg)
-    kind = record.run_as_kind or PrincipalKind.PASSWORD
-    revoke_account = (
-        (record.run_as_user or "").strip()
-        if kind is PrincipalKind.MANAGED_SERVICE_ACCOUNT
-        and scheduler.supports_unattended_password
-        and paths.is_machine_scope()
-        else ""
+    revoke = provision_session.revoke_request_for_removal(
+        record.run_as_user,
+        record.run_as_kind,
+        current=_current_account(),
+        shared_settings=scheduler.supports_unattended_password and paths.is_machine_scope(),
     )
     note = ""
-    if revoke_account:
-        attempt = provision_session.request_removal_with_revoke(cfg.schedule_task_name, user=revoke_account, kind=kind)
+    if revoke is not None:
+        attempt = provision_session.request_removal_with_revoke(
+            cfg.schedule_task_name, user=revoke.user, kind=revoke.kind
+        )
         if attempt.revoke is provision_session.RevokeOutcome.FALL_BACK:
             ok, message = scheduler.delete(cfg.schedule_task_name)
         else:

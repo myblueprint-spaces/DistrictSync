@@ -811,7 +811,7 @@ def request_access() -> GrantOutcome:
 
 
 # --------------------------------------------------------------------------- #
-# prune_principal — Remove for a managed service account (DSYNC-33)            #
+# prune_principal — Remove revokes what registration granted (DSYNC-33, -115) #
 # --------------------------------------------------------------------------- #
 
 
@@ -843,12 +843,53 @@ class RemovalAttempt:
     revoke: RevokeOutcome
 
 
+@dataclass(frozen=True)
+class RevokeRequest:
+    """The recorded principal a Remove asks the elevated child to revoke (DSYNC-115)."""
+
+    user: str
+    kind: PrincipalKind
+
+
+def revoke_request_for_removal(
+    recorded_user: str | None,
+    recorded_kind: PrincipalKind | None,
+    *,
+    current: str,
+    shared_settings: bool,
+) -> RevokeRequest | None:
+    """Should this Remove revoke folder access, and for whom? Pure and TOTAL — the ONE decision (DSYNC-115).
+
+    Both Removes call it — Setup's and ``--schedule-remove`` — with the schedule RECORD read before it is cleared.
+    A registration grants access to the shared folder to every principal that is not the signed-in account (a
+    password account, local or domain, and a managed service account: the ones that provision), so exactly those
+    are revoked. The signed-in account was granted nothing, so it gets ``None`` and the ordinary remove (no extra
+    prompt). ``None`` too off a shared-settings computer (``shared_settings`` = the scheduler can register an
+    unattended task AND this install is machine scope): there is no shared folder to revoke on.
+
+    A record with no kind is a password account (``principal_kind_from_record``'s evidenced rule). "Foreign" is the
+    same :func:`~src.scheduler.register_gate.principal_key` reduction the gate and the provision decision use.
+    What the child actually revokes is decided by its grant record, not by this request (see
+    ``provisioning.apply_prune_principal``).
+    """
+    from src.scheduler.register_gate import principal_key
+
+    if not shared_settings:
+        return None
+    user = (recorded_user or "").strip()
+    kind = recorded_kind or task_com.principal_kind_from_record(None, user=user)
+    if kind is PrincipalKind.MANAGED_SERVICE_ACCOUNT or (user and principal_key(user, current)):
+        return RevokeRequest(user=user, kind=kind)
+    return None
+
+
 def request_removal_with_revoke(task_name: str, *, user: str, kind: PrincipalKind) -> RemovalAttempt:
     """Remove the nightly AND the retired account's folder access — ONE UAC prompt. Never raises.
 
     Plan 0049's named hole: ``prune_principal`` had a handler and an implementation and no
     producer, so a retired gMSA kept read/execute on the shared profile root and modify on its
-    ``runs`` folder. This is its producer, for the MANAGED_SERVICE_ACCOUNT principal.
+    ``runs`` folder. DSYNC-33 made this its producer for a managed service account; DSYNC-115 for
+    every principal a registration granted access to (see :func:`revoke_request_for_removal`).
 
     The child's ordering is the safety property and it is not re-implemented here:
     ``apply_prune_principal`` deletes the task and prunes ONLY after a read-back proves the
@@ -909,7 +950,19 @@ def request_removal_with_revoke(task_name: str, *, user: str, kind: PrincipalKin
         step = _refusal_step(child_message)
         if step in (ProvisionStep.DELETE, ProvisionStep.PRUNE):
             if step is ProvisionStep.PRUNE:
-                logger.warning("The nightly's account kept its access to the shared folder (step: prune).")
+                exit_match = _ICACLS_MARKER.search(child_message)
+                if exit_match is not None:
+                    logger.warning(
+                        "The nightly's account kept its access to the shared folder (step: prune, icacls exit %s).",
+                        exit_match.group(1),
+                    )
+                else:
+                    # DSYNC-115: no icacls failure - an ace was KEPT on purpose (one DistrictSync did not grant, or an
+                    # account it may not remove), or the folder's permissions could not be read.
+                    logger.warning(
+                        "The nightly's account kept access to the shared folder that DistrictSync did not grant or "
+                        "may not remove, or the folder's permissions could not be read (step: prune)."
+                    )
             return _removal(_confirm(task_name), RevokeOutcome.NOT_REVOKED)
         logger.warning(
             "The account's access could not be removed with the nightly (%s); removing the nightly the ordinary way.",
