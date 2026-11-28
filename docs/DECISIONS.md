@@ -13,6 +13,16 @@ Supersedes: nothing
 
 **Consequences.** The `reexec` seams stay synchronous and required; the windows pass `relaunch.relaunch_seam(page)` (schedules the coroutine with `page.run_task`). The one-file exe and the per-user Setup.exe were exposed too whenever their path held a space (a profile folder with a space in its name); the one-file exe also needed the environment reset and the working-directory change, without which the child would run from, or hold open, the parent's `_MEI` folder. The failure box is not `launcher._show_error_dialog`: that starts a second `ft.run` inside the running event loop, and its tkinter fallback is not bundled.
 
+## 2026-11-27 - DSYNC-110: the user mappings folder is created only on the write path; provisioning does not pre-create it
+
+Supersedes: nothing
+
+**Decided.** `paths.user_mappings_dir()` is a pure path with no side effect; `paths.ensure_user_mappings_dir()` is the one creator, called by `authoring.write_overlay` after the load-back passes. Every other caller reads (`loader._search_dirs` / `_require_search_pair`, `authoring.overlay_path`, `authoring.delete_overlay`, the catalog and Mapping screen through them), and a missing folder means "no user mappings". Machine setup does NOT create `mappings/`.
+
+**Why.** On a machine-wide install the nightly's principal has RX on the profile root (M on `runs/` only), so the old mkdir-on-every-call failed the nightly with `[WinError 5]` whenever no administrator session had created the folder first. Pre-creating it in provisioning was rejected: `migrate_profile` SKIPS a destination that already exists, so an empty `mappings/` made at step 3 would silently drop the administrator's per-user overlays at step 4, and it would not repair an already-provisioned computer. The reader fix covers every computer.
+
+**Consequences.** A writer that adds bytes to the user mappings folder must call `ensure_user_mappings_dir()` first; a failed load-back now leaves no folder behind. Tests that plant overlays create the folder themselves.
+
 ## 2026-11-27 - DSYNC-113: one script derives the installer's version; the installed app is checked against its package
 
 Supersedes: nothing
