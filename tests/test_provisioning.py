@@ -981,11 +981,16 @@ class TestRemoveRevokesWhatWasRecorded:
         assert rig.aces(machine_root, _PRINCIPAL_SID) == [], "positive twin: the recorded grant WAS revoked"
 
     def test_the_request_cannot_name_an_unrecorded_account_into_the_prune(self, rig, source_profile, machine_root):
+        """An unrecorded account the request names gets only the legacy rule (review L2): an ace that is not exactly
+        DistrictSync's shape stays, and the Remove says so."""
         _register_as(source_profile, "CORP\\svc", PrincipalKind.PASSWORD)
-        rig.seed_granted(machine_root, _OTHER_SID)
-        _remove_as("CORP\\other", PrincipalKind.PASSWORD)
-        assert rig.aces(machine_root, _OTHER_SID), "the record, not the request, decides who is revoked"
-        assert rig.aces(machine_root, _PRINCIPAL_SID) == []
+        rig.seed(machine_root, _OTHER_SID, "F")
+        rig.seed(machine_root / "runs", _OTHER_SID, "M")
+        with pytest.raises(provisioning.ProvisionRefused) as exc:
+            _remove_as("CORP\\other", PrincipalKind.PASSWORD)
+        assert (exc.value.step, exc.value.icacls_exit) == (Step.PRUNE, None)
+        assert rig.aces(machine_root, _OTHER_SID) and rig.aces(machine_root / "runs", _OTHER_SID)
+        assert rig.aces(machine_root, _PRINCIPAL_SID) == [], "positive twin: the recorded one was revoked"
 
     @pytest.mark.parametrize(
         ("rights", "flags"),
@@ -1123,6 +1128,123 @@ class TestASwitchRevokesTheRetiredAccount:
         rig.icacls.clear()
         _register_as(source_profile, "CORP\\svc", PrincipalKind.PASSWORD)
         assert not [args for args in rig.icacls if args[1] == "/remove:g"]
+
+
+class TestTheShapeRuleEdges:
+    """Review notes I1 + the missing rows: which aces count as "not DistrictSync's", on the record path."""
+
+    def _remove_recorded_svc(self, rig: _Rig, source_profile: Path) -> None:
+        _register_as(source_profile, "CORP\\svc", PrincipalKind.PASSWORD)
+
+    @pytest.mark.parametrize(
+        "flags",
+        [
+            pytest.param(_OICI | 0x10, id="inherited"),
+            pytest.param(_OICI | 0x08, id="inherit-only"),
+        ],
+    )
+    def test_an_inherited_or_inherit_only_ace_is_kept(self, rig, source_profile, machine_root, flags):
+        self._remove_recorded_svc(rig, source_profile)
+        rig.seed(machine_root, _PRINCIPAL_SID, "RX", flags=flags)
+        with pytest.raises(provisioning.ProvisionRefused) as exc:
+            _remove_as("CORP\\svc", PrincipalKind.PASSWORD)
+        assert (exc.value.step, exc.value.icacls_exit) == (Step.PRUNE, None)
+        assert not [args for args in rig.icacls if args[1] == "/remove:g"]
+        assert rig.ledger == [_PRINCIPAL_SID]
+
+    @pytest.mark.parametrize(
+        "trustee",
+        [
+            pytest.param(_PRINCIPAL_SID, id="attributed to the account"),
+            pytest.param("", id="unattributed - the reader reports no SID for this type"),
+        ],
+    )
+    def test_a_conditional_or_callback_allow_ace_keeps_the_account(self, rig, source_profile, machine_root, trustee):
+        """Type 9 (ACCESS_ALLOWED_CALLBACK): ``paths.read_dacl_entries`` reports no SID for it, so an ace it cannot
+        attribute may be this account's and must keep it."""
+        self._remove_recorded_svc(rig, source_profile)
+        rig.dacl[str(machine_root)].append((9, _OICI, _RX, trustee))
+        with pytest.raises(provisioning.ProvisionRefused) as exc:
+            _remove_as("CORP\\svc", PrincipalKind.PASSWORD)
+        assert exc.value.step is Step.PRUNE
+        assert rig.aces(machine_root / "runs", _PRINCIPAL_SID), "all or nothing per account"
+
+    def test_a_deny_ace_does_not_block_the_revoke(self, rig, source_profile, machine_root):
+        self._remove_recorded_svc(rig, source_profile)
+        rig.dacl[str(machine_root)].append((1, _OICI, _M, _PRINCIPAL_SID))  # ACCESS_DENIED: a hardening measure
+        _remove_as("CORP\\svc", PrincipalKind.PASSWORD)
+        assert [entry for entry in rig.aces(machine_root, _PRINCIPAL_SID) if entry[0] == 0] == []
+        assert rig.aces(machine_root, _PRINCIPAL_SID) == [(1, _OICI, _M, _PRINCIPAL_SID)], "the deny ace stays"
+        assert rig.ledger == []
+
+    def test_a_recorded_sid_with_no_ace_runs_no_icacls_and_leaves_the_record(self, rig, machine_root):
+        rig.seed_granted(machine_root, _SETUP_SID)  # something on the folders, nothing for the recorded SID
+        rig.ledger = [_PRINCIPAL_SID]
+        _remove_as("CORP\\svc", PrincipalKind.PASSWORD)
+        assert not [args for args in rig.icacls if args[1] == "/remove:g"]
+        assert rig.ledger == []
+
+
+class TestARecordedInstallStillRevokesThePreUpgradeAccount:
+    """Review note L2: an install from before the record, whose Remove was declined, then a later registration that
+    started the record. The schedule record still names the old account; the legacy rule applies to it."""
+
+    def test_the_requested_unrecorded_account_with_exactly_DistrictSyncs_shape_is_revoked(self, rig, machine_root):
+        rig.seed_granted(machine_root, _PRINCIPAL_SID)  # P1, granted by a pre-record build
+        rig.seed_granted(machine_root, _MSA_SID)  # P2, recorded
+        rig.ledger = [_MSA_SID]
+        _remove_as("CORP\\svc", PrincipalKind.PASSWORD)
+        assert rig.aces(machine_root, _PRINCIPAL_SID) == [] and rig.aces(machine_root / "runs", _PRINCIPAL_SID) == []
+        assert rig.aces(machine_root, _MSA_SID) == []
+        assert rig.ledger == [], "the legacy account is never ADDED to the record"
+
+    def test_the_fence_still_holds_for_the_requested_account(self, rig, machine_root):
+        rig.seed_granted(machine_root, _SETUP_SID)
+        rig.ledger = []
+        with pytest.raises(provisioning.ProvisionRefused):
+            _remove_as("CORP\\jane", PrincipalKind.PASSWORD)  # the administrator running the child
+        assert rig.aces(machine_root, _SETUP_SID) and rig.aces(machine_root / "runs", _SETUP_SID)
+
+    def test_a_requested_account_that_no_longer_resolves_does_not_stop_the_recorded_revoke(
+        self, rig, machine_root, monkeypatch
+    ):
+        rig.seed_granted(machine_root, _MSA_SID)
+        rig.ledger = [_MSA_SID]
+        resolve = provisioning._account_sid
+
+        def _gone(name: str) -> str:
+            if name.lower().endswith("svc$"):
+                raise provisioning.AccountLookupError(provisioning.ERROR_NONE_MAPPED)
+            return resolve(name)
+
+        monkeypatch.setattr(provisioning, "_account_sid", _gone)
+        _remove_as("CORP\\svc$", PrincipalKind.MANAGED_SERVICE_ACCOUNT)
+        assert rig.aces(machine_root, _MSA_SID) == []
+
+
+class TestRetiringNeverFailsARegistration:
+    """Review note L1: ``prune_retired_grants`` is TOTAL - the nightly is already registered when it runs."""
+
+    @pytest.mark.parametrize("error", [RuntimeError("boom"), KeyError("x"), TypeError("y")])
+    def test_any_exception_is_contained(self, rig, source_profile, machine_root, monkeypatch, error):
+        _register_as(source_profile, "CORP\\svc", PrincipalKind.PASSWORD)
+
+        def _raise(*_args, **_kwargs):
+            raise error
+
+        monkeypatch.setattr(provisioning, "_revoke", _raise)
+        payload = _payload(source_profile, user="CORP\\svc$", kind=PrincipalKind.MANAGED_SERVICE_ACCOUNT.value)
+        assert provisioning.prune_retired_grants(payload) is None
+        assert rig.ledger == [_PRINCIPAL_SID], "nothing revoked, so still recorded for the next Remove"
+
+
+class TestTheSidPattern:
+    """Review note L3: ``\\d`` is Unicode-aware unless the pattern is ASCII; a trustee is ASCII digits only."""
+
+    def test_a_unicode_digit_sid_is_rejected(self, rig):
+        arabic_indic_one = "\u0661"
+        rig.ledger = [f"S-1-5-21-{arabic_indic_one}-2-3-1002", _PRINCIPAL_SID]
+        assert provisioning.read_grant_ledger() == (_PRINCIPAL_SID,)
 
 
 class TestAnInstallFromBeforeTheRecord:
