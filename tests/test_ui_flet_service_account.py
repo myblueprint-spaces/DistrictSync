@@ -1509,6 +1509,16 @@ class TestTheGateAndItsReasonFollowTheToggle:
 # --------------------------------------------------------------------------- #
 # DSYNC-111 — a password nightly whose account cannot log on as a batch job      #
 # --------------------------------------------------------------------------- #
+def _order(tree, first: str, second: str) -> bool:
+    """Whether a control containing ``first`` is painted ABOVE one containing ``second`` (depth-first tree order)."""
+    from tests.test_ui_flet_render_smoke import _iter_controls
+
+    values = [v for c in _iter_controls(tree) if isinstance(v := getattr(c, "value", None), str)]
+    a = next(i for i, v in enumerate(values) if first in v)
+    b = next(i for i, v in enumerate(values) if second in v)
+    return a < b
+
+
 class TestTheBatchRightBand:
     """The window's password-account Schedule said "Nightly sync scheduled" with no check at all, while a gMSA press
     already shows the DSYNC-33 check band. A password press now runs the SAME shared read the command line uses
@@ -1557,8 +1567,8 @@ class TestTheBatchRightBand:
         assert _has_text_containing(tree, batch_right.NOT_HELD_DETAIL)
         assert reads["accounts"] == [_SIGNED_IN]
 
-    @pytest.mark.parametrize("state", ["GRANTED", "NOT_DIRECT", "UNKNOWN"])
-    def test_anything_else_shows_no_band(self, tmp_path, stub_page, monkeypatch, reads, state):
+    @pytest.mark.parametrize("state", ["GRANTED", "GRANTED_VIA_GROUP"])
+    def test_a_held_right_shows_no_band(self, tmp_path, stub_page, monkeypatch, reads, state):
         from src.scheduler import batch_right
         from src.scheduler.schedule_check import RightState
 
@@ -1566,6 +1576,54 @@ class TestTheBatchRightBand:
         tree = self._signed_in_password(tmp_path, stub_page, monkeypatch)
         assert _has_text(tree, "Nightly sync scheduled") and reads["accounts"]  # positive twin: it was read
         assert not _has_text_containing(tree, batch_right.NOT_HELD_HEADLINE)
+        assert not _has_text_containing(tree, batch_right.INCONCLUSIVE_HEADLINE)
+
+    @pytest.mark.parametrize("state", ["NOT_DIRECT", "UNKNOWN"])
+    def test_review_f2_inconclusive_shows_the_attention_band(self, tmp_path, stub_page, monkeypatch, reads, state):
+        """Review F2: the command line prints "Not confirmed"; the window said nothing. Now a WARNING band, same copy."""
+        from src.scheduler import batch_right
+        from src.scheduler.schedule_check import RightState
+
+        reads["value"] = RightState[state]
+        tree = self._signed_in_password(tmp_path, stub_page, monkeypatch)
+        assert _has_text_containing(tree, batch_right.INCONCLUSIVE_HEADLINE)
+        assert _has_text_containing(tree, batch_right.INCONCLUSIVE_LINE)
+        assert not _has_text_containing(tree, batch_right.NOT_HELD_HEADLINE)
+        assert _order(tree, batch_right.INCONCLUSIVE_HEADLINE, "Nightly sync scheduled")
+
+    def test_review_f2_the_failed_band_leads(self, tmp_path, stub_page, monkeypatch, reads):
+        """Verdict first: "won't run yet" sits ABOVE the green "Nightly sync scheduled"."""
+        from src.scheduler import batch_right
+        from src.scheduler.schedule_check import RightState
+
+        reads["value"] = RightState.DENIED
+        tree = self._signed_in_password(tmp_path, stub_page, monkeypatch)
+        assert _order(tree, batch_right.NOT_HELD_HEADLINE, "Nightly sync scheduled")
+
+    def test_review_f2_the_failed_band_leads_the_handover_too(self, tmp_path, stub_page, monkeypatch, reads):
+        from src.scheduler import batch_right
+        from src.scheduler.schedule_check import RightState
+
+        reads["value"] = RightState.DENIED
+        tree = self._service_password(tmp_path, stub_page, monkeypatch, handed_over=True)
+        assert _order(tree, batch_right.NOT_HELD_HEADLINE, setup_mod.HANDOVER_DONE_HEADLINE)
+
+    def test_review_f2_an_inconclusive_handover_shows_the_attention_band(self, tmp_path, stub_page, monkeypatch, reads):
+        from src.scheduler import batch_right
+        from src.scheduler.schedule_check import RightState
+
+        reads["value"] = RightState.NOT_DIRECT
+        tree = self._service_password(tmp_path, stub_page, monkeypatch, handed_over=True)
+        assert _has_text_containing(tree, batch_right.INCONCLUSIVE_LINE)
+        assert _order(tree, batch_right.INCONCLUSIVE_HEADLINE, setup_mod.HANDOVER_DONE_HEADLINE)
+
+    def test_review_f2_an_unconfirmed_switch_leads_with_the_band(self, tmp_path, stub_page, monkeypatch, reads):
+        from src.scheduler import batch_right
+        from src.scheduler.schedule_check import RightState
+
+        reads["value"] = RightState.UNKNOWN
+        tree = self._service_password(tmp_path, stub_page, monkeypatch, handed_over=False)
+        assert _order(tree, batch_right.INCONCLUSIVE_HEADLINE, setup_mod.SCOPE_SWITCH_UNCONFIRMED_HEADLINE)
 
     def test_a_logged_on_only_press_reads_nothing(self, tmp_path, stub_page, monkeypatch, reads):
         cfg = _settings(tmp_path, monkeypatch)

@@ -249,7 +249,6 @@ class TestTheExitCode:
 
         code = headless.EXIT_REGISTERED_WITHOUT_BATCH_RIGHT
         assert code == 4
-        assert code not in {0, 1, 2, 3}
         exits = {v for k, v in vars(schedule_check).items() if k.startswith("CHECK_EXIT_")}
         assert code not in exits
 
@@ -261,6 +260,7 @@ class TestTheExitCode:
             "docs/partner/it-deployment.md",
             "docs/partner/troubleshooting.md",
             "docs/developer/scheduler.md",
+            "docs/developer/failure-policy.md",
         ],
     )
     def test_every_written_contract_states_it(self, doc):
@@ -459,3 +459,167 @@ class TestTheElevatedChildCarriesIt:
             PrincipalKind.PASSWORD, "PC\\svc_local", elevated_state=RightState.UNKNOWN
         )
         assert outcome is BatchRight.HELD
+
+
+# --------------------------------------------------------------------------------------------------------------------
+# Review F1: the generous token is for GRANTS only. A deny is judged against the SIDs a batch token CERTAINLY carries,
+# or a deny on a SID the token may not carry (LOCAL, NTLM Authentication) would produce a false exit 4.
+# --------------------------------------------------------------------------------------------------------------------
+_LOCAL_SID = "S-1-2-0"
+_NTLM_SID = "S-1-5-64-10"
+
+
+class TestTheDenyTokenIsMinimal:
+    def test_a_deny_on_local_alone_is_not_denied(self):
+        """The reviewer's measured case: a grant via Users plus a deny on S-1-2-0 alone was exit 4."""
+        state = batch_right.local_token_state(_facts(holders=(_USERS,), denies=(_LOCAL_SID,)))
+        assert state is RightState.GRANTED_VIA_GROUP
+
+    def test_a_deny_on_ntlm_authentication_alone_is_not_denied(self):
+        state = batch_right.local_token_state(_facts(holders=(_USERS,), denies=(_NTLM_SID,)))
+        assert state is RightState.GRANTED_VIA_GROUP
+
+    def test_a_deny_on_an_alias_reached_only_through_a_generous_sid_is_not_denied(self):
+        aliases = {_DISTRICT_GROUP: frozenset({_LOCAL_SID})}
+        state = batch_right.local_token_state(
+            _facts(holders=(_USERS,), denies=(_DISTRICT_GROUP,), groups=(_USERS,), aliases=aliases)
+        )
+        assert state is RightState.GRANTED_VIA_GROUP
+
+    def test_positive_twin_a_grant_through_a_generous_sid_still_counts(self):
+        assert batch_right.local_token_state(_facts(holders=(_LOCAL_SID,), groups=())) is RightState.GRANTED_VIA_GROUP
+
+    @pytest.mark.parametrize("sid", ["S-1-1-0", "S-1-5-3", "S-1-5-11", "S-1-5-113"])
+    def test_positive_twin_a_deny_on_a_certain_implicit_sid_is_denied(self, sid):
+        assert batch_right.local_token_state(_facts(holders=(_USERS,), denies=(sid,))) is RightState.DENIED
+
+    def test_positive_twin_a_deny_on_an_alias_reached_through_a_certain_sid_is_denied(self):
+        aliases = {_USERS: frozenset({_AUTH_USERS})}
+        state = batch_right.local_token_state(
+            _facts(holders=(_EVERYONE,), denies=(_USERS,), groups=(), aliases=aliases)
+        )
+        assert state is RightState.DENIED
+
+    def test_the_deny_set_is_the_certain_one(self):
+        sids = batch_right.deny_token_sids(_facts(groups=(_USERS, _ADMINISTRATORS)))
+        for sid in ("S-1-1-0", "S-1-5-3", "S-1-5-11", "S-1-5-113", "S-1-5-114", _USER, _USERS, _ADMINISTRATORS):
+            assert sid in sids, sid
+        for sid in (_LOCAL_SID, _NTLM_SID, "S-1-5-15"):
+            assert sid not in sids, sid
+        assert "S-1-5-114" not in batch_right.deny_token_sids(_facts())
+
+    def test_the_deny_set_is_inside_the_grant_set(self):
+        facts = _facts(groups=(_USERS, _ADMINISTRATORS), aliases={_DISTRICT_GROUP: frozenset({_LOCAL_SID})})
+        assert batch_right.deny_token_sids(facts) <= batch_right.token_sids(facts)
+
+
+# --------------------------------------------------------------------------------------------------------------------
+# Review F3/F4: who may return 4; the stale "stays 0" comment.
+# --------------------------------------------------------------------------------------------------------------------
+def _returns_and_names(paths=None):
+    import ast
+
+    found = []
+    for path in paths if paths is not None else _src_files():
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name) and node.id == "EXIT_REGISTERED_WITHOUT_BATCH_RIGHT":
+                found.append(("name", path.name))
+            if isinstance(node, ast.Attribute) and node.attr == "EXIT_REGISTERED_WITHOUT_BATCH_RIGHT":
+                found.append(("attr", path.name))
+            value = None
+            if isinstance(node, ast.Return):
+                value = node.value
+            elif isinstance(node, ast.Call) and getattr(node.func, "attr", getattr(node.func, "id", "")) == "exit":
+                value = node.args[0] if node.args else None
+            if isinstance(value, ast.Tuple) and value.elts:
+                value = value.elts[0]
+            if isinstance(value, ast.Constant) and value.value == 4 and not isinstance(value.value, bool):
+                found.append(("literal 4", f"{path.name}:{value.lineno}"))
+    return found
+
+
+class TestOnlyHeadlessRegisterReturnsFour:
+    def test_the_constant_lives_only_in_headless(self):
+        found = _returns_and_names()
+        assert {where for kind, where in found if kind in ("name", "attr")} == {"headless.py"}
+
+    def test_no_function_in_src_returns_or_exits_a_literal_4(self):
+        assert [where for kind, where in _returns_and_names() if kind == "literal 4"] == []
+
+    def test_positive_twin_the_scan_has_teeth(self, tmp_path):
+        """The same walk over a planted module reports a returned tuple, a bare return and a sys.exit of 4."""
+        planted = tmp_path / "planted.py"
+        planted.write_text(
+            "import sys\ndef f():\n    return 4, 'x'\ndef g():\n    return 4\ndef h():\n    sys.exit(4)\n",
+            encoding="utf-8",
+        )
+        assert len([k for k, _ in _returns_and_names([planted]) if k == "literal 4"]) == 3
+
+    def test_headless_register_is_where_it_is_returned(self):
+        source = (SRC / "scheduler" / "headless.py").read_text(encoding="utf-8")
+        assert "EXIT_REGISTERED_WITHOUT_BATCH_RIGHT if outcome is batch_right.BatchRight.NOT_HELD" in source
+
+    def test_the_stale_stays_0_comment_is_gone(self):
+        assert "so the exit code stays 0" not in (SRC / "scheduler" / "headless.py").read_text(encoding="utf-8")
+
+
+# --------------------------------------------------------------------------------------------------------------------
+# Review F4: the seam over the Net/LSA calls — how ``_local_facts`` assembles the facts, without the real machine.
+# --------------------------------------------------------------------------------------------------------------------
+class _FakeApi:
+    def __init__(self, *, account_sid=_USER, primary=None):
+        self.sid, self.primary = account_sid, primary
+        self.calls: list[str] = []
+
+    def account_sid(self, name):
+        self.calls.append(f"sid:{name}")
+        return self.sid
+
+    def domain_sids(self):
+        self.calls.append("domains")
+        return _MACHINE, self.primary
+
+    def holders(self, right):
+        self.calls.append(f"holders:{right}")
+        return frozenset({_ADMINISTRATORS}) if right == "SeBatchLogonRight" else frozenset({"S-1-5-32-546"})
+
+    def local_groups(self, user):
+        self.calls.append(f"local:{user}")
+        return frozenset({_USERS})
+
+    def sam_groups(self, prefix, user):
+        self.calls.append(f"sam:{prefix}:{user}")
+        return frozenset({f"{_MACHINE}-513"})
+
+    def aliases(self):
+        self.calls.append("aliases")
+        return {_USERS: frozenset({_AUTH_USERS})}
+
+
+class TestAssemblingTheLocalFacts:
+    def test_a_local_account_is_assembled_from_every_read(self):
+        api = _FakeApi()
+        facts = batch_right._assemble_local_facts("PC\\svc_local", api)
+        assert facts == batch_right.LocalFacts(
+            account_sid=_USER,
+            user_group_sids=frozenset({_USERS, f"{_MACHINE}-513"}),
+            alias_members={_USERS: frozenset({_AUTH_USERS})},
+            batch_holders=frozenset({_ADMINISTRATORS}),
+            deny_holders=frozenset({"S-1-5-32-546"}),
+        )
+        assert "local:svc_local" in api.calls and "sam:PC:svc_local" in api.calls  # the bare user name, its prefix
+
+    def test_a_domain_account_reads_no_rights_and_no_groups(self):
+        api = _FakeApi(account_sid=f"{_DOMAIN}-1105", primary=_DOMAIN)
+        assert batch_right._assemble_local_facts("CORP\\svc", api) is None
+        assert api.calls == ["sid:CORP\\svc", "domains"]
+
+    def test_a_bare_name_has_no_prefix(self):
+        api = _FakeApi()
+        batch_right._assemble_local_facts("svc_local", api)
+        assert "sam::svc_local" in api.calls
+
+    def test_the_assembled_lab_facts_decide_not_held(self):
+        facts = batch_right._assemble_local_facts("PC\\svc_local", _FakeApi())
+        assert facts is not None and batch_right.local_token_state(facts) is RightState.NOT_HELD_LOCAL
