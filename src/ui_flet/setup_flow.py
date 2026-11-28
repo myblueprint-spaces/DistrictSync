@@ -42,6 +42,8 @@ from datetime import date, timedelta
 from enum import Enum
 from typing import Literal
 
+# DSYNC-111: the gMSA checklist moved to the scheduler layer (the headless --schedule-register prints it too).
+from src.scheduler.batch_right import GMSA_PREREQUISITES as GMSA_PREREQUISITES
 from src.scheduler.register_gate import principal_key
 from src.scheduler.schedule_record import WAKE_TO_RUN_DEFAULT as WAKE_TO_RUN_DEFAULT
 
@@ -463,24 +465,12 @@ SCHEDULE_ACCOUNT_FIELD_LABEL = "Windows account for the nightly task"
 #: -account arm names it. Three surfaces, one spelling.
 SCHEDULE_GMSA_TOGGLE_LABEL = "This is a managed service account (gMSA)"
 
-#: What a district's IT team must do BEFORE a managed service account can run the nightly task,
-#: as a checklist (plan 0049 S-4). Read by the Settings disclosure AND by ``setup_errors``'
-#: managed-service-account failure arm, because those are the two moments an admin needs them
-#: and a second copy would let the two drift. The hand-to-IT document states them verbatim too,
-#: tied back by ``tests/test_partner_doc_schedule_copy_parity.py``.
-#:
-#: None of the three is knowable from here: ``validators.validate_gmsa_account`` is a SHAPE
-#: check by design, and Windows does not answer all three at registration either — a missing
-#: 'Log on as a batch job' right registers cleanly and surfaces only as the task's run-time
-#: ``LastTaskResult`` (``task_com.RESULT_BATCH_LOGON_PROBLEM``). So this is
-#: a list to hand to somebody, never a state this app can verify — which is also why the
-#: failure arm offers no "try again" and the disclosure renders them as read-only glyphs rather
-#: than tick boxes.
-GMSA_PREREQUISITES: tuple[str, ...] = (
-    "This computer is listed in the account's PrincipalsAllowedToRetrieveManagedPassword.",
-    "Install-ADServiceAccount has been run for the account on this computer.",
-    "The account is granted the 'Log on as a batch job' right on this computer.",
-)
+#: ``GMSA_PREREQUISITES`` — what a district's IT team must do BEFORE a managed service account can
+#: run the nightly task (plan 0049 S-4) — is imported above from ``src/scheduler/batch_right.py``
+#: (DSYNC-111) and re-exported: read by the Settings disclosure, ``setup_errors``' failure arm and
+#: the headless ``--schedule-register``. None of the three is knowable at registration — a missing
+#: 'Log on as a batch job' right registers cleanly and surfaces only at run time — so the
+#: disclosure renders them as read-only glyphs rather than tick boxes.
 
 #: The hand-to-IT document's TITLE, spelled once (plan 0049 S-4). The Settings disclosure names
 #: it so an admin can ask for it by name, and ``docs/partner/managed-service-accounts.md`` opens

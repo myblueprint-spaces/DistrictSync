@@ -13,6 +13,11 @@ the same as the window's Schedule button. It refuses, with what to do, when they
 
 The password arrives as an argument from ``main`` (``DISTRICTSYNC_TASK_PASSWORD``, ``--task-password-stdin`` or a prompt);
 it goes only into the ``Principal`` handed to the engine, never into a message, a log line or ``AppConfig``.
+
+DSYNC-111: after a password or gMSA account registers, the command prints the account's prerequisites and reads its
+'Log on as a batch job' right (:mod:`src.scheduler.batch_right`, the DSYNC-33 read). A positive NOT HELD keeps the task
+and exits :data:`EXIT_REGISTERED_WITHOUT_BATCH_RIGHT`; what the read cannot see is an advisory line, exit 0. Nothing
+here grants the right.
 """
 
 from __future__ import annotations
@@ -23,9 +28,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from src.config.app_config import AppConfig
-from src.scheduler import get_scheduler
+from src.scheduler import batch_right, get_scheduler
 from src.scheduler.messages import ABSENT_TASK_MARKERS
 from src.scheduler.register_gate import RegisterBlock, ScheduleAccountFacts, principal_key, register_block
+from src.scheduler.schedule_check import ScheduleCheck
 from src.scheduler.schedule_record import (
     TaskArgs,
     clear_registered_record,
@@ -40,6 +46,11 @@ logger = logging.getLogger(__name__)
 PRINCIPAL_CURRENT = "current"
 PRINCIPAL_GMSA = "gmsa"
 PRINCIPAL_PASSWORD = "password"  # nosec B105 - the --principal keyword, not a secret
+
+#: DSYNC-111: the nightly IS registered (and recorded), but its account positively does not hold 'Log on as a batch
+#: job', so Windows will not start it until IT grants the right. Distinct from 0 (ok), 1 (refused/failed), 2 (misuse)
+#: and 3 (a conversion's SFTP delivery failed); its documentation is pinned by ``tests/test_batch_right.py``.
+EXIT_REGISTERED_WITHOUT_BATCH_RIGHT = 4
 
 
 @dataclass(frozen=True)
@@ -123,7 +134,8 @@ def _record(cfg: AppConfig):
 
 
 def register(*, run_time: str, spec: PrincipalSpec, password: str | None, wake_to_run: bool) -> tuple[int, str]:
-    """Register the nightly. Returns ``(exit_code, message)``: 0 registered, 1 refused or failed."""
+    """Register the nightly. Returns ``(exit_code, message)``: 0 registered, 1 refused or failed, and
+    :data:`EXIT_REGISTERED_WITHOUT_BATCH_RIGHT` registered but its account cannot log on as a batch job (DSYNC-111)."""
     from src.scheduler import provision_session
 
     cfg = AppConfig.load()
@@ -186,7 +198,7 @@ def register(*, run_time: str, spec: PrincipalSpec, password: str | None, wake_t
         )
 
     try:
-        return _dispatch(cfg, scheduler, foreign, principal, run_time, wake_to_run, _persist)
+        return _dispatch(cfg, scheduler, foreign, principal, run_time, wake_to_run, _persist, typed or current)
     except Exception as exc:  # noqa: BLE001 - the window's contract: a fixed line, the exception TYPE logged, no traceback
         logger.error("Headless schedule failed: %s", type(exc).__name__)
         return 1, "The nightly was not scheduled because of an unexpected error; see the log."
@@ -199,7 +211,24 @@ LOGGED_ON_ONLY_NOTE = (
 )
 
 
-def _dispatch(cfg, scheduler, foreign, principal, run_time, wake_to_run, persist) -> tuple[int, str]:
+def _with_batch_right(
+    scheduler, principal: Principal, account: str, lines: list[str], check: ScheduleCheck | None = None
+) -> tuple[int, str]:
+    """Append the prerequisites and the batch-right read to a SUCCESS report (DSYNC-111) and pick its exit code.
+
+    Only on Windows (``supports_unattended_password``) and only for an unattended principal; the task is never undone.
+    """
+    outcome = (
+        batch_right.after_registration(principal.kind, account, check=check)
+        if scheduler.supports_unattended_password
+        else None
+    )
+    lines = [*lines, *batch_right.report_lines(principal.kind, outcome)]
+    code = EXIT_REGISTERED_WITHOUT_BATCH_RIGHT if outcome is batch_right.BatchRight.NOT_HELD else 0
+    return code, "\n".join(lines)
+
+
+def _dispatch(cfg, scheduler, foreign, principal, run_time, wake_to_run, persist, account) -> tuple[int, str]:
     from src.scheduler import provision_session
 
     if not foreign:
@@ -217,10 +246,10 @@ def _dispatch(cfg, scheduler, foreign, principal, run_time, wake_to_run, persist
         if not ok:
             return 1, f"The nightly was not scheduled: {message}"
         persist()
-        done = f"Scheduled: DistrictSync runs every day at {run_time}."
+        done = [f"Scheduled: DistrictSync runs every day at {run_time}."]
         if scheduler.supports_unattended_password and principal.kind is PrincipalKind.INTERACTIVE_TOKEN:
-            done += "\n" + LOGGED_ON_ONLY_NOTE  # the window's downgrade warning: never a silent logged-on-only task
-        return 0, done
+            done.append(LOGGED_ON_ONLY_NOTE)  # the window's downgrade warning: never a silent logged-on-only task
+        return _with_batch_right(scheduler, principal, account, done)
 
     attempt = provision_session.request_provision(
         cfg.schedule_task_name,
@@ -264,7 +293,7 @@ def _dispatch(cfg, scheduler, foreign, principal, run_time, wake_to_run, persist
             if not attempt.check.passed
             else f"The account's test run {verdict}."
         )
-    return 0, "\n".join(lines)
+    return _with_batch_right(scheduler, principal, account, lines, attempt.check)
 
 
 def remove() -> tuple[int, str]:

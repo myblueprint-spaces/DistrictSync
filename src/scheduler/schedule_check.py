@@ -778,6 +778,27 @@ def _bounded_advisory(read: Callable[[], StrEnum], unknown: StrEnum, *, timeout_
     return answer
 
 
+def read_batch_right(
+    account: str,
+    *,
+    account_sid: Callable[[str], str] | None = None,
+    reader: Callable[[str], Collection[str]] = _read_account_rights,
+    timeout_s: float = ADVISORY_CALL_TIMEOUT_S,
+) -> RightState:
+    """The account's OWN batch-logon rights, resolved and read on a bounded worker. ADVISORY and TOTAL.
+
+    The ONE read: the elevated check (:func:`run_for_payload`) and the post-registration
+    report (``batch_right.after_registration``, DSYNC-111) both call it. It does NOT expand
+    group membership — a right held through a group reads :attr:`RightState.NOT_DIRECT`.
+    """
+    resolve_sid = account_sid if account_sid is not None else _provisioning_account_sid
+
+    def _rights() -> RightState:
+        return batch_right_state(resolve_sid(account), reader=reader)
+
+    return RightState(_bounded_advisory(_rights, RightState.UNKNOWN, timeout_s=timeout_s, label="check-rights"))
+
+
 def _sweep_allowed(root: Path) -> bool:
     """May the ELEVATED child sweep ``root/runs``? Only once the folder passes the trust check."""
     try:
@@ -826,16 +847,9 @@ def run_for_payload(
     except (KeyError, ValueError, TypeError):
         return ScheduleCheck(verdict=CheckVerdict.UNAVAILABLE)
 
-    resolve_sid = account_sid if account_sid is not None else _provisioning_account_sid
-
-    def _rights() -> RightState:
-        return batch_right_state(resolve_sid(user), reader=rights_reader)
-
     # Each advisory read may reach a domain controller, so each is bounded; together they are
     # ADVISORY_BUDGET_S of TOTAL_BUDGET_S, which the parent's elevation wait is sized on.
-    batch_right = RightState(
-        _bounded_advisory(_rights, RightState.UNKNOWN, timeout_s=advisory_timeout_s, label="check-rights")
-    )
+    batch_right = read_batch_right(user, account_sid=account_sid, reader=rights_reader, timeout_s=advisory_timeout_s)
     installed = InstallState(
         _bounded_advisory(
             lambda: install_state(user, query=install_query),

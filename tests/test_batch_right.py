@@ -215,8 +215,9 @@ def _src_files():
 
 
 #: The ways a program grants a user right: the LSA call, the resource-kit tool, a security template import, and the
-#: PowerShell modules that wrap them. DSYNC-111 decision 4: granting user rights stays district IT's job.
-_GRANT_MARKERS = re.compile(r"LsaAddAccountRights|ntrights|secedit|Grant-UserRight|Carbon", re.IGNORECASE)
+#: PowerShell modules that wrap them. DSYNC-111 decision 4: granting user rights stays district IT's job. Word-bounded:
+#: ``LsaEnumerateAccountRights`` (the READ) contains "ntrights".
+_GRANT_MARKERS = re.compile(r"LsaAddAccountRights|\bntrights\b|\bsecedit\b|Grant-UserRight|\bCarbon\b", re.IGNORECASE)
 
 
 class TestNoAutomaticGrant:
@@ -238,6 +239,8 @@ class TestNoAutomaticGrant:
         planted = tmp_path / "x.py"
         planted.write_text("win32security.LsaAddAccountRights(policy, sid, ['SeBatchLogonRight'])\n", encoding="utf-8")
         assert _GRANT_MARKERS.search(planted.read_text(encoding="utf-8"))
+        assert _GRANT_MARKERS.search('subprocess.run(["ntrights.exe", "+r", "SeBatchLogonRight"])')
+        assert not _GRANT_MARKERS.search("win32security.LsaEnumerateAccountRights(policy, sid)")
 
 
 class TestTheExitCode:
@@ -263,4 +266,6 @@ class TestTheExitCode:
     def test_every_written_contract_states_it(self, doc):
         text = re.sub(r"\s+", " ", (ROOT / doc).read_text(encoding="utf-8"))
         assert re.search(r"`4`|\*\*4\*\*|exits? (with )?(code )?4\b|\b4 registered", text), doc
-        assert "batch job" in text, doc
+        # "batch", not the right's full name: the troubleshooting page may not carry "Log on as a batch job"
+        # (tests/test_partner_doc_schedule_copy_parity.py, _RETIRED_PHRASES); it links to the IT guide, which does.
+        assert "batch" in text, doc

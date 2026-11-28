@@ -164,7 +164,8 @@ open DistrictSync once as an administrator, or run `DistrictSync.exe --machine-s
 
 ## Exit codes
 
-Every run ends with one of four codes. Task Scheduler shows it as **Last Run
+Every run ends with one of the codes below (a conversion with `0` to `3`; code `4` comes
+only from `--schedule-register`). Task Scheduler shows it as **Last Run
 Result**; in Command Prompt read it with `echo %ERRORLEVEL%`, in PowerShell with
 `$LASTEXITCODE`.
 
@@ -174,6 +175,7 @@ Result**; in Command Prompt read it with `echo %ERRORLEVEL%`, in PowerShell with
 | **1** | The run did **not** complete: bad input folder, unreadable district config, no usable input files, a file the mapping lists that is missing or has no rows (anything but the family contacts file), an output that would have come out empty, a student, staff, class, enrollment, course or attendance export with a problem (for example a missing column the mapping needs), or a run that produced no output / lost its student roster. **Nothing was written** — your previous output folder is untouched. | Check `etl_tool.log` for the `Pipeline failed:` line, and confirm the GDE export actually landed in the input folder — see [*The sync stopped: a file is missing or came out empty*](#the-sync-stopped-a-file-is-missing-or-came-out-empty). |
 | **2** | The command line itself was wrong — a missing/unknown flag, more than one `--sftp-…` subcommand, or `--sftp-password-stdin` with nothing piped in. | Fix the command; nothing was run. |
 | **3** | The conversion **succeeded and the CSVs were written**, but the SFTP delivery to SpacesEDU failed. | See the *Last Run Result* notes above — the files are intact in your output folder. |
+| **4** | `--schedule-register` **scheduled the nightly**, but the account it runs as lacks the batch-logon user right on this computer (it is denied it, or Windows refused that logon type when it tested a managed service account), so Windows will not start the nightly. | Hand your IT team [Step 4 of the IT deployment guide](it-deployment.md#step-4--schedule-the-nightly-sync), which says where the right is granted and why a deny entry overrides a grant. The nightly stays scheduled: once the right is granted the next nightly runs, with no need to schedule it again. DistrictSync never grants the right itself. |
 
 A code **1** and a code **3** mean very different things: `1` means no files were
 produced, `3` means the files exist locally but SpacesEDU did not receive them.

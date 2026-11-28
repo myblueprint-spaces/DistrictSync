@@ -29,6 +29,7 @@ import threading
 from dataclasses import dataclass
 from enum import StrEnum
 
+from src.scheduler.batch_right import BatchRight
 from src.scheduler.provision_session import HandoverOutcome, ProvisionAttempt, ProvisionOutcome
 from src.scheduler.schedule_check import ScheduleCheck
 from src.utils.paths import MachineScopeRefusedReason
@@ -78,21 +79,25 @@ class HandoverResult:
             only — the nightly registered, and the elevated child then proved (or could not
             prove) that Windows can start DistrictSync as its account. It rides the one-shot
             because re-entry destroys Setup before the admin could read it there.
+        batch_right: a password nightly's 'Log on as a batch job' outcome (DSYNC-111), for
+            :attr:`~HandoverBanner.HANDED_OVER` only — read by the PARENT after the child reported
+            PROVISIONED, and carried across re-entry for the same reason as ``check``.
     """
 
     banner: HandoverBanner
     detail: str = ""
     refused_reason: MachineScopeRefusedReason | None = None
     check: ScheduleCheck | None = None
+    batch_right: BatchRight | None = None
 
     @classmethod
-    def handed_over(cls, *, check: ScheduleCheck | None) -> HandoverResult:
+    def handed_over(cls, *, check: ScheduleCheck | None, batch_right: BatchRight | None = None) -> HandoverResult:
         """The clean case: the scope changed and the nightly is registered.
 
         ``check`` is REQUIRED (``None`` = no check ran, e.g. a password principal): a
         defaulted ``None`` would let the one caller that HAS a result drop it silently.
         """
-        return cls(banner=HandoverBanner.HANDED_OVER, check=check)
+        return cls(banner=HandoverBanner.HANDED_OVER, check=check, batch_right=batch_right)
 
     @classmethod
     def nightly_unconfirmed(cls, detail: str) -> HandoverResult:
@@ -110,7 +115,13 @@ class HandoverResult:
         return cls(banner=HandoverBanner.REFUSED, refused_reason=reason)
 
 
-def compose(attempt: ProvisionAttempt, handover: HandoverOutcome, *, nightly_detail: str) -> HandoverResult | None:
+def compose(
+    attempt: ProvisionAttempt,
+    handover: HandoverOutcome,
+    *,
+    nightly_detail: str,
+    batch_right: BatchRight | None = None,
+) -> HandoverResult | None:
     """Join the child's report and the parent's own switch read into ONE banner, or ``None``.
 
     ``None`` means *nothing irreversible happened* — the switch is off, this session did
@@ -140,7 +151,7 @@ def compose(attempt: ProvisionAttempt, handover: HandoverOutcome, *, nightly_det
     if not handover.handed_over:
         return None
     if attempt.outcome is ProvisionOutcome.PROVISIONED:
-        return HandoverResult.handed_over(check=attempt.check)
+        return HandoverResult.handed_over(check=attempt.check, batch_right=batch_right)
     return HandoverResult.nightly_unconfirmed(nightly_detail)
 
 

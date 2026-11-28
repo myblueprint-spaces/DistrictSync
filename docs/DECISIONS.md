@@ -3,6 +3,17 @@
 **Convention (adopted 2026-09-23):** every new entry carries a line `Supersedes: <date — title of the replaced entry>` (or `Supersedes: nothing`) directly under its heading, so a replaced decision is found by search rather than by reading prose.
 
 
+## 2026-11-27 - DSYNC-111: `--schedule-register` checks 'Log on as a batch job' and exits 4 when it is positively missing
+
+Supersedes: nothing
+
+**Decided (owner, via the orchestrator).** After a SUCCESSFUL registration as a password or gMSA account (never `current`), the command prints the account's prerequisite lines (`GMSA_PREREQUISITES`, moved from `ui_flet/setup_flow.py` to `src/scheduler/batch_right.py` and re-exported) and reads the right through the DSYNC-33 read (`schedule_check.read_batch_right`, factored out of `run_for_payload`, never a second LSA path). NOT HELD keeps the task and the record and exits a new code `4` (0-3 were taken; `4` had no other use in src, docs or tests); INCONCLUSIVE is an advisory line, exit 0 (the plan 0055 M3 rule). Nothing grants the right (source-scan pin). The window's PASSWORD press shows the same outcome as a FAILED band (a gMSA press already had the DSYNC-33 check band).
+
+**Why the line is where it is.** The read sees only the account's OWN rights; it does not expand groups, so a right held through Administrators or a GPO reads `NOT_DIRECT`, exactly like a right nobody granted. Calling that "not held" would send a district to fix a working setup. So NOT HELD is only a positive determination: a direct `SeDenyBatchLogonRight`, or Windows refusing the logon type when it started the gMSA check run (`CheckVerdict.BATCH_LOGON`, decided over the whole token). A passing check run counts as HELD.
+
+**Consequences.** The lab's exact case (a plain local account with no rights at all, password principal) prints the advisory and exits 0, not 4: no group-aware read exists for a password principal. Closing that needs either a group-expanding read (LsaEnumerateAccountsWithUserRight against the account's token groups, which cannot see nested domain groups locally) or widening `schedule_check.applies_to` to PASSWORD so the check run proves it (up to a minute per Schedule press); both are follow-ups, not this ticket. The troubleshooting page keeps its `_RETIRED_PHRASES` ban on the right's full name and links to the IT guide for the how-to.
+
+
 ## 2026-11-27 - DSYNC-109: headless `--configure` saves the district and folders with the window's rules, moved to the config layer
 
 Supersedes: nothing

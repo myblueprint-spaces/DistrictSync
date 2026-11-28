@@ -293,6 +293,20 @@ def _no_real_uac(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _no_real_lsa_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    """HARD test-safety guard (DSYNC-111): no test reads this computer's real user-rights policy.
+
+    ``batch_right.read_right`` is the post-registration seam over the DSYNC-33 LSA read; without this a headless or
+    window registration test would resolve a made-up account against the real directory and read the real policy.
+    It answers UNKNOWN (the honest "could not read") unless a test re-points it.
+    """
+    from src.scheduler import batch_right
+    from src.scheduler.schedule_check import RightState
+
+    monkeypatch.setattr(batch_right, "read_right", lambda account: RightState.UNKNOWN)
+
+
+@pytest.fixture(autouse=True)
 def _no_real_updater_folder(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """HARD test-safety guard (plan 0055 U2a): no test resolves the real ``%ProgramData%\\DistrictSync-Updater``.
 
