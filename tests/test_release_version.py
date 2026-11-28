@@ -33,7 +33,9 @@ rv = _load_script()
 class TestThePackageVersion:
     """The version a build stamps into the app AND packs with vpk: the tag's, or the rehearsal's ``0.0.<run>``."""
 
-    @pytest.mark.parametrize(("tag", "want"), [("v3.30.0", "3.30.0"), ("v0.0.1", "0.0.1"), ("v10.200.3000", "10.200.3000")])
+    @pytest.mark.parametrize(
+        ("tag", "want"), [("v3.30.0", "3.30.0"), ("v0.0.1", "0.0.1"), ("v10.200.3000", "10.200.3000")]
+    )
     def test_a_tag_build_takes_the_tags_version(self, tag, want):
         assert rv.package_version("tag", tag, "57") == want
 
@@ -138,6 +140,10 @@ class TestTheInstalledCheck:
         assert rv.check_installed(tmp_path, "0.0.57", msi=True) != []
         assert rv.check_installed(tmp_path, "0.0.57", msi=False) == []  # the MSI is only read when asked for
         assert rv.check_installed(tmp_path / "absent", "0.0.57", msi=False) != []  # no sq.version -> fail
+        # An MSI the registry reader cannot find is a failure when one was asked for (added by a falsification probe).
+        monkeypatch.setattr(rv, "_installed_msi_product_version", lambda: None)
+        found = rv.check_installed(tmp_path, "0.0.57", msi=True)
+        assert len(found) == 1 and "MSI" in found[0]
 
 
 class TestTheCommandLine:
