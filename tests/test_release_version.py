@@ -78,10 +78,6 @@ class TestTheMapping:
     def test_the_app_prints_the_semver_after_the_product_name(self):
         assert rv.app_version_line("3.30.0") == "DistrictSync 3.30.0"
 
-    def test_the_old_rehearsal_scheme_could_not_have_passed(self):
-        """The finding itself: the app's 0.0.57 maps to 0.0.57.0, never to the 0.57.1.0 the MSI carried."""
-        assert rv.msi_product_version("0.0.57") != "0.57.1.0"
-
 
 class TestTheMsiRehearsalPair:
     """MSI N+1 is the version stamped into the app (so N+1's app and package agree); N is one patch below it."""
@@ -146,6 +142,38 @@ class TestTheInstalledCheck:
         assert len(found) == 1 and "MSI" in found[0]
 
 
+class TestRunningTheInstalledExe:
+    """``_run_version`` runs the exe on a throwaway profile; a cleanup failure must never decide the result (L2)."""
+
+    @pytest.fixture
+    def spy(self, monkeypatch):
+        seen: dict = {}
+        real = rv.tempfile.TemporaryDirectory
+
+        def temporary_directory(*args, **kwargs):
+            seen["kwargs"] = kwargs
+            return real(*args, **kwargs)
+
+        def run(argv, **kwargs):
+            seen["profile"] = kwargs["env"]["DISTRICTSYNC_DATA_DIR"]
+            return rv.subprocess.CompletedProcess(argv, seen.get("code", 0), "DistrictSync 0.0.57\n", "")
+
+        monkeypatch.setattr(rv.tempfile, "TemporaryDirectory", temporary_directory)
+        monkeypatch.setattr(rv.subprocess, "run", run)
+        return seen
+
+    def test_the_profile_cleanup_ignores_errors_and_the_stdout_is_returned(self, spy, tmp_path):
+        assert rv._run_version(tmp_path / "DistrictSync.exe") == "DistrictSync 0.0.57\n"
+        assert spy["kwargs"].get("ignore_cleanup_errors") is True
+        assert "dsync-version-check-" in spy["profile"]
+
+    def test_a_non_zero_exit_is_still_a_mismatch(self, spy, tmp_path):
+        spy["code"] = 3
+        out = rv._run_version(tmp_path / "DistrictSync.exe")
+        assert out.startswith("<exit 3>")
+        assert rv.mismatches("0.0.57", app_stdout=out, package="0.0.57") != []
+
+
 class TestTheCommandLine:
     @pytest.fixture
     def tag_env(self, monkeypatch):
@@ -163,6 +191,18 @@ class TestTheCommandLine:
         monkeypatch.setenv("GITHUB_RUN_NUMBER", "57")
         assert rv.main(["msi-versions"]) == 0
         assert capsys.readouterr().out.strip() == "0.0.56 0.0.57"
+
+    @pytest.mark.parametrize("tag", ["v3.30.0", "v3.30.1"])
+    def test_msi_versions_refuses_a_tag_ref(self, monkeypatch, capsys, tag):
+        """A dispatch from a tag must not sign a throwaway MSI with a release number (review L1); the twin above
+        is the branch run that does print the pair."""
+        monkeypatch.setenv("GITHUB_REF_TYPE", "tag")
+        monkeypatch.setenv("GITHUB_REF_NAME", tag)
+        monkeypatch.setenv("GITHUB_RUN_NUMBER", "57")
+        assert rv.main(["msi-versions"]) == 1
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "the MSI rehearsal runs from a branch, not a tag" in captured.err
 
     def test_stamp_writes_the_module_with_lf_only(self, tag_env, tmp_path):
         target = tmp_path / "_version.py"
