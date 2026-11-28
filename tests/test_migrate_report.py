@@ -216,3 +216,45 @@ class TestItIsDispatchedFirst:
         monkeypatch.setattr(migration, "discover", lambda task_name=None: _f(nightly_uses_this_copy=True))
         assert main_mod.cli(["--migrate"]) == 0
         assert "nothing was changed" in capsys.readouterr().out
+
+
+class TestTheReportIsByteForByteD1a:
+    """DSYNC-116: ``--migrate --apply`` is the new way in; ``--migrate`` alone keeps D1a's report, byte for byte."""
+
+    GOLDEN = (
+        "DistrictSync migration report (nothing was changed).\n"
+        "Shared settings on this computer: yes\n"
+        "The nightly still runs another copy: a copy in another folder (for example the one-file DistrictSync.exe).\n"
+        "Moving the nightly to this copy is not automatic yet. Before you move it, make sure this copy uses the shared "
+        "settings and that DistrictSync.exe --sftp-test passes from it. Then remove the old schedule "
+        "(DistrictSync.exe --schedule-remove) and schedule it again from this copy at the same time and for the same "
+        "account (DistrictSync.exe --schedule-register --time HH:MM --principal ... [--wake]). Until that register "
+        "succeeds there is no nightly, so do it well away from the run time.\n"
+        "A copy installed for this Windows account is also here. Once the nightly runs this copy, remove it from "
+        "Windows Settings > Apps (it is not removed for you).\n"
+        "Delivery is set up, but its password is not in the shared settings yet. Run DistrictSync.exe "
+        "--sftp-configure from this copy, then --sftp-test.\n"
+    )
+
+    def test_the_printed_report_is_unchanged(self, monkeypatch, capsys):
+        import src.main as main_mod
+
+        found = _f(nightly_program="C:\\old\\DistrictSync.exe", per_user_copy=True, delivery_in_machine_store=False)
+        monkeypatch.setattr(migration, "discover", lambda task_name=None: found)
+        assert main_mod.cli(["--migrate"]) == 1
+        assert capsys.readouterr().out == self.GOLDEN
+
+    def test_positive_twin_the_apply_form_prints_a_different_report(self, monkeypatch, capsys):
+        """Not vacuous: the golden would also pass if --apply had been wired to the same report."""
+        import src.main as main_mod
+        from src.scheduler import migration_apply
+
+        monkeypatch.setattr(main_mod, "_is_windows", lambda: True)
+        monkeypatch.setattr(
+            migration_apply,
+            "run",
+            lambda **kw: migration_apply.ApplyResult(code=1, lines=(migration_apply.HEADER,)),
+        )
+        assert main_mod.cli(["--migrate", "--apply"]) == 1
+        out = capsys.readouterr().out
+        assert out == migration_apply.HEADER + "\n" and out != self.GOLDEN

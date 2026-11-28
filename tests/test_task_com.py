@@ -491,6 +491,43 @@ class TestTaskFacts:
         boolean would otherwise be indistinguishable from a real unattended task."""
         assert task_com.task_facts(self._task(LogonType=value)).logon_type is None
 
+    def test_it_reads_what_a_migration_needs_to_re_register(self):
+        """DSYNC-116: the action's arguments and start-in folder and the daily trigger's time are facts too, so a
+        nightly can be re-registered (or put back) from what was READ, including one made with raw schtasks."""
+        task = self._task()
+        action = task.Definition.Actions.Item.return_value
+        action.Arguments = ' --sis myedbc --input "C:\\in" '
+        action.WorkingDirectory = "C:\\DistrictSync"
+        task.Definition.Triggers.Count = 1
+        task.Definition.Triggers.Item.return_value.Type = task_com.TASK_TRIGGER_DAILY
+        task.Definition.Triggers.Item.return_value.StartBoundary = "2024-01-01T02:05:00"
+        facts = task_com.task_facts(task)
+        assert facts.arguments == '--sis myedbc --input "C:\\in"'
+        assert facts.working_dir == "C:\\DistrictSync"
+        assert facts.run_time == "02:05"
+
+    @pytest.mark.parametrize(
+        ("count", "kind", "boundary"),
+        [
+            (0, 2, "2024-01-01T02:05:00"),  # no trigger
+            (2, 2, "2024-01-01T02:05:00"),  # two triggers: not one daily time
+            (1, 3, "2024-01-01T02:05:00"),  # weekly
+            (1, 2, "02:05"),  # not an ISO boundary
+            (1, 2, None),
+        ],
+    )
+    def test_a_run_time_it_cannot_read_as_one_daily_time_is_none(self, count, kind, boundary):
+        task = self._task()
+        task.Definition.Triggers.Count = count
+        task.Definition.Triggers.Item.return_value.Type = kind
+        task.Definition.Triggers.Item.return_value.StartBoundary = boundary
+        assert task_com.task_facts(task).run_time is None
+
+    def test_unreadable_arguments_are_none_not_a_mock(self):
+        """Positive twin of the read above: a shape this does not understand is None, never a str() of it."""
+        facts = task_com.task_facts(self._task())
+        assert facts.arguments is None and facts.working_dir is None and facts.run_time is None
+
     def test_a_real_logon_type_survives(self):
         """Not vacuous: the totality rows above would all pass over a function that returned
         ``None`` unconditionally."""
