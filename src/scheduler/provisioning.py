@@ -460,11 +460,21 @@ _DENY_ACE_TYPES = frozenset({1, 6, 10, 12})
 _INHERIT_OI_CI = 0x3  # OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE — icacls' (OI)(CI), and nothing else
 _READ_EXECUTE_MASK = int(READ_EXECUTE, 16)
 _MODIFY_MASK = int(MODIFY, 16)
+#: ``icacls`` right -> the access mask a DACL read returns for it.
+_PRINCIPAL_ACCESS_MASKS = {"RX": _READ_EXECUTE_MASK, "M": _MODIFY_MASK}
 
 
 def _granted_targets(root: Path) -> tuple[tuple[Path, int], ...]:
-    """Where a task principal is granted, and with which mask: RX on the root, Modify on ``runs`` (D2)."""
-    return ((root, _READ_EXECUTE_MASK), (root / paths.MACHINE_RUNS_SUBDIR, _MODIFY_MASK))
+    """Where a task principal is granted, and with which mask: RX on the root, Modify on ``runs`` (D2).
+
+    Built from :data:`PROTECTED_SUBTREES`' ``principal_rights`` (DSYNC-117 F6), the same column the
+    descriptors and :func:`_ensure_runs_and_principal`'s grant read, so the exact shape the revoke accepts
+    is the shape that was granted. A second administrator's grant (``setup_rights``: Modify on the root)
+    is never this shape, so the revoke keeps it.
+    """
+    return tuple(
+        (root / subtree.relative, _PRINCIPAL_ACCESS_MASKS[subtree.principal_rights]) for subtree in PROTECTED_SUBTREES
+    )
 
 
 def _revoke(root: Path, sids: tuple[str, ...], *, protected: frozenset[str]) -> tuple[set[str], set[str]]:
@@ -1167,18 +1177,20 @@ def _create_profile(root: Path, *, setup_sid: str, principal_sid: str) -> None:
 def _ensure_runs_and_principal(root: Path, *, setup_sid: str, principal_sid: str, principal_account: str) -> None:
     """Step 3b — the idempotent half of step 3, for a resumed or re-scheduled profile.
 
-    ``runs/`` may be missing (a kill right after the root was created) and the principal may
+    A protected folder (``runs/``; any :data:`PROTECTED_SUBTREES` row) may be missing (a kill right
+    after the root was created) and the principal may
     be a NEW one (Remove pruned the last). Both are repaired additively with ``icacls``,
     where **every non-zero exit is fatal** — the inverse of
     ``elevation._set_owner_only_dacl``'s warn-and-continue, because here the DACL is the
     confidentiality boundary rather than a defence-in-depth layer over DPAPI.
     """
-    runs = root / paths.MACHINE_RUNS_SUBDIR
-    if not runs.exists():
+    for subtree in PROTECTED_SUBTREES:
+        folder = root / subtree.relative
+        if folder.exists():
+            continue
+        sddl = _subtree_sddl(subtree, setup_sid=setup_sid, principal_sid=principal_sid, owner_sid=OWNER_ADMINISTRATORS)
         try:
-            _create_directory_with_sddl(
-                runs, _runs_sddl(setup_sid=setup_sid, principal_sid=principal_sid, owner_sid=OWNER_ADMINISTRATORS)
-            )
+            _create_directory_with_sddl(folder, sddl)
         except FileExistsError as exc:
             raise ProvisionRefused(ProvisionStep.PRE_EXISTING) from exc
         except OSError as exc:
@@ -1191,8 +1203,10 @@ def _ensure_runs_and_principal(root: Path, *, setup_sid: str, principal_sid: str
         # two installs of the same shape never read back differently through ``icacls``.
         return
 
-    for target, rights in ((root, "RX"), (runs, "M")):
-        exit_code = _run_icacls([str(target), "/grant", f"{principal_account}:(OI)(CI){rights}"])
+    # One source (DSYNC-117 F6): the same rows and rights the descriptors and the revoke read.
+    for subtree in PROTECTED_SUBTREES:
+        target = root / subtree.relative
+        exit_code = _run_icacls([str(target), "/grant", f"{principal_account}:(OI)(CI){subtree.principal_rights}"])
         if exit_code != 0:
             raise ProvisionRefused(ProvisionStep.PRINCIPAL, icacls_exit=exit_code)
 
@@ -1231,8 +1245,10 @@ def _verify_provisioned(root: Path, source: Path) -> None:
     reader will not look.
     """
     try:
-        paths.assert_machine_dir_trusted(root)
-        paths.assert_no_open_aces(root / paths.MACHINE_RUNS_SUBDIR)
+        paths.assert_machine_dir_trusted(root)  # the root's ace walk is part of the trust predicate
+        for subtree in PROTECTED_SUBTREES:
+            if subtree.relative:
+                paths.assert_no_open_aces(root / subtree.relative)
     except paths.MachineScopeRefused as exc:
         raise ProvisionRefused(ProvisionStep.VERIFY) from exc
     if (source / paths.RUN_STORE_NAME).is_file() and not paths.history_db_in(root, machine_scope=True).is_file():
