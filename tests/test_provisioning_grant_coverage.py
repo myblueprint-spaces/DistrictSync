@@ -217,3 +217,53 @@ def test_the_grant_command_names_no_folder_outside_the_shared_profile(acl, machi
     for call in acl.calls:
         assert Path(call[0]) == machine_root or Path(call[0]).parent == machine_root
         assert re.fullmatch(r".+:\(OI\)\(CI\)(M|RX)", call[2])
+
+
+# --------------------------------------------------------------------------- #
+# F6: the nightly principal's grant and DSYNC-115's revoke read the same table. #
+# --------------------------------------------------------------------------- #
+
+_EXTRA = provisioning.ProtectedSubtree("extra", setup_rights="M", principal_rights="M")
+
+
+def _sddl_mask_for(sddl: str, sid: str) -> int:
+    match = re.search(rf"\(A;OICI;([^;]+);;;{re.escape(sid)}\)", sddl)
+    assert match, sid
+    return int(match.group(1), 16)
+
+
+class TestThePrincipalSideIsOneSource:
+    def test_the_shape_the_revoke_checks_equals_the_table_and_the_descriptors(self, acl, machine_root):
+        """``_revoke`` removes a grant only when it is EXACTLY this shape; it must be what was granted."""
+        _provisioned(machine_root)
+        targets = dict(provisioning._granted_targets(machine_root))
+        assert set(targets) == {machine_root / subtree.relative for subtree in provisioning.PROTECTED_SUBTREES}
+        for subtree in provisioning.PROTECTED_SUBTREES:
+            folder = machine_root / subtree.relative
+            assert targets[folder] == _sddl_mask_for(acl.created[folder], _PRINCIPAL_SID)
+
+    def test_115s_exact_shape_is_kept_rx_on_the_root_and_modify_on_runs(self, machine_root):
+        targets = dict(provisioning._granted_targets(machine_root))
+        assert targets[machine_root] == int(provisioning.READ_EXECUTE, 16)
+        assert targets[machine_root / paths_module.MACHINE_RUNS_SUBDIR] == int(provisioning.MODIFY, 16)
+
+    def test_a_new_row_reaches_the_revoke(self, machine_root, monkeypatch):
+        monkeypatch.setattr(provisioning, "PROTECTED_SUBTREES", (*provisioning.PROTECTED_SUBTREES, _EXTRA))
+        assert machine_root / "extra" in dict(provisioning._granted_targets(machine_root))
+
+    def test_a_new_row_reaches_the_principals_grant_and_is_created(self, acl, machine_root, monkeypatch):
+        machine_root.mkdir(parents=True)
+        monkeypatch.setattr(provisioning, "PROTECTED_SUBTREES", (*provisioning.PROTECTED_SUBTREES, _EXTRA))
+        provisioning._ensure_runs_and_principal(
+            machine_root, setup_sid=_SETUP_SID, principal_sid=_PRINCIPAL_SID, principal_account="CORP\\svc"
+        )
+        assert acl.rights(machine_root, "CORP\\svc") == {"RX"}
+        assert acl.rights(machine_root / paths_module.MACHINE_RUNS_SUBDIR, "CORP\\svc") == {"M"}
+        assert acl.rights(machine_root / "extra", "CORP\\svc") == {"M"}
+        assert "D:P" in acl.created[machine_root / "extra"], "a missing protected folder is created protected"
+
+    def test_a_second_admins_modify_on_the_root_is_not_the_principal_shape(self, machine_root):
+        """115's revoke keeps any SID holding Modify on the root: a granted administrator is never revoked."""
+        targets = dict(provisioning._granted_targets(machine_root))
+        admin_root_right = int(provisioning._SDDL_MASKS[provisioning._protected_subtree("").setup_rights], 16)
+        assert targets[machine_root] != admin_root_right
