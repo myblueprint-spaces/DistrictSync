@@ -28,7 +28,7 @@ from collections.abc import Callable
 import flet as ft
 
 from src.scheduler.provision_session import GrantOutcome, request_access
-from src.ui_flet import components, grant_access, tokens
+from src.ui_flet import components, grant_access, relaunch, tokens
 
 # The window is sized for one card of copy — the same order of magnitude as the launcher's
 # own boot-error window, and never the shell's geometry (there is no AppConfig to read it
@@ -149,16 +149,6 @@ def _frame(body: ft.Control, on_close: Callable[[object | None], None]) -> ft.Co
     )
 
 
-def _reexec() -> None:  # pragma: no cover - replaces the process image
-    """Re-launch DistrictSync and replace this process. Never returns on success.
-
-    The argv is computed by the pure :func:`src.ui_flet.grant_access.reexec_argv`, which is
-    where the frozen-vs-source decision is tested; this is the one line that cannot be.
-    """
-    argv = grant_access.reexec_argv()
-    os.execv(argv[0], argv)  # nosec B606 - re-launching OUR OWN interpreter/exe, argv from sys, no shell
-
-
 def show_grant_window() -> bool:  # pragma: no cover - ft.run glue
     """Render the pre-shell grant window. ``False`` means it could not be shown at all.
 
@@ -172,7 +162,8 @@ def show_grant_window() -> bool:  # pragma: no cover - ft.run glue
             page.window.width = _WINDOW_WIDTH
             page.window.height = _WINDOW_HEIGHT
             page.bgcolor = tokens.color_content_wash
-            page.add(build_grant_body(page, request=request_access, reexec=_reexec))
+            # DSYNC-114: the shared relaunch closes this window, then starts a correctly quoted fresh copy.
+            page.add(build_grant_body(page, request=request_access, reexec=relaunch.relaunch_seam(page)))
 
         ft.run(_page)
         return True
