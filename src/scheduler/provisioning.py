@@ -410,7 +410,7 @@ def _write_grant_ledger_value(sids: list[str]) -> None:  # pragma: no cover - Wi
         winreg.SetValueEx(key, GRANT_LEDGER_VALUE_NAME, 0, winreg.REG_MULTI_SZ, list(sids))
 
 
-_SID_RE = re.compile(r"S-1-\d+(-\d+)+")
+_SID_RE = re.compile(r"S-1-\d+(-\d+)+", re.ASCII)  # ASCII digits only
 
 
 def read_grant_ledger() -> tuple[str, ...] | None:
@@ -451,6 +451,10 @@ def _dacl_entries(path: Path) -> tuple[tuple[int, int, int, str], ...]:
 
 
 _ACCESS_ALLOWED = 0
+#: The DENY family (plain, object, callback, callback-object). ``icacls /remove:g`` never touches these and a deny ace
+#: is a hardening measure, so it neither blocks nor counts toward a revoke. Every OTHER non-plain type (an object,
+#: callback or conditional ALLOW) is something DistrictSync never writes, so it keeps the account (review I1).
+_DENY_ACE_TYPES = frozenset({1, 6, 10, 12})
 _INHERIT_OI_CI = 0x3  # OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE — icacls' (OI)(CI), and nothing else
 _READ_EXECUTE_MASK = int(READ_EXECUTE, 16)
 _MODIFY_MASK = int(MODIFY, 16)
@@ -465,7 +469,9 @@ def _revoke(root: Path, sids: tuple[str, ...], *, protected: frozenset[str]) -> 
     """Remove each SID's grant ONLY where every ALLOW ace it holds is exactly the one DistrictSync makes.
 
     Per SID, all or nothing: if it holds any other ALLOW ace on the root or on ``runs`` (full control, an extra
-    non-inheritable ace, the setup administrator's Modify on the root…), nothing of that SID's is touched — the ace
+    non-inheritable, inherited or inherit-only ace, the setup administrator's Modify on the root, an object, callback
+    or conditional allow ace — including one the DACL reader cannot attribute to a SID), nothing of that SID's is
+    touched; deny aces are ignored either way — the ace
     is not DistrictSync's to remove and ``icacls /remove:g`` cannot remove one ace of several. ``protected`` SIDs
     (plus SYSTEM and Administrators) are never touched at all. The trustee is passed as ``*S-1-…``: no name lookup
     (a retired managed service account may no longer resolve) and no account name in the argument list.
@@ -488,9 +494,16 @@ def _revoke(root: Path, sids: tuple[str, ...], *, protected: frozenset[str]) -> 
         to_remove: list[Path] = []
         ours = True
         for path, mask in targets:
+            entries = dacls[path]
+            if any(
+                kind != _ACCESS_ALLOWED and kind not in _DENY_ACE_TYPES and who.upper() in (sid, "")
+                for kind, _flags, _mask, who in entries
+            ):
+                ours = False
+                continue
             held = [
                 (flags, held_mask)
-                for kind, flags, held_mask, who in dacls[path]
+                for kind, flags, held_mask, who in entries
                 if kind == _ACCESS_ALLOWED and who.upper() == sid
             ]
             if not held:
@@ -1250,8 +1263,9 @@ def apply_prune_principal(payload: Mapping[str, object]) -> None:
 
     **What is revoked comes from the grant record** (DSYNC-115, :data:`GRANT_LEDGER_VALUE_NAME`), for every
     principal kind: every recorded SID, because once the one nightly is gone none of them has a task to run. The
-    record — written by this module, before each grant, in a key only an administrator can write — is what decides,
-    never the request: a request naming an account DistrictSync did not record revokes nothing of that account's.
+    record — written by this module, before each grant, in a key only an administrator can write — is what decides.
+    An account the request names that is NOT recorded (a pre-record principal still in the schedule record, review
+    L2) gets only the legacy rule below: exact shape, fenced, never added to the record.
     A recorded SID that no longer resolves to a name (a retired managed service account) is still revoked: the
     trustee is the SID. Each revoke goes through :func:`_revoke`'s shape rule, so an ace DistrictSync did not make
     stays, and SYSTEM, Administrators and the administrator running this child are never touched. What was
@@ -1303,6 +1317,15 @@ def apply_prune_principal(payload: Mapping[str, object]) -> None:
         candidates: tuple[str, ...] = (principal_sid,)
     else:
         candidates = recorded
+        try:
+            requested_sid = _sid_for(principal).upper()
+        except ProvisionRefused:
+            requested_sid = ""  # it no longer resolves: the record still revokes what IT holds
+        if requested_sid and requested_sid not in recorded:
+            # Review L2: a pre-record principal the schedule record still names (its Remove was declined, then a
+            # later registration started the record). The legacy rule applies to it: exact shape only, and
+            # ``_revoke``'s fence (SYSTEM, Administrators, this administrator) keeps — and reports — the rest.
+            candidates = (*recorded, requested_sid)
 
     task_name = str(payload.get("task_name", "")).strip()
     if not task_name or not _delete_task_confirmed_missing(task_name):
@@ -1330,8 +1353,9 @@ def prune_retired_grants(payload: Mapping[str, object]) -> None:
     The same :func:`_revoke` rule as a Remove: only recorded SIDs, only DistrictSync's shape, never SYSTEM,
     Administrators, the administrator running this child or the new principal.
 
-    **Never raises.** The nightly is registered and recorded when this runs; a retired grant that could not be
-    revoked must not turn that into a reported failure. It stays in the record, so the next Remove revokes it and
+    **Never raises — whatever the exception** (review L1). The nightly is registered and recorded when this runs;
+    an escape would reach ``elevated_apply._apply`` and report that registration as failed. A retired grant that
+    could not be revoked must not turn that into a reported failure. It stays in the record, so the next Remove revokes it and
     reports the outcome. An install with no record has nothing recorded to retire.
     """
     try:
@@ -1347,5 +1371,7 @@ def prune_retired_grants(payload: Mapping[str, object]) -> None:
         revoked, _kept = _revoke(_machine_root(), retired, protected=frozenset({admin_sid, keep}))
         if revoked:
             _write_grant_ledger_value([sid for sid in recorded if sid not in revoked])
-    except (ProvisionRefused, OSError, LookupError, ValueError):
+    except Exception:  # noqa: BLE001 - best-effort by design: the nightly is already registered
+        # No log line: this module runs elevated and has no logger by design (module docstring). Nothing is lost —
+        # whatever was not revoked is still recorded, and the next Remove revokes it and reports the outcome.
         return
