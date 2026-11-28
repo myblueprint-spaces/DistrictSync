@@ -59,6 +59,24 @@ logger = logging.getLogger(__name__)
 
 CONFIG_FILENAME = "config.json"
 
+# Settings are READ as ``utf-8-sig`` (a leading UTF-8 byte-order mark is accepted and
+# dropped) but WRITTEN as plain ``utf-8`` (no BOM) — see :func:`_atomic_write_text`. The file
+# is hand-editable, and Windows PowerShell 5.1's ``Set-Content -Encoding UTF8`` writes a
+# BOM (DSYNC-112). Every reader of ``config.json`` decodes through
+# :func:`decode_settings_bytes`, so there is one spelling of the rule.
+_SETTINGS_READ_ENCODING = "utf-8-sig"
+
+
+def decode_settings_bytes(raw: bytes) -> str:
+    """Decode ``config.json`` bytes to text, accepting (and dropping) a UTF-8 BOM.
+
+    THE one read-side decoding rule for the settings file. Raises
+    :class:`UnicodeDecodeError` on bytes that are not UTF-8 — the caller decides what
+    "unreadable" means for it.
+    """
+    return raw.decode(_SETTINGS_READ_ENCODING)
+
+
 # Name for the preserved bytes of an unreadable predecessor. Deliberately mirrors the
 # run store's ``history.corrupt-<ts>.db`` convention so the two quarantine artifacts
 # read alike in a support ticket.
@@ -1057,7 +1075,7 @@ def _config_from_bytes(raw: bytes) -> AppConfig | None:
     behaviour.
     """
     try:
-        data = json.loads(raw.decode("utf-8"))
+        data = json.loads(decode_settings_bytes(raw))
     except (UnicodeDecodeError, ValueError):
         return None
     if not isinstance(data, dict):
