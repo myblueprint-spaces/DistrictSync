@@ -170,7 +170,8 @@ function Invoke-Guest([string]$name, [string]$script, [string]$expect = '') {
     $remoteOut = 'C:\Windows\Temp\lab-out.txt'
     $wrapped = "& { $script } *> $remoteOut"
     $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($wrapped))
-    Invoke-Vmrun @('-gu', 'Administrator', '-gp', $pw, 'runProgramInGuest', $vmx, 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe', "-NoProfile -EncodedCommand $encoded") | Out-Null
+    # Through cmd /c: powershell.exe started directly by vmrun (Tools 13) exits 1 before running anything.
+    Invoke-Vmrun @('-gu', 'Administrator', '-gp', $pw, 'runProgramInGuest', $vmx, 'C:\Windows\System32\cmd.exe', "/c C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -EncodedCommand $encoded") | Out-Null
     $local = Join-Path $env:TEMP "lab-out-$name.txt"
     Invoke-Vmrun @('-gu', 'Administrator', '-gp', $pw, 'CopyFileFromGuestToHost', $vmx, $remoteOut, $local) | Out-Null
     $out = Get-Content -Raw $local
@@ -378,10 +379,18 @@ function Initialize-LabDomain {
     foreach ($vm in 'lab-desktop', 'lab-core') { try { Invoke-Vmrun @('stop', (Get-Vmx $vm), 'soft') | Out-Null } catch { } }
     Start-LabVm 'lab-dc'
     Send-GuestSecret 'lab-dc'
-    Say 'promote lab-dc'
-    Invoke-Guest 'lab-dc' "$read; Install-WindowsFeature AD-Domain-Services | Out-Null; Install-ADDSForest -DomainName $Domain -DomainNetbiosName $Netbios -SafeModeAdministratorPassword `$pw -Force -NoRebootOnCompletion -ErrorAction Stop | Out-Null; 'promoted'" 'promoted' | Out-Null
-    Invoke-Vmrun @('reset', (Get-Vmx 'lab-dc'), 'soft') | Out-Null
-    Wait-Tools 'lab-dc'
+    $role = Invoke-Guest 'lab-dc' "'role=' + (Get-CimInstance Win32_ComputerSystem).DomainRole" 'role='
+    if ($role -notmatch 'role=[45]') {
+        Say 'promote lab-dc'
+        # Until the reboot the guest refuses the lab logon, so reading this step's output back fails: the marker file
+        # is checked after the reboot instead, and that check is what fails loudly.
+        try {
+            Invoke-Guest 'lab-dc' "$read; Install-WindowsFeature AD-Domain-Services | Out-Null; Install-ADDSForest -DomainName $Domain -DomainNetbiosName $Netbios -SafeModeAdministratorPassword `$pw -Force -NoRebootOnCompletion -ErrorAction Stop | Out-Null; 'promoted' | Set-Content C:\Windows\Temp\lab-promoted.txt; 'promoted'" 'promoted' | Out-Null
+        } catch { Say "lab-dc : promote output not readable before the reboot ($($_.Exception.Message)); checking after it" }
+        Invoke-Vmrun @('reset', (Get-Vmx 'lab-dc'), 'soft') | Out-Null
+        Wait-Tools 'lab-dc'
+        Invoke-Guest 'lab-dc' "Get-Content C:\Windows\Temp\lab-promoted.txt" 'promoted' | Out-Null
+    }
     $dcIp = (Invoke-Vmrun @('getGuestIPAddress', (Get-Vmx 'lab-dc'), '-wait')).Trim()
     Say "lab-dc is $dcIp; make it static and point the members at it"
     Invoke-Guest 'lab-dc' "`$i = Get-NetIPConfiguration | Where-Object IPv4DefaultGateway | Select-Object -First 1; `$a = `$i.IPv4Address | Select-Object -First 1; `$gw = `$i.IPv4DefaultGateway.NextHop; Set-NetIPInterface -InterfaceIndex `$i.InterfaceIndex -Dhcp Disabled; Remove-NetIPAddress -InterfaceIndex `$i.InterfaceIndex -AddressFamily IPv4 -Confirm:`$false -ErrorAction SilentlyContinue; Remove-NetRoute -InterfaceIndex `$i.InterfaceIndex -DestinationPrefix 0.0.0.0/0 -Confirm:`$false -ErrorAction SilentlyContinue; New-NetIPAddress -InterfaceIndex `$i.InterfaceIndex -IPAddress $dcIp -PrefixLength `$a.PrefixLength -DefaultGateway `$gw -ErrorAction Stop | Out-Null; Set-DnsClientServerAddress -InterfaceIndex `$i.InterfaceIndex -ServerAddresses 127.0.0.1; 'static'" 'static' | Out-Null
