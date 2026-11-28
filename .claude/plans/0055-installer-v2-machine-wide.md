@@ -225,6 +225,34 @@ The one-file exe keeps shipping. From the first MSI release it shows one Home ba
 | T25 | Windows Installer repair / resiliency after an updater apply | L | the applied version stays |
 | T26 | A standard user pre-plants each folder and key the SYSTEM updater reads, and swaps in a junction | L | the updater refuses; nothing is written outside the install |
 
+### Lab results, round 1 (2026-11-27/28, DSYNC-92)
+
+**Setup.** Local VMware Workstation 26 lab, Server 2022 evaluation ISO. The VMs are lab-dc (Core, DC of `lab.dsync.test`), lab-desktop (Desktop Experience) and lab-core (Core); at most two ran at once. The MSIs are N 0.57.0.0 and N+1 0.57.1.0, both from rehearsal run 46057942795 on main 1da44b0. The data is the repo's synthetic SD74 fixtures (`tests/snapshots/input`) with the bundled `sd74myedbc` config. Guest commands ran through VMware Tools; the window rows used the console.
+
+**Stand-in.** N has no headless writer for the district and folders (DSYNC-109 came later), so the rows below wrote `config.json` directly. Rows marked "rerun" repeat with `--configure` once a rehearsal MSI includes it.
+
+| Row | Result | Evidence and notes |
+|---|---|---|
+| T1 | **FAIL → DSYNC-114** | Machine-setup window (notify preselected) → "Set up this computer" succeeds: HKLM `MachineScope=1`, shared folder created, profile moved. The window then hangs on "Working…": `os.execv` does not quote on Windows, so the relaunch of `C:\Program Files\…\DistrictSync.exe` exits 2 ("unrecognized arguments: Files\…"). Reproduced by hand. Reopening the window works (identity page, then the Setup wizard). Rerun after DSYNC-114; the Convert and signed-in Schedule parts are still to run. |
+| T2 | PASS (headless part) | Before machine setup, a schedule is refused with exit 1 and names `--machine-setup`. `--machine-setup --updates notify` exits 0. Without a district the schedule is refused with exit 1 (the copy now names `--configure`, DSYNC-109). Register exits 0. `--diagnose` shows the full Installation block (install kind machine, MSI version, updater folder trusted). |
+| T3 | PASS once its prerequisites are met; found **DSYNC-110** and **DSYNC-111** | A local stored-password account without "Log on as a batch job": register says "Scheduled", exit 0, but the nightly never runs (267011; Security 4625, 0xC000015B). DSYNC-111 makes this exit 4. With the right granted, the first nightly failed: `Access is denied: <profile>\mappings` (DSYNC-110, reading mappings created the folder). With the admin pre-creating it: result 0, 5 CSVs plus the zip, log `runs\etl_tool-scheduled-<tag>.log`, no account name in any log. |
+| T4 | PASS; found **DSYNC-115** | Domain stored-password account (`LAB\svc_dsyncpw`): nightly result 0, output written, no account name in any log. After `--schedule-remove` the account still holds RX on the profile and M on `runs\` (DSYNC-115). |
+| T5 | PASS | gMSA: register ran the account's own test run ("The account's test run passed"), the nightly ran with result 0, and `--schedule-remove` deleted the task and revoked the gMSA's grants. Observed, not guaranteed: the gMSA nightly ran before the batch right was granted on the member (likely a group or default policy); the prerequisite wording stays. |
+| T6 | PASS (VMware Tools session); WinRM/SSH not covered yet; rerun with `--configure` | Server Core: MSI install, machine setup, schedule refusals, register, and the nightly under N, after N+1 and after uninstall/reinstall (5 CSVs plus the zip each time), `--diagnose`. |
+| T7, T8 | Blocked on D1b | `--migrate` is the D1a report only; the move itself is D1b. |
+| T9 | PASS | Major upgrade N→N+1 in the same folder (`current\`, `Update.exe`, `.msi-installed`). MSI version 0.57.1.0. Nightly task unchanged and still runs. Profile and HKLM key kept. Found **DSYNC-113** (fixed): the app reported 0.0.57 in both builds. |
+| T10–T16, T21 (package half) | Blocked on the update feed (plan 0054 S6b/S8) | |
+| T17 | PASS | `msiexec /x`: program removed. ProgramData, the settings, the HKLM key and the nightly task are kept. No `systemprofile` folders. There is no updater task yet. |
+| T18 | PASS | Reinstall: the nightly runs again with no reconfiguration. |
+| T21 (MSI half) | PASS | Both MSIs carry a valid Authenticode signature. |
+| T24 | Recorded outcome | An older MSI over a newer one is refused by Windows Installer (1603, "A newer version of DistrictSync is already installed"), and the version is unchanged. |
+| T25 | PASS (repair half) | `msiexec /fa` exits 0 and the version is kept. The half after an updater apply is blocked on the feed. |
+| T20, T23, T26 | To run | |
+
+**Other findings.**
+- A `config.json` saved with a UTF-8 BOM was treated as corrupt (**DSYNC-112**, fixed).
+- Polish list: at 1024×768 the window's right edge is clipped (on the Setup wizard, the top-right "Start over with a di…" link and the long explanatory lines are cut off).
+
 ## Affected files
 
 | Path | Change |
