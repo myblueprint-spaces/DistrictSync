@@ -312,6 +312,11 @@ def _account_sid(name: str) -> str:  # pragma: no cover - Windows-only ctypes
         kernel32.LocalFree(text)
 
 
+#: The bound on ONE ``icacls`` call. Named (second review, LOW 3) because the elevated ``--migrate --apply`` op makes up
+#: to four of them and the parent's wait (``migration_move.CHILD_BUDGET_S``) is sized from it.
+ICACLS_TIMEOUT_S = 60
+
+
 def _run_icacls(args: list[str]) -> int:
     """Run ``icacls`` with ``args`` and return its exit code. TOTAL — never raises.
 
@@ -327,7 +332,7 @@ def _run_icacls(args: list[str]) -> int:
             [system_binary("icacls.exe"), *args],
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=ICACLS_TIMEOUT_S,
             check=False,
             creationflags=subprocess_no_window_flags(),
         )
@@ -1438,3 +1443,97 @@ def prune_retired_grants(payload: Mapping[str, object]) -> None:
         # No log line: this module runs elevated and has no logger by design (module docstring). Nothing is lost —
         # whatever was not revoked is still recorded, and the next Remove revokes it and reports the outcome.
         return
+
+
+# --------------------------------------------------------------------------- #
+# --migrate --apply (DSYNC-116 review H2): the moved nightly's access         #
+# --------------------------------------------------------------------------- #
+
+
+def _trusted_root() -> Path:
+    _refuse_under_override()
+    root = _machine_root()
+    try:
+        paths.assert_machine_dir_trusted(root)
+    except paths.MachineScopeRefused as exc:
+        raise ProvisionRefused(ProvisionStep.PRE_EXISTING) from exc
+    return root
+
+
+def _migrating_principal(account: str, kind: task_com.PrincipalKind) -> tuple[str, str]:
+    """``(account, sid)`` for the nightly's principal, validated by its KIND. Raises ``PRINCIPAL``."""
+    try:
+        principal = task_com.validate_principal_account(kind, account)
+    except ValueError as exc:
+        raise ProvisionRefused(ProvisionStep.PRINCIPAL) from exc
+    return principal, _sid_for(principal).upper()
+
+
+def grant_principal(account: str, kind: task_com.PrincipalKind) -> bool:
+    """Give a moved nightly's principal its access to the shared profile: RX on the root, M on ``runs/``.
+
+    The SAME steps a Schedule press for that account runs in ``apply_provision``: the SID goes into the grant record
+    FIRST (DSYNC-115's :func:`_record_grant`, before anything is granted), then the additive step 3b
+    (:func:`_ensure_runs_and_principal`). So ``--migrate --apply``'s schedule check (which writes its marker into
+    ``runs/``) and the moved nightly can use the shared profile on a computer that machine setup provisioned for the
+    administrator only, and a later Remove (``apply_prune_principal``) revokes it from the record.
+
+    Returns whether the account was NEW to the shared profile (no ALLOW ace on the root before): only a new grant is
+    ever taken back by the move (:func:`revoke_principal`), because an account that already had access may be the
+    one the OLD nightly uses. It is recorded either way, so a Remove of the moved nightly revokes it.
+
+    Raises:
+        ProvisionRefused: ``OVERRIDE``, ``PRE_EXISTING`` or ``PRINCIPAL`` (an unwritable record included; then
+            nothing was granted), with an icacls exit code when the grant itself failed.
+    """
+    root = _trusted_root()
+    principal, principal_sid = _migrating_principal(account, kind)
+    setup_sid = _sid_for(current_run_as_user()).upper()
+    if principal_sid in _UNPRUNABLE_SIDS or principal_sid == setup_sid:
+        return False  # SYSTEM, Administrators or the administrator: their access is in the descriptor itself
+    try:
+        already = any(
+            kind_ == _ACCESS_ALLOWED and who.upper() == principal_sid
+            for kind_, _flags, _mask, who in _dacl_entries(root)
+        )
+    except OSError as exc:
+        # Without the answer a later take-back could strip access someone else relies on: refuse, change nothing.
+        raise ProvisionRefused(ProvisionStep.PRINCIPAL) from exc
+    _record_grant(principal_sid)  # DSYNC-115: recorded BEFORE anything is granted
+    try:
+        _ensure_runs_and_principal(root, setup_sid=setup_sid, principal_sid=principal_sid, principal_account=principal)
+    except ProvisionRefused:
+        # Second review, MEDIUM 1: the root grant may have landed before ``runs`` refused. An account that had no
+        # access before is taken back (best-effort, through the record: a failed take-back leaves its SID recorded,
+        # so the next Remove retries it); the grant's own refusal is what is reported.
+        if not already:
+            with contextlib.suppress(ProvisionRefused):
+                _take_back(root, principal_sid, admin_sid=setup_sid)
+        raise
+    return not already
+
+
+def revoke_principal(account: str, kind: task_com.PrincipalKind) -> None:
+    """Take back a grant :func:`grant_principal` made NEW, after a move that did not happen, and drop it from the record.
+
+    DSYNC-115's :func:`_revoke` does the revoke (by SID, only DistrictSync's exact shape, never SYSTEM, Administrators
+    or the administrator running this child); what was revoked leaves the record, as a Remove does. An ace DistrictSync
+    did not make is kept AND stays recorded, so the next Remove reports it. Raises ``PRUNE`` when anything was kept.
+    """
+    root = _trusted_root()
+    _principal, principal_sid = _migrating_principal(account, kind)
+    _take_back(root, principal_sid, admin_sid=_sid_for(current_run_as_user()).upper())
+
+
+def _take_back(root: Path, principal_sid: str, *, admin_sid: str) -> None:
+    """115's :func:`_revoke` for ONE SID, then drop it from the record if (and only if) it was revoked."""
+    revoked, kept = _revoke(root, (principal_sid,), protected=frozenset({admin_sid}))
+    if revoked:
+        try:
+            recorded = read_grant_ledger()
+            if recorded is not None and principal_sid in recorded:
+                _write_grant_ledger_value([sid for sid in recorded if sid != principal_sid])
+        except OSError as exc:
+            raise ProvisionRefused(ProvisionStep.PRUNE) from exc
+    if kept:
+        raise ProvisionRefused(ProvisionStep.PRUNE)

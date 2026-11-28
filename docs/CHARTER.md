@@ -135,6 +135,14 @@ on a dev box (no domain, no unattended UAC), so the honest output names what is 
 fakes and what is reasoned from documentation. 13/13 scheduler-half and 9/9 UI probes went red;
 the one green probe exposed a dead constant, which was removed.
 
+*Grown 2026-11-28 (DSYNC-116 — `migration_move` / `migration_apply`).* When the plan already fixes the flow's ORDER
+step by step (plan 0055 section 5), tests can come FIRST against a designed seam (a `NightlyOps` Protocol, a fake Task
+Scheduler keyed by task name, and the real elevated child run in-process). The operator asked for that here, and it
+worked. Kill-at-each-step is a `BaseException` raised from the fake, so `except Exception` cannot hide it. The tests
+were self-authored (no sub-agent tool), then falsified: 11/11 perturbations went red; the refuting review's
+fixes added 20 more, all red after one test was sharpened (a guard caught later by a second check needed a test of
+WHEN it fires, not only THAT it fires).
+
 ### Documentation + its enforcing gate
 _Recorded 2026-07-29 (plan 0038 S2b — `docs/developer/output-contract.md` + its drift test)._
 

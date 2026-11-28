@@ -162,6 +162,25 @@ The machine-wide install (`DistrictSync.msi`) needs one setup step by an adminis
 open DistrictSync once as an administrator, or run `DistrictSync.exe --machine-setup --updates notify`. See the
 [IT deployment guide](it-deployment.md).
 
+## Moving the nightly stopped part-way (`--migrate --apply`)
+
+`DistrictSync.exe --migrate --apply` moves the nightly to the machine-wide install in one step behind one Windows
+permission prompt. It prints a report (also written to the log) whose **Left:** lines say what was not moved and why,
+and whose **Way back:** line gives the old nightly's run time, account kind and wake setting.
+
+- **"There is NO nightly now"**: the old task was removed and the new one could not be registered or confirmed. Put
+  it back before the next run time, as the **Way back:** line says: from the old copy's Setup › Schedule at that time
+  for the same account, or from the installed copy with `--schedule-register --time HH:MM --principal ...` (add
+  `--wake` if the line says so). Then run `--migrate --apply` again.
+- **The old nightly was put back**: scheduling the new one failed, and DistrictSync re-registered the old task from
+  the facts it had read. Fix what the report names and run it again.
+- **Windows could not start the installed copy as the nightly's account**: the schedule check failed for the
+  installed program, so the nightly was not touched. The report names the check's result; see the
+  [managed service accounts guide](managed-service-accounts.md).
+- **The delivery test failed**: nothing was touched. Run `--sftp-test`, fix delivery, then run it again.
+
+To see where things stand at any time, run `DistrictSync.exe --migrate` (it changes nothing).
+
 ## Exit codes
 
 Every run ends with one of the codes below (a conversion with `0` to `3`; code `4` comes

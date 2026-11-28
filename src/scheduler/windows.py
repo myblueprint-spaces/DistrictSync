@@ -342,6 +342,80 @@ def module_prefix(exe_path: Path) -> str:
     return "-m src.main " if PureWindowsPath(exe_path).name.lower().startswith("python") else ""
 
 
+def quote_arg(value: str) -> str:
+    """One argument, double-quoted so ``CommandLineToArgvW`` gives back exactly ``value`` (DSYNC-116 review H1).
+
+    A backslash is literal unless quotes follow it, so only the backslashes that run into a quote (an embedded one, or
+    the closing one) are doubled: ``D:\\`` becomes ``"D:\\\\"``, not ``"D:\\"``, whose closing quote Windows would read
+    as a literal quote. An ordinary path is unchanged: ``"C:\\GDE\\in"``. :func:`split_command_line` is the inverse.
+    """
+    out: list[str] = []
+    backslashes = 0
+    for char in value:
+        if char == "\\":
+            backslashes += 1
+            continue
+        if char == '"':
+            out.append("\\" * (2 * backslashes + 1) + '"')
+        else:
+            out.append("\\" * backslashes + char)
+        backslashes = 0
+    out.append("\\" * (2 * backslashes))
+    return '"' + "".join(out) + '"'
+
+
+def split_command_line(text: str) -> list[str]:
+    """Split a task's ``Arguments`` the way the started program sees them: ``CommandLineToArgvW``'s rules.
+
+    ``2n`` backslashes before a quote are ``n`` backslashes and the quote opens or closes a quoted run; ``2n+1`` are
+    ``n`` and a literal quote; inside quotes ``""`` is a literal quote that also ends the quoted run; a backslash
+    anywhere else is literal (a UNC ``\\\\srv`` stays as it is). POSIX ``shlex`` is NOT this. Compared with the real
+    ``CommandLineToArgvW`` by a Windows-only test. An unclosed quote reads to the end, as Windows reads it (the program the task starts sees exactly this).
+    """
+    args: list[str] = []
+    current: list[str] = []
+    in_arg = quoted = False
+    i, n = 0, len(text)
+    while i < n:
+        char = text[i]
+        if char == "\\":
+            j = i
+            while j < n and text[j] == "\\":
+                j += 1
+            count = j - i
+            in_arg = True
+            if j < n and text[j] == '"':
+                current.append("\\" * (count // 2))
+                if count % 2:
+                    current.append('"')
+                    j += 1
+            else:
+                current.append("\\" * count)
+            i = j
+            continue
+        if char == '"':
+            if quoted and i + 1 < n and text[i + 1] == '"':
+                # Inside quotes, ``""`` is a literal quote AND ends the quoted run (measured against the real API).
+                current.append('"')
+                quoted = False
+                i += 2
+                in_arg = True
+                continue
+            quoted = not quoted
+            in_arg = True
+        elif char in " \t" and not quoted:
+            if in_arg:
+                args.append("".join(current))
+                current, in_arg = [], False
+        else:
+            current.append(char)
+            in_arg = True
+        i += 1
+    if in_arg:
+        args.append("".join(current))
+    return args
+
+
 def _build_action_args(
     exe_path: Path,
     sis_type: str,
@@ -377,9 +451,9 @@ def _build_action_args(
             "--sis",
             sis_type,
             "--input",
-            f'"{input_dir}"',
+            quote_arg(str(input_dir)),
             "--output",
-            f'"{output_dir}"',
+            quote_arg(str(output_dir)),
         ]
     else:
         working_dir = exe_path.parent
@@ -387,9 +461,9 @@ def _build_action_args(
             "--sis",
             sis_type,
             "--input",
-            f'"{input_dir}"',
+            quote_arg(str(input_dir)),
             "--output",
-            f'"{output_dir}"',
+            quote_arg(str(output_dir)),
         ]
     if sftp:
         arg_parts.append("--sftp")
@@ -661,7 +735,7 @@ def delete_task(task_name: str) -> tuple[bool, str]:
 # CONFIRMED by reading the real task back (read_schedule) — never assumed from an exit code.
 
 
-def _run_elevated_child(req_path: Path, res_path: Path) -> ElevationOutcome:
+def _run_elevated_child(req_path: Path, res_path: Path, *, timeout_s: float = _ELEV_TIMEOUT_S) -> ElevationOutcome:
     """Launch OUR OWN exe elevated in ``--elevated-apply`` mode (S1b — no PowerShell child).
 
     The child is ``sys.executable``: the frozen DistrictSync.exe in production, the Python
@@ -676,10 +750,10 @@ def _run_elevated_child(req_path: Path, res_path: Path) -> ElevationOutcome:
     """
     exe = Path(sys.executable)
     params = f'{module_prefix(exe)}--elevated-apply "{req_path}" "{res_path}"'
-    return elevation.run_elevated(str(exe), params, timeout_s=_ELEV_TIMEOUT_S)
+    return elevation.run_elevated(str(exe), params, timeout_s=timeout_s)
 
 
-def run_elevated_child(req_path: Path, res_path: Path) -> ElevationOutcome:
+def run_elevated_child(req_path: Path, res_path: Path, *, timeout_s: float | None = None) -> ElevationOutcome:
     """Public face of :func:`_run_elevated_child`, for the non-schedule elevated ops.
 
     Plan 0049 S-1b-ii.2's grant window runs `grant_current_user` behind the same single UAC
@@ -687,8 +761,13 @@ def run_elevated_child(req_path: Path, res_path: Path) -> ElevationOutcome:
     in this module — it lives in ``src/scheduler/provision_session.py``. Delegating (rather
     than that module re-deriving ``sys.executable`` + the ``-m src.main`` dev prefix) keeps
     ONE spelling of how this app launches itself elevated.
+
+    ``timeout_s`` (DSYNC-116) is for an op whose bounded steps outlast the schedule budget (``--migrate --apply``'s
+    probe, delete, register and put-back); ``None`` keeps :data:`_ELEV_TIMEOUT_S`.
     """
-    return _run_elevated_child(req_path, res_path)
+    if timeout_s is None:
+        return _run_elevated_child(req_path, res_path)
+    return _run_elevated_child(req_path, res_path, timeout_s=timeout_s)
 
 
 def _map_pre_consent_failure(outcome: ElevationOutcome) -> str | None:

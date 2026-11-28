@@ -21,6 +21,9 @@ Per-release download links and auto-generated commit notes live on the
   and DistrictSync cannot override it. Server Core and scripted installs use `--machine-setup`,
   `--configure --sis <district> --input <folder> --output <folder>` (the district and folders, with the window's
   rules), `--schedule-register` and `--schedule-remove` instead of the window, and `--migrate` reports what moving an existing copy involves.
+  `--migrate --apply` then moves the nightly to the installed copy behind one Windows permission prompt: it tests
+  delivery first, checks that Windows can start the installed copy as the nightly's account, schedules the nightly again
+  with the same time, account and settings, and puts the old one back if that fails (DSYNC-116).
   `--diagnose` gains an Installation block. DistrictSync is built not to write Windows account names into its logs,
   log file names or run history: it tells accounts apart with a short code. Districts already using `DistrictSync-windows.exe` or `DistrictSync-Setup.exe` do not
   need to change anything. See the IT deployment guide (plan 0055).

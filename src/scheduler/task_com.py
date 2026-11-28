@@ -53,6 +53,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import re
 import sys
 import threading
 from collections.abc import Iterator
@@ -912,6 +913,17 @@ class TaskFacts:
     #: ``Definition.Settings.WakeToRun`` (DSYNC-37), for display and "Copy details" only;
     #: ``None`` when the settings could not be read as a boolean.
     wake_to_run: bool | None = None
+    #: The first action's ``Arguments`` and ``WorkingDirectory``, and the ONE daily trigger's time as ``"HH:MM"``
+    #: (DSYNC-116): what ``--migrate --apply`` needs to re-register a nightly, or put it back, from what it READ,
+    #: including one made with raw ``schtasks``. ``None`` when not readable as such (never a ``str()`` of a shape
+    #: this does not understand); ``run_time`` is ``None`` unless there is exactly one trigger and it is daily.
+    arguments: str | None = None
+    working_dir: str | None = None
+    run_time: str | None = None
+    #: ``IRegisteredTask.State`` (``TASK_STATE_*``; review M2: a running nightly is never moved) and whether the task AND
+    #: its trigger are switched on (review M1: ``None`` unless both read as real bools).
+    state: int | None = None
+    enabled: bool | None = None
 
 
 def com_error_scode(exc: BaseException) -> int | None:
@@ -1060,6 +1072,54 @@ def _bool_or_none(value: Any) -> bool | None:
     return value if isinstance(value, bool) else None
 
 
+def _text_or_none(value: Any) -> str | None:
+    """A COM string -> stripped text, or ``None`` for blank or anything that is not a ``str``. Total."""
+    return (value.strip() or None) if isinstance(value, str) else None
+
+
+#: A LOCAL ISO boundary, anchored at both ends (DSYNC-116 review M1): a ``Z`` or ``+hh:mm`` suffix makes Task Scheduler
+#: fire at that UTC instant, which "HH:MM" re-registered as local time would silently shift.
+_BOUNDARY_TIME = re.compile(r"^\d{4}-\d{2}-\d{2}T(\d{2}):(\d{2})(?::\d{2})?$")
+
+
+def _blank(value: Any) -> bool:
+    """An unset COM string property ("" or ``None``). A MagicMock or anything else is NOT blank: no guess."""
+    return value is None or (isinstance(value, str) and not value.strip())
+
+
+def _daily_trigger(triggers: Any) -> tuple[str | None, bool | None]:
+    """``(run_time, enabled)`` of a task's ONE trigger (DSYNC-116). Total; owns its COM-ref release.
+
+    ``run_time`` is ``"HH:MM"`` only for exactly the shape :func:`apply_definition` writes: one trigger, daily, every
+    day (``DaysInterval`` 1), a local ISO ``StartBoundary``, and no random delay, repetition or end. Any other shape is
+    not "a nightly at one time", and re-registering it as one would change the schedule (review M1). ``enabled`` is the
+    trigger's own ``Enabled`` (``None`` when not a real bool).
+    """
+    trigger = repetition = None
+    try:
+        count = getattr(triggers, "Count", None)
+        if not isinstance(count, int) or isinstance(count, bool) or count != 1:
+            return None, None
+        trigger = triggers.Item(1)
+        enabled = _bool_or_none(getattr(trigger, "Enabled", None))
+        repetition = getattr(trigger, "Repetition", None)
+        if (
+            _logon_or_none(getattr(trigger, "Type", None)) != TASK_TRIGGER_DAILY
+            or _logon_or_none(getattr(trigger, "DaysInterval", None)) != 1
+            or not _blank(getattr(trigger, "RandomDelay", None))
+            or not _blank(getattr(trigger, "EndBoundary", None))
+            or not _blank(getattr(repetition, "Interval", None))
+        ):
+            return None, enabled
+        boundary = getattr(trigger, "StartBoundary", None)
+        match = _BOUNDARY_TIME.match(boundary) if isinstance(boundary, str) else None
+        return (f"{match.group(1)}:{match.group(2)}" if match else None), enabled
+    except Exception:  # noqa: BLE001 - a read-back fact: an unreadable trigger is "no answer", never a raise
+        return None, None
+    finally:
+        trigger = repetition = None  # noqa: F841 - releases THIS frame's COM refs pre-teardown
+
+
 def task_facts(task: Any) -> TaskFacts:
     """Reduce ONE live-or-fake COM task object to plain data (the read side's testable core).
 
@@ -1078,7 +1138,7 @@ def task_facts(task: Any) -> TaskFacts:
     reduction is total: a shape this cannot make sense of yields ``None``, never a raise and
     never a guess.
     """
-    actions = principal = settings = None
+    actions = action = principal = settings = triggers = None
     try:
         action_path: str | None = None
         actions = task.Definition.Actions
@@ -1087,9 +1147,14 @@ def task_facts(task: Any) -> TaskFacts:
             # contract (`action_path`). Its one consumer is `ui_flet.schedule_probe.
             # registered_program_moved` (DSYNC-32), which gates the "moved or deleted"
             # sentence on it — read for that boolean only, never logged or displayed.
-            action_path = str(actions.Item(1).Path or "").strip() or None
+            action = actions.Item(1)
+            action_path = str(action.Path or "").strip() or None
         principal = task.Definition.Principal
         settings = task.Definition.Settings
+        triggers = getattr(task.Definition, "Triggers", None)
+        run_time, trigger_enabled = _daily_trigger(triggers)
+        task_enabled = _bool_or_none(getattr(task, "Enabled", None))
+        enabled = None if task_enabled is None or trigger_enabled is None else (task_enabled and trigger_enabled)
         return TaskFacts(
             next_run=_iso_or_none(task.NextRunTime),
             last_run=_iso_or_none(task.LastRunTime),
@@ -1098,9 +1163,14 @@ def task_facts(task: Any) -> TaskFacts:
             run_as=str(getattr(principal, "UserId", "") or "").strip() or None,
             logon_type=_logon_or_none(getattr(principal, "LogonType", None)),
             wake_to_run=_bool_or_none(getattr(settings, "WakeToRun", None)),
+            arguments=_text_or_none(getattr(action, "Arguments", None)),
+            working_dir=_text_or_none(getattr(action, "WorkingDirectory", None)),
+            run_time=run_time,
+            state=_logon_or_none(getattr(task, "State", None)),
+            enabled=enabled,
         )
     finally:
-        actions = principal = settings = None  # noqa: F841 - releases THIS frame's COM refs pre-teardown
+        actions = action = principal = settings = triggers = None  # noqa: F841 - releases THIS frame's COM refs pre-teardown
 
 
 def read_task(task_name: str) -> TaskFacts:

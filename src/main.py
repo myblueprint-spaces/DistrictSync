@@ -76,6 +76,7 @@ from src.sftp.uploader import SFTPUploader
 from src.update import policy
 from src.utils.logger import get_logger
 from src.utils.paths import MachineScopeRefused, handshake_dir, migrate_legacy_data_dir, pin_data_dir
+from src.utils.secret_env import SFTP_PASSWORD_ENV_VAR, TASK_PASSWORD_ENV_VAR  # one spelling (DSYNC-116 M5)
 from src.utils.validators import validate_sftp_host, validate_sis_type
 from src.utils.version import app_version, startup_banner
 
@@ -255,8 +256,6 @@ def _attach_parent_console() -> bool:
 # SFTP CLI subcommands — headless / Docker / scripted setup
 # ----------------------------------------------------------------------
 
-SFTP_PASSWORD_ENV_VAR = "DISTRICTSYNC_SFTP_PASSWORD"  # nosec B105
-
 
 def _read_sftp_password(args: argparse.Namespace) -> str:
     """Resolve the SFTP password from (in order): env var, stdin, interactive prompt.
@@ -328,20 +327,24 @@ def _sftp_configure(args: argparse.Namespace) -> int:
         print("Error: password is required.")
         return 1
 
-    uploader = SFTPUploader(host=host, port=port, username=username, remote_path=remote_path)
-    uploader.store_password(password)
+    _save_sftp(cfg, host=host, port=port, username=username, remote_path=remote_path, password=password)
 
+    print(f"SFTP configured: {username}@{host}:{port}{remote_path}")
+    print("Password saved to the OS credential store.")
+    print("Run 'DistrictSync --sftp-test' to verify the connection.")
+    return 0
+
+
+def _save_sftp(cfg: AppConfig, *, host: str, port: int, username: str, remote_path: str, password: str) -> None:
+    """Store the password (the store this process is pinned to) and save the delivery settings: ONE writer, shared by
+    ``--sftp-configure`` and ``--migrate --apply``'s delivery step."""
+    SFTPUploader(host=host, port=port, username=username, remote_path=remote_path).store_password(password)
     cfg.sftp_enabled = True
     cfg.sftp_host = host
     cfg.sftp_port = port
     cfg.sftp_username = username
     cfg.sftp_remote_path = remote_path
     cfg.save()
-
-    print(f"SFTP configured: {username}@{host}:{port}{remote_path}")
-    print("Password saved to the OS credential store.")
-    print("Run 'DistrictSync --sftp-test' to verify the connection.")
-    return 0
 
 
 def _sftp_test(args: argparse.Namespace) -> int:
@@ -390,8 +393,6 @@ _CONVERSION_AND_SFTP_DESTS = (
 
 #: The destinations ``--configure`` takes: the district and the two folders, exactly what Setup's folders card saves.
 _CONFIGURE_DESTS = ("sis", "input", "output")
-
-TASK_PASSWORD_ENV_VAR = "DISTRICTSYNC_TASK_PASSWORD"  # nosec B105 - the NAME of the variable, not a secret
 
 
 def _read_task_password(args: argparse.Namespace, account: str) -> str:
@@ -473,6 +474,91 @@ def _migrate() -> int:
     for line in migration.report_lines(findings):
         print(line)
     return 1 if migration.needs_action(findings) else 0
+
+
+#: What ``--migrate --apply`` may carry besides itself: the delivery settings and password routes (plan section 5, step 3).
+_MIGRATE_DELIVERY_DESTS = ("sftp_host", "sftp_port", "sftp_user", "sftp_remote", "sftp_password_stdin")
+
+
+class _MigrateCollect:
+    """``--migrate --apply``'s input routes: the same three as ``--sftp-configure`` and ``--schedule-register``.
+
+    Both password variables are POPPED here, at the start of the command (review M5), so neither reaches a child this
+    process starts: the elevated child, the schedule check or the per-user uninstaller. Nothing is saved until
+    :meth:`save_delivery`, which the ladder calls only after the account's password has been collected too (L4).
+    """
+
+    def __init__(self, args: argparse.Namespace) -> None:
+        self._args = args
+        self._task_env = os.environ.pop(TASK_PASSWORD_ENV_VAR, None) or None
+        self._sftp_env = os.environ.pop(SFTP_PASSWORD_ENV_VAR, None) or None
+        self._pending: dict[str, object] | None = None
+
+    def task_password(self, account: str) -> str:
+        return self._task_env or _read_task_password(self._args, account)
+
+    def prepare_delivery(self) -> str | None:
+        args = self._args
+        cfg = AppConfig.load()
+        if args.sftp_host:
+            try:
+                host = validate_sftp_host(args.sftp_host)
+            except ValueError as exc:
+                return f"The delivery host is not allowed ({exc}), so nothing was changed."
+            port, username, remote_path = args.sftp_port, args.sftp_user, args.sftp_remote
+        elif cfg.sftp_host and cfg.sftp_username and cfg.sftp_remote_path:
+            host, port, username, remote_path = cfg.sftp_host, cfg.sftp_port, cfg.sftp_username, cfg.sftp_remote_path
+        else:
+            return (
+                "Delivery is on for the nightly, but its settings are not in the shared settings, so nothing was "
+                "changed. Run this again with --sftp-host <host> --sftp-user <user> --sftp-remote <path>."
+            )
+        password = self._sftp_env or _read_sftp_password(args)
+        if not password:
+            return "Delivery's password is required, so nothing was changed."
+        self._pending = {
+            "host": host,
+            "port": port,
+            "username": username,
+            "remote_path": remote_path,
+            "password": password,
+        }
+        return None
+
+    def save_delivery(self) -> None:
+        pending, self._pending = self._pending, None
+        if pending is None:  # pragma: no cover - the ladder calls this only after a successful prepare
+            raise RuntimeError("save_delivery before prepare_delivery")
+        _save_sftp(
+            AppConfig.load(),
+            host=str(pending["host"]),
+            port=int(pending["port"]),  # type: ignore[call-overload]
+            username=str(pending["username"]),
+            remote_path=str(pending["remote_path"]),
+            password=str(pending["password"]),
+        )
+
+
+def _migrate_apply(args: argparse.Namespace) -> int:
+    """``--migrate --apply`` (plan 0055 D1b, DSYNC-116): move the nightly to this copy. The ladder and its report are
+    ``src.scheduler.migration_apply.run``; this function owns only the argv, stdin and console routes."""
+    if not _is_windows():
+        print("Error: --migrate --apply is for Windows.")
+        return 1
+    from src.scheduler import headless, migration_apply
+
+    collect = _MigrateCollect(args)  # FIRST: pops both password variables before anything can start a child (M5)
+    declared = None
+    if args.principal is not None:
+        try:
+            declared = headless.parse_principal(args.principal)
+        except ValueError as exc:
+            print(f"Error: {exc}")
+            return 2
+    result = migration_apply.run(declared=declared, collect=collect, delivery_flags_given=bool(args.sftp_host))
+    for line in result.lines:
+        print(line)
+    return result.code
 
 
 def _schedule_remove() -> int:
@@ -850,6 +936,11 @@ def _cli(argv: list[str] | None) -> int:
         action="store_true",
         help="Report what moving to the machine-wide DistrictSync involves (read-only)",
     )
+    schedule_group.add_argument(
+        "--apply",
+        action="store_true",
+        help="With --migrate: move the nightly to this copy (one Windows permission prompt; see the IT guide)",
+    )
     schedule_group.add_argument("--time", help="With --schedule-register: the run time, HH:MM (24-hour)")
     schedule_group.add_argument(
         "--principal",
@@ -882,9 +973,14 @@ def _cli(argv: list[str] | None) -> int:
             "--schedule-register, --schedule-remove, --migrate, --configure."
         )
         return 2
+    if args.apply and not args.migrate:
+        print("Error: --apply is used with --migrate.")
+        return 2
     # Decided on PARSED values, never on spellings: argparse accepts abbreviations (--wak, --sftp-h).
     schedule_options = args.time is not None or args.principal is not None or args.wake or args.task_password_stdin
-    if schedule_options and not args.schedule_register:
+    # --migrate --apply takes the account's kind and password routes, never a time or wake (those are the nightly's own).
+    with_apply = args.migrate and args.apply and args.time is None and not args.wake
+    if schedule_options and not args.schedule_register and not with_apply:
         print("Error: --time, --principal, --wake and --task-password-stdin are used with --schedule-register.")
         return 2
     if args.updates is not None and not args.machine_setup:
@@ -899,6 +995,19 @@ def _cli(argv: list[str] | None) -> int:
             )
             return 2
         return _schedule_register(args) if args.schedule_register else _schedule_remove()
+    if args.migrate and args.apply:
+        extra = [dest for dest in _CONVERSION_AND_SFTP_DESTS if dest not in _MIGRATE_DELIVERY_DESTS]
+        if any(getattr(args, dest) != parser.get_default(dest) for dest in extra):
+            print("Error: --migrate --apply moves the nightly only; run a conversion separately.")
+            return 2
+        if args.task_password_stdin and args.sftp_password_stdin:
+            print("Error: only one password can be read from stdin; set the other in its environment variable.")
+            return 2
+        delivery = [args.sftp_host, args.sftp_user, args.sftp_remote]
+        if any(delivery) and not all(delivery):
+            print("Error: give --sftp-host, --sftp-user and --sftp-remote together.")
+            return 2
+        return _migrate_apply(args)
     if args.migrate:
         if conversion_or_sftp:
             print("Error: --migrate only reports; run a conversion or SFTP setup separately.")
@@ -995,7 +1104,8 @@ def _cli(argv: list[str] | None) -> int:
     #   1 — ETL / validation error (run did not complete)
     #   2 — argument misuse: an argparse usage error (missing/unknown flags),
     #       more than one subcommand (SFTP, --machine-setup, --schedule-*, --migrate, --configure), a schedule
-    #       option without --schedule-register, or a --*-password-stdin with an empty stdin
+    #       option without --schedule-register (or --migrate --apply), --apply without --migrate, or a
+    #       --*-password-stdin with an empty stdin
     #   3 — SFTP delivery failure (ETL succeeded; upload did not)
     #   4 — --schedule-register only (DSYNC-111): registered, but the account lacks 'Log on as a batch job'
     #       (headless.EXIT_REGISTERED_WITHOUT_BATCH_RIGHT; a conversion never returns it)

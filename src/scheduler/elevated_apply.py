@@ -49,6 +49,10 @@ import contextlib
 import json
 import os
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from src.scheduler import task_com
 
 # The request file is DPAPI-sealed by the parent and small; anything larger is not ours.
 _MAX_REQUEST_BYTES = 64 * 1024
@@ -92,6 +96,7 @@ def _write_result(
     *,
     check: dict[str, object] | None = None,
     batch_right: str | None = None,
+    access_kept: bool = False,
 ) -> None:
     """Atomic plaintext result — temp + ``os.replace`` so the parent never sees a partial.
 
@@ -106,6 +111,8 @@ def _write_result(
         result["check"] = check
     if batch_right is not None:
         result["batch_right"] = batch_right
+    if access_kept:  # DSYNC-116: a NEW grant the move could not take back (one boolean; no account)
+        result["access_kept"] = True
     payload = json.dumps(result)
     tmp = res_path.with_name(res_path.name + ".tmp")
     tmp.write_text(payload, encoding="utf-8")
@@ -188,6 +195,21 @@ def _apply(req_path: Path, res_path: Path) -> int:
             _do_grant_current_user(payload)
         elif op == "prune_principal":
             _do_prune_principal(payload)
+        elif op == "migrate_nightly":
+            # DSYNC-116: probe, delete, confirm missing, register, or put the old one back. Validated before any
+            # change (a ValueError below means nothing was touched); total after that. The bounded stage id is the
+            # whole message, and the probe's bounded wire form rides ``check``: never an account or a password.
+            from src.scheduler import migration_move
+
+            moved = migration_move.run_in_child(payload)
+            _write_result(
+                res_path,
+                moved.stage is migration_move.MoveStage.MOVED,
+                moved.stage.value,
+                check=moved.wire(),
+                access_kept=moved.access_kept,
+            )
+            return 0
         else:
             _write_result(res_path, False, _MSG_REQUEST_UNREADABLE)
             return 0
@@ -251,7 +273,18 @@ def _batch_right(payload: dict[str, object]) -> str | None:
 
 
 def _do_register(payload: dict[str, object]) -> None:
-    """Register the nightly in the privileged half, re-validating every field BY KIND.
+    """Register the nightly in the privileged half: :func:`register_params`, then the ONE registration call."""
+    from src.scheduler import task_com
+
+    task_com.register_task_definition(register_params(payload))
+
+
+def register_params(payload: dict[str, object]) -> task_com.RegisterParams:
+    """Re-validate a register payload BY KIND and build the command (``ValueError`` on any refusal).
+
+    Split out of :func:`_do_register` (DSYNC-116) so ``--migrate --apply``'s op can validate BOTH registrations it may
+    make (the new nightly, and the old one it puts back if that fails) before it changes anything, through the same
+    validators every elevated registration uses.
 
     **The account validator is chosen by the declared kind, and that is the make-or-break
     line of plan 0049 S-3.** Until then this called ``validate_run_as_user`` unconditionally
@@ -267,7 +300,7 @@ def _do_register(payload: dict[str, object]) -> None:
     ``_apply`` maps to ``_MSG_REQUEST_INVALID`` — a request naming a principal shape this
     build does not have is refused, never coerced into one it does.
     """
-    from src.scheduler import task_com
+    from src.scheduler import task_com  # noqa: F811 - the runtime import; the module-level one is TYPE_CHECKING only
     from src.utils.validators import validate_run_time, validate_task_name
 
     if not set(payload) >= _REQUIRED_REGISTER_FIELDS:
@@ -286,19 +319,17 @@ def _do_register(payload: dict[str, object]) -> None:
     exe = str(payload["exe"])
     _refuse_per_user_install(kind, user, exe)
 
-    task_com.register_task_definition(
-        task_com.RegisterParams(
-            task_name=task_name,
-            exe=exe,
-            arguments=str(payload["arguments"]),
-            working_dir=str(payload["working_dir"]),
-            run_time=run_time,
-            user=user,
-            password=str(password) if password is not None else None,
-            kind=kind,
-            run_highest=bool(payload["run_highest"]),
-            wake_to_run=wake_to_run,
-        )
+    return task_com.RegisterParams(
+        task_name=task_name,
+        exe=exe,
+        arguments=str(payload["arguments"]),
+        working_dir=str(payload["working_dir"]),
+        run_time=run_time,
+        user=user,
+        password=str(password) if password is not None else None,
+        kind=kind,
+        run_highest=bool(payload["run_highest"]),
+        wake_to_run=wake_to_run,
     )
 
 
