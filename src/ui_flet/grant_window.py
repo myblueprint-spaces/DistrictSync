@@ -22,14 +22,13 @@ cross-thread control updates to a boot path — the last place to add a class of
 from __future__ import annotations
 
 import os
-import subprocess  # nosec B404 - relaunching OUR OWN exe, argv list, no shell
 import sys
 from collections.abc import Callable
 
 import flet as ft
 
 from src.scheduler.provision_session import GrantOutcome, request_access
-from src.ui_flet import components, grant_access, tokens
+from src.ui_flet import components, grant_access, relaunch, tokens
 
 # The window is sized for one card of copy — the same order of magnitude as the launcher's
 # own boot-error window, and never the shell's geometry (there is no AppConfig to read it
@@ -150,25 +149,6 @@ def _frame(body: ft.Control, on_close: Callable[[object | None], None]) -> ft.Co
     )
 
 
-def relaunch() -> None:
-    """Start a fresh DistrictSync and end this process. Never returns.
-
-    The argv is computed by the pure :func:`src.ui_flet.grant_access.reexec_argv`. It is
-    spawned as a LIST (``subprocess`` quotes each argument) rather than ``os.execv``: on Windows
-    ``os.execv`` joins its arguments unquoted, so an install under ``C:\\Program Files`` arrived
-    as two arguments and the relaunch ran the COMMAND LINE with a stray path instead of the
-    window (DSYNC-117 — the route the lab's traceback took). Shared with the machine setup
-    window, which relaunches the same way.
-    """
-    argv = grant_access.reexec_argv()
-    subprocess.Popen(argv)  # nosec B603 - re-launching OUR OWN interpreter/exe, argv from sys, no shell
-    os._exit(0)
-
-
-def _reexec() -> None:  # pragma: no cover - ends the process
-    relaunch()
-
-
 def show_grant_window() -> bool:  # pragma: no cover - ft.run glue
     """Render the pre-shell grant window. ``False`` means it could not be shown at all.
 
@@ -182,7 +162,8 @@ def show_grant_window() -> bool:  # pragma: no cover - ft.run glue
             page.window.width = _WINDOW_WIDTH
             page.window.height = _WINDOW_HEIGHT
             page.bgcolor = tokens.color_content_wash
-            page.add(build_grant_body(page, request=request_access, reexec=_reexec))
+            # DSYNC-114: the shared relaunch closes this window, then starts a correctly quoted fresh copy.
+            page.add(build_grant_body(page, request=request_access, reexec=relaunch.relaunch_seam(page)))
 
         ft.run(_page)
         return True

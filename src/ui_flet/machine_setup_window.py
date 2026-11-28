@@ -136,17 +136,11 @@ def _frame(body: ft.Control, on_close: Callable[[object | None], None]) -> ft.Co
     )
 
 
-def _reexec() -> None:  # pragma: no cover - ends the process
-    # DSYNC-117: the shared relaunch (an argv LIST; ``os.execv`` split a ``Program Files`` path).
-    from src.ui_flet.grant_window import relaunch
-
-    relaunch()
-
-
 def show_machine_setup_window() -> bool:  # pragma: no cover - ft.run glue
     """Render the window. ``False`` means it could not be shown; the launcher then shows its plain dialog."""
     try:
         from src.scheduler.machine_setup import run
+        from src.ui_flet import relaunch
         from src.utils.logger import get_logger
         from src.utils.paths import handshake_dir
 
@@ -161,7 +155,8 @@ def show_machine_setup_window() -> bool:  # pragma: no cover - ft.run glue
             page.window.width = _WINDOW_WIDTH
             page.window.height = _WINDOW_HEIGHT
             page.bgcolor = tokens.color_content_wash
-            page.add(build_machine_setup_body(page, request=run, reexec=_reexec))
+            # DSYNC-114: the shared relaunch closes this window, then starts a correctly quoted fresh copy.
+            page.add(build_machine_setup_body(page, request=run, reexec=relaunch.relaunch_seam(page)))
 
         ft.run(_page)
         return True

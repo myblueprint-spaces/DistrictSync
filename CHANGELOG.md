@@ -45,9 +45,8 @@ Per-release download links and auto-generated commit notes live on the
   stopped with a "Permission denied" error window. The step now covers every folder, and an account
   given access by an earlier version is asked once more the next time it opens DistrictSync, which
   completes the access. If the log file still cannot be opened, DistrictSync keeps running and writes
-  its log to that account's own DistrictSync folder instead. After approving, DistrictSync also now
-  reopens its window correctly when installed under `C:\Program Files`. The nightly sync was not
-  affected (DSYNC-117).
+  its log to that account's own DistrictSync folder instead. The nightly sync was not affected
+  (DSYNC-117).
 
 - **The nightly sync no longer fails with "Access is denied" on a machine-wide install where no
   custom mapping was ever saved.** When the nightly ran as a service account before an
@@ -67,6 +66,12 @@ Per-release download links and auto-generated commit notes live on the
   DistrictSync reported such a file as "truncated or corrupt" and ran on default settings; it now reads
   it normally, including during computer setup and `--migrate`. Files DistrictSync saves itself still have
   no byte-order mark (DSYNC-112).
+
+- **"Set up this computer" no longer stays on "Working…" after it succeeds.** On the machine-wide install
+  (`C:\Program Files\myBlueprint.DistrictSync\`), DistrictSync restarted itself with its folder name split at
+  the space, so the new copy stopped at once and the setup window never closed. It now closes the window and
+  starts DistrictSync correctly. The same fix applies to the window that gives a second administrator access to
+  the shared settings (DSYNC-114).
 
 ### Changed
 

@@ -160,9 +160,9 @@ def reexec_argv() -> list[str]:
     boot path is the last place to guess. A fresh process re-runs the real ladder from the
     top, which is also the only honest confirmation that the grant worked.
 
-    Pure and returned rather than executed; ``grant_window.relaunch`` spawns it as a LIST
-    (DSYNC-117: ``os.execv`` on Windows does not quote, so ``C:\\Program Files\\…`` arrived split
-    and the relaunch ran the command line instead of the window).
+    Pure and returned rather than executed: :mod:`src.ui_flet.relaunch` hands it to
+    ``subprocess.Popen`` as a LIST, so Windows quotes it (DSYNC-114 — ``os.execv`` did not,
+    and an exe under ``Program Files`` split at the space).
     """
     if getattr(sys, "frozen", False):
         return [sys.executable, *sys.argv[1:]]

@@ -12,9 +12,8 @@ Pinned here:
 * the window boot routes a session that cannot write ``runs\\`` to the grant window (a typed refusal),
   never to a traceback;
 * the fallback line names no account and no path;
-* the relaunch after a successful grant quotes its own path (``os.execv`` on Windows does not, so a
-  ``C:\\Program Files`` install re-opened as the CLI with a split path — the route the lab's traceback
-  took).
+* (the relaunch itself — ``os.execv`` split ``C:\\Program Files``, the route the lab's traceback took —
+  is DSYNC-114's ``ui_flet/relaunch.py``, pinned in ``tests/test_ui_flet_relaunch.py``).
 
 Never the real profile or ``C:\\ProgramData``: the machine root is redirected into tmp and the
 handshake folder is a separate tmp folder, so a fall-through into the per-user PROFILE is visible.
@@ -24,7 +23,6 @@ from __future__ import annotations
 
 import logging
 import logging.handlers
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -274,35 +272,3 @@ class TestTheWindowBoot:
         )
         monkeypatch.undo()
         assert "failed to launch" in (handshake / "etl_tool.log").read_text(encoding="utf-8")
-
-
-# --------------------------------------------------------------------------- #
-# The relaunch after a grant.                                                  #
-# --------------------------------------------------------------------------- #
-
-
-class TestTheRelaunchQuotesItsPath:
-    def test_relaunch_spawns_with_an_argv_list_and_exits(self, monkeypatch):
-        from src.ui_flet import grant_window
-
-        spawned: list[list[str]] = []
-        exited: list[int] = []
-        monkeypatch.setattr(grant_window.subprocess, "Popen", lambda argv, **kw: spawned.append(list(argv)))
-        monkeypatch.setattr(grant_window.os, "_exit", lambda code: exited.append(code))
-        monkeypatch.setattr(
-            grant_window.grant_access, "reexec_argv", lambda: ["C:\\Program Files\\DistrictSync\\DistrictSync.exe"]
-        )
-
-        grant_window.relaunch()
-
-        assert spawned == [["C:\\Program Files\\DistrictSync\\DistrictSync.exe"]]
-        assert exited == [0]
-        assert subprocess.list2cmdline(spawned[0]).startswith('"C:\\Program Files'), "the path survives as ONE arg"
-
-    def test_neither_window_uses_os_execv(self):
-        import inspect
-
-        from src.ui_flet import grant_window, machine_setup_window
-
-        for module in (grant_window, machine_setup_window):
-            assert "os.execv(" not in inspect.getsource(module), module.__name__
